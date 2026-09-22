@@ -2,6 +2,33 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.5.0 — 2026-09-22
+
+Leaner blocks, leaner agent — fases 0–2 del plan de RAM ([docs/PLAN-ram-reduction.md](docs/PLAN-ram-reduction.md)).
+
+### Performance
+
+- **Plain text unless markdown is needed.** Measured per block: `<markdown>` 0.33 MB vs
+  `<text>` 0.09 MB (syntax highlighting is free in RAM — 0.32 MB without it — so it stays).
+  Task cards render the prompt verbatim as text; assistant/exit bodies only use the markdown
+  renderable when they actually have structure. Standard 400-step repro: **279 → 205 MB**
+  settled; a plain-prose workload sits at **152 MB** (≈ the app's base).
+- **`prompt_toolkit` loads lazily** in the agent (only interactive prompts need it): the `mini`
+  import drops **35 → 20 MB** and ~63 ms of startup on every invocation, `-y` runs included.
+- The agent freezes interned state after imports (`gc.freeze()`) and collects per step, keeping
+  hour-long runs flat.
+
+### Added
+
+- `MINITUI_PROFILE=1` (or `MINITUI_PROFILE=<path>`) samples the TUI's RSS/CPU every 5 s into
+  `~/.config/mini-tui/profile.log` for capacity work on real sessions.
+
+### Notes
+
+- `mini`'s remaining ~200 MB during runs is `litellm` (measured: 198 MB retained at import) —
+  all six providers route through it. Cutting that is Fase 3 of the plan and needs a decision
+  on cost tracking.
+
 ## 0.4.0 — 2026-09-22
 
 One repo, one install — mini-swe-agent now lives in `agent/`, and trajectory persistence got
