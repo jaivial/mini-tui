@@ -229,3 +229,15 @@ DeepSeek, OpenAI and OpenCode Go stay on litellm: they rely on its price tables 
 Anthropic/Responses protocol adapters.
 
 Measured (same task, real cli-proxy): peak RSS 214 → 40 MB · first journal write 5.2 → 3.0 s.
+
+## 5. Per-step overhead (0.8.0)
+
+Measured with the deterministic model on a 600-step run (the agent's time besides the LLM and
+the command): **8.9 → 1.8 ms/step**.
+
+| Cost per step (before) | Fix |
+| --- | --- |
+| `gc.collect()` full pass: ~5–6 ms, growing with the heap | generation 0 every step, full every 50 (`FULL_GC_EVERY_STEPS`) |
+| `Template(src)` parse+compile: ~1.5 ms × each render | `models/utils/templates.py`: `lru_cache` of compiled templates |
+| Full export every 20 msgs / 10 s: O(n), 33 ms at 900 msgs | cadence `max(20, n // 10)` messages / 60 s; the journal is always current |
+| New TCP (+TLS) connection per model call | keep-alive `http.client` connection per model, one retry on a stale socket |

@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -24,9 +24,13 @@ class _Gateway:
         gateway = self
 
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"  # keep-alive, like real gateways
+
             def do_POST(self):  # noqa: N802
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                gateway.requests.append({"path": self.path, "auth": self.headers.get("Authorization"), "body": body})
+                gateway.requests.append(
+                    {"path": self.path, "auth": self.headers.get("Authorization"), "body": body, "peer": self.client_address}
+                )
                 status, reply = gateway.replies.pop(0)
                 data = json.dumps(reply).encode()
                 self.send_response(status)
@@ -38,7 +42,8 @@ class _Gateway:
             def log_message(self, *args):
                 pass
 
-        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.server.server_port}/v1"
 
@@ -51,6 +56,7 @@ def gateway(monkeypatch):
     monkeypatch.setenv("MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT", "2")
     yield g
     g.server.shutdown()
+    g.server.server_close()
 
 
 def _completion(message: dict, finish_reason: str = "tool_calls") -> dict:
@@ -147,3 +153,21 @@ def test_gateways_never_import_litellm(name):
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, env={**os.environ, "MSWEA_SILENT_STARTUP": "1"})
     assert out.stdout.strip().splitlines()[-1] == "False False"
+
+
+def test_steps_reuse_one_keep_alive_connection(gateway):
+    for _ in range(3):
+        gateway.replies.append((200, _completion({"role": "assistant", "content": "ok"}, "stop")))
+    model = get_model("cliproxy/claude-opus-5-5")
+    for _ in range(3):
+        model.query([{"role": "user", "content": "hi"}])
+    assert len({r["peer"] for r in gateway.requests}) == 1  # same client socket every step
+
+
+def test_a_dropped_idle_connection_is_retried_transparently(gateway):
+    gateway.replies += [(200, _completion({"role": "assistant", "content": "a"}, "stop"))] * 2
+    model = get_model("cliproxy/claude-opus-5-5")
+    model.query([{"role": "user", "content": "hi"}])
+    model._conn.sock.close()  # the server's idle timeout closed our pooled socket
+    model._conn.sock = __import__("socket").socket()  # a dead, unconnected socket in its place
+    assert model.query([{"role": "user", "content": "hi"}])["extra"]["submission"] == "a"

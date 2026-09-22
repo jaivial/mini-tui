@@ -13,6 +13,7 @@ import logging
 import os
 import ssl
 import time
+from functools import lru_cache
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -36,6 +37,12 @@ logger = logging.getLogger("openai_compat_model")
 _WIRE_KEYS = ("role", "content", "tool_calls", "tool_call_id", "name")
 #: `model_kwargs` that only meant something to litellm (kept for config compatibility).
 _LITELLM_ONLY_KWARGS = {"drop_params", "custom_llm_provider", "api_base", "api_key", "timeout"}
+
+
+@lru_cache(maxsize=1)
+def _ssl_context() -> ssl.SSLContext:
+    """Loading the CA bundle costs ~1.5 ms; one context serves every connection."""
+    return ssl.create_default_context()
 
 
 class OpenaiCompatError(Exception):
@@ -99,23 +106,49 @@ class OpenaiCompatModel:
 
     # --- transport -------------------------------------------------------------------------
 
+    def _connection(self, url) -> http.client.HTTPConnection:
+        """One keep-alive connection per model: remote HTTPS gateways skip the TCP+TLS handshake
+        (tens to hundreds of ms) on every step."""
+        key = (url.scheme, url.hostname, url.port)
+        if getattr(self, "_conn_key", None) != key or getattr(self, "_conn", None) is None:
+            if url.scheme == "https":
+                conn = http.client.HTTPSConnection(
+                    url.hostname, url.port, timeout=self.config.request_timeout, context=_ssl_context()
+                )
+            else:
+                conn = http.client.HTTPConnection(url.hostname, url.port, timeout=self.config.request_timeout)
+            self._conn, self._conn_key = conn, key
+        return self._conn
+
+    def _drop_connection(self) -> None:
+        conn, self._conn = getattr(self, "_conn", None), None
+        if conn is not None:
+            conn.close()
+
     def _post(self, path: str, body: dict) -> dict:
         url = urlsplit(self.config.api_base.rstrip("/") + path)
-        conn_class = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
-        extra = {"context": ssl.create_default_context()} if url.scheme == "https" else {}
-        conn = conn_class(url.hostname, url.port, timeout=self.config.request_timeout, **extra)
         target = url.path + (f"?{url.query}" if url.query else "")
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
-        try:
-            conn.request("POST", target, body=json.dumps(body).encode(), headers=headers)
-            response = conn.getresponse()
-            raw = response.read()
-        except (OSError, http.client.HTTPException) as e:
-            raise OpenaiCompatError(f"{type(e).__name__}: {e} ({self.config.api_base})") from e
-        finally:
-            conn.close()
+        payload = json.dumps(body).encode()
+        for reuse in (True, False):
+            conn = self._connection(url)
+            fresh = conn.sock is None
+            try:
+                conn.request("POST", target, body=payload, headers=headers)
+                response = conn.getresponse()
+                raw = response.read()
+                if response.will_close:
+                    self._drop_connection()
+                break
+            except (OSError, http.client.HTTPException) as e:
+                self._drop_connection()
+                # A pooled socket the server closed while idle fails before any byte of a reply
+                # arrives: retry once on a fresh connection. Fresh-connection failures are real.
+                if reuse and not fresh and isinstance(e, (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError)):
+                    continue
+                raise OpenaiCompatError(f"{type(e).__name__}: {e} ({self.config.api_base})") from e
         text = raw.decode("utf-8", "replace")
         if response.status >= 400:
             raise self._http_error(response.status, text)
