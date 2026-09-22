@@ -158,6 +158,7 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `Alt+Enter` / `Ctrl+J` | insert a newline in the prompt (`Shift+Enter` too where the terminal reports it) |
 | `/` | opens the command palette: `↑`/`↓` or click to select · `Enter`/`Tab` fills the prompt (never sends) |
 | `$` | opens the skills palette (`~/.claude/skills`) · `$<skill> <request>` runs the request with that skill |
+| `↑` / `↓` (in the prompt) | browse the prompts sent in this session · `↓` past the newest restores your draft |
 | `Esc` | close the palette / leave the prompt · **double `Esc` interrupts the run** |
 | `ctrl+c` | clear the prompt · press it twice (within 1.5 s) to close |
 | `/quit` · `/exit` | close mini-tui |

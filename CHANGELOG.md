@@ -6,6 +6,10 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ### Added
 
+- **Prompt history.** Every prompt sent in the session (commands and `$skill` calls too) is
+  remembered: `↑` on the first line of the prompt recalls older ones, `↓` on the last line walks
+  forward and restores the half-written draft. `/resume` seeds it with the session's prompts.
+
 - **`$skill` prompts.** `$` opens a completion palette over `~/.claude/skills` (name +
   description); `$<skill> <request>` sends mini the skill's `SKILL.md` ahead of the request,
   and the transcript collapses it back to `$<skill> <request>`. Unknown skills keep the prompt

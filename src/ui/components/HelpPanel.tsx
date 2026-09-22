@@ -11,6 +11,7 @@ export function HelpPanel() {
     ["/help", "this panel"],
     ["/quit  ·  /exit", "close mini-tui"],
     ["Enter", "send the prompt (Alt+Enter / Ctrl+J for a newline)"],
+    ["↑ ↓ (prompt)", "recall prompts sent in this session"],
     ["↑ ↓  ·  click", "pick in the command palette (Enter/Tab fills, never sends)"],
     ["Esc", "leave the prompt · double Esc interrupts the run"],
     ["ctrl+c", "clear the prompt · press twice to close"],
