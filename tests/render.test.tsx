@@ -362,6 +362,55 @@ describe("App rendering", () => {
     setup.renderer.destroy();
   });
 
+  test("ctrl+c once clears the prompt, twice closes (also from navigation mode)", async () => {
+    let quits = 0;
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onQuit={() => (quits += 1)} />,
+      { width: 80, height: 16, exitOnCtrlC: false }, // like src/index.ts
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("draft prompt");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressCtrlC();
+    });
+    await setup.renderOnce();
+    let frame = setup.captureCharFrame();
+    expect(quits).toBe(0);
+    expect(frame).not.toContain("draft prompt"); // cleared
+    expect(frame).toContain("ctrl+c again to close");
+
+    await act(async () => {
+      setup.mockInput.pressCtrlC();
+    });
+    expect(quits).toBe(1);
+    setup.renderer.destroy();
+
+    // an empty prompt still needs two presses; a stale first press does not count
+    let quits2 = 0;
+    const other = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onQuit={() => (quits2 += 1)} />,
+      { width: 80, height: 16, exitOnCtrlC: false }, // like src/index.ts
+    );
+    await other.renderOnce();
+    other.mockInput.pressEscape(); // navigation mode
+    await Bun.sleep(60);
+    await act(async () => {
+      other.mockInput.pressCtrlC();
+    });
+    expect(quits2).toBe(0);
+    await Bun.sleep(1600); // past the double-press window
+    await act(async () => {
+      other.mockInput.pressCtrlC();
+    });
+    expect(quits2).toBe(0);
+    await act(async () => {
+      other.mockInput.pressCtrlC();
+    });
+    expect(quits2).toBe(1);
+    other.renderer.destroy();
+  });
+
   test("double Esc interrupts the run and never quits the TUI", async () => {
     let quits = 0;
     let interrupts = 0;

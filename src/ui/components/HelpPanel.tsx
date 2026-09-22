@@ -13,7 +13,7 @@ export function HelpPanel() {
     ["Enter", "send the prompt (Alt+Enter / Ctrl+J for a newline)"],
     ["↑ ↓  ·  click", "pick in the command palette (Enter/Tab fills, never sends)"],
     ["Esc", "leave the prompt · double Esc interrupts the run"],
-    ["ctrl+c", "clear the prompt · twice (or on empty) closes"],
+    ["ctrl+c", "clear the prompt · press twice to close"],
     ["j k  ·  e", "move between steps · expand/collapse the focused output"],
     ["PgUp PgDn  ·  g G", "scroll · g loads older steps / G back to live bottom"],
   ];

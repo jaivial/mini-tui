@@ -75,7 +75,8 @@ const runSpec: TaskSpec | undefined =
     ? { task: args.task, model: args.model || DEFAULT_MODEL || undefined, specs: args.specs, cwd: process.cwd() }
     : undefined;
 
-const renderer = await createCliRenderer({ exitOnCtrlC: true });
+// ctrl+c belongs to the App: once clears the prompt, twice closes.
+const renderer = await createCliRenderer({ exitOnCtrlC: false });
 startProfiling();
 const quit = () => {
   renderer.destroy();

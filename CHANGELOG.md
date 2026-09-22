@@ -11,6 +11,12 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
   and the transcript collapses it back to `$<skill> <request>`. Unknown skills keep the prompt
   and say so in the hint line.
 
+### Changed
+
+- **ctrl+c: once clears, twice closes.** The first press clears the prompt (and shows
+  "ctrl+c again to close"). A second press within 1.5 s closes the TUI, in the prompt and in
+  navigation mode. The renderer no longer exits on the first ctrl+c.
+
 ### Fixed
 
 - Filling the prompt from the palette parks the cursor at the end, so typing continues after
