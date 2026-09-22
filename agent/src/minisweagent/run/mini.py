@@ -98,6 +98,11 @@ def main(
         run_task = _multiline_prompt()
         console.print("[bold green]Got that, thanks![/bold green]")
 
+    # Keep the runtime heap trim: freeze interned state so GC never scans it (the step loop
+    # in DefaultAgent.run collects after every step).
+    import gc
+
+    gc.freeze()
     model = get_model(config=config.get("model", {}))
     env = get_environment(config.get("environment", {}), default_type="local")
     agent = get_agent(model, env, config.get("agent", {}), default_type="interactive")

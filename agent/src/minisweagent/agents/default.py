@@ -2,6 +2,7 @@
 or https://minimal-agent.com for a tutorial on the basic building principles.
 """
 
+import gc
 import json
 import logging
 import os
@@ -134,6 +135,7 @@ class DefaultAgent:
             finally:
                 # force=False: the journal is always current; the full export throttles.
                 self.save(self.config.output_path, force=False)
+                gc.collect()  # reclaim per step: runs go on for hours with big payloads
             if self.messages[-1].get("role") == "exit":
                 exit_message = self.messages.pop()
                 # A TUI can hold the run open at exit and keep one conversation going:
