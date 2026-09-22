@@ -1,18 +1,21 @@
 import { colors } from "../theme";
-import type { ConnectStep } from "../../connect";
+import { filterModels, visibleSlice, type ConnectStep } from "../../connect";
 import type { ProviderDef } from "../../providers";
 
 /** `/connect` wizard: provider → API key → model → connection test. */
-export function ConnectWizard(props: { step: ConnectStep; providers: ProviderDef[] }) {
+export function ConnectWizard(props: { step: ConnectStep; providers: ProviderDef[]; areaHeight?: number }) {
   const step = props.step;
+  // Keep the panel inside the available area: window the lists instead of overflowing.
+  const budget = Math.max(4, (props.areaHeight ?? 24) - 4);
   return (
     <box borderStyle="rounded" borderColor={colors.border} width="80%" marginLeft="auto" marginRight="auto" paddingX={1} gap={0}>
       <text fg={colors.dim}>connect provider · Esc close</text>
 
       {step.kind === "provider" ? (
         <>
-          {props.providers.map((provider, i) => {
-            const selected = i === step.index;
+          {visibleSlice(props.providers, step.index, budget).items.map((provider) => {
+            const index = props.providers.indexOf(provider);
+            const selected = index === step.index;
             return (
               <box key={provider.id} flexDirection="row" gap={2}>
                 <text fg={colors.accent}>{selected ? "▸" : " "}</text>
@@ -45,8 +48,10 @@ export function ConnectWizard(props: { step: ConnectStep; providers: ProviderDef
             <text fg={colors.text}>{step.query}▏</text>
           </box>
           {step.models.length === 0 ? <text fg={colors.faint}>no models match</text> : null}
-          {step.models.slice(0, 10).map((model, i) => {
-            const selected = i === step.index;
+          {visibleSlice(filterModels(step.models, step.query), step.index, budget - 2).items.map((model, i, all) => {
+            const filtered = filterModels(step.models, step.query);
+            const index = filtered.indexOf(model, filtered.length - all.length >= 0 ? 0 : 0);
+            const selected = model === filtered[step.index];
             return (
               <box key={model} flexDirection="row" gap={1}>
                 <text fg={colors.accent}>{selected ? "▸" : " "}</text>

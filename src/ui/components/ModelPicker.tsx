@@ -28,6 +28,7 @@ export function indexForModel(model: string | undefined): number {
 export function ModelPicker(props: {
   current?: string;
   models?: SelectOption[];
+  areaHeight?: number;
   onPick: (model: string) => void;
   onCancel: () => void;
 }) {
@@ -38,7 +39,7 @@ export function ModelPicker(props: {
   };
   const [selectedIndex, setSelectedIndex] = useState(() => indexFor(props.current));
   return (
-    <box borderStyle="rounded" borderColor={colors.border} paddingX={1} gap={0}>
+    <box borderStyle="rounded" borderColor={colors.border} width="80%" paddingX={1} gap={0}>
       <text fg={colors.dim}>model · ↑/↓ choose · Enter apply · Esc close (applies from the next step)</text>
       <select
         options={models}
@@ -48,7 +49,7 @@ export function ModelPicker(props: {
         showDescription
         showScrollIndicator
         width="100%"
-        height={14}
+        height={Math.max(5, Math.min(14, (props.areaHeight ?? 18) - 4))}
         backgroundColor={colors.bg}
         focusedBackgroundColor={colors.bg}
         focusedTextColor={colors.text}

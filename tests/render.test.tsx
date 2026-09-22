@@ -718,3 +718,42 @@ describe("/connect BYOK wizard", () => {
     }
   });
 });
+
+describe("modals", () => {
+  test("float over the transcript and never move the prompt bar (short terminal)", async () => {
+    const { events, info } = parseTrajectory(loadFixture("normal-step"));
+    const short = { width: 110, height: 16 };
+
+    const plain = await testRender(
+      <App cwd="." events={events} info={info} initialSettings={EXPANDED} onQuit={() => {}} />,
+      short,
+    );
+    await plain.renderOnce();
+    const promptRow = plain
+      .captureCharFrame()
+      .split("\n")
+      .findIndex((l) => l.includes("what should mini do"));
+    plain.renderer.destroy();
+
+    const modal = await testRender(
+      <App cwd="." events={events} info={info} initialSettings={EXPANDED} onQuit={() => {}} />,
+      short,
+    );
+    await modal.renderOnce();
+    await modal.mockInput.typeText("/model");
+    await Bun.sleep(20);
+    await act(async () => {
+      modal.mockInput.pressEnter(); // palette fill
+    });
+    await modal.renderOnce();
+    await act(async () => {
+      modal.mockInput.pressEnter(); // open the modal
+    });
+    await modal.renderOnce();
+    const frame = modal.captureCharFrame();
+    const lines = frame.split("\n");
+    expect(lines.findIndex((l) => l.includes("what should mini do"))).toBe(promptRow); // prompt bar unmoved
+    expect(frame).toContain("Xiaomi MiMo"); // picker visible, clipped to the area
+    modal.renderer.destroy();
+  });
+});

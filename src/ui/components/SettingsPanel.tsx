@@ -16,7 +16,7 @@ export function SettingsPanel(props: {
   }));
   const [selectedIndex, setSelectedIndex] = useState(() => indexForMode(props.settings.outputMode));
   return (
-    <box borderStyle="rounded" borderColor={colors.border} paddingX={1} gap={0}>
+    <box borderStyle="rounded" borderColor={colors.border} width="80%" paddingX={1} gap={0}>
       <text fg={colors.dim}>settings · output display · Enter apply · Esc close</text>
       <select
         options={options}

@@ -15,6 +15,7 @@ import { PromptBar } from "./components/PromptBar";
 import { ModelPicker, MODELS } from "./components/ModelPicker";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { HelpPanel } from "./components/HelpPanel";
+import { Modal } from "./components/Modal";
 import { SessionModal } from "./components/SessionModal";
 import { CommandPalette, buildOptions, matchOptions, type CommandOption } from "./components/CommandPalette";
 import { ConnectWizard } from "./components/ConnectWizard";
@@ -542,13 +543,13 @@ export function App(props: AppProps) {
       }
 
       if (step.kind === "models") {
-        const shown = filterModels(step.models, step.query).slice(0, 10);
+        const filtered = filterModels(step.models, step.query);
         if (key.name === "escape") return setConnectStep({ kind: "key", def: step.def, value: step.key });
         if (key.name === "up") return setConnectStep({ ...step, index: Math.max(0, step.index - 1) });
-        if (key.name === "down") return setConnectStep({ ...step, index: Math.min(Math.max(shown.length - 1, 0), step.index + 1) });
+        if (key.name === "down") return setConnectStep({ ...step, index: Math.min(Math.max(filtered.length - 1, 0), step.index + 1) });
         if (key.name === "backspace") return setConnectStep({ ...step, query: step.query.slice(0, -1), index: 0 });
         if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
-          const model = shown[Math.min(step.index, Math.max(shown.length - 1, 0))];
+          const model = filtered[Math.min(step.index, Math.max(filtered.length - 1, 0))];
           if (!model) return;
           setConnectStep({ kind: "testing", def: step.def, key: step.key, model });
           const modelName = `${step.def.prefix}/${model}`;
@@ -716,33 +717,37 @@ export function App(props: AppProps) {
 
   // Compact bottom stack: prompt (grows with the text) · loader (while running) · meta · hint.
   const bottomRows = 2 + promptRows + (displayStatus === "running" ? 1 : 0) + 1 + (hintText ? 1 : 0);
+  const modalAreaHeight = Math.max(4, dims.height - bottomRows);
+
+  const overlayNode =
+    overlayState === "model" ? (
+      <ModelPicker
+        current={modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL}
+        models={modelOptions}
+        areaHeight={modalAreaHeight}
+        onPick={applyModel}
+        onCancel={() => setOverlay("none")}
+      />
+    ) : overlayState === "connect" && connectStep ? (
+      <ConnectWizard step={connectStep} providers={PROVIDERS} areaHeight={modalAreaHeight} />
+    ) : overlayState === "settings" ? (
+      <SettingsPanel settings={settings} onApply={applySettings} onCancel={() => setOverlay("none")} />
+    ) : overlayState === "help" ? (
+      <HelpPanel />
+    ) : overlayState === "resume" ? (
+      <SessionModal
+        sessions={resumeRows}
+        query={resumeQuery}
+        page={Math.min(resumePage, Math.max(0, resumePages - 1))}
+        pages={resumePages}
+        selectedIndex={Math.min(resumeIdx, Math.max(resumeRows.length - 1, 0))}
+        onPick={openSession}
+      />
+    ) : null;
 
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={colors.bg}>
-      {overlayState === "model" ? (
-        <ModelPicker
-          current={modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL}
-          models={modelOptions}
-          onPick={applyModel}
-          onCancel={() => setOverlay("none")}
-        />
-      ) : overlayState === "connect" && connectStep ? (
-        <ConnectWizard step={connectStep} providers={PROVIDERS} />
-      ) : overlayState === "settings" ? (
-        <SettingsPanel settings={settings} onApply={applySettings} onCancel={() => setOverlay("none")} />
-      ) : overlayState === "help" ? (
-        <HelpPanel />
-      ) : overlayState === "resume" ? (
-        <SessionModal
-          sessions={resumeRows}
-          query={resumeQuery}
-          page={Math.min(resumePage, Math.max(0, resumePages - 1))}
-          pages={resumePages}
-          selectedIndex={Math.min(resumeIdx, Math.max(resumeRows.length - 1, 0))}
-          onPick={openSession}
-        />
-      ) : (
-        <scrollbox
+      <scrollbox
           ref={scrollRef}
           stickyStart="bottom"
           width="100%"
@@ -806,7 +811,6 @@ export function App(props: AppProps) {
             </box>
           ) : null}
         </scrollbox>
-      )}
       {paletteOpen ? (
         <CommandPalette
           options={paletteOptions}
@@ -839,6 +843,7 @@ export function App(props: AppProps) {
         status={displayStatus}
       />
       <StatusBar hint={hintText} />
+      {overlayNode ? <Modal areaHeight={modalAreaHeight}>{overlayNode}</Modal> : null}
     </box>
   );
 }

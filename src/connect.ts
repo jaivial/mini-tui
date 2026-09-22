@@ -14,3 +14,12 @@ export function filterModels(models: string[], query: string): string[] {
   if (!needle) return models;
   return models.filter((model) => model.toLowerCase().includes(needle));
 }
+
+/**
+ * Window of items to display around the selection (lists never overflow the panel).
+ * Indices always refer to the full `items` array.
+ */
+export function visibleSlice<T>(items: T[], index: number, budget: number): { start: number; items: T[] } {
+  const start = Math.max(0, Math.min(index - Math.floor(budget / 2), Math.max(0, items.length - budget)));
+  return { start, items: items.slice(start, start + budget) };
+}

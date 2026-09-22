@@ -56,6 +56,10 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
   ![connect wizard](docs/screenshots/connect.png)
 
+- **Modals, not layout shifts.** `/model`, `/settings`, `/resume`, `/connect` and `/help` open as
+  floating modals centered over the transcript — the prompt bar and the bottom stack never move,
+  and panels clip to the available area on short terminals.
+
 - **`/help`** lists every command and key in one panel.
 
   ![help panel](docs/screenshots/help.png)

@@ -1,0 +1,9 @@
+https://villacarmenmedia.b-cdn.net/mini-tui/command-palette.png
+https://villacarmenmedia.b-cdn.net/mini-tui/connect.png
+https://villacarmenmedia.b-cdn.net/mini-tui/final-answer.png
+https://villacarmenmedia.b-cdn.net/mini-tui/help.png
+https://villacarmenmedia.b-cdn.net/mini-tui/model-picker.png
+https://villacarmenmedia.b-cdn.net/mini-tui/prompt.png
+https://villacarmenmedia.b-cdn.net/mini-tui/resume.png
+https://villacarmenmedia.b-cdn.net/mini-tui/run.png
+https://villacarmenmedia.b-cdn.net/mini-tui/settings.png
