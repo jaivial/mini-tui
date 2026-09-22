@@ -14,7 +14,7 @@ export class WheelSpeed implements ScrollAcceleration {
   }
 
   private lastTick = 0;
-  private streak = 0;
+  private streak = -1;
 
   tick(now: number = Date.now()): number {
     // consecutive quick wheel events ramp towards `burst`, slow ones stay at `factor`
@@ -24,7 +24,7 @@ export class WheelSpeed implements ScrollAcceleration {
   }
 
   reset(): void {
-    this.streak = 0;
+    this.streak = -1;
     this.lastTick = 0;
   }
 }
