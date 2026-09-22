@@ -7,9 +7,10 @@ import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 
-import { App } from "../src/ui/App";
+import { App, deriveStatus } from "../src/ui/App";
 import { CommandPalette, buildOptions } from "../src/ui/components/CommandPalette";
 import { MODELS } from "../src/ui/components/ModelPicker";
+import { colors, themeById } from "../src/ui/theme";
 import { parseTrajectory } from "../src/traj/parse";
 import { createSession, openDb, saveTranscript } from "../src/sessions";
 import type { RunEvent, Trajectory } from "../src/traj/schema";
@@ -259,7 +260,7 @@ describe("App rendering", () => {
       setup.mockInput.pressEnter(); // apply the highlighted mode
     });
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("output display →");
+    expect(setup.captureCharFrame()).not.toContain("output display →"); // nothing below the status line
     setup.renderer.destroy();
   });
 
@@ -435,7 +436,7 @@ describe("App rendering", () => {
     expect(quits).toBe(0);
     expect(frame).not.toContain("OLD-TASK");
     expect(frame).not.toContain("OLD-OUTPUT");
-    expect(frame).toContain("new session");
+    expect(frame).toContain("what should mini do"); // blank session, prompt ready
 
     await act(async () => setup.mockInput.pressArrow("up")); // history starts empty again
     await Bun.sleep(20);
@@ -516,7 +517,7 @@ describe("App rendering", () => {
     await setup.renderOnce();
     expect(interrupts).toBe(1);
     expect(quits).toBe(0); // quitting stays on /quit, /exit and double ctrl+c
-    expect(setup.captureCharFrame()).toContain("interrupt");
+    expect(setup.captureCharFrame()).not.toContain("interrupted —"); // no hint row under the status line
     setup.renderer.destroy();
   });
 });
@@ -606,6 +607,34 @@ describe("bottom stack", () => {
     done.renderer.destroy();
   });
 
+  test("status: an exit from an earlier turn does not show done while the run works", async () => {
+    const turn: RunEvent[] = [
+      { type: "task", text: "first" },
+      { type: "exit", exitStatus: "Submitted", submission: "" },
+      { type: "task", text: "follow-up" },
+      { type: "tool_call", id: "c1", name: "bash", command: "echo still-working" },
+    ];
+    // live run held open at exit, follow-up in flight → still working (was "done")
+    expect(deriveStatus("running", turn)).toBe("running");
+    expect(deriveStatus("running", [...turn, { type: "exit", exitStatus: "Submitted", submission: "" }])).toBe("done");
+    expect(deriveStatus("running", [...turn, { type: "exit", exitStatus: "LimitsExceeded", submission: "" }])).toBe("error");
+    expect(deriveStatus("interrupted", [...turn, { type: "exit", exitStatus: "Submitted", submission: "" }])).toBe("interrupted");
+    expect(deriveStatus("idle", [])).toBe("idle");
+
+    // in the UI: working loader, no green chip, and the model row is the last row on screen
+    const setup = await testRender(
+      <App cwd="." events={turn} info={{ cost: 0, apiCalls: 2 }} statusOverride="running" onQuit={() => {}} />,
+      { width: 120, height: 18 },
+    );
+    await setup.renderOnce();
+    const lines = setup.captureCharFrame().split("\n").map((l) => l.trimEnd());
+    expect(lines.join("\n")).not.toContain("● done");
+    const last = lines.filter((l) => l).at(-1) ?? "";
+    expect(last).toContain("working ·");
+    expect(last).toContain("default model");
+    setup.renderer.destroy();
+  });
+
   test("opening the TUI shows no load state until a run starts", async () => {
     const setup = await testRender(<App cwd="/home/jaime/mini-tui" onQuit={() => {}} />, { width: 120, height: 18 });
     await setup.renderOnce();
@@ -648,7 +677,8 @@ describe("theme selector", () => {
       setup.mockInput.pressKey(String.fromCharCode(27) + "[B"); // ↓ → nord
     });
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("theme → nord");
+    expect(colors.bg).toBe(themeById("nord").colors.bg); // applied live
+    expect(setup.captureCharFrame()).not.toContain("theme →");
     setup.renderer.destroy();
   });
 });
@@ -678,8 +708,7 @@ describe("select-to-copy", () => {
 
     expect(copied.length).toBe(1);
     expect(copied[0].length).toBeGreaterThan(0);
-    expect(setup.captureCharFrame()).toContain("copied");
-    expect(setup.captureCharFrame()).toContain("→ clipboard");
+    expect(setup.captureCharFrame()).not.toContain("copied"); // silent: no hint row
     setup.renderer.destroy();
   });
 });

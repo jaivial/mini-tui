@@ -2,6 +2,26 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **"● done" while the agent was still working.** The agent keeps a run open at exit to take
+  follow-ups, and its journal keeps that exit message. Any exit anywhere in the transcript
+  showed "done" (green) through every later turn. The chip now reads the *last* event: an exit
+  there means done (or error for a non-`Submitted` exit status), and anything after it is live
+  work with the loader. Replaying a real claude-opus-5-5 session: 122 of 129 working snapshots
+  showed "done" before, 0 now.
+- A follow-up sent to a held-open run restarts the "working · Ns" timer.
+- ctrl+c right after fast typing now clears the prompt too (it read a not-yet-synced copy).
+
+### Changed
+
+- **Nothing below the model row.** The hint line under the status line is gone (no
+  "sent → …", "copied …", "theme → …", "interrupted — …"). The status line is the last row.
+  The ctrl+c close prompt moves into the prompt placeholder, and the rare failures (unknown
+  `$skill`, unreadable session) post a transcript notice instead.
+
 ## 0.6.0 — 2026-09-22
 
 Skills, prompt memory and sessions without restarts.
@@ -19,7 +39,7 @@ Skills, prompt memory and sessions without restarts.
 - **`$skill` prompts.** `$` opens a completion palette over `~/.claude/skills` (name +
   description); `$<skill> <request>` sends mini the skill's `SKILL.md` ahead of the request,
   and the transcript collapses it back to `$<skill> <request>`. Unknown skills keep the prompt
-  and say so in the hint line.
+  and post a notice.
 
 ### Changed
 
