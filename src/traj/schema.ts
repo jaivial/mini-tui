@@ -1,9 +1,10 @@
 /**
  * Types mirroring the `mini` trajectory file (`trajectory_format: "mini-swe-agent-1.1"`).
  *
- * The harness writes this JSON via `DefaultAgent.save()` after every step, so it is the
- * read-only integration surface mini-tui consumes. See `mini-swe-agent` sources for the
- * producing side (`src/minisweagent/agents/default.py`, `models/utils/actions_toolcall.py`).
+ * The vendored agent (`agent/`) appends every message to an `<traj>.jsonl` journal as it
+ * happens and periodically exports this full JSON (atomically), so this is the read-only
+ * integration surface mini-tui consumes — via the journal when present, else whole-file.
+ * See `agent/src/minisweagent/agents/default.py` for the producing side.
  */
 
 export interface TrajectoryInfo {

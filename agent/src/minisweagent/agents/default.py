@@ -49,6 +49,11 @@ class DefaultAgent:
         self.n_calls = 0
         self.n_consecutive_format_errors = 0
         self._start_time = time.time()
+        # Append-only journal bookkeeping (see save()).
+        self._journal_path: Path | None = None
+        self._journaled_messages = 0
+        self._export_messages = 0
+        self._export_at = 0.0
 
     def get_template_vars(self, **kwargs) -> dict:
         return recursive_merge(
@@ -127,7 +132,8 @@ class DefaultAgent:
                 self.handle_uncaught_exception(e)
                 raise
             finally:
-                self.save(self.config.output_path)
+                # force=False: the journal is always current; the full export throttles.
+                self.save(self.config.output_path, force=False)
             if self.messages[-1].get("role") == "exit":
                 exit_message = self.messages.pop()
                 # A TUI can hold the run open at exit and keep one conversation going:
@@ -297,12 +303,55 @@ class DefaultAgent:
         }
         return recursive_merge(agent_data, self.model.serialize(), self.env.serialize(), *extra_dicts)
 
-    def save(self, path: Path | None, *extra_dicts) -> dict:
+    # Full-export throttling: the append-only journal is always current, so the O(n) JSON
+    # rewrite only has to land periodically and at the end of the run (any save() with the
+    # default force=True still writes it immediately, keeping callers' semantics unchanged).
+    EXPORT_EVERY_MESSAGES = 20
+    EXPORT_EVERY_SECONDS = 10.0
+
+    def save(self, path: Path | None, *extra_dicts, force: bool = True) -> dict:
         """Save the trajectory of the agent to a file if path is given. Returns full serialized data.
         You can pass additional dictionaries with extra data to be (recursively) merged into the output data.
+
+        Every message is also appended to ``<path>.jsonl`` (meta line, one line per message,
+        fresh info line) as it happens — O(1) per step and never torn, so crash recovery and
+        live consumers don't depend on the full rewrite. ``force=False`` throttles the full
+        export to ``EXPORT_EVERY_MESSAGES``/``EXPORT_EVERY_SECONDS`` (it is always written
+        when the run ends with an exit message).
         """
         data = self.serialize(*extra_dicts)
         if path:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(data, indent=2))
+            self._append_journal(path, data)
+            now = time.time()
+            is_exit = bool(self.messages) and self.messages[-1].get("role") == "exit"
+            if (
+                force
+                or is_exit
+                or len(self.messages) - self._export_messages >= self.EXPORT_EVERY_MESSAGES
+                or now - self._export_at >= self.EXPORT_EVERY_SECONDS
+            ):
+                tmp = path.with_name(path.name + ".tmp")
+                tmp.write_text(json.dumps(data, separators=(",", ":")))
+                os.replace(tmp, path)  # atomic: readers never see a torn trajectory
+                self._export_messages = len(self.messages)
+                self._export_at = now
         return data
+
+    def _append_journal(self, path: Path, data: dict) -> None:
+        """Keep ``<path>.jsonl`` (meta + one line per message + fresh info) up to date."""
+        journal = path.with_suffix(".jsonl")
+        fresh = self._journal_path != path or self._journaled_messages == 0
+        lines: list[str] = []
+        if fresh:
+            self._journal_path = path
+            self._journaled_messages = 0
+            lines.append(
+                json.dumps({"t": "meta", "trajectory_format": data.get("trajectory_format", "")}, separators=(",", ":"))
+            )
+        for message in self.messages[self._journaled_messages :]:
+            lines.append(json.dumps({"t": "msg", "m": message}, separators=(",", ":")))
+        self._journaled_messages = len(self.messages)
+        lines.append(json.dumps({"t": "info", "i": data.get("info", {})}, separators=(",", ":")))
+        with journal.open("w" if fresh else "a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
