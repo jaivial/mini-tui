@@ -6,6 +6,10 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ### Added
 
+- **`/new`** starts a fresh session without restarting mini-tui: the current run (if any) is
+  stopped, its transcript saved, and the view, cost, prompt history and conversation reset. The
+  chosen model and settings carry over; the next prompt creates a new saved session.
+
 - **Prompt history.** Every prompt sent in the session (commands and `$skill` calls too) is
   remembered: `↑` on the first line of the prompt recalls older ones, `↓` on the last line walks
   forward and restores the half-written draft. `/resume` seeds it with the session's prompts.

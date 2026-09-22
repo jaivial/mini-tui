@@ -406,6 +406,45 @@ describe("App rendering", () => {
     setup.renderer.destroy();
   });
 
+  test("/new clears the transcript and the prompt history in place", async () => {
+    let quits = 0;
+    const events: RunEvent[] = [
+      { type: "task", text: "OLD-TASK" },
+      { type: "tool_call", id: "c1", name: "bash", command: "echo OLD-OUTPUT" },
+      { type: "observation", toolCallId: "c1", returncode: 0, output: "OLD-OUTPUT", exceptionInfo: "" },
+    ];
+    const setup = await testRender(
+      <App cwd="." events={events} info={{ cost: 0.5, apiCalls: 1 }} initialSettings={EXPANDED} persistSettings={false} onSend={() => {}} onQuit={() => (quits += 1)} />,
+      { width: 90, height: 20 },
+    );
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("OLD-TASK");
+
+    await setup.mockInput.typeText("remember me");
+    await Bun.sleep(20);
+    await act(async () => setup.mockInput.pressEnter());
+    await setup.mockInput.typeText("/new");
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("start a new session"); // palette entry
+    await act(async () => setup.mockInput.pressEnter()); // fill
+    await act(async () => setup.mockInput.pressEnter()); // run
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    let frame = setup.captureCharFrame();
+    expect(quits).toBe(0);
+    expect(frame).not.toContain("OLD-TASK");
+    expect(frame).not.toContain("OLD-OUTPUT");
+    expect(frame).toContain("new session");
+
+    await act(async () => setup.mockInput.pressArrow("up")); // history starts empty again
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    expect(frame).not.toContain("remember me");
+    setup.renderer.destroy();
+  });
+
   test("ctrl+c once clears the prompt, twice closes (also from navigation mode)", async () => {
     let quits = 0;
     const setup = await testRender(
