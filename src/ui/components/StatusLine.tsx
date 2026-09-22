@@ -5,14 +5,12 @@ const BAR_CELLS = 10;
 
 /**
  * The single info line below the prompt: animated load state while the agent
- * works, plus model · path (git branch) · step · cost · status.
+ * works, plus model · path (git branch) · status.
  */
 export function StatusLine(props: {
   model: string;
   path: string;
   branch: string | null;
-  step: number;
-  cost: number;
   status: string;
   tick: number;
   elapsedS: number;
@@ -35,10 +33,6 @@ export function StatusLine(props: {
       <text fg={colors.faint}>·</text>
       <text fg={colors.dim}>{props.path}</text>
       {props.branch ? <text fg={colors.dim}>⎇ {props.branch}</text> : null}
-      <text fg={colors.faint}>·</text>
-      <text fg={colors.dim}>
-        step {props.step} · ${props.cost.toFixed(4)}
-      </text>
       {props.status === "done" || props.status === "error" ? (
         <text fg={statusColor}>● {props.status}</text>
       ) : null}

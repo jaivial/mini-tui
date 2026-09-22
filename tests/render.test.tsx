@@ -415,7 +415,9 @@ describe("bottom stack", () => {
     expect(statusLine).toContain("xiaomi/mimo-v2.6-pro");
     expect(statusLine).toContain("mini-tui");
     expect(statusLine).toContain("⎇ main");
-    expect(statusLine).toContain("step 0 · $0.0217");
+    // no step/cost noise on the line
+    expect(statusLine).not.toContain("step");
+    expect(statusLine).not.toContain("$");
     running.renderer.destroy();
 
     const done = await testRender(
@@ -436,7 +438,7 @@ describe("bottom stack", () => {
     expect(frame).toContain("what should mini do"); // prompt ready
     expect(frame).not.toContain("working ·"); // no loader while idle
     expect(frame).not.toContain("●"); // no status chip while idle
-    expect(frame).toContain("step 0 · $0.0000"); // stats stay on the line
+    expect(frame).not.toContain("step"); // no stats on the line
     setup.renderer.destroy();
   });
 });

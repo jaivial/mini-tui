@@ -746,7 +746,6 @@ export function App(props: AppProps) {
     }
   });
 
-  const step = events.filter((event) => event.type === "assistant").length;
   const focusedPair = Math.min(Math.max(focusIdx, 0), Math.max(pairItems.length - 1, 0));
   const exitEvent = events.find((event) => event.type === "exit") as Extract<RunEvent, { type: "exit" }> | undefined;
   const displayStatus = props.statusOverride ?? (exitEvent ? "done" : status);
@@ -885,8 +884,6 @@ export function App(props: AppProps) {
         model={(modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL) || "default model"}
         path={shortPath(props.cwd)}
         branch={branch}
-        step={step}
-        cost={info.cost}
         status={displayStatus}
         tick={tick}
         elapsedS={elapsedS}
