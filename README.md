@@ -157,7 +157,7 @@ Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 | `/connect` | connect a BYOK provider (key → model → tested connection) |
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
 | `e` | expand / collapse the focused output block |
-| `PgUp` / `PgDn` | scroll half a screen · mouse wheel scrolls 2–3× (burst-accelerated) |
+| `PgUp` / `PgDn` | scroll half a screen · mouse wheel scrolls 3–5× (burst-accelerated) |
 | `g` / `G` | top / bottom |
 
 ## How it works

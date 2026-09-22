@@ -506,3 +506,91 @@ describe("select-to-copy", () => {
     setup.renderer.destroy();
   });
 });
+
+describe("e toggles any block", () => {
+  const events: RunEvent[] = [
+    { type: "tool_call", id: "call_x", name: "bash", command: "seq 1 30" },
+    {
+      type: "observation",
+      toolCallId: "call_x",
+      returncode: 0,
+      output: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n"),
+      exceptionInfo: "",
+    },
+  ];
+
+  test("collapses blocks in trim/expanded modes and expands them in collapsed", async () => {
+    for (const mode of ["trim", "expanded"] as const) {
+      const setup = await testRender(
+        <App cwd="." events={events} info={{ cost: 0, apiCalls: 1 }} initialSettings={{ outputMode: mode }} onQuit={() => {}} />,
+        { width: 90, height: 30 },
+      );
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("line 1"); // full view by default
+
+      setup.mockInput.pressEscape();
+      await Bun.sleep(60); // navigate mode (bare ESC needs the parser timeout)
+      setup.mockInput.pressKey("e"); // collapse the focused block
+      await Bun.sleep(20);
+      await setup.renderOnce();
+      let frame = setup.captureCharFrame();
+      expect(frame).toContain("1 tool call");
+      expect(frame).not.toContain("line 1");
+
+      setup.mockInput.pressKey("e"); // expand it again
+      await Bun.sleep(20);
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("line 1");
+      expect(frame).toContain("[e] collapse");
+      setup.renderer.destroy();
+    }
+  });
+
+  test("expands blocks in collapsed mode", async () => {
+    const setup = await testRender(
+      <App
+        cwd="."
+        events={events}
+        info={{ cost: 0, apiCalls: 1 }}
+        initialSettings={{ outputMode: "collapsed" }}
+        onQuit={() => {}}
+      />,
+      { width: 90, height: 30 },
+    );
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("1 tool call");
+
+    setup.mockInput.pressEscape();
+    await Bun.sleep(60);
+    setup.mockInput.pressKey("e");
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("line 1"); // flipped open reveals the output
+    expect(frame).toContain("seq 1 30"); // command shown too
+    expect(frame).not.toContain("1 tool call");
+    setup.renderer.destroy();
+  });
+
+  test("mouse click on a block toggles it too", async () => {
+    const setup = await testRender(
+      <App
+        cwd="."
+        events={events}
+        info={{ cost: 0, apiCalls: 1 }}
+        initialSettings={{ outputMode: "collapsed" }}
+        onQuit={() => {}}
+      />,
+      { width: 90, height: 30 },
+    );
+    await setup.renderOnce();
+    await setup.mockMouse.click(20, 0); // the count line (first content row)
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("seq 1 30"); // flipped open on click
+    expect(frame).not.toContain("1 tool call");
+    setup.renderer.destroy();
+  });
+});

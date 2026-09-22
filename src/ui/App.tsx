@@ -138,7 +138,7 @@ export function App(props: AppProps) {
   );
   const [errorText, setErrorText] = useState("");
   const [focusIdx, setFocusIdx] = useState(0);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [flipped, setFlipped] = useState<Set<number>>(new Set());
   const [tick, setTick] = useState(0);
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
   const [settings, setSettings] = useState<Settings>(() => {
@@ -717,7 +717,7 @@ export function App(props: AppProps) {
     if (key.name === "e" && pairItems.length) {
       const target = pairItems[Math.min(Math.max(focusIdx, 0), pairItems.length - 1)]?.toolIndex;
       if (target !== undefined) {
-        setExpanded((prev) => {
+        setFlipped((prev) => {
           const next = new Set(prev);
           if (next.has(target)) next.delete(target);
           else next.add(target);
@@ -753,7 +753,7 @@ export function App(props: AppProps) {
   const busy = Boolean(live.current.run) && !exitedRef.current;
   const elapsedS = startedAtRef.current ? Math.floor((Date.now() - startedAtRef.current) / 1000) : 0;
   const toggle = (key: number) =>
-    setExpanded((prev) => {
+    setFlipped((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -826,7 +826,7 @@ export function App(props: AppProps) {
                     output={event.output}
                     exceptionInfo={event.exceptionInfo}
                     mode={settings.outputMode}
-                    expanded={expanded.has(item.index)}
+                    flipped={flipped.has(item.index)}
                     focused={false}
                     onToggle={() => toggle(item.index)}
                   />
@@ -846,7 +846,7 @@ export function App(props: AppProps) {
                 output={obs?.type === "observation" ? obs.output : ""}
                 exceptionInfo={obs?.type === "observation" ? obs.exceptionInfo : ""}
                 mode={settings.outputMode}
-                expanded={expanded.has(item.toolIndex)}
+                flipped={flipped.has(item.toolIndex)}
                 focused={pairFocus === focusedPair}
                 onToggle={() => toggle(item.toolIndex)}
               />

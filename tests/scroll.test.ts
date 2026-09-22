@@ -14,4 +14,15 @@ describe("WheelSpeed", () => {
     accel.reset();
     expect(accel.tick(9000)).toBe(2); // a slow wheel is back to the base factor
   });
+
+  test("defaults scroll at least 3x and burst to 5x", () => {
+    const accel = new WheelSpeed();
+    expect(accel.tick(0)).toBe(3);
+    accel.reset();
+    expect(accel.tick(0)).toBe(3);
+    expect(accel.tick(60)).toBeCloseTo(3.5);
+    expect(accel.tick(120)).toBeCloseTo(4);
+    expect(accel.tick(180)).toBeCloseTo(4.5);
+    expect(accel.tick(240)).toBe(5);
+  });
 });

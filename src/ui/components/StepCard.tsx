@@ -6,7 +6,7 @@ const COLLAPSED_TAIL = 12;
 const TRIM_HEAD = 2;
 const EXPANDED_CAP = 5000;
 
-/** Clip outputs according to the display mode (per-block expand overrides it). */
+/** Clip outputs according to the display mode (full reveal when flipped open). */
 export function clipOutput(output: string, mode: OutputMode, forceExpand = false): { text: string; hidden: number } {
   const lines = output.replace(/\n+$/, "").split("\n");
   const expanded = forceExpand || mode === "expanded";
@@ -21,8 +21,9 @@ export function clipOutput(output: string, mode: OutputMode, forceExpand = false
 }
 
 /**
- * One borderless block per bash step. Display modes: `collapsed` renders only a
- * `N tool calls` count line, `trim` two lines of output, `expanded` everything.
+ * One borderless block per bash step. `flipped` inverts the block against its
+ * display mode, so `e`/click always toggles: count line <-> full card, whatever
+ * the mode is.
  */
 export function StepCard(props: {
   index?: number;
@@ -32,16 +33,17 @@ export function StepCard(props: {
   output: string;
   exceptionInfo: string;
   mode: OutputMode;
-  expanded: boolean;
+  flipped: boolean;
   focused: boolean;
   onToggle: () => void;
 }) {
   const badge = props.returncode === null ? "rc=?" : `rc=${props.returncode}`;
   const badgeColor = props.returncode === 0 ? colors.ok : props.returncode === null ? colors.dim : colors.err;
   const marker = <text fg={colors.accent}>{props.focused ? "▍" : " "}</text>;
+  const count = props.command !== undefined ? "1 tool call" : "output";
 
-  if (props.mode === "collapsed" && !props.expanded) {
-    const count = props.command !== undefined ? "1 tool call" : "output";
+  const collapsedView = props.mode === "collapsed" !== props.flipped;
+  if (collapsedView) {
     return (
       <box paddingX={1} gap={1} flexDirection="row" onMouseDown={props.onToggle}>
         {marker}
@@ -51,12 +53,15 @@ export function StepCard(props: {
     );
   }
 
-  const { text, hidden } = clipOutput(props.output, props.mode, props.expanded);
+  // full card: reveal everything when flipped open from the count line, otherwise
+  // follow the mode's clipping
+  const reveal = props.mode === "collapsed" && props.flipped;
+  const { text, hidden } = clipOutput(props.output, props.mode, reveal);
   const totalLines = props.output.replace(/\n+$/, "").split("\n").length;
   const label = props.index !== undefined ? `${props.name ?? "bash"} #${props.index}` : "output";
   return (
     <box paddingX={1} gap={0}>
-      <box flexDirection="row" gap={1}>
+      <box flexDirection="row" gap={1} onMouseDown={props.onToggle}>
         {marker}
         <text fg={colors.dim}>{label}</text>
         <text fg={badgeColor}>{badge}</text>
@@ -66,7 +71,7 @@ export function StepCard(props: {
       {text ? <text fg={colors.dim}>{text}</text> : null}
       {totalLines > 2 ? (
         <text fg={colors.faint}>
-          {hidden > 0 ? `${hidden} lines hidden · ` : ""}[e] {props.expanded || props.mode === "expanded" ? "collapse" : "expand"}
+          {hidden > 0 ? `${hidden} lines hidden · ` : ""}[e] collapse
         </text>
       ) : null}
     </box>

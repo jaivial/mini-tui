@@ -8,7 +8,7 @@ export class WheelSpeed implements ScrollAcceleration {
   private readonly factor: number;
   private readonly burst: number;
 
-  constructor(factor = 2, burst = 3) {
+  constructor(factor = 3, burst = 5) {
     this.factor = factor;
     this.burst = Math.max(factor, burst);
   }
