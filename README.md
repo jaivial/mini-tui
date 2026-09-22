@@ -211,6 +211,20 @@ Upstream sync: `git subtree pull --prefix=agent --squash <upstream> <ref>`. The 
 descriptions (kept for upstreaming) live in
 [docs/mini-swe-agent-patches.md](docs/mini-swe-agent-patches.md).
 
+## Performance
+
+Trajectory persistence, measured on a synthetic 300-step run (the agent saves after every step):
+
+| | full rewrite per step (old) | append-only journal + throttled export (now) |
+| --- | --- | --- |
+| Bytes written | 235.4 MB | 4.3 MB (**55× less**) |
+| Persistence time | 0.99 s | 0.12 s (**8× faster**) |
+
+The TUI itself is bounded and lean: the transcript mounts in a sliding window of 120 blocks, so
+memory stays flat no matter how long a run gets (this fixed a 5+ GB growth on long runs in
+0.2.0). The 0.3.0 render pass then cut the measured footprint by ~30 % across the board — on the
+standard 400-step repro: 18.6 s → 13.1 s CPU and peak RSS 323 → 228 MB.
+
 ## Development
 
 ```bash
