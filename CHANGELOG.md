@@ -2,7 +2,10 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.7.0 — 2026-09-22
+
+Fase 3 del plan de RAM: `mini` sin litellm para los gateways y una TUI más ligera en vivo.
+Una sesión con claude-opus-5-5 vía cliproxy pasa de ~410–560 MB a ~215–250 MB (TUI + mini).
 
 ### Performance
 
