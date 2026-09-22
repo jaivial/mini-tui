@@ -17,6 +17,7 @@ const PROMPT_KEY_BINDINGS = [
 export function PromptBar(props: {
   focused: boolean;
   busy: boolean;
+  rows: number;
   textareaRef: RefObject<TextareaRenderable | null>;
   onSend: (text: string) => void;
   onTextChange: (text: string) => void;
@@ -31,7 +32,7 @@ export function PromptBar(props: {
       <textarea
         ref={props.textareaRef}
         focused={props.focused}
-        height={3}
+        height={Math.max(1, Math.min(3, props.rows))}
         keyBindings={PROMPT_KEY_BINDINGS as never}
         placeholder={hint}
         textColor={colors.text}

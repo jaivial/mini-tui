@@ -11,9 +11,10 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
 ## Features
 
-- **Prompt bar, Claude-Code style.** A multi-line prompt input pinned to the bottom of the screen:
-  type your task (`Alt+Enter` / `Ctrl+J` for a new line), hit Enter, and keep typing follow-ups
-  while the agent works (or after it submits) — they continue the *same* conversation.
+- **Prompt bar, Claude-Code style.** A compact multi-line prompt pinned to the bottom of the
+  screen (it grows with your text): type your task (`Alt+Enter` / `Ctrl+J` for a new line), hit
+  Enter, and keep typing follow-ups while the agent works (or after it submits) — they continue
+  the *same* conversation.
 
   ![prompt bar](docs/screenshots/prompt.png)
 
@@ -27,8 +28,9 @@ outputs — into cards, badges and banners. The harness runs completely untouche
   template wrapping — the **final answer is rendered as proper markdown** (bold, code, links), and
   the redundant `exit Submitted` echo of it is never shown.
 - **One quiet card per bash step** (command + its output), shadcn-style: zinc neutrals, rounded
-  surfaces, a single subtle accent and semantic colors used sparingly. The meta row below the
-  prompt shows the selected model, the working path and the checked-out git branch.
+  surfaces, a single subtle accent and semantic colors used sparingly. Right under the prompt
+  sits an animated load state while the agent works (`⣾ ▓░░░░ working · 34s · step 2 · $0.0217`),
+  followed by the selected model, the working path and the checked-out git branch.
 - **Output display modes** — collapsed (just a `1 tool call` line), trimmed to 2 lines, or fully
   expanded. Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still
   expands or collapses any block individually.

@@ -386,3 +386,40 @@ describe("markdown and palette extras", () => {
     setup.renderer.destroy();
   });
 });
+
+describe("bottom stack", () => {
+  test("loader row sits right under the prompt while running (and hides when done)", async () => {
+    const running = await testRender(
+      <App
+        cwd="/home/jaime/mini-tui"
+        events={[]}
+        info={{ cost: 0.0217, apiCalls: 3, model: "xiaomi/mimo-v2.6-pro" }}
+        statusOverride="running"
+        onQuit={() => {}}
+      />,
+      { width: 90, height: 18 },
+    );
+    await running.renderOnce();
+    const runFrame = running.captureCharFrame();
+    expect(runFrame).toContain("working ·");
+    expect(runFrame).toContain("$0.0217");
+    // compact stack: the meta line comes right after the loader row
+    const lines = runFrame.split("\n").map((l) => l.trimEnd());
+    const loaderIdx = lines.findIndex((l) => l.includes("working ·"));
+    expect(lines[loaderIdx + 1]).toContain("xiaomi/mimo-v2.6-pro");
+    expect(lines[loaderIdx + 1]).toContain("⎇ main");
+    // the prompt box no longer has empty rows: 3 rows (border, text, border)
+    const boxTop = lines.findIndex((l) => l.startsWith("╭") && lines[lines.indexOf(l) + 1]?.includes("what should mini do"));
+    const boxBottom = lines.findIndex((l) => l.startsWith("╰") && lines.indexOf(l) > boxTop);
+    expect(boxBottom - boxTop).toBe(2);
+    running.renderer.destroy();
+
+    const done = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} statusOverride="done" onQuit={() => {}} />,
+      { width: 90, height: 18 },
+    );
+    await done.renderOnce();
+    expect(done.captureCharFrame()).not.toContain("working ·");
+    done.renderer.destroy();
+  });
+});

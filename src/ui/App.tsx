@@ -4,6 +4,7 @@ import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
 import { colors, markdownSyntaxStyle } from "./theme";
 import { MetaRow } from "./components/MetaRow";
+import { LoaderRow } from "./components/LoaderRow";
 import { TaskCard } from "./components/TaskCard";
 import { StepCard } from "./components/StepCard";
 import { NoticeLine } from "./components/NoticeLine";
@@ -22,7 +23,6 @@ import { gitBranch, shortPath } from "../git";
 import { loadSettings, saveSettings, type Settings } from "../settings";
 import type { RunEvent, RunInfo, Trajectory } from "../traj/schema";
 
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const COMMAND_OPTIONS = buildOptions(MODELS);
 const ESC_DOUBLE_MS = 800;
 
@@ -122,6 +122,7 @@ export function App(props: AppProps) {
   const paletteIdxRef = useRef(0);
   const lastEscAt = useRef(0);
   const followRef = useRef(true);
+  const startedAtRef = useRef(0);
   const textareaRef = useRef<TextareaRenderable | null>(null);
   const branch = useMemo(() => gitBranch(props.cwd), [props.cwd]);
 
@@ -151,6 +152,7 @@ export function App(props: AppProps) {
 
   const paletteOptions = promptText.startsWith("/") && !paletteDismissed ? matchOptions(promptText, COMMAND_OPTIONS) : [];
   const paletteOpen = paletteOptions.length > 0 && inputFocused && overlayState === "none";
+  const promptRows = Math.max(1, promptText.split("\n").length);
 
   const applyPromptText = (text: string) => {
     textareaRef.current?.setText(text);
@@ -195,6 +197,7 @@ export function App(props: AppProps) {
   const startRun = (spec: TaskSpec) => {
     setStatus("running");
     exitedRef.current = false;
+    startedAtRef.current = Date.now();
     setHintText(undefined);
     const run = spawnMini({ ...spec, model: spec.model || modelOverride });
     live.current = { run };
@@ -270,7 +273,7 @@ export function App(props: AppProps) {
 
   useEffect(() => {
     if (status !== "running") return;
-    const timer = setInterval(() => setTick((t) => (t + 1) % SPINNER.length), 120);
+    const timer = setInterval(() => setTick((t) => (t + 1) % 1000), 120);
     return () => clearInterval(timer);
   }, [status]);
 
@@ -408,6 +411,7 @@ export function App(props: AppProps) {
   const exitEvent = events.find((event) => event.type === "exit") as Extract<RunEvent, { type: "exit" }> | undefined;
   const displayStatus = props.statusOverride ?? (exitEvent ? "done" : status);
   const busy = Boolean(live.current.run) && !exitedRef.current;
+  const elapsedS = startedAtRef.current ? Math.floor((Date.now() - startedAtRef.current) / 1000) : 0;
   const toggle = (key: number) =>
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -416,19 +420,8 @@ export function App(props: AppProps) {
       return next;
     });
 
-  const hint =
-    hintText ??
-    (overlayState === "model"
-      ? "model picker"
-      : overlayState === "settings"
-        ? "settings"
-        : overlayState === "help"
-          ? "help"
-          : inputFocused
-            ? busy
-              ? "typing · Enter continues the conversation"
-              : "typing · Enter launches"
-            : "normal · i type · q quit");
+  // Compact bottom stack: prompt (grows with the text) · loader (while running) · meta · hint.
+  const bottomRows = 2 + promptRows + (displayStatus === "running" ? 1 : 0) + 1 + (hintText ? 1 : 0);
 
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={colors.bg}>
@@ -447,7 +440,7 @@ export function App(props: AppProps) {
           ref={scrollRef}
           stickyStart="bottom"
           width="100%"
-          height={Math.max(6, dims.height - 10 - paletteOptions.length)}
+          height={Math.max(6, dims.height - bottomRows - paletteOptions.length)}
           contentOptions={{ gap: 1 }}
         >
           {items.map((item) => {
@@ -518,6 +511,7 @@ export function App(props: AppProps) {
       <PromptBar
         focused={inputFocused && overlayState === "none" && !paletteOpen}
         busy={busy}
+        rows={promptRows}
         textareaRef={textareaRef}
         onSend={send}
         onTextChange={(text) => {
@@ -529,6 +523,9 @@ export function App(props: AppProps) {
           }
         }}
       />
+      {displayStatus === "running" ? (
+        <LoaderRow tick={tick} elapsedS={elapsedS} step={step} cost={info.cost} />
+      ) : null}
       <MetaRow
         model={(modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL) || "default model"}
         path={shortPath(props.cwd)}
@@ -536,9 +533,8 @@ export function App(props: AppProps) {
         step={step}
         cost={info.cost}
         status={displayStatus}
-        spinner={SPINNER[tick % SPINNER.length]}
       />
-      <StatusBar hint={hint} />
+      <StatusBar hint={hintText} />
     </box>
   );
 }
