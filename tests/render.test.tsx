@@ -102,7 +102,7 @@ describe("App rendering", () => {
     setup.mockInput.pressKey(String.fromCharCode(27) + "[5~"); // PageUp
     await setup.renderOnce();
     const afterPageUp = setup.captureCharFrame();
-    expect(afterPageUp).toContain("bash #6"); // the view moved up over earlier steps
+    expect(afterPageUp).toContain("bash #5"); // the view moved up several steps
     expect(afterPageUp).not.toContain("CARD-8");
 
     setup.mockInput.pressKey("g");

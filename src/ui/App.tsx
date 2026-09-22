@@ -728,11 +728,11 @@ export function App(props: AppProps) {
     if (key.name === "k" || key.name === "up") return setFocusIdx((f) => Math.max(f - 1, 0));
     if (key.name === "pageup") {
       followRef.current = false;
-      return scrollRef.current?.scrollBy(-10);
+      return scrollRef.current?.scrollBy(-scrollStep);
     }
     if (key.name === "pagedown") {
       followRef.current = true;
-      return scrollRef.current?.scrollBy(10);
+      return scrollRef.current?.scrollBy(scrollStep);
     }
     if (key.name === "g" && key.shift) {
       followRef.current = true;
@@ -760,6 +760,8 @@ export function App(props: AppProps) {
 
   // Compact bottom stack: prompt (grows with the text) · single status line · hint.
   const bottomRows = 2 + promptRows + 1 + (hintText ? 1 : 0);
+  // PgUp/PgDn travel half a screen (at least 12 rows) — quick without being jumpy.
+  const scrollStep = Math.max(12, Math.floor(dims.height / 2));
   const modalAreaHeight = Math.max(4, dims.height - bottomRows);
 
   const overlayNode =
