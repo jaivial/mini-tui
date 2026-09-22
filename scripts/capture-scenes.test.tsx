@@ -14,6 +14,7 @@ import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 
 import { App } from "../src/ui/App";
+import { THEMES, applyTheme } from "../src/ui/theme";
 import { createSession, openDb, updateSession } from "../src/sessions";
 import type { RunEvent } from "../src/traj/schema";
 
@@ -238,4 +239,18 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   );
   await setup.renderOnce();
   save("prompt", setup);
+
+  // 10) the same transcript in every theme (README gallery)
+  for (const theme of THEMES) {
+    applyTheme(theme.id);
+    setup = await testRender(
+      <App cwd="." events={BASE_EVENTS} info={info} statusOverride="running" initialSettings={{ outputMode: "trim", theme: theme.id }} onQuit={() => {}} />,
+      { width: 110, height: 38 },
+    );
+    await setup.renderOnce();
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    save(`theme-${theme.id}`, setup);
+  }
+  applyTheme("shadcn");
 });

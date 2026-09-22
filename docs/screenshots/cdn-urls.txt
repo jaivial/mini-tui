@@ -7,3 +7,5 @@ https://villacarmenmedia.b-cdn.net/mini-tui/prompt.png
 https://villacarmenmedia.b-cdn.net/mini-tui/resume.png
 https://villacarmenmedia.b-cdn.net/mini-tui/run.png
 https://villacarmenmedia.b-cdn.net/mini-tui/settings.png
+https://villacarmenmedia.b-cdn.net/mini-tui/mini-tui-demo.mp4
+https://villacarmenmedia.b-cdn.net/mini-tui/mini-tui-gallery.mp4

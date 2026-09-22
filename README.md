@@ -86,6 +86,19 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 - **`view` mode** renders any existing trajectory (including
   `~/.config/mini-swe-agent/last_mini_run.traj.json`) with the same renderer.
 
+## Themes
+
+Six palettes — pick one in `/settings` (`Tab` to the theme group): moving the selection repaints
+the whole UI live and the choice persists.
+
+| shadcn (default) | nord | dracula |
+| --- | --- | --- |
+| ![shadcn](docs/screenshots/theme-shadcn.png) | ![nord](docs/screenshots/theme-nord.png) | ![dracula](docs/screenshots/theme-dracula.png) |
+
+| gruvbox | tokyo night | catppuccin |
+| --- | --- | --- |
+| ![gruvbox](docs/screenshots/theme-gruvbox.png) | ![tokyo night](docs/screenshots/theme-tokyo-night.png) | ![catppuccin](docs/screenshots/theme-catppuccin.png) |
+
 ## Requirements
 
 - [Bun](https://bun.sh) ≥ 1.3 (OpenTUI ships a native Zig renderer; Node ≥ 26.4 also works)
