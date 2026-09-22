@@ -402,12 +402,15 @@ describe("bottom stack", () => {
     await running.renderOnce();
     const runFrame = running.captureCharFrame();
     expect(runFrame).toContain("working ·");
-    expect(runFrame).toContain("$0.0217");
     // compact stack: the meta line comes right after the loader row
     const lines = runFrame.split("\n").map((l) => l.trimEnd());
     const loaderIdx = lines.findIndex((l) => l.includes("working ·"));
+    // no duplicated step/price on the loader row (they live in the meta line below)
+    expect(lines[loaderIdx]).not.toContain("step");
+    expect(lines[loaderIdx]).not.toContain("$");
     expect(lines[loaderIdx + 1]).toContain("xiaomi/mimo-v2.6-pro");
     expect(lines[loaderIdx + 1]).toContain("⎇ main");
+    expect(lines[loaderIdx + 1]).toContain("step 0 · $0.0217");
     // the prompt box no longer has empty rows: 3 rows (border, text, border)
     const boxTop = lines.findIndex((l) => l.startsWith("╭") && lines[lines.indexOf(l) + 1]?.includes("what should mini do"));
     const boxBottom = lines.findIndex((l) => l.startsWith("╰") && lines.indexOf(l) > boxTop);
@@ -421,5 +424,15 @@ describe("bottom stack", () => {
     await done.renderOnce();
     expect(done.captureCharFrame()).not.toContain("working ·");
     done.renderer.destroy();
+  });
+
+  test("opening the TUI shows no load state until a run starts", async () => {
+    const setup = await testRender(<App cwd="/home/jaime/mini-tui" onQuit={() => {}} />, { width: 90, height: 18 });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("what should mini do"); // prompt ready
+    expect(frame).not.toContain("working ·"); // no loader while idle
+    expect(frame).not.toContain("●"); // no status chip while idle
+    setup.renderer.destroy();
   });
 });

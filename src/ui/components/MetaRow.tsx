@@ -13,6 +13,7 @@ export function MetaRow(props: {
   status: string;
 }) {
   const statusColor = props.status === "error" ? colors.err : props.status === "done" ? colors.ok : colors.dim;
+  const showStatus = props.status === "done" || props.status === "error";
   return (
     <box flexDirection="row" gap={2} paddingX={1}>
       <text fg={colors.text}>{props.model}</text>
@@ -23,7 +24,7 @@ export function MetaRow(props: {
       <text fg={colors.dim}>
         step {props.step} · ${props.cost.toFixed(4)}
       </text>
-      {props.status !== "running" ? <text fg={statusColor}>● {props.status}</text> : null}
+      {showStatus ? <text fg={statusColor}>● {props.status}</text> : null}
     </box>
   );
 }

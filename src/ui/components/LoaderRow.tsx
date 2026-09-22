@@ -4,7 +4,7 @@ const FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 const BAR_CELLS = 10;
 
 /** Shimmering load state shown right below the prompt while the agent works. */
-export function LoaderRow(props: { tick: number; elapsedS: number; step: number; cost: number }) {
+export function LoaderRow(props: { tick: number; elapsedS: number }) {
   const spinner = FRAMES[props.tick % FRAMES.length];
   const head = props.tick % BAR_CELLS;
   const bar = Array.from({ length: BAR_CELLS }, (_, i) => (i === head ? "▓" : "░")).join("");
@@ -12,10 +12,7 @@ export function LoaderRow(props: { tick: number; elapsedS: number; step: number;
     <box flexDirection="row" gap={2} paddingX={1}>
       <text fg={colors.accent}>{spinner}</text>
       <text fg={colors.faint}>{bar}</text>
-      <text fg={colors.dim}>
-        working · {props.elapsedS}s · step {props.step}
-      </text>
-      <text fg={colors.faint}>${props.cost.toFixed(4)}</text>
+      <text fg={colors.dim}>working · {props.elapsedS}s</text>
     </box>
   );
 }

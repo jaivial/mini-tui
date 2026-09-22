@@ -37,8 +37,8 @@ export interface AppProps {
   follow?: boolean;
   /** Run mode: start immediately with this task (otherwise wait for the prompt). */
   runSpec?: TaskSpec;
-  /** Force the header status (for screenshot scenes); otherwise derived from the run. */
-  statusOverride?: "running" | "done" | "error";
+  /** Force the bottom-stack status (for screenshot scenes); otherwise derived from the run. */
+  statusOverride?: "running" | "done" | "error" | "idle";
   /** Override persisted settings (tests/screenshots). */
   initialSettings?: Settings;
   /** Persist settings changes to disk (tests set this to false). */
@@ -97,8 +97,8 @@ export function App(props: AppProps) {
   const staticMode = Boolean(props.events);
   const [events, setEvents] = useState<RunEvent[]>(props.events ?? []);
   const [info, setInfo] = useState<RunInfo>(props.info ?? { cost: 0, apiCalls: 0 });
-  const [status, setStatus] = useState<"running" | "done" | "error">(
-    props.statusOverride ?? (staticMode || props.viewPath ? "done" : "running"),
+  const [status, setStatus] = useState<"running" | "done" | "error" | "idle">(
+    props.statusOverride ?? (props.runSpec ? "running" : staticMode || props.viewPath ? "done" : "idle"),
   );
   const [errorText, setErrorText] = useState("");
   const [focusIdx, setFocusIdx] = useState(0);
@@ -198,8 +198,7 @@ export function App(props: AppProps) {
     setStatus("running");
     exitedRef.current = false;
     startedAtRef.current = Date.now();
-    setHintText(undefined);
-    const run = spawnMini({ ...spec, model: spec.model || modelOverride });
+    setHintText(undefined);    const run = spawnMini({ ...spec, model: spec.model || modelOverride });
     live.current = { run };
     live.current.watch = watchTrajectory(run.session.trajPath, applySnapshot);
     run.exited.then((code) => {
@@ -523,9 +522,7 @@ export function App(props: AppProps) {
           }
         }}
       />
-      {displayStatus === "running" ? (
-        <LoaderRow tick={tick} elapsedS={elapsedS} step={step} cost={info.cost} />
-      ) : null}
+      {displayStatus === "running" ? <LoaderRow tick={tick} elapsedS={elapsedS} /> : null}
       <MetaRow
         model={(modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL) || "default model"}
         path={shortPath(props.cwd)}
