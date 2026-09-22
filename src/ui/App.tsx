@@ -671,7 +671,15 @@ export function App(props: AppProps) {
     const now = Date.now();
     if (now - lastCtrlCAt.current < CTRL_C_DOUBLE_MS) return quit();
     lastCtrlCAt.current = now;
-    if (promptRef.current) applyPromptText("");
+    // read the buffer itself: promptRef syncs a tick after each key, so a ctrl+c that
+    // lands right behind fast typing would otherwise see an empty prompt
+    let text = promptRef.current;
+    try {
+      text = textareaRef.current?.editorView.getText() ?? text;
+    } catch {
+      // renderer torn down
+    }
+    if (text) applyPromptText("");
     setCloseArmed(true);
     setTimeout(() => setCloseArmed(false), CTRL_C_DOUBLE_MS);
   };

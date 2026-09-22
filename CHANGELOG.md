@@ -13,6 +13,7 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
   work with the loader. Replaying a real claude-opus-5-5 session: 122 of 129 working snapshots
   showed "done" before, 0 now.
 - A follow-up sent to a held-open run restarts the "working · Ns" timer.
+- ctrl+c right after fast typing now clears the prompt too (it read a not-yet-synced copy).
 
 ### Changed
 
