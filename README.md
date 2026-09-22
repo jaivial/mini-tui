@@ -60,6 +60,11 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
   ![connect wizard](docs/screenshots/connect.png)
 
+- **Select-to-copy.** Highlight any text in the UI with the mouse and it lands on your clipboard
+  the moment you release — transcripts, commands, outputs, whatever. It works **inside tmux**
+  (OSC 52 passthrough + the tmux paste buffer, `prefix+]`) and falls back to `wl-copy`/`xclip`/
+  `xsel`/`pbcopy` when available.
+
 - **Modals, not layout shifts.** `/model`, `/settings`, `/resume`, `/connect` and `/help` open as
   floating modals centered over the transcript — the prompt bar and the bottom stack never move,
   and panels clip to the available area on short terminals.

@@ -475,3 +475,34 @@ describe("theme selector", () => {
     setup.renderer.destroy();
   });
 });
+
+describe("select-to-copy", () => {
+  test("highlighting text with the mouse copies it", async () => {
+    const copied: string[] = [];
+    const { events, info } = parseTrajectory(loadFixture("normal-step"));
+    const setup = await testRender(
+      <App
+        cwd="."
+        events={events}
+        info={info}
+        initialSettings={EXPANDED}
+        onCopy={(text) => copied.push(text)}
+        onQuit={() => {}}
+      />,
+      { width: 120, height: 60 },
+    );
+    await setup.renderOnce();
+
+    // drag across the command row of the first card
+    await setup.mockMouse.pressDown(2, 5);
+    await setup.mockMouse.moveTo(20, 5);
+    await setup.mockMouse.release(20, 5);
+    await Bun.sleep(500); // the copy happens once the selection settles
+
+    expect(copied.length).toBe(1);
+    expect(copied[0].length).toBeGreaterThan(0);
+    expect(setup.captureCharFrame()).toContain("copied");
+    expect(setup.captureCharFrame()).toContain("→ clipboard");
+    setup.renderer.destroy();
+  });
+});

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
+import { useKeyboard, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
 import type { Database } from "bun:sqlite";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
@@ -34,6 +34,7 @@ import { messagesToEvents, parseInfo } from "../traj/parse";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
+import { copyText } from "../clipboard";
 import { gitBranch, shortPath } from "../git";
 import {
   DEFAULT_DB_PATH,
@@ -75,6 +76,8 @@ export interface AppProps {
   dbPath?: string;
   /** Override prompt submission (tests); otherwise runs a task or continues the run. */
   onSend?: (text: string) => void;
+  /** Override clipboard writes (tests); defaults to OSC 52 + tmux buffer + native tools. */
+  onCopy?: (text: string) => void;
   /** Override the provider connection test (tests); defaults to a real one-token query. */
   testModel?: (modelName: string, key: string) => Promise<boolean>;
   onQuit?: () => void;
@@ -167,6 +170,7 @@ export function App(props: AppProps) {
   const lastEscAt = useRef(0);
   const followRef = useRef(true);
   const startedAtRef = useRef(0);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<TextareaRenderable | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const messagesRef = useRef<TrajectoryMessage[]>([]);
@@ -514,6 +518,19 @@ export function App(props: AppProps) {
     if (inputRefocus.current && promptRef.current) return applyPromptText("");
     return quit();
   };
+
+  // Mouse-highlight any text in the UI to copy it (clipboard works inside tmux too).
+  useSelectionHandler((selection) => {
+    const text = selection.getSelectedText();
+    if (!text) return;
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    // copy once the selection settles (mouse released / drag paused)
+    copyTimer.current = setTimeout(() => {
+      if (props.onCopy) props.onCopy(text);
+      else copyText(text);
+      setHintText(`copied ${text.length} chars → clipboard`);
+    }, 350);
+  });
 
   useKeyboard((key) => {
     if (overlayRef.current === "connect") {
