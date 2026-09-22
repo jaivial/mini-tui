@@ -2,6 +2,17 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Performance
+
+- **`mini` without litellm for the gateways.** `cliproxy/`, `rosetta/` and `xiaomi/` models now
+  call their OpenAI-compatible `/chat/completions` directly (stdlib HTTP, same trajectory
+  shape). A real claude-opus-5-5 run: **peak RSS 214 → 40 MB** and the first answer **~2.3 s
+  sooner** (litellm's import alone was 198 MB / 2.1 s). DeepSeek, OpenAI and OpenCode Go keep
+  litellm (price tables, protocol adapters). Picking a model class no longer imports litellm.
+- The gateway API key is no longer written into the trajectory's model config (`***`).
+
 ## 0.6.1 — 2026-09-22
 
 An honest status chip and a quieter bottom stack.

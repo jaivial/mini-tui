@@ -44,11 +44,9 @@ import litellm
 
 from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
 from minisweagent.models.litellm_response_model import LitellmResponseModel
+from minisweagent.models.routing import OPENCODE_GO_PREFIX, is_opencode_go_model  # noqa: F401 (re-exported)
 
 logger = logging.getLogger(__name__)
-
-#: Prefix used to route a model name to OpenCode Go.
-OPENCODE_GO_PREFIX = "opencode-go/"
 
 #: Base URL for the OpenAI compatible flavors (`/chat/completions`, `/responses`).
 DEFAULT_API_BASE = "https://opencode.ai/zen/go/v1"
@@ -677,11 +675,6 @@ OPENCODE_GO_MODELS: tuple[GoModelInfo, ...] = (
 
 #: Every advertised id, indexed for lookups.
 MODEL_BY_ID: dict[str, GoModelInfo] = {model.id: model for model in OPENCODE_GO_MODELS}
-
-
-def is_opencode_go_model(model_name: str) -> bool:
-    """Whether `model_name` should be served by OpenCode Go."""
-    return model_name.lower().startswith(OPENCODE_GO_PREFIX)
 
 
 def strip_opencode_go_prefix(model_name: str) -> str:

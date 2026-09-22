@@ -24,18 +24,13 @@ reported, so cost tracking defaults to "ignore_errors" for these models.
 import os
 from typing import Any, Literal
 
-from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
+from minisweagent.models.routing import ROSETTA_PREFIX, is_rosetta_model  # noqa: F401 (re-exported)
+from minisweagent.models.openai_compat_model import OpenaiCompatModel, OpenaiCompatModelConfig, gateway_settings
 
-#: Prefix used to route a model name to Rosetta.
-ROSETTA_PREFIX = "rosetta/"
 
 DEFAULT_API_BASE = "http://127.0.0.1:9120/v1"
 DEFAULT_API_KEY = "rosetta-local"
 
-
-def is_rosetta_model(model_name: str) -> bool:
-    """Whether `model_name` should be served by Rosetta."""
-    return model_name.lower().startswith(ROSETTA_PREFIX)
 
 
 def strip_rosetta_prefix(model_name: str) -> str:
@@ -45,27 +40,20 @@ def strip_rosetta_prefix(model_name: str) -> str:
     return model_name
 
 
-class RosettaModelConfig(LitellmModelConfig):
+class RosettaModelConfig(OpenaiCompatModelConfig):
     model_kwargs: dict[str, Any] = {}
     cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
     """Rosetta does not report per-token costs, so cost errors are ignored by default."""
 
 
-class RosettaModel(LitellmModel):
-    """Talks to a Rosetta gateway through litellm's OpenAI-compatible provider."""
+class RosettaModel(OpenaiCompatModel):
+    """Talks to the gateway's OpenAI-compatible `/chat/completions` directly (no litellm)."""
 
     def __init__(self, **kwargs):
         kwargs.setdefault("config_class", RosettaModelConfig)
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
+        kwargs.update(gateway_settings(model_kwargs, "ROSETTA_API_BASE", DEFAULT_API_BASE, "ROSETTA_API_KEY", DEFAULT_API_KEY))
+        kwargs["model_kwargs"] = {k: v for k, v in model_kwargs.items() if k not in ("api_base", "api_key")}
         super().__init__(**kwargs)
-
-        # Route through litellm's openai provider, pointed at the Rosetta gateway.
-        upstream_name = strip_rosetta_prefix(self.config.model_name)
-        self.config.model_name = f"openai/{upstream_name}"
-
-        model_kwargs = dict(self.config.model_kwargs)
-        model_kwargs.setdefault("custom_llm_provider", "openai")
-        model_kwargs.setdefault("api_base", os.getenv("ROSETTA_API_BASE", DEFAULT_API_BASE).rstrip("/"))
-        model_kwargs.setdefault("api_key", os.getenv("ROSETTA_API_KEY", DEFAULT_API_KEY))
-        # Rosetta backends vary in which sampling params they accept.
-        model_kwargs.setdefault("drop_params", True)
-        self.config.model_kwargs = model_kwargs
+        # The routing prefix is stripped: the gateway receives exactly the id it advertises.
+        self.config.model_name = strip_rosetta_prefix(self.config.model_name)

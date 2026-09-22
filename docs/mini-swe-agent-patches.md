@@ -206,3 +206,26 @@ Semantics: the file is any trajectory (or `{"messages": [...]}`) produced by a p
 the new task as a `UserNewTask` follow-up — same shape the interactive agent uses. Verified
 end-to-end: a run that learns a secret fact, then `--resume` with "what is my favorite color?",
 answers from the earlier conversation.
+
+## 4. Direct OpenAI-compatible client for the gateways (no litellm)
+
+`src/minisweagent/models/openai_compat_model.py` + `models/routing.py`.
+
+`cliproxy/`, `rosetta/` and `xiaomi/` models are plain OpenAI `/chat/completions` gateways that
+report no prices, so litellm only added its import cost: **~198 MB RSS and ~2 s per run**.
+`OpenaiCompatModel` is the standard library's `http.client` plus pydantic and produces exactly the
+message shape `LitellmModel` did (`tool_calls`, `extra.actions`, `extra.response` as a dict,
+`extra.cost = 0.0`, plain-text final answers as `extra.submission`).
+
+- Only protocol keys go on the wire (`role`, `content`, `tool_calls`, `tool_call_id`, `name`);
+  litellm-only `model_kwargs` (`drop_params`, `custom_llm_provider`, …) are ignored.
+- 400/401/403/404/413/422 abort at once (`OpenaiCompatAbortError`); 408/429/5xx and transport
+  errors go through the usual tenacity retry.
+- The API key is never serialized into the trajectory (`api_key: "***"`).
+- `models/routing.py` holds the `is_*_model` prefix predicates, so `get_model_class` picks a
+  gateway without importing any litellm-backed module (the provider modules re-export them).
+
+DeepSeek, OpenAI and OpenCode Go stay on litellm: they rely on its price tables and on the
+Anthropic/Responses protocol adapters.
+
+Measured (same task, real cli-proxy): peak RSS 214 → 40 MB · first journal write 5.2 → 3.0 s.

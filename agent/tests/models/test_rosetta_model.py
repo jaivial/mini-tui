@@ -46,12 +46,11 @@ def test_explicit_model_class_wins_over_prefix():
 def test_rosetta_model_defaults():
     model = get_model("rosetta/zai-glm/glm-4.6")
     assert isinstance(model, RosettaModel)
-    # The rosetta/ prefix is replaced by litellm's openai provider prefix.
-    assert model.config.model_name == "openai/zai-glm/glm-4.6"
-    assert model.config.model_kwargs["custom_llm_provider"] == "openai"
-    assert model.config.model_kwargs["api_base"] == DEFAULT_API_BASE
-    assert model.config.model_kwargs["api_key"] == DEFAULT_API_KEY
-    assert model.config.model_kwargs["drop_params"] is True
+    # The rosetta/ prefix is stripped: the gateway gets exactly the id it advertises.
+    assert model.config.model_name == "zai-glm/glm-4.6"
+    assert model.config.api_base == DEFAULT_API_BASE
+    assert model.config.api_key == DEFAULT_API_KEY
+    assert model.config.model_kwargs == {}  # connection settings live on the config, not in the body
     # Rosetta reports no per-token cost, so cost errors must not abort a run.
     assert model.config.cost_tracking == "ignore_errors"
 
@@ -59,16 +58,16 @@ def test_rosetta_model_defaults():
 def test_rosetta_model_respects_env_overrides():
     with patch.dict(os.environ, {"ROSETTA_API_BASE": "http://example.com:1234/v1/", "ROSETTA_API_KEY": "secret"}):
         model = get_model("rosetta/zai-glm/glm-4.6")
-    assert model.config.model_kwargs["api_base"] == "http://example.com:1234/v1"
-    assert model.config.model_kwargs["api_key"] == "secret"
+    assert model.config.api_base == "http://example.com:1234/v1"
+    assert model.config.api_key == "secret"
 
 
 def test_explicit_model_kwargs_are_not_overridden():
     model = get_model("rosetta/zai-glm/glm-4.6", {"model_kwargs": {"api_base": "http://custom/v1", "temperature": 0.3}})
-    assert model.config.model_kwargs["api_base"] == "http://custom/v1"
+    assert model.config.api_base == "http://custom/v1"
     assert model.config.model_kwargs["temperature"] == 0.3
     # Defaults still fill in the gaps.
-    assert model.config.model_kwargs["api_key"] == DEFAULT_API_KEY
+    assert model.config.api_key == DEFAULT_API_KEY
 
 
 def test_rosetta_does_not_get_anthropic_cache_control():

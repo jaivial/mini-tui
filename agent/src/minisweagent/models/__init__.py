@@ -52,12 +52,14 @@ def get_model(input_model_name: str | None = None, config: dict | None = None) -
 
     model_class = get_model_class(resolved_model_name, config.pop("model_class", ""))
 
-    from minisweagent.models.cliproxy_model import is_cliproxy_model
-    from minisweagent.models.deepseek_model import is_deepseek_model
-    from minisweagent.models.openai_model import is_openai_model
-    from minisweagent.models.opencode_go_model import is_opencode_go_model
-    from minisweagent.models.rosetta_model import is_rosetta_model
-    from minisweagent.models.xiaomi_model import is_xiaomi_model
+    from minisweagent.models.routing import (
+        is_cliproxy_model,
+        is_deepseek_model,
+        is_openai_model,
+        is_opencode_go_model,
+        is_rosetta_model,
+        is_xiaomi_model,
+    )
 
     if (
         any(s in resolved_model_name.lower() for s in ["anthropic", "sonnet", "opus", "claude"])
@@ -121,21 +123,22 @@ def get_model_class(model_name: str, model_class: str = "") -> type:
     Otherwise, the model_name is used to select the best model class.
     """
     if not model_class:
-        from minisweagent.models.cliproxy_model import is_cliproxy_model
-        from minisweagent.models.deepseek_model import is_deepseek_model
-        from minisweagent.models.openai_model import is_openai_model, needs_responses_api
-        from minisweagent.models.opencode_go_model import (
+        # Routing predicates are import-light: picking a gateway class must not load litellm.
+        from minisweagent.models.routing import (
+            is_cliproxy_model,
+            is_deepseek_model,
+            is_openai_model,
             is_opencode_go_model,
+            is_rosetta_model,
+            is_xiaomi_model,
         )
-        from minisweagent.models.opencode_go_model import (
-            needs_responses_api as needs_go_responses_api,
-        )
-        from minisweagent.models.rosetta_model import is_rosetta_model
-        from minisweagent.models.xiaomi_model import is_xiaomi_model
+        from minisweagent.models.routing import openai_needs_responses_api as needs_responses_api
 
         if is_opencode_go_model(model_name):
             # Go serves ids on three endpoints; the Anthropic compatible one is picked inside
             # OpencodeGoModel, the Responses API one needs a different class.
+            from minisweagent.models.opencode_go_model import needs_responses_api as needs_go_responses_api
+
             model_class = "opencode_go_response" if needs_go_responses_api(model_name) else "opencode_go"
         elif is_rosetta_model(model_name):
             model_class = "rosetta"

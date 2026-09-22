@@ -24,24 +24,14 @@ Run `mini-extra xiaomi-models` to list the ids your key accepts.
 import os
 from typing import Any, Literal
 
-from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
+from minisweagent.models.routing import XIAOMI_PREFIX, is_xiaomi_model  # noqa: F401 (re-exported)
+from minisweagent.models.openai_compat_model import OpenaiCompatModel, OpenaiCompatModelConfig, gateway_settings
 
-#: Prefix used to route a model name to the Xiaomi MiMo API.
-XIAOMI_PREFIX = "xiaomi/"
 
 DEFAULT_API_BASE = "https://token-plan-sgp.xiaomimimo.com/v1"
 DEFAULT_API_KEY = ""
-"""litellm has no native Xiaomi provider to pick a key up from, so an unset key fails on the first call."""
+"""An unset key fails on the first call with a clear 401 message."""
 
-
-def is_xiaomi_model(model_name: str) -> bool:
-    """Whether `model_name` should be served by the Xiaomi MiMo API.
-
-    Both `xiaomi/<id>` and a bare MiMo id (`mimo-v2.6-pro`) count; Xiaomi's own ids all
-    start with `mimo`, so a bare id is unambiguous.
-    """
-    lowered = model_name.lower()
-    return lowered.startswith(XIAOMI_PREFIX) or ("/" not in lowered and lowered.startswith("mimo"))
 
 
 def strip_xiaomi_prefix(model_name: str) -> str:
@@ -51,26 +41,20 @@ def strip_xiaomi_prefix(model_name: str) -> str:
     return model_name
 
 
-class XiaomiModelConfig(LitellmModelConfig):
+class XiaomiModelConfig(OpenaiCompatModelConfig):
     model_kwargs: dict[str, Any] = {}
     cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
     """The token-plan endpoint reports no per-token prices, so cost errors are ignored by default."""
 
 
-class XiaomiModel(LitellmModel):
-    """Talks to the Xiaomi MiMo API through litellm's OpenAI-compatible provider."""
+class XiaomiModel(OpenaiCompatModel):
+    """Talks to the gateway's OpenAI-compatible `/chat/completions` directly (no litellm)."""
 
     def __init__(self, **kwargs):
         kwargs.setdefault("config_class", XiaomiModelConfig)
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
+        kwargs.update(gateway_settings(model_kwargs, "XIAOMI_API_BASE", DEFAULT_API_BASE, "XIAOMI_API_KEY", DEFAULT_API_KEY))
+        kwargs["model_kwargs"] = {k: v for k, v in model_kwargs.items() if k not in ("api_base", "api_key")}
         super().__init__(**kwargs)
-
-        upstream_name = strip_xiaomi_prefix(self.config.model_name)
-        self.config.model_name = f"openai/{upstream_name}"
-
-        model_kwargs = dict(self.config.model_kwargs)
-        model_kwargs.setdefault("custom_llm_provider", "openai")
-        model_kwargs.setdefault("api_base", os.getenv("XIAOMI_API_BASE", DEFAULT_API_BASE).rstrip("/"))
-        model_kwargs.setdefault("api_key", os.getenv("XIAOMI_API_KEY", DEFAULT_API_KEY))
-        # Be lenient about sampling params this minimal OpenAI-compatible surface does not implement.
-        model_kwargs.setdefault("drop_params", True)
-        self.config.model_kwargs = model_kwargs
+        # The routing prefix is stripped: the gateway receives exactly the id it advertises.
+        self.config.model_name = strip_xiaomi_prefix(self.config.model_name)

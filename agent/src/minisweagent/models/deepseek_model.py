@@ -33,23 +33,13 @@ from typing import Any, Literal
 import litellm
 
 from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
+from minisweagent.models.routing import DEEPSEEK_PREFIX, is_deepseek_model  # noqa: F401 (re-exported)
 
-#: Prefix used to route a model name to the DeepSeek API.
-DEEPSEEK_PREFIX = "deepseek/"
 
 DEFAULT_API_BASE = "https://api.deepseek.com/v1"
 DEFAULT_API_KEY = ""
 """litellm picks up `DEEPSEEK_API_KEY` when no explicit key is set."""
 
-
-def is_deepseek_model(model_name: str) -> bool:
-    """Whether `model_name` should be served by the DeepSeek API.
-
-    Both `deepseek/<id>` and a bare DeepSeek id (`deepseek-flash`) count; a bare id is
-    unambiguous because DeepSeek's own ids all start with `deepseek`.
-    """
-    lowered = model_name.lower()
-    return lowered.startswith(DEEPSEEK_PREFIX) or ("/" not in lowered and lowered.startswith("deepseek"))
 
 
 def strip_deepseek_prefix(model_name: str) -> str:

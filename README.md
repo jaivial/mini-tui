@@ -235,8 +235,10 @@ memory stays flat no matter how long a run gets (this fixed a 5+ GB growth on lo
 standard 400-step repro: 18.6 s → 13.1 s CPU and peak RSS 323 → 228 MB. In 0.5.0 blocks got
 3.6× leaner (plain text unless the text really has markdown — measured 0.33 → 0.09 MB per
 block): the same repro now settles at 205 MB, and a plain-prose run at 152 MB. Agent-side,
-`prompt_toolkit` loads lazily (35 → 20 MB import); `litellm`'s 198 MB is the known floor for
-`mini` — see [docs/PLAN-ram-reduction.md](docs/PLAN-ram-reduction.md) for the plan and numbers.
+`prompt_toolkit` loads lazily (35 → 20 MB import). In 0.7.0 the local/subscription gateways
+(`cliproxy/`, `rosetta/`, `xiaomi/`) talk to their OpenAI-compatible endpoint directly instead of
+through `litellm`: a real claude-opus-5-5 run peaks at **40 MB instead of 214 MB** and answers
+~2.3 s sooner. See [docs/PLAN-ram-reduction.md](docs/PLAN-ram-reduction.md) for the plan and numbers.
 
 ## Development
 

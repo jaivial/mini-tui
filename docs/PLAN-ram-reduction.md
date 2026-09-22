@@ -105,6 +105,26 @@ Ajustes respecto al plan original, decididos con las medidas de la fase 0:
 Sesión completa hoy: TUI 152–205 MB + mini ≈ 230 MB (de los cuales litellm ≈ 198) ≈
 **380–435 MB** (antes ~450–465). El objetivo <300 MB requiere la fase 3.
 
+## 8. Fase 3 (2026-09-22, 0.7.0)
+
+Re-medición sobre 0.6.1 con sesiones reales (claude-opus-5-5 vía cliproxy):
+
+| Medida | 0.6.1 | Palanca |
+| --- | --- | --- |
+| `mini` en un run real | 214 MB pico, 1ª respuesta a 5,2 s | **A6**: cliente directo para gateways |
+| Import de `litellm` | 198 MB / 2,1 s | — |
+| TUI viva, sesión de 817 msgs | 191 MB (pico 229) · 136 MB en `view` | historial crudo en memoria |
+| Historial crudo retenido | 5,3 MB JSON, de los que 3 MB son `extra.response` / `raw_output` | D1 |
+| Guardado cada 2 s | 6,4 MB de strings nuevos por guardado (17 ms) | D2 |
+| CPU en reposo "working" | 4 % (el spinner re-renderiza todo el árbol 8×/s) | D3 |
+| `bun --smol` | peor (157 vs 136 MB) | descartado |
+
+- **A6 hecho**: `cliproxy/`, `rosetta/`, `xiaomi/` → `OpenaiCompatModel` (stdlib). Run real:
+  **214 → 40 MB**, primera respuesta 2,3 s antes.
+- **D1** — la TUI retiene solo lo que `--resume` necesita (sin `extra.response`/`raw_output`).
+- **D2** — el transcript se guarda al terminar cada turno y cada 30 s, no cada 2 s.
+- **D3** — el spinner es un componente aislado: su tick no re-renderiza la App.
+
 - **A2**: alguna ruta puede necesitar litellm implícitamente → detectar en Fase 0, mantener
   fallback `import` con mensaje de error accionable ("este modelo requiere litellm: pip install …").
 - **B2**: los bloques colapsados pierden el resaltado → son de una línea (`1 tool call`); el
