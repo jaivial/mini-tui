@@ -5,6 +5,11 @@ import { colors } from "../theme";
 
 /** Curated model list for the `/model` picker (custom ids can still be passed with -m). */
 export const MODELS: SelectOption[] = [
+  {
+    name: "cliproxy/claude-opus-5-5",
+    description: "cli-proxy · Claude Opus 5.5 (Claude subscription)",
+    value: "cliproxy/claude-opus-5-5",
+  },
   { name: "xiaomi/mimo-v2.6-pro", description: "Xiaomi MiMo V2.6 Pro", value: "xiaomi/mimo-v2.6-pro" },
   { name: "xiaomi/mimo-v2.6-flash", description: "Xiaomi MiMo V2.6 Flash (fast)", value: "xiaomi/mimo-v2.6-flash" },
   { name: "deepseek/deepseek-chat", description: "DeepSeek chat", value: "deepseek/deepseek-chat" },
