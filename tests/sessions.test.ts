@@ -1,5 +1,7 @@
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+
+import { Database } from "bun:sqlite";
 
 import { describe, expect, test } from "bun:test";
 
@@ -13,6 +15,7 @@ import {
   openDb,
   saveTranscript,
   updateSession,
+  writeResumeFile,
 } from "../src/sessions";
 
 const DB = join(import.meta.dir, ".tmp-sessions-db.sqlite");
@@ -64,6 +67,40 @@ describe("session store", () => {
     expect(record?.api_calls).toBe(3);
     expect(record?.cost).toBe(1.5);
     expect(JSON.parse(record?.events_json ?? "[]")).toEqual([{ type: "task", text: "task 3" }]);
+    db.close();
+    rmSync(DB, { force: true });
+  });
+});
+
+describe("resume context", () => {
+  test("raw messages round-trip through the store and the resume file", () => {
+    rmSync(DB, { force: true });
+    const db = openDb(DB);
+    createSession(db, { id: "r1", cwd: "/proj", model: "m", task: "hello" });
+    const messages = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi", extra: { actions: [{ command: "ls", tool_call_id: "c1" }] } },
+    ];
+    saveTranscript(db, "r1", [{ type: "task", text: "hello" }], { cost: 0, apiCalls: 1 }, messages);
+    const record = getSession(db, "r1");
+    expect(JSON.parse(record?.messages_json ?? "[]")).toEqual(messages);
+
+    const path = writeResumeFile("r1", messages);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ messages });
+    rmSync(path, { force: true });
+    db.close();
+    rmSync(DB, { force: true });
+  });
+
+  test("old databases gain the messages column (empty history)", () => {
+    rmSync(DB, { force: true });
+    const raw = new Database(DB, { create: true });
+    raw.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, cwd TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', task TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, api_calls INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0, exit_status TEXT NOT NULL DEFAULT '', events_json TEXT NOT NULL DEFAULT '[]', info_json TEXT NOT NULL DEFAULT '{}')");
+    raw.query("INSERT INTO sessions (id, title, cwd, created_at, updated_at) VALUES ('old', 'Old', '/p', 1, 1)").run();
+    raw.close();
+    const db = openDb(DB);
+    expect(getSession(db, "old")?.messages_json).toBe("[]");
     db.close();
     rmSync(DB, { force: true });
   });

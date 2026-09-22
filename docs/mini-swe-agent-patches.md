@@ -1,8 +1,8 @@
 # Companion mini-swe-agent patches
 
 `mini-tui` works with an unmodified
-[mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent). Two small, optional patches to your
-local checkout unlock the behaviors below. Both are inert unless you use them.
+[mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent). Three small, optional patches to
+your local checkout unlock the behaviors below. All are inert unless you use them.
 
 ## 1. Plain-text final answer (no temporary markdown file)
 
@@ -157,3 +157,51 @@ Semantics:
   `InteractiveAgent` uses), so follow-up prompts continue the same conversation — mid-run from
   the next step, or after a submission via the exit hold.
 - The hold ends when the TUI kills the process (Ctrl+C / `q` in mini-tui).
+
+## 3. `--resume` (true context carry-over)
+
+Lets a run continue an earlier conversation with its full message history as context — this is
+what makes `/resume` followed by a prompt feel like the same chat.
+
+`src/minisweagent/agents/default.py` — `run()` learns `resume_messages`:
+
+```python
+def run(self, task: str = "", *, resume_messages: list[dict] | None = None, **kwargs) -> dict:
+    self.extra_template_vars |= {"task": task, **kwargs}
+    if resume_messages:
+        # Continue an earlier conversation: keep its history (minus exit markers)
+        # and deliver the new task as a follow-up.
+        self.messages = [m for m in resume_messages if m.get("role") != "exit"]
+        self.add_messages(self._user_task_message(task))
+    else:
+        self.messages = []
+        self.add_messages(
+            self.model.format_message(role="system", content=self._render_template(self.config.system_template)),
+            self.model.format_message(role="user", content=self._render_template(self.config.instance_template)),
+        )
+    ...  # the step loop is unchanged
+```
+
+`src/minisweagent/run/mini.py` — a CLI flag (plus `import json`):
+
+```python
+resume: Path | None = typer.Option(
+    None,
+    "--resume",
+    help="Continue an earlier conversation: reload the messages from this trajectory/JSON file "
+    "as context and treat the task as a follow-up.",
+    rich_help_panel="Advanced",
+),
+...
+if resume is not None:
+    resume_messages = json.loads(resume.read_text()).get("messages", [])
+    agent.run(run_task, resume_messages=resume_messages)
+else:
+    agent.run(run_task)
+```
+
+Semantics: the file is any trajectory (or `{"messages": [...]}`) produced by a previous run;
+`mini --resume <file> -t "follow-up"` reloads those messages (dropping `exit` markers) and adds
+the new task as a `UserNewTask` follow-up — same shape the interactive agent uses. Verified
+end-to-end: a run that learns a secret fact, then `--resume` with "what is my favorite color?",
+answers from the earlier conversation.

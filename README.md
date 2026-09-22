@@ -40,7 +40,8 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 - **`/resume` — saved sessions in SQLite.** Every conversation is stored
   (`~/.config/mini-tui/sessions.db`) with an AI-generated title (falling back to your prompt,
   trimmed). `/resume` opens a modal listing the sessions **started in the current folder**,
-  paged and searchable by title — pick one to restore its transcript and keep typing.
+  paged and searchable by title — pick one to restore its transcript, and your next prompt
+  continues the *same conversation with full context* (`mini --resume`, companion patch 3).
 
   ![resume modal](docs/screenshots/resume.png)
 
@@ -146,15 +147,17 @@ mini-tui appends `MESSAGE <text>` / `MODEL <id>` lines to the run's control file
 
 ## Companion mini-swe-agent patches (optional)
 
-Two small patches to your local mini-swe-agent unlock the nicest behaviors. Everything works
-without them except live `/model` switching and conversational follow-ups. See
-[docs/mini-swe-agent-patches.md](docs/mini-swe-agent-patches.md) for the exact changes:
+Three small patches to your local mini-swe-agent unlock the nicest behaviors. Everything works
+without them except live `/model` switching, conversational follow-ups and context-carrying
+`/resume`. See [docs/mini-swe-agent-patches.md](docs/mini-swe-agent-patches.md) for the exact changes:
 
 1. **Plain-text final answer** — a response with text and no tool calls is the submission
    (no more `cat > /tmp/final_answer.md` round-trips).
 2. **Control file** — `MODEL <id>` switches the running agent's model from its next step;
    `MESSAGE <text>` continues the conversation mid-run or at the exit hold (both no-ops when
    `MSWEA_CONTROL_FILE` is unset).
+3. **`--resume`** — reloads a previous conversation's message history as context and treats
+   the new task as a follow-up (what `/resume` + prompt uses).
 
 ## Development
 

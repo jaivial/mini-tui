@@ -31,11 +31,12 @@ import {
   listSessions,
   openDb,
   saveTranscript,
+  writeResumeFile,
   type SessionRecord,
 } from "../sessions";
 import { generateTitle } from "../title";
 import { loadSettings, saveSettings, type Settings } from "../settings";
-import type { RunEvent, RunInfo, Trajectory } from "../traj/schema";
+import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 
 const COMMAND_OPTIONS = buildOptions(MODELS);
 const ESC_DOUBLE_MS = 800;
@@ -146,6 +147,7 @@ export function App(props: AppProps) {
   const startedAtRef = useRef(0);
   const textareaRef = useRef<TextareaRenderable | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<TrajectoryMessage[]>([]);
   const dbRef = useRef<Database | null>(null);
   const resumeQueryRef = useRef("");
   const resumePageRef = useRef(0);
@@ -223,6 +225,7 @@ export function App(props: AppProps) {
   };
 
   const applySnapshot = (traj: Trajectory) => {
+    messagesRef.current = traj.messages ?? [];
     setEvents(messagesToEvents(traj.messages ?? [], { showSystem: props.showSystem }));
     setInfo(parseInfo(traj));
   };
@@ -253,7 +256,7 @@ export function App(props: AppProps) {
     if (!persist || !id) return;
     const timer = setTimeout(() => {
       try {
-        saveTranscript(db(), id, events, info);
+        saveTranscript(db(), id, events, info, messagesRef.current);
       } catch {
         // persistence is best-effort
       }
@@ -311,6 +314,7 @@ export function App(props: AppProps) {
       setEvents(JSON.parse(record.events_json) as RunEvent[]);
       const restored = JSON.parse(record.info_json) as RunInfo;
       setInfo({ ...restored, cost: restored.cost ?? 0, apiCalls: restored.apiCalls ?? 0 });
+      messagesRef.current = JSON.parse(record.messages_json) as TrajectoryMessage[];
     } catch {
       setHintText("could not restore that session");
     }
@@ -397,7 +401,18 @@ export function App(props: AppProps) {
         }
       }
     }
-    startRun({ task: trimmed, model: modelOverride, cwd: props.cwd });
+    // Follow-ups after the first prompt (or after /resume) continue the same
+    // conversation: the raw history goes to `mini --resume` as context.
+    let resumePath: string | undefined;
+    const history = messagesRef.current;
+    if (sessionIdRef.current && history.length > 0) {
+      try {
+        resumePath = writeResumeFile(sessionIdRef.current, history);
+      } catch {
+        resumePath = undefined;
+      }
+    }
+    startRun({ task: trimmed, model: modelOverride, cwd: props.cwd, resumePath });
     setHintText(undefined);
   };
 

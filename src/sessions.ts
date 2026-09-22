@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import type { RunEvent, RunInfo } from "./traj/schema";
+import type { RunEvent, RunInfo, TrajectoryMessage } from "./traj/schema";
 
 export interface SessionRecord {
   id: string;
@@ -18,6 +18,7 @@ export interface SessionRecord {
   exit_status: string;
   events_json: string;
   info_json: string;
+  messages_json: string;
 }
 
 export const DEFAULT_DB_PATH = join(homedir(), ".config", "mini-tui", "sessions.db");
@@ -46,10 +47,16 @@ export function openDb(path: string = DEFAULT_DB_PATH): Database {
       cost REAL NOT NULL DEFAULT 0,
       exit_status TEXT NOT NULL DEFAULT '',
       events_json TEXT NOT NULL DEFAULT '[]',
-      info_json TEXT NOT NULL DEFAULT '{}'
+      info_json TEXT NOT NULL DEFAULT '{}',
+      messages_json TEXT NOT NULL DEFAULT '[]'
     );
     CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions (cwd, updated_at DESC);
   `);
+  try {
+    db.exec("ALTER TABLE sessions ADD COLUMN messages_json TEXT NOT NULL DEFAULT '[]'");
+  } catch {
+    // column already exists (databases created before --resume support)
+  }
   return db;
 }
 
@@ -75,6 +82,7 @@ export function updateSession(db: Database, id: string, patch: Partial<SessionRe
   if (patch.exit_status !== undefined) fields.push(["exit_status", patch.exit_status]);
   if (patch.events_json !== undefined) fields.push(["events_json", patch.events_json]);
   if (patch.info_json !== undefined) fields.push(["info_json", patch.info_json]);
+  if (patch.messages_json !== undefined) fields.push(["messages_json", patch.messages_json]);
   if (fields.length === 0) return;
   fields.push(["updated_at", Date.now()]);
   const sets = fields.map(([name]) => `${name} = ?`).join(", ");
@@ -83,14 +91,33 @@ export function updateSession(db: Database, id: string, patch: Partial<SessionRe
   db.query(`UPDATE sessions SET ${sets} WHERE id = ?`).run(...(values as [string | number, ...Array<string | number>]));
 }
 
-export function saveTranscript(db: Database, id: string, events: RunEvent[], info: RunInfo): void {
+export function saveTranscript(
+  db: Database,
+  id: string,
+  events: RunEvent[],
+  info: RunInfo,
+  messages: TrajectoryMessage[] = [],
+): void {
   updateSession(db, id, {
     events_json: JSON.stringify(events),
     info_json: JSON.stringify(info),
+    messages_json: JSON.stringify(messages),
     api_calls: info.apiCalls,
     cost: info.cost,
     exit_status: info.exitStatus ?? "",
   });
+}
+
+/**
+ * Write the raw conversation so `mini --resume <path>` can reload it as context.
+ * Returns the file path (stable per session, rewritten on every save).
+ */
+export function writeResumeFile(id: string, messages: TrajectoryMessage[]): string {
+  const dir = join(homedir(), ".config", "mini-tui", "resume");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${id}.json`);
+  writeFileSync(path, `${JSON.stringify({ messages })}\n`);
+  return path;
 }
 
 export function getSession(db: Database, id: string): SessionRecord | null {

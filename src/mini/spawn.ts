@@ -13,6 +13,18 @@ export interface TaskSpec {
   model?: string;
   specs?: string[];
   cwd?: string;
+  /** Continue an earlier conversation: `mini --resume <file>` with its raw messages. */
+  resumePath?: string;
+}
+
+/** Build the `mini` argv for a run (exported for tests). */
+export function buildMiniArgs(spec: TaskSpec, session: SessionPaths): string[] {
+  const args = [MINI_BIN, "-y", "--exit-immediately", "-o", session.trajPath];
+  if (spec.resumePath) args.push("--resume", spec.resumePath);
+  if (spec.model) args.push("-m", spec.model);
+  for (const configSpec of spec.specs ?? []) args.push("-c", configSpec);
+  args.push("-t", spec.task);
+  return args;
 }
 
 export interface MiniRun {
@@ -30,10 +42,7 @@ export interface MiniRun {
 
 export function spawnMini(spec: TaskSpec): MiniRun {
   const session = createSessionDir(spec.task);
-  const cmd = [MINI_BIN, "-y", "--exit-immediately", "-o", session.trajPath];
-  if (spec.model) cmd.push("-m", spec.model);
-  for (const configSpec of spec.specs ?? []) cmd.push("-c", configSpec);
-  cmd.push("-t", spec.task);
+  const cmd = buildMiniArgs(spec, session);
 
   const logFd = openSync(session.logPath, "a");
   const proc = Bun.spawn({
