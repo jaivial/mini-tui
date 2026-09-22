@@ -36,6 +36,10 @@ export interface MiniRun {
   /** Resolves with the exit code (null when killed by a signal). */
   exited: Promise<number | null>;
   kill(): void;
+  /** Interrupt the run in flight (SIGINT, then SIGTERM if needed). */
+  interrupt(): void;
+  /** Interrupt the run in flight (SIGINT, then SIGTERM if it insists). */
+  interrupt(): void;
   /** Ask the running agent to switch model from its next step (control file). */
   switchModel(model: string): void;
   /** Send a follow-up prompt that continues the same conversation (control file). */
@@ -73,6 +77,21 @@ export function spawnMini(spec: TaskSpec): MiniRun {
     pid: proc.pid,
     cmd,
     exited,
+    interrupt() {
+      // SIGINT first (mini saves its trajectory), escalate if it ignores us
+      try {
+        proc.kill("SIGINT");
+      } catch {
+        return; // already gone
+      }
+      setTimeout(() => {
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          // already gone
+        }
+      }, 2000).unref?.();
+    },
     kill() {
       if (exiting) return;
       exiting = true;

@@ -15,7 +15,8 @@ export function StatusLine(props: {
   tick: number;
   elapsedS: number;
 }) {
-  const statusColor = props.status === "error" ? colors.err : props.status === "done" ? colors.ok : colors.dim;
+  const statusColor =
+    props.status === "error" ? colors.err : props.status === "done" ? colors.ok : props.status === "interrupted" ? colors.warn : colors.dim;
   const running = props.status === "running";
   const head = props.tick % BAR_CELLS;
   const bar = Array.from({ length: BAR_CELLS }, (_, i) => (i === head ? "▓" : "░")).join("");
@@ -33,7 +34,7 @@ export function StatusLine(props: {
       <text fg={colors.faint}>·</text>
       <text fg={colors.dim}>{props.path}</text>
       {props.branch ? <text fg={colors.dim}>⎇ {props.branch}</text> : null}
-      {props.status === "done" || props.status === "error" ? (
+      {props.status === "done" || props.status === "error" || props.status === "interrupted" ? (
         <text fg={statusColor}>● {props.status}</text>
       ) : null}
     </box>

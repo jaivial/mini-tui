@@ -303,7 +303,7 @@ describe("App rendering", () => {
     const frame = setup.captureCharFrame();
     expect(frame).toContain("help · Esc close");
     expect(frame).toContain("/quit  ·  /exit");
-    expect(frame).toContain("double Esc closes");
+    expect(frame).toContain("double Esc interrupts the run");
     setup.renderer.destroy();
   });
 
@@ -329,11 +329,19 @@ describe("App rendering", () => {
     setup.renderer.destroy();
   });
 
-  test("double Esc closes the TUI", async () => {
+  test("double Esc interrupts the run and never quits the TUI", async () => {
     let quits = 0;
+    let interrupts = 0;
     const setup = await testRender(
-      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onQuit={() => (quits += 1)} />,
-      { width: 80, height: 16 },
+      <App
+        cwd="."
+        events={[]}
+        info={{ cost: 0, apiCalls: 0 }}
+        statusOverride="running"
+        onInterrupt={() => (interrupts += 1)}
+        onQuit={() => (quits += 1)}
+      />,
+      { width: 90, height: 18 },
     );
     await setup.renderOnce();
     setup.mockInput.pressEscape();
@@ -341,7 +349,9 @@ describe("App rendering", () => {
     setup.mockInput.pressEscape();
     await Bun.sleep(100); // the second bare ESC is only emitted after the parser timeout
     await setup.renderOnce();
-    expect(quits).toBe(1);
+    expect(interrupts).toBe(1);
+    expect(quits).toBe(0); // quitting stays on /quit, /exit and double ctrl+c
+    expect(setup.captureCharFrame()).toContain("interrupt");
     setup.renderer.destroy();
   });
 });

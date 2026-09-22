@@ -79,6 +79,8 @@ export interface AppProps {
   onSend?: (text: string) => void;
   /** Override clipboard writes (tests); defaults to OSC 52 + tmux buffer + native tools. */
   onCopy?: (text: string) => void;
+  /** Observe double-Esc interrupts (tests). */
+  onInterrupt?: () => void;
   /** Override the provider connection test (tests); defaults to a real one-token query. */
   testModel?: (modelName: string, key: string) => Promise<boolean>;
   onQuit?: () => void;
@@ -133,7 +135,7 @@ export function App(props: AppProps) {
   const staticMode = Boolean(props.events);
   const [events, setEvents] = useState<RunEvent[]>(props.events ?? []);
   const [info, setInfo] = useState<RunInfo>(props.info ?? { cost: 0, apiCalls: 0 });
-  const [status, setStatus] = useState<"running" | "done" | "error" | "idle">(
+  const [status, setStatus] = useState<"running" | "done" | "error" | "idle" | "interrupted">(
     props.statusOverride ?? (props.runSpec ? "running" : staticMode || props.viewPath ? "done" : "idle"),
   );
   const [errorText, setErrorText] = useState("");
@@ -165,6 +167,7 @@ export function App(props: AppProps) {
   const inputRefocus = useRef(true);
   const overlayRef = useRef<"none" | "model" | "settings" | "help" | "resume" | "connect">("none");
   const exitedRef = useRef(false);
+  const interruptedRef = useRef(false);
   const promptRef = useRef("");
   const dismissedRef = useRef(false);
   const paletteIdxRef = useRef(0);
@@ -341,13 +344,28 @@ export function App(props: AppProps) {
       live.current.watch?.stop();
       const traj = readTrajectory(run.session.trajPath);
       if (traj) applySnapshot(traj);
-      if (code === 0) {
+      if (interruptedRef.current) {
+        setStatus("interrupted"); // the user asked for this stop — not an error
+      } else if (code === 0) {
         setStatus("done");
       } else {
         setStatus("error");
         setErrorText(tailLog(run.session.logPath));
       }
     });
+  };
+
+  /** Double Esc: interrupt the run in flight (SIGINT through `MiniRun.interrupt`). */
+  const interruptRun = () => {
+    if (props.onInterrupt) props.onInterrupt();
+    const run = live.current.run;
+    if (!run || exitedRef.current) {
+      setHintText("nothing to interrupt");
+      return;
+    }
+    interruptedRef.current = true;
+    run.interrupt();
+    setHintText("interrupted — stopping the run");
   };
 
   const openSession = (record: SessionRecord) => {
@@ -507,10 +525,10 @@ export function App(props: AppProps) {
     else process.exit(0);
   };
 
-  /** Esc: double press closes (interrupting the run), single press toggles prompt/navigation. */
+  /** Esc: double press interrupts the run in flight; single press toggles prompt/navigation. */
   const escapePress = () => {
     const now = Date.now();
-    if (now - lastEscAt.current < ESC_DOUBLE_MS) return quit();
+    if (now - lastEscAt.current < ESC_DOUBLE_MS) return interruptRun();
     lastEscAt.current = now;
     return setInputFocused(!inputRefocus.current);
   };
@@ -748,7 +766,7 @@ export function App(props: AppProps) {
 
   const focusedPair = Math.min(Math.max(focusIdx, 0), Math.max(pairItems.length - 1, 0));
   const exitEvent = events.find((event) => event.type === "exit") as Extract<RunEvent, { type: "exit" }> | undefined;
-  const displayStatus = props.statusOverride ?? (exitEvent ? "done" : status);
+  const displayStatus = props.statusOverride ?? (status === "interrupted" ? "interrupted" : exitEvent ? "done" : status);
   const busy = Boolean(live.current.run) && !exitedRef.current;
   const elapsedS = startedAtRef.current ? Math.floor((Date.now() - startedAtRef.current) / 1000) : 0;
   const toggle = (key: number) =>
