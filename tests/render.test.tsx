@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "bun:test";
@@ -9,6 +10,7 @@ import { App } from "../src/ui/App";
 import { CommandPalette, buildOptions } from "../src/ui/components/CommandPalette";
 import { MODELS } from "../src/ui/components/ModelPicker";
 import { parseTrajectory } from "../src/traj/parse";
+import { createSession, openDb, saveTranscript } from "../src/sessions";
 import type { RunEvent, Trajectory } from "../src/traj/schema";
 
 const EXPANDED = { outputMode: "expanded" as const };
@@ -486,5 +488,95 @@ describe("prompt wrapping and quiet hints", () => {
     // exactly one "model →" — the notice inside the chat area
     expect(frame.split("model →").length - 1).toBe(1);
     setup.renderer.destroy();
+  });
+});
+
+describe("/resume session browser", () => {
+  const DB = join(import.meta.dir, ".tmp-sessions-render.sqlite");
+
+  test("lists this folder's sessions, filters by title and restores one", async () => {
+    rmSync(DB, { force: true });
+    const db = openDb(DB);
+    createSession(db, { id: "a1", cwd: "/proj/a", model: "m", task: "fix the tax calculation", title: "Fix tax calculation" });
+    createSession(db, { id: "a2", cwd: "/proj/a", model: "m", task: "add pagination", title: "Add pagination" });
+    createSession(db, { id: "b1", cwd: "/proj/b", model: "m", task: "other", title: "Other folder work" });
+    saveTranscript(db, "a1", [{ type: "task", text: "fix the tax calculation" }], { cost: 0.1, apiCalls: 2 });
+    db.close();
+
+    const setup = await testRender(
+      <App cwd="/proj/a" dbPath={DB} persistSettings={false} onQuit={() => {}} />,
+      { width: 110, height: 30 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/resume");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter(); // palette fill
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter(); // open the browser
+    });
+    await setup.renderOnce();
+    let frame = setup.captureCharFrame();
+    expect(frame).toContain("sessions in this folder");
+    expect(frame).toContain("Fix tax calculation");
+    expect(frame).toContain("Add pagination");
+    expect(frame).not.toContain("Other folder work"); // cwd filter
+
+    await setup.mockInput.typeText("pagi"); // live title search
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    expect(frame).toContain("Add pagination");
+    expect(frame).not.toContain("Fix tax calculation");
+
+    await act(async () => {
+      setup.mockInput.pressEnter(); // restore the selected session
+    });
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    expect(frame).toContain("resumed → Add pagination");
+    expect(frame).not.toContain("sessions in this folder"); // modal closed
+    setup.renderer.destroy();
+    rmSync(DB, { force: true });
+  });
+
+  test("pages through long histories with PgDn", async () => {
+    rmSync(DB, { force: true });
+    const db = openDb(DB);
+    for (let i = 0; i < 10; i++) {
+      createSession(db, { id: `s${i}`, cwd: "/proj", model: "m", task: `t${i}`, title: `Session ${i}` });
+    }
+    db.close();
+
+    const setup = await testRender(<App cwd="/proj" dbPath={DB} persistSettings={false} onQuit={() => {}} />, {
+      width: 110,
+      height: 30,
+    });
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/resume");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await setup.renderOnce();
+    let frame = setup.captureCharFrame();
+    expect(frame).toContain("page 1/2");
+
+    await act(async () => {
+      setup.mockInput.pressKey(String.fromCharCode(27) + "[6~"); // PageDown
+    });
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    expect(frame).toContain("page 2/2");
+    expect(frame).toContain("Session 1");
+    expect(frame).not.toContain("Session 9"); // newest first: page 2 is the tail
+    setup.renderer.destroy();
+    rmSync(DB, { force: true });
   });
 });

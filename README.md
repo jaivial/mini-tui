@@ -37,6 +37,13 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
   ![settings panel](docs/screenshots/settings.png)
 
+- **`/resume` — saved sessions in SQLite.** Every conversation is stored
+  (`~/.config/mini-tui/sessions.db`) with an AI-generated title (falling back to your prompt,
+  trimmed). `/resume` opens a modal listing the sessions **started in the current folder**,
+  paged and searchable by title — pick one to restore its transcript and keep typing.
+
+  ![resume modal](docs/screenshots/resume.png)
+
 - **`/help`** lists every command and key in one panel.
 
   ![help panel](docs/screenshots/help.png)
@@ -108,6 +115,7 @@ Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 | `/help` | commands and keys |
 | `/model` | open the model picker (or `/model <id>` for a direct switch) |
 | `/settings` | output display (collapsed / trimmed / expanded) |
+| `/resume` | browse sessions saved in this folder (search + pages) |
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
 | `e` | expand / collapse the focused output block |
 | `PgUp` / `PgDn` | scroll |

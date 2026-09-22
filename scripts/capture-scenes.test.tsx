@@ -6,7 +6,7 @@
  *
  * Skipped on a normal `bun test` run.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { test } from "bun:test";
@@ -14,6 +14,7 @@ import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 
 import { App } from "../src/ui/App";
+import { createSession, openDb, updateSession } from "../src/sessions";
 import type { RunEvent } from "../src/traj/schema";
 
 const OUT_DIR = join(import.meta.dir, "..", "docs", "screenshots");
@@ -174,7 +175,47 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   await setup.renderOnce();
   save("help", setup);
 
-  // 7) the multi-line prompt (empty transcript, ready to type)
+  // 7) the /resume session browser
+  const dbPath = join(import.meta.dir, ".tmp-capture-sessions.sqlite");
+  rmSync(dbPath, { force: true });
+  const db = openDb(dbPath);
+  const titles = [
+    "Fix WhatsApp queue re-arm on reconnect",
+    "Add tax rules to the billing service",
+    "Refactor flaky float comparison test",
+    "Cache menu lookups in the API layer",
+    "Ship the reservations date picker fix",
+  ];
+  titles.forEach((title, i) => {
+    createSession(db, {
+      id: `cap-${i}`,
+      cwd: "/home/jaime/project",
+      model: "xiaomi/mimo-v2.6-pro",
+      task: title.toLowerCase(),
+      title,
+    });
+    updateSession(db, `cap-${i}`, { api_calls: 4 + i, cost: 0.03 * (i + 1) });
+  });
+  db.close();
+  setup = await testRender(
+    <App cwd="/home/jaime/project" dbPath={dbPath} onSend={() => {}} onQuit={() => {}} />,
+    { width: 110, height: 30 },
+  );
+  await setup.renderOnce();
+  await setup.mockInput.typeText("/resume");
+  await Bun.sleep(30);
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await setup.renderOnce();
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await setup.renderOnce();
+  save("resume", setup);
+  rmSync(dbPath, { force: true });
+
+  // 8) the multi-line prompt (empty transcript, ready to type)
   setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 24 });
   await setup.renderOnce();
   await setup.mockInput.typeText(

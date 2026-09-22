@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
+import type { Database } from "bun:sqlite";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
 import { colors, markdownSyntaxStyle } from "./theme";
@@ -14,12 +15,25 @@ import { PromptBar } from "./components/PromptBar";
 import { ModelPicker, MODELS } from "./components/ModelPicker";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { HelpPanel } from "./components/HelpPanel";
+import { SessionModal } from "./components/SessionModal";
 import { CommandPalette, buildOptions, matchOptions, type CommandOption } from "./components/CommandPalette";
 import { messagesToEvents, parseInfo } from "../traj/parse";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
 import { gitBranch, shortPath } from "../git";
+import {
+  DEFAULT_DB_PATH,
+  PAGE_SIZE,
+  countSessions,
+  createSession,
+  fallbackTitle,
+  listSessions,
+  openDb,
+  saveTranscript,
+  type SessionRecord,
+} from "../sessions";
+import { generateTitle } from "../title";
 import { loadSettings, saveSettings, type Settings } from "../settings";
 import type { RunEvent, RunInfo, Trajectory } from "../traj/schema";
 
@@ -41,8 +55,10 @@ export interface AppProps {
   statusOverride?: "running" | "done" | "error" | "idle";
   /** Override persisted settings (tests/screenshots). */
   initialSettings?: Settings;
-  /** Persist settings changes to disk (tests set this to false). */
+  /** Persist settings/sessions to disk (tests set this to false). */
   persistSettings?: boolean;
+  /** Sessions database path (tests use a temporary file). */
+  dbPath?: string;
   /** Override prompt submission (tests); otherwise runs a task or continues the run. */
   onSend?: (text: string) => void;
   onQuit?: () => void;
@@ -107,15 +123,20 @@ export function App(props: AppProps) {
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
   const [settings, setSettings] = useState<Settings>(() => props.initialSettings ?? loadSettings());
   const [inputFocused, setInputFocusedState] = useState(true);
-  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help">("none");
+  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help" | "resume">("none");
   const [hintText, setHintText] = useState<string | undefined>(undefined);
   const [promptText, setPromptTextState] = useState("");
   const [paletteDismissed, setPaletteDismissedState] = useState(false);
   const [paletteIdx, setPaletteIdxState] = useState(0);
+  const [resumeQuery, setResumeQueryState] = useState("");
+  const [resumePage, setResumePageState] = useState(0);
+  const [resumeIdx, setResumeIdxState] = useState(0);
+  const [resumeRows, setResumeRows] = useState<SessionRecord[]>([]);
+  const [resumePages, setResumePages] = useState(0);
   // Key handlers can fire several times before React re-renders; mirror what they
   // read/write into refs so state is never stale inside a batch of keystrokes.
   const inputRefocus = useRef(true);
-  const overlayRef = useRef<"none" | "model" | "settings" | "help">("none");
+  const overlayRef = useRef<"none" | "model" | "settings" | "help" | "resume">("none");
   const exitedRef = useRef(false);
   const promptRef = useRef("");
   const dismissedRef = useRef(false);
@@ -124,13 +145,19 @@ export function App(props: AppProps) {
   const followRef = useRef(true);
   const startedAtRef = useRef(0);
   const textareaRef = useRef<TextareaRenderable | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const dbRef = useRef<Database | null>(null);
+  const resumeQueryRef = useRef("");
+  const resumePageRef = useRef(0);
+  const resumeIdxRef = useRef(0);
+  const resumeRowsRef = useRef<SessionRecord[]>([]);
   const branch = useMemo(() => gitBranch(props.cwd), [props.cwd]);
 
   const setInputFocused = (value: boolean) => {
     inputRefocus.current = value;
     setInputFocusedState(value);
   };
-  const setOverlay = (value: "none" | "model" | "settings" | "help") => {
+  const setOverlay = (value: "none" | "model" | "settings" | "help" | "resume") => {
     overlayRef.current = value;
     setOverlayState(value);
   };
@@ -146,9 +173,30 @@ export function App(props: AppProps) {
     paletteIdxRef.current = value;
     setPaletteIdxState(value);
   };
+  const setResumeQuery = (value: string) => {
+    resumeQueryRef.current = value;
+    resumePageRef.current = 0;
+    resumeIdxRef.current = 0;
+    setResumeQueryState(value);
+    setResumePageState(0);
+    setResumeIdxState(0);
+  };
+  const setResumePage = (value: number) => {
+    resumePageRef.current = value;
+    resumeIdxRef.current = 0;
+    setResumePageState(value);
+    setResumeIdxState(0);
+  };
+  const setResumeIdx = (value: number) => {
+    resumeIdxRef.current = value;
+    setResumeIdxState(value);
+  };
   const dims = useTerminalDimensions();
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const live = useRef<{ watch?: WatchHandle; run?: MiniRun }>({});
+
+  const persist = props.persistSettings !== false;
+  const db = (): Database => (dbRef.current ??= openDb(props.dbPath ?? DEFAULT_DB_PATH));
 
   const paletteOptions = promptText.startsWith("/") && !paletteDismissed ? matchOptions(promptText, COMMAND_OPTIONS) : [];
   const paletteOpen = paletteOptions.length > 0 && inputFocused && overlayState === "none";
@@ -199,11 +247,46 @@ export function App(props: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Keep the session transcript saved (debounced) once a session exists.
+  useEffect(() => {
+    const id = sessionIdRef.current;
+    if (!persist || !id) return;
+    const timer = setTimeout(() => {
+      try {
+        saveTranscript(db(), id, events, info);
+      } catch {
+        // persistence is best-effort
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, info]);
+
+  // Load one page of this folder's sessions whenever the /resume modal state changes.
+  useEffect(() => {
+    if (overlayState !== "resume") return;
+    try {
+      const total = countSessions(db(), props.cwd, resumeQuery);
+      const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      const page = Math.min(resumePage, pages - 1);
+      const rows = listSessions(db(), props.cwd, resumeQuery, page);
+      resumeRowsRef.current = rows;
+      setResumeRows(rows);
+      setResumePages(pages);
+    } catch {
+      resumeRowsRef.current = [];
+      setResumeRows([]);
+      setResumePages(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayState, resumeQuery, resumePage]);
+
   const startRun = (spec: TaskSpec) => {
     setStatus("running");
     exitedRef.current = false;
     startedAtRef.current = Date.now();
-    setHintText(undefined);    const run = spawnMini({ ...spec, model: spec.model || modelOverride });
+    setHintText(undefined);
+    const run = spawnMini({ ...spec, model: spec.model || modelOverride });
     live.current = { run };
     live.current.watch = watchTrajectory(run.session.trajPath, applySnapshot);
     run.exited.then((code) => {
@@ -220,11 +303,35 @@ export function App(props: AppProps) {
     });
   };
 
+  const openSession = (record: SessionRecord) => {
+    setOverlay("none");
+    setResumeQuery("");
+    sessionIdRef.current = record.id;
+    try {
+      setEvents(JSON.parse(record.events_json) as RunEvent[]);
+      const restored = JSON.parse(record.info_json) as RunInfo;
+      setInfo({ ...restored, cost: restored.cost ?? 0, apiCalls: restored.apiCalls ?? 0 });
+    } catch {
+      setHintText("could not restore that session");
+    }
+    setStatus("done");
+    setHintText(`resumed → ${record.title}`);
+    setInputFocused(true);
+  };
+
   const applyModel = (model: string) => {
     setOverlay("none");
     setModelOverride(model);
     const liveRun = live.current.run;
     liveRun?.switchModel(model);
+    const id = sessionIdRef.current;
+    if (persist && id) {
+      try {
+        db().query("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?").run(model, Date.now(), id);
+      } catch {
+        // persistence is best-effort
+      }
+    }
     setEvents((prev) => [
       ...prev,
       {
@@ -254,6 +361,7 @@ export function App(props: AppProps) {
     if (command === "model") return setOverlay("model");
     if (command === "settings" || command === "config") return setOverlay("settings");
     if (command === "help" || command === "h") return setOverlay("help");
+    if (command === "resume" || command === "sessions") return setOverlay("resume");
     if (command === "quit" || command === "exit" || command === "q") return quit();
     if (command.startsWith("model ")) {
       const model = trimmed.replace(/^\//, "").slice("model ".length).trim();
@@ -268,10 +376,29 @@ export function App(props: AppProps) {
     if (liveRun && !exitedRef.current) {
       liveRun.sendUserMessage(trimmed);
       setHintText("sent → continues the conversation from the next step");
-    } else {
-      startRun({ task: trimmed, model: modelOverride, cwd: props.cwd });
-      setHintText(undefined);
+      return;
     }
+    if (!sessionIdRef.current) {
+      const id = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      sessionIdRef.current = id;
+      const model = modelOverride ?? DEFAULT_MODEL;
+      if (persist) {
+        try {
+          createSession(db(), { id, cwd: props.cwd, model, task: trimmed });
+          generateTitle(trimmed, model, (title) => {
+            try {
+              db().query("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title, Date.now(), id);
+            } catch {
+              // persistence is best-effort
+            }
+          });
+        } catch {
+          // persistence is best-effort
+        }
+      }
+    }
+    startRun({ task: trimmed, model: modelOverride, cwd: props.cwd });
+    setHintText(undefined);
   };
 
   useEffect(() => {
@@ -323,6 +450,30 @@ export function App(props: AppProps) {
   };
 
   useKeyboard((key) => {
+    if (overlayRef.current === "resume") {
+      // the session browser owns the keys: its search box is display-only
+      const rows = resumeRowsRef.current;
+      if (key.name === "escape") {
+        setOverlay("none");
+        setInputFocused(true);
+        return;
+      }
+      if (key.name === "up") return setResumeIdx(Math.max(0, resumeIdxRef.current - 1));
+      if (key.name === "down") return setResumeIdx(Math.min(Math.max(rows.length - 1, 0), resumeIdxRef.current + 1));
+      if (key.name === "pageup") return setResumePage(Math.max(0, resumePageRef.current - 1));
+      if (key.name === "pagedown") return setResumePage(resumePageRef.current + 1);
+      if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
+        const record = rows[Math.min(resumeIdxRef.current, Math.max(rows.length - 1, 0))];
+        if (record) openSession(record);
+        return;
+      }
+      if (key.name === "backspace") return setResumeQuery(resumeQueryRef.current.slice(0, -1));
+      const ch = key.sequence;
+      if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ")
+        return setResumeQuery(resumeQueryRef.current + ch);
+      return;
+    }
+
     if (overlayRef.current !== "none") {
       if (key.name === "escape") {
         setOverlay("none");
@@ -438,6 +589,15 @@ export function App(props: AppProps) {
         <SettingsPanel settings={settings} onApply={applySettings} onCancel={() => setOverlay("none")} />
       ) : overlayState === "help" ? (
         <HelpPanel />
+      ) : overlayState === "resume" ? (
+        <SessionModal
+          sessions={resumeRows}
+          query={resumeQuery}
+          page={Math.min(resumePage, Math.max(0, resumePages - 1))}
+          pages={resumePages}
+          selectedIndex={Math.min(resumeIdx, Math.max(resumeRows.length - 1, 0))}
+          onPick={openSession}
+        />
       ) : (
         <scrollbox
           ref={scrollRef}

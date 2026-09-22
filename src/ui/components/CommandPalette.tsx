@@ -11,6 +11,7 @@ export function buildOptions(models: SelectOption[]): CommandOption[] {
   return [
     { insert: "/model", label: "/model", detail: "open the model picker" },
     { insert: "/settings", label: "/settings", detail: "output display settings" },
+    { insert: "/resume", label: "/resume", detail: "browse sessions saved in this folder" },
     { insert: "/help", label: "/help", detail: "commands and keys" },
     { insert: "/quit", label: "/quit", detail: "close mini-tui" },
     { insert: "/exit", label: "/exit", detail: "close mini-tui" },
