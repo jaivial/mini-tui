@@ -31,6 +31,19 @@ describe("cleanTaskText", () => {
 });
 
 describe("messagesToEvents", () => {
+  test("incremental parsing (startIndex) matches a full parse chunk by chunk", () => {
+    for (const fixture of ["normal-step", "multi-tool", "weird", "error-obs"]) {
+      const messages = loadFixture(fixture).messages ?? [];
+      const full = messagesToEvents(messages);
+      for (let split = 1; split < messages.length; split++) {
+        // `head` is what an earlier snapshot parsed; `tail` is the incremental delta.
+        const head = messagesToEvents(messages.slice(0, split));
+        const tail = messagesToEvents(messages, {}, split);
+        expect([...head, ...tail]).toEqual(full);
+      }
+    }
+  });
+
   test("normal step: task, assistant, tool call, observation, exit", () => {
     const events = messagesToEvents(loadFixture("normal-step").messages ?? []);
     expect(events).toEqual([

@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import { bashSyntaxStyle, colors } from "../theme";
 import type { OutputMode } from "../../settings";
 
@@ -36,9 +38,10 @@ export function clipOutput(output: string, mode: OutputMode, forceExpand = false
 /**
  * One borderless block per bash step. `flipped` inverts the block against its
  * display mode, so `e`/click always toggles: count line <-> full card, whatever
- * the mode is.
+ * the mode is. Memoized: the App re-renders on every spinner tick, and a step card
+ * only changes when its own props do.
  */
-export function StepCard(props: {
+export const StepCard = memo(function StepCard(props: {
   index?: number;
   name?: string;
   command?: string;
@@ -89,4 +92,4 @@ export function StepCard(props: {
       ) : null}
     </box>
   );
-}
+});

@@ -213,7 +213,16 @@ function toolEvent(message: TrajectoryMessage): RunEvent {
  */
 export function messagesToEvents(messages: TrajectoryMessage[], options: ParseOptions = {}, startIndex = 0): RunEvent[] {
   const events: RunEvent[] = [];
-  const seenBefore = messages.slice(0, startIndex).some((m) => m.role === "user" && !hasInterruptType(m) && !hasActions(m));
+  // Scan the prefix without slicing it: incremental callers pass a growing startIndex
+  // on every snapshot, so an allocating slice here would churn on every step.
+  let seenBefore = false;
+  for (let i = 0; i < startIndex && i < messages.length; i++) {
+    const prior = messages[i] ?? {};
+    if (prior.role === "user" && !hasInterruptType(prior) && !hasActions(prior)) {
+      seenBefore = true;
+      break;
+    }
+  }
   let taskSeen = seenBefore;
 
   for (let i = startIndex; i < messages.length; i++) {

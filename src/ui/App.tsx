@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
 import type { Database } from "bun:sqlite";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
-import { colors, markdownSyntaxStyle, applyTheme, DEFAULT_THEME } from "./theme";
+import { colors, applyTheme, DEFAULT_THEME } from "./theme";
 import { StatusLine } from "./components/StatusLine";
 import { TaskCard } from "./components/TaskCard";
-import { StepCard, clipText } from "./components/StepCard";
+import { StepCard } from "./components/StepCard";
+import { AssistantCard } from "./components/AssistantCard";
 import { NoticeLine } from "./components/NoticeLine";
 import { ExitBanner } from "./components/ExitBanner";
 import { StatusBar } from "./components/StatusBar";
@@ -104,6 +105,16 @@ type Item =
   | { kind: "pair"; toolIndex: number; observationIndex: number | null };
 
 /** Group each tool call with its observation (FIFO, `tool_call_id` preferred). */
+/** Value-level message identity across re-parses (trajectory files are re-read whole). */
+function sameMessage(a: TrajectoryMessage | undefined, b: TrajectoryMessage | undefined): boolean {
+  return (
+    Boolean(a && b) &&
+    a?.role === b?.role &&
+    String(a?.content ?? "") === String(b?.content ?? "") &&
+    a?.tool_call_id === b?.tool_call_id
+  );
+}
+
 export function buildItems(events: RunEvent[]): Item[] {
   const pairs: Pair[] = [];
   const freePairs: Pair[] = [];
@@ -281,9 +292,20 @@ export function App(props: AppProps) {
     setInputFocused(true);
   };
 
+  /** Messages are append-only per run: parse only what's new since the last snapshot. */
+  const consumedRef = useRef(0);
   const applySnapshot = (traj: Trajectory) => {
-    messagesRef.current = traj.messages ?? [];
-    setEvents(messagesToEvents(traj.messages ?? [], { showSystem: props.showSystem }));
+    const messages = traj.messages ?? [];
+    // Only continue incrementally when the file grew from what we already consumed —
+    // a replaced file (e.g. `view --follow` on another run's output) restarts from zero.
+    const from = consumedRef.current;
+    const prev = messagesRef.current;
+    const contiguous = from > 0 && messages.length >= from && sameMessage(prev[from - 1], messages[from - 1]);
+    const startFrom = contiguous ? from : 0;
+    const fresh = messagesToEvents(messages, { showSystem: props.showSystem }, startFrom);
+    messagesRef.current = messages;
+    consumedRef.current = messages.length;
+    setEvents((prevEvents) => (startFrom === 0 ? fresh : fresh.length ? [...prevEvents, ...fresh] : prevEvents));
     setInfo(parseInfo(traj));
   };
 
@@ -354,6 +376,7 @@ export function App(props: AppProps) {
       env: modelEnv(spec.model || modelOverride || DEFAULT_MODEL, connections),
     });
     live.current = { run };
+    consumedRef.current = 0; // fresh trajectory: events rebuild from its first message
     live.current.watch = watchTrajectory(run.session.trajPath, applySnapshot);
     run.exited.then((code) => {
       exitedRef.current = true;
@@ -393,6 +416,7 @@ export function App(props: AppProps) {
       const restored = JSON.parse(record.info_json) as RunInfo;
       setInfo({ ...restored, cost: restored.cost ?? 0, apiCalls: restored.apiCalls ?? 0 });
       messagesRef.current = JSON.parse(record.messages_json) as TrajectoryMessage[];
+      consumedRef.current = messagesRef.current.length;
     } catch {
       setHintText("could not restore that session");
     }
@@ -539,6 +563,7 @@ export function App(props: AppProps) {
   const start = Math.min(anchor ?? tailStart, tailStart);
   const items = allItems.slice(start, start + MOUNTED_ITEMS);
   const pairItems = items.filter((item): item is Extract<Item, { kind: "pair" }> => item.kind === "pair");
+  const pairRank = new Map(pairItems.map((p, i) => [p.toolIndex, i] as const));
 
   const quit = () => {
     live.current.watch?.stop();
@@ -811,13 +836,26 @@ export function App(props: AppProps) {
   const displayStatus = props.statusOverride ?? (status === "interrupted" ? "interrupted" : exitEvent ? "done" : status);
   const busy = Boolean(live.current.run) && !exitedRef.current;
   const elapsedS = startedAtRef.current ? Math.floor((Date.now() - startedAtRef.current) / 1000) : 0;
-  const toggle = (key: number) =>
-    setFlipped((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+  const toggle = useCallback(
+    (key: number) =>
+      setFlipped((prev) => {
+        const next = new Set(prev);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      }),
+    [],
+  );
+  // Stable per-block closures: memoized cards must not see a new prop identity per render.
+  const togglesRef = useRef(new Map<number, () => void>());
+  const onToggleFor = (key: number) => {
+    let fn = togglesRef.current.get(key);
+    if (!fn) {
+      fn = () => toggle(key);
+      togglesRef.current.set(key, fn);
+    }
+    return fn;
+  };
 
   // Compact bottom stack: prompt (grows with the text) · single status line · hint.
   const bottomRows = 2 + promptRows + 1 + (hintText ? 1 : 0);
@@ -870,25 +908,13 @@ export function App(props: AppProps) {
             if (item.kind === "event") {
               const event = events[item.index];
               if (!event) return null;
-              if (event.type === "task") return <TaskCard key={item.index} text={clipText(event.text, 24, 6).text} />;
-              if (event.type === "assistant")
-                return (
-                  <box key={item.index} paddingX={1} gap={0}>
-                    <text fg={colors.faint}>assistant</text>
-                    <markdown content={clipText(event.text, 80, 16).text} syntaxStyle={markdownSyntaxStyle} streaming />
-                  </box>
-                );
+              if (event.type === "task") return <TaskCard key={item.index} text={event.text} />;
+              if (event.type === "assistant") return <AssistantCard key={item.index} text={event.text} />;
               if (event.type === "notice")
-                return <NoticeLine key={item.index} text={clipText(event.text, 24, 6).text} interruptType={event.interruptType} />;
+                return <NoticeLine key={item.index} text={event.text} interruptType={event.interruptType} />;
               // `Submitted` just repeats the final answer rendered above — show only real errors.
               if (event.type === "exit" && event.exitStatus !== "Submitted")
-                return (
-                  <ExitBanner
-                    key={item.index}
-                    exitStatus={event.exitStatus}
-                    submission={clipText(event.submission, 40).text}
-                  />
-                );
+                return <ExitBanner key={item.index} exitStatus={event.exitStatus} submission={event.submission} />;
               if (event.type === "observation")
                 return (
                   <StepCard
@@ -899,14 +925,14 @@ export function App(props: AppProps) {
                     mode={settings.outputMode}
                     flipped={flipped.has(item.index)}
                     focused={false}
-                    onToggle={() => toggle(item.index)}
+                    onToggle={onToggleFor(item.index)}
                   />
                 );
               return null;
             }
             const tool = events[item.toolIndex];
             const obs = item.observationIndex !== null ? events[item.observationIndex] : null;
-            const pairFocus = pairItems.findIndex((p) => p.toolIndex === item.toolIndex);
+            const pairFocus = pairRank.get(item.toolIndex) ?? -1;
             return (
               <StepCard
                 key={item.toolIndex}
@@ -919,7 +945,7 @@ export function App(props: AppProps) {
                 mode={settings.outputMode}
                 flipped={flipped.has(item.toolIndex)}
                 focused={pairFocus === focusedPair}
-                onToggle={() => toggle(item.toolIndex)}
+                onToggle={onToggleFor(item.toolIndex)}
               />
             );
           })}

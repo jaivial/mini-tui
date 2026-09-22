@@ -1,6 +1,10 @@
-import { colors, markdownSyntaxStyle } from "../theme";
+import { memo } from "react";
 
-export function ExitBanner(props: { exitStatus: string; submission: string }) {
+import { colors, markdownSyntaxStyle } from "../theme";
+import { clipText } from "./StepCard";
+
+/** Error/exit banner with the final submission — clipped so the markdown buffer stays bounded. */
+export const ExitBanner = memo(function ExitBanner(props: { exitStatus: string; submission: string }) {
   const ok =
     props.exitStatus === "Submitted" || props.exitStatus === "Complete" || props.exitStatus === "Finished";
   return (
@@ -9,7 +13,7 @@ export function ExitBanner(props: { exitStatus: string; submission: string }) {
         <text fg={colors.dim}>exit</text>
         <text fg={ok ? colors.ok : colors.err}>{props.exitStatus || "finished"}</text>
       </box>
-      {props.submission ? <markdown content={props.submission} syntaxStyle={markdownSyntaxStyle} streaming /> : null}
+      {props.submission ? <markdown content={clipText(props.submission, 40).text} syntaxStyle={markdownSyntaxStyle} streaming /> : null}
     </box>
   );
-}
+});
