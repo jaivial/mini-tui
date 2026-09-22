@@ -5,6 +5,7 @@ export function HelpPanel() {
   const rows: Array<[string, string]> = [
     ["/model [id]", "switch model — picker, or straight to <id>"],
     ["/resume", "browse sessions saved in this folder (search, pages)"],
+    ["/connect", "connect a BYOK provider (key → model → connection test)"],
     ["/settings", "output display: collapsed / trimmed (2 lines) / expanded"],
     ["/help", "this panel"],
     ["/quit  ·  /exit", "close mini-tui"],

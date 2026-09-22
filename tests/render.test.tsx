@@ -580,3 +580,141 @@ describe("/resume session browser", () => {
     rmSync(DB, { force: true });
   });
 });
+
+describe("/connect BYOK wizard", () => {
+  test("connects a provider end to end and its models join /model", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "mimo-v2.6-pro" }, { id: "mimo-v2.6-flash" }] }))) as typeof fetch;
+    const tested: string[] = [];
+
+    try {
+      const setup = await testRender(
+        <App
+          cwd="/proj"
+          persistSettings={false}
+          testModel={async (model) => {
+            tested.push(model);
+            return true;
+          }}
+          onQuit={() => {}}
+        />,
+        { width: 110, height: 32 },
+      );
+      await setup.renderOnce();
+      await setup.mockInput.typeText("/connect");
+      await Bun.sleep(20);
+      await act(async () => {
+        setup.mockInput.pressEnter(); // palette fill
+      });
+      await setup.renderOnce();
+      await act(async () => {
+        setup.mockInput.pressEnter(); // open the wizard
+      });
+      await setup.renderOnce();
+      let frame = setup.captureCharFrame();
+      expect(frame).toContain("connect provider");
+      expect(frame).toContain("Xiaomi MiMo");
+      expect(frame).toContain("DeepSeek");
+
+      await act(async () => {
+        setup.mockInput.pressEnter(); // pick Xiaomi MiMo
+      });
+      await setup.renderOnce();
+      await setup.mockInput.typeText("tp-secret-key");
+      await Bun.sleep(20);
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("paste your API key");
+      expect(frame).not.toContain("tp-secret-key"); // masked
+      expect(frame).toContain("•");
+
+      await act(async () => {
+        setup.mockInput.pressEnter(); // continue → catalog
+      });
+      await Bun.sleep(20);
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("mimo-v2.6-pro");
+      expect(frame).toContain("mimo-v2.6-flash");
+
+      await setup.mockInput.typeText("flash"); // filter to the flash model
+      await Bun.sleep(20);
+      await act(async () => {
+        setup.mockInput.pressEnter(); // test & save
+      });
+      await Bun.sleep(20);
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("● connected");
+      expect(frame).toContain("models added to /model");
+      expect(tested).toEqual(["xiaomi/mimo-v2.6-flash"]);
+
+      await act(async () => {
+        setup.mockInput.pressEscape();
+      });
+      await Bun.sleep(100); // let the ESC parser emit
+      await setup.renderOnce();
+
+      await setup.mockInput.typeText("/model");
+      await Bun.sleep(20);
+      await act(async () => {
+        setup.mockInput.pressEnter(); // palette fill
+      });
+      await setup.renderOnce();
+      await act(async () => {
+        setup.mockInput.pressEnter(); // open the picker
+      });
+      await setup.renderOnce();
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("xiaomi/mimo-v2.6-pro"); // the provider's models are listed
+      expect(frame).toContain("xiaomi/mimo-v2.6-flash");
+      setup.renderer.destroy();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("a failed connection test keeps the wizard on the model step", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ id: "m1" }] }))) as typeof fetch;
+    try {
+      const setup = await testRender(
+        <App cwd="/proj" persistSettings={false} testModel={async () => false} onQuit={() => {}} />,
+        { width: 110, height: 30 },
+      );
+      await setup.renderOnce();
+      await setup.mockInput.typeText("/connect");
+      await Bun.sleep(20);
+      await act(async () => {
+        setup.mockInput.pressEnter();
+      });
+      await setup.renderOnce();
+      await act(async () => {
+        setup.mockInput.pressEnter(); // open the wizard
+      });
+      await setup.renderOnce();
+      await act(async () => {
+        setup.mockInput.pressEnter(); // pick the first provider
+      });
+      await setup.renderOnce();
+      await setup.mockInput.typeText("bad-key");
+      await Bun.sleep(20);
+      await act(async () => {
+        setup.mockInput.pressEnter();
+      });
+      await Bun.sleep(20);
+      await act(async () => {
+        setup.mockInput.pressEnter(); // test the highlighted model
+      });
+      await Bun.sleep(20);
+      await setup.renderOnce();
+      const frame = setup.captureCharFrame();
+      expect(frame).toContain("could not reach");
+      expect(frame).toContain("Enter test & save"); // back on the model step
+      setup.renderer.destroy();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

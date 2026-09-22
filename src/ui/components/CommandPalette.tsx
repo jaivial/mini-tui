@@ -12,6 +12,7 @@ export function buildOptions(models: SelectOption[]): CommandOption[] {
     { insert: "/model", label: "/model", detail: "open the model picker" },
     { insert: "/settings", label: "/settings", detail: "output display settings" },
     { insert: "/resume", label: "/resume", detail: "browse sessions saved in this folder" },
+    { insert: "/connect", label: "/connect", detail: "connect a provider with your own API key" },
     { insert: "/help", label: "/help", detail: "commands and keys" },
     { insert: "/quit", label: "/quit", detail: "close mini-tui" },
     { insert: "/exit", label: "/exit", detail: "close mini-tui" },

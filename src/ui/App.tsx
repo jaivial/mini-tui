@@ -17,6 +17,19 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { HelpPanel } from "./components/HelpPanel";
 import { SessionModal } from "./components/SessionModal";
 import { CommandPalette, buildOptions, matchOptions, type CommandOption } from "./components/CommandPalette";
+import { ConnectWizard } from "./components/ConnectWizard";
+import type { ConnectStep } from "../connect";
+import { filterModels } from "../connect";
+import {
+  PROVIDERS,
+  connectionModelOptions,
+  connectionsEnv,
+  fetchProviderModels,
+  loadConnections,
+  saveConnection,
+  testProviderModel,
+  type ProviderDef,
+} from "../providers";
 import { messagesToEvents, parseInfo } from "../traj/parse";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
@@ -62,6 +75,8 @@ export interface AppProps {
   dbPath?: string;
   /** Override prompt submission (tests); otherwise runs a task or continues the run. */
   onSend?: (text: string) => void;
+  /** Override the provider connection test (tests); defaults to a real one-token query. */
+  testModel?: (modelName: string, key: string) => Promise<boolean>;
   onQuit?: () => void;
 }
 
@@ -124,7 +139,7 @@ export function App(props: AppProps) {
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
   const [settings, setSettings] = useState<Settings>(() => props.initialSettings ?? loadSettings());
   const [inputFocused, setInputFocusedState] = useState(true);
-  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help" | "resume">("none");
+  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help" | "resume" | "connect">("none");
   const [hintText, setHintText] = useState<string | undefined>(undefined);
   const [promptText, setPromptTextState] = useState("");
   const [paletteDismissed, setPaletteDismissedState] = useState(false);
@@ -134,10 +149,12 @@ export function App(props: AppProps) {
   const [resumeIdx, setResumeIdxState] = useState(0);
   const [resumeRows, setResumeRows] = useState<SessionRecord[]>([]);
   const [resumePages, setResumePages] = useState(0);
+  const [connectStep, setConnectStepState] = useState<ConnectStep | null>(null);
+  const [connections, setConnections] = useState(() => loadConnections());
   // Key handlers can fire several times before React re-renders; mirror what they
   // read/write into refs so state is never stale inside a batch of keystrokes.
   const inputRefocus = useRef(true);
-  const overlayRef = useRef<"none" | "model" | "settings" | "help" | "resume">("none");
+  const overlayRef = useRef<"none" | "model" | "settings" | "help" | "resume" | "connect">("none");
   const exitedRef = useRef(false);
   const promptRef = useRef("");
   const dismissedRef = useRef(false);
@@ -153,13 +170,15 @@ export function App(props: AppProps) {
   const resumePageRef = useRef(0);
   const resumeIdxRef = useRef(0);
   const resumeRowsRef = useRef<SessionRecord[]>([]);
+  const connectRef = useRef<ConnectStep | null>(null);
+  const commandOptionsRef = useRef<CommandOption[]>([]);
   const branch = useMemo(() => gitBranch(props.cwd), [props.cwd]);
 
   const setInputFocused = (value: boolean) => {
     inputRefocus.current = value;
     setInputFocusedState(value);
   };
-  const setOverlay = (value: "none" | "model" | "settings" | "help" | "resume") => {
+  const setOverlay = (value: "none" | "model" | "settings" | "help" | "resume" | "connect") => {
     overlayRef.current = value;
     setOverlayState(value);
   };
@@ -193,6 +212,10 @@ export function App(props: AppProps) {
     resumeIdxRef.current = value;
     setResumeIdxState(value);
   };
+  const setConnectStep = (value: ConnectStep | null) => {
+    connectRef.current = value;
+    setConnectStepState(value);
+  };
   const dims = useTerminalDimensions();
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const live = useRef<{ watch?: WatchHandle; run?: MiniRun }>({});
@@ -200,7 +223,13 @@ export function App(props: AppProps) {
   const persist = props.persistSettings !== false;
   const db = (): Database => (dbRef.current ??= openDb(props.dbPath ?? DEFAULT_DB_PATH));
 
-  const paletteOptions = promptText.startsWith("/") && !paletteDismissed ? matchOptions(promptText, COMMAND_OPTIONS) : [];
+  // Connected providers contribute their models to /model and its palette entries.
+  const modelOptions = useMemo(() => [...MODELS, ...connectionModelOptions(connections)], [connections]);
+  const commandOptions = useMemo(() => buildOptions(modelOptions), [modelOptions]);
+  commandOptionsRef.current = commandOptions;
+
+  const paletteOptions =
+    promptText.startsWith("/") && !paletteDismissed ? matchOptions(promptText, commandOptionsRef.current) : [];
   const paletteOpen = paletteOptions.length > 0 && inputFocused && overlayState === "none";
   // Soft-wrapped rows: long lines continue on the next row and grow the box (up to 8).
   const promptContentWidth = Math.max(12, dims.width - 4);
@@ -289,7 +318,7 @@ export function App(props: AppProps) {
     exitedRef.current = false;
     startedAtRef.current = Date.now();
     setHintText(undefined);
-    const run = spawnMini({ ...spec, model: spec.model || modelOverride });
+    const run = spawnMini({ ...spec, model: spec.model || modelOverride, env: connectionsEnv(connections) });
     live.current = { run };
     live.current.watch = watchTrajectory(run.session.trajPath, applySnapshot);
     run.exited.then((code) => {
@@ -366,6 +395,10 @@ export function App(props: AppProps) {
     if (command === "settings" || command === "config") return setOverlay("settings");
     if (command === "help" || command === "h") return setOverlay("help");
     if (command === "resume" || command === "sessions") return setOverlay("resume");
+    if (command === "connect") {
+      setConnectStep({ kind: "provider", index: 0 });
+      return setOverlay("connect");
+    }
     if (command === "quit" || command === "exit" || command === "q") return quit();
     if (command.startsWith("model ")) {
       const model = trimmed.replace(/^\//, "").slice("model ".length).trim();
@@ -465,6 +498,90 @@ export function App(props: AppProps) {
   };
 
   useKeyboard((key) => {
+    if (overlayRef.current === "connect") {
+      // the BYOK wizard owns the keys (its inputs are display-only)
+      const step = connectRef.current;
+      if (!step) return;
+      if (step.kind === "testing") return; // the connection test is in flight
+
+      if (step.kind === "provider") {
+        if (key.name === "escape") return setOverlay("none");
+        if (key.name === "up") return setConnectStep({ ...step, index: Math.max(0, step.index - 1) });
+        if (key.name === "down") return setConnectStep({ ...step, index: Math.min(PROVIDERS.length - 1, step.index + 1) });
+        if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
+          return setConnectStep({ kind: "key", def: PROVIDERS[step.index], value: "" });
+        }
+        return;
+      }
+
+      if (step.kind === "key") {
+        if (key.name === "escape") return setConnectStep({ kind: "provider", index: 0 });
+        if (key.name === "backspace") return setConnectStep({ ...step, value: step.value.slice(0, -1) });
+        if (key.name === "return" || key.name === "enter") {
+          if (!step.value.trim()) return;
+          // load the provider catalog (static fallback when the request fails)
+          setConnectStep({ kind: "models", def: step.def, key: step.value.trim(), models: step.def.staticModels, query: "", index: 0 });
+          fetchProviderModels(step.def, step.value.trim())
+            .then((ids) => {
+              const merged = [...new Set([...ids, ...step.def.staticModels])];
+              const current = connectRef.current;
+              if (current?.kind === "models") {
+                setConnectStep({ ...current, models: merged.length ? merged : step.def.staticModels });
+              }
+            })
+            .catch(() => undefined);
+          return;
+        }
+        const ch = key.sequence;
+        if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ") return setConnectStep({ ...step, value: step.value + ch });
+        return;
+      }
+
+      if (step.kind === "models") {
+        const shown = filterModels(step.models, step.query).slice(0, 10);
+        if (key.name === "escape") return setConnectStep({ kind: "key", def: step.def, value: step.key });
+        if (key.name === "up") return setConnectStep({ ...step, index: Math.max(0, step.index - 1) });
+        if (key.name === "down") return setConnectStep({ ...step, index: Math.min(Math.max(shown.length - 1, 0), step.index + 1) });
+        if (key.name === "backspace") return setConnectStep({ ...step, query: step.query.slice(0, -1), index: 0 });
+        if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
+          const model = shown[Math.min(step.index, Math.max(shown.length - 1, 0))];
+          if (!model) return;
+          setConnectStep({ kind: "testing", def: step.def, key: step.key, model });
+          const modelName = `${step.def.prefix}/${model}`;
+          void (props.testModel ?? testProviderModel)(modelName, step.key).then((ok) => {
+            if (!ok) {
+              setConnectStep({ ...step, error: `could not reach ${modelName} with that key` });
+              return;
+            }
+            const full = step.models;
+            const connection = {
+              id: step.def.id,
+              name: step.def.name,
+              keyEnv: step.def.keyEnv,
+              extraEnv: step.def.extraEnv,
+              prefix: step.def.prefix,
+              key: step.key,
+              models: full,
+              defaultModel: model,
+              addedAt: Date.now(),
+            };
+            if (props.persistSettings !== false) saveConnection(connection);
+            setConnections((prev) => [...prev.filter((c) => c.id !== connection.id), connection]);
+            setConnectStep({ kind: "done", def: step.def, model, count: full.length });
+          });
+          return;
+        }
+        const ch = key.sequence;
+        if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ")
+          return setConnectStep({ ...step, query: step.query + ch, index: 0 });
+        return;
+      }
+
+      // done / error screens
+      if (key.name === "escape") return setOverlay("none");
+      return;
+    }
+
     if (overlayRef.current === "resume") {
       // the session browser owns the keys: its search box is display-only
       const rows = resumeRowsRef.current;
@@ -502,7 +619,7 @@ export function App(props: AppProps) {
 
       if (!dismissedRef.current && promptRef.current.startsWith("/")) {
         // slash completion: App owns the keys while the popover is open
-        const options = matchOptions(promptRef.current, COMMAND_OPTIONS);
+        const options = matchOptions(promptRef.current, commandOptionsRef.current);
         if (options.length === 0) return;
         if (key.name === "escape") return escapePress();
         if (key.name === "up") return setPaletteIdx(Math.max(0, paletteIdxRef.current - 1));
@@ -597,9 +714,12 @@ export function App(props: AppProps) {
       {overlayState === "model" ? (
         <ModelPicker
           current={modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL}
+          models={modelOptions}
           onPick={applyModel}
           onCancel={() => setOverlay("none")}
         />
+      ) : overlayState === "connect" && connectStep ? (
+        <ConnectWizard step={connectStep} providers={PROVIDERS} />
       ) : overlayState === "settings" ? (
         <SettingsPanel settings={settings} onApply={applySettings} onCancel={() => setOverlay("none")} />
       ) : overlayState === "help" ? (

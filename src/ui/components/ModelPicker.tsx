@@ -27,15 +27,21 @@ export function indexForModel(model: string | undefined): number {
 
 export function ModelPicker(props: {
   current?: string;
+  models?: SelectOption[];
   onPick: (model: string) => void;
   onCancel: () => void;
 }) {
-  const [selectedIndex, setSelectedIndex] = useState(() => indexForModel(props.current));
+  const models = props.models ?? MODELS;
+  const indexFor = (model: string | undefined): number => {
+    const index = models.findIndex((option) => option.value === model);
+    return index >= 0 ? index : 0;
+  };
+  const [selectedIndex, setSelectedIndex] = useState(() => indexFor(props.current));
   return (
     <box borderStyle="rounded" borderColor={colors.border} paddingX={1} gap={0}>
       <text fg={colors.dim}>model · ↑/↓ choose · Enter apply · Esc close (applies from the next step)</text>
       <select
-        options={MODELS}
+        options={models}
         selectedIndex={selectedIndex}
         focused
         wrapSelection

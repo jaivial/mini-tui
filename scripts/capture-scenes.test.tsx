@@ -215,7 +215,22 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   save("resume", setup);
   rmSync(dbPath, { force: true });
 
-  // 8) the multi-line prompt (empty transcript, ready to type)
+  // 8) the /connect BYOK wizard (provider list)
+  setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 30 });
+  await setup.renderOnce();
+  await setup.mockInput.typeText("/connect");
+  await Bun.sleep(30);
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await setup.renderOnce();
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await setup.renderOnce();
+  save("connect", setup);
+
+  // 9) the multi-line prompt (empty transcript, ready to type)
   setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 24 });
   await setup.renderOnce();
   await setup.mockInput.typeText(

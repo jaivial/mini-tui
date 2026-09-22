@@ -45,6 +45,14 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
   ![resume modal](docs/screenshots/resume.png)
 
+- **`/connect` — BYOK providers.** Pick a provider (Xiaomi MiMo, DeepSeek, MiniMax, OpenAI,
+  Anthropic, Moonshot, Zhipu, Groq, OpenRouter, OpenCode Go), paste your API key, choose a model
+  and the connection is **tested for real** (a one-token query through mini's own model layer)
+  before being saved locally. Every catalog model of a connected provider joins the `/model`
+  picker, and its key is injected into your runs.
+
+  ![connect wizard](docs/screenshots/connect.png)
+
 - **`/help`** lists every command and key in one panel.
 
   ![help panel](docs/screenshots/help.png)
@@ -117,6 +125,7 @@ Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 | `/model` | open the model picker (or `/model <id>` for a direct switch) |
 | `/settings` | output display (collapsed / trimmed / expanded) |
 | `/resume` | browse sessions saved in this folder (search + pages) |
+| `/connect` | connect a BYOK provider (key → model → tested connection) |
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
 | `e` | expand / collapse the focused output block |
 | `PgUp` / `PgDn` | scroll |

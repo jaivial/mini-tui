@@ -15,6 +15,8 @@ export interface TaskSpec {
   cwd?: string;
   /** Continue an earlier conversation: `mini --resume <file>` with its raw messages. */
   resumePath?: string;
+  /** Extra environment for the run (e.g. BYOK provider keys). */
+  env?: Record<string, string>;
 }
 
 /** Build the `mini` argv for a run (exported for tests). */
@@ -51,7 +53,7 @@ export function spawnMini(spec: TaskSpec): MiniRun {
     stdin: "ignore",
     stdout: logFd,
     stderr: logFd,
-    env: { ...process.env, MSWEA_CONTROL_FILE: session.controlPath },
+    env: { ...process.env, ...(spec.env ?? {}), MSWEA_CONTROL_FILE: session.controlPath },
   });
   closeSync(logFd);
 
