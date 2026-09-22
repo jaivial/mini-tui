@@ -3,6 +3,7 @@
 """Run mini-SWE-agent in your local environment. This is the default executable `mini`."""
 # Read this first: https://mini-swe-agent.com/latest/usage/mini/  (usage)
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,7 @@ def main(
     cost_limit: float | None = typer.Option(None, "-l", "--cost-limit", help="Cost limit. Set to 0 to disable."),
     config_spec: list[str] = typer.Option([str(DEFAULT_CONFIG_FILE)], "-c", "--config", help=_CONFIG_SPEC_HELP_TEXT),
     output: Path | None = typer.Option(DEFAULT_OUTPUT_FILE, "-o", "--output", help="Output trajectory file"),
+    resume: Path | None = typer.Option(None, "--resume", help="Continue an earlier conversation: reload the messages from this trajectory/JSON file as context and treat the task as a follow-up.", rich_help_panel="Advanced"),
     exit_immediately: bool = typer.Option(False, "--exit-immediately", help="Exit immediately when the agent wants to finish instead of prompting.", rich_help_panel="Advanced"),
 ) -> Any:
     # fmt: on
@@ -99,7 +101,13 @@ def main(
     model = get_model(config=config.get("model", {}))
     env = get_environment(config.get("environment", {}), default_type="local")
     agent = get_agent(model, env, config.get("agent", {}), default_type="interactive")
-    agent.run(run_task)
+    resume_messages = None
+    if isinstance(resume, Path):  # typer leaves OptionInfo defaults when called as a function
+        resume_messages = json.loads(resume.read_text()).get("messages", [])
+    if resume_messages:
+        agent.run(run_task, resume_messages=resume_messages)
+    else:
+        agent.run(run_task)
     if (output_path := config.get("agent", {}).get("output_path")):
         console.print(f"Saved trajectory to [bold green]'{output_path}'[/bold green]")
     return agent

@@ -4,6 +4,7 @@ or https://minimal-agent.com for a tutorial on the basic building principles.
 
 import json
 import logging
+import os
 import time
 import traceback
 from pathlib import Path
@@ -12,7 +13,7 @@ from jinja2 import StrictUndefined, Template
 from pydantic import BaseModel
 
 from minisweagent import Environment, Model, __version__
-from minisweagent.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded, TimeExceeded
+from minisweagent.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded, Submitted, TimeExceeded
 from minisweagent.utils.serialize import recursive_merge
 
 
@@ -85,14 +86,22 @@ class DefaultAgent:
             )
         )
 
-    def run(self, task: str = "", **kwargs) -> dict:
-        """Run step() until agent is finished. Returns dictionary with exit_status, submission keys."""
+    def run(self, task: str = "", *, resume_messages: list[dict] | None = None, **kwargs) -> dict:
+        """Run step() until agent is finished. Returns dictionary with exit_status, submission keys.
+
+        ``resume_messages`` continues an earlier conversation: its message history is
+        reloaded as context (exit markers dropped) and ``task`` arrives as a follow-up.
+        """
         self.extra_template_vars |= {"task": task, **kwargs}
-        self.messages = []
-        self.add_messages(
-            self.model.format_message(role="system", content=self._render_template(self.config.system_template)),
-            self.model.format_message(role="user", content=self._render_template(self.config.instance_template)),
-        )
+        if resume_messages:
+            self.messages = [m for m in resume_messages if m.get("role") != "exit"]
+            self.add_messages(self._user_task_message(task))
+        else:
+            self.messages = []
+            self.add_messages(
+                self.model.format_message(role="system", content=self._render_template(self.config.system_template)),
+                self.model.format_message(role="user", content=self._render_template(self.config.instance_template)),
+            )
         while True:
             try:
                 self.step()
@@ -120,15 +129,124 @@ class DefaultAgent:
             finally:
                 self.save(self.config.output_path)
             if self.messages[-1].get("role") == "exit":
+                exit_message = self.messages.pop()
+                # A TUI can hold the run open at exit and keep one conversation going:
+                # a follow-up prompt continues where we left off (context preserved).
+                if self._wait_for_control_followup():
+                    continue
+                self.messages.append(exit_message)
                 break
         return self.messages[-1].get("extra", {})
 
     def step(self) -> list[dict]:
-        """Query the LM, execute actions."""
-        return self.execute_actions(self.query())
+        """Query the LM, execute actions.
+
+        A response without actions carries `extra.submission`: the model answered in
+        plain text, which ends the run as a submission (no tool-call round-trip needed).
+        """
+        message = self.query()
+        submission = message.get("extra", {}).get("submission")
+        if isinstance(submission, str):
+            raise Submitted(
+                {
+                    "role": "exit",
+                    "content": submission,
+                    "extra": {"exit_status": "Submitted", "submission": submission},
+                }
+            )
+        return self.execute_actions(message)
+
+    def _control_file(self) -> str | None:
+        return os.environ.get("MSWEA_CONTROL_FILE")
+
+    def _drain_control(self) -> tuple[str | None, list[str]]:
+        """Read and consume the control file (TUI command channel).
+
+        Returns `(model_name, user_messages)`. The file is truncated on read, so
+        `MESSAGE` lines are consumed exactly once. Writing side: append lines
+        `MODEL <name>` / `MESSAGE <text>`.
+        """
+        control_path = self._control_file()
+        if not control_path:
+            return None, []
+        path = Path(control_path)
+        try:
+            raw = path.read_text()
+        except OSError:
+            return None, []
+        if not raw.strip():
+            return None, []
+        try:
+            path.write_text("")
+        except OSError:
+            pass
+        model_name = None
+        messages = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("MODEL "):
+                model_name = line[len("MODEL ") :].strip() or None
+            elif line.startswith("MESSAGE "):
+                payload = line[len("MESSAGE ") :].strip()
+                if payload.startswith('"'):
+                    # JSON-quoted so multi-line prompts survive the line-based protocol.
+                    try:
+                        payload = json.loads(payload)
+                    except ValueError:
+                        pass
+                if payload:
+                    messages.append(str(payload))
+        return model_name, messages
+
+    @staticmethod
+    def _user_task_message(text: str) -> dict:
+        """Same shape the interactive agent uses when the user adds a new task."""
+        return {
+            "role": "user",
+            "content": f"The user added a new task: {text}",
+            "extra": {"interrupt_type": "UserNewTask"},
+        }
+
+    def _apply_model_switch(self, name: str | None) -> None:
+        if name and name != getattr(self, "_control_model_name", None):
+            from minisweagent.models import get_model
+
+            self._control_model_name = name
+            self.model = get_model(name)
+
+    def _apply_control_commands(self) -> None:
+        """Apply out-of-band commands from MSWEA_CONTROL_FILE (e.g. a TUI `/model` switch).
+
+        No-op unless the environment variable is set, so plain runs behave exactly as before.
+        Supported lines: `MODEL <model name>` (applied before the next model call) and
+        `MESSAGE <text>` (added to the conversation as a user follow-up).
+        """
+        model_name, messages = self._drain_control()
+        self._apply_model_switch(model_name)
+        for text in messages:
+            self.add_messages(self._user_task_message(text))
+
+    def _wait_for_control_followup(self) -> bool:
+        """Hold at exit for a follow-up prompt from the control channel.
+
+        Lets a TUI keep one conversation going across submissions ("type to continue").
+        Applies the queued commands and returns True when a `MESSAGE` arrived; only
+        waits when MSWEA_CONTROL_FILE is set (the TUI ends the wait by killing us).
+        """
+        if not self._control_file():
+            return False
+        while True:
+            model_name, messages = self._drain_control()
+            self._apply_model_switch(model_name)
+            if messages:
+                for text in messages:
+                    self.add_messages(self._user_task_message(text))
+                return True
+            time.sleep(0.2)
 
     def query(self) -> dict:
         """Query the model and return model messages. Override to add hooks."""
+        self._apply_control_commands()
         if 0 < self.config.step_limit <= self.n_calls or 0 < self.config.cost_limit <= self.cost:
             raise LimitsExceeded(
                 {

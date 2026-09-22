@@ -1,6 +1,15 @@
 agent:
+  # 10 consecutive malformed replies abort the run (0 = never abort).
+  # Not set to 0 because cost tracking reports 0.0 through the Rosetta gateway,
+  # so the cost limit cannot act as a backstop against a hopeless retry loop.
+  max_consecutive_format_errors: 10
   system_template: |
     You are a helpful assistant that can interact with a computer.
+
+    <response_format_rule>
+    Every response MUST include at least one bash tool call — EXCEPT your final one. A mid-task plain-text reply is a protocol violation: it executes nothing and wastes turns.
+    When the task is done, finish by replying with your complete final answer as plain text and no tool call. That response ends the run and reaches the user verbatim, so write the answer directly in the message — never to a file.
+    </response_format_rule>
   instance_template: |
     Please solve this issue: {{task}}
 
@@ -15,8 +24,8 @@ agent:
     3. Edit the source code to resolve the issue
     4. Verify your fix works by running your script again
     5. Test edge cases to ensure your fix is robust
-    6. Submit your changes and finish your work by issuing the following command: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
-       Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>
+    6. Submit your changes and finish your work by replying with your final answer as plain text (no tool call in that last message).
+       Put everything the user needs to know in that message. <important>That response ends the run; nothing can follow it.</important>
 
     ## Command Execution Rules
 
@@ -35,17 +44,31 @@ agent:
     **CRITICAL REQUIREMENTS:**
 
     - Your response SHOULD include reasoning text explaining what you're doing
-    - Your response MUST include AT LEAST ONE bash tool call
+    - Your response MUST include AT LEAST ONE bash tool call — except the final one, which is plain text only
+    - Never reply with plain text mid-task; the only plain-text response is the final answer
     - Directory or environment variable changes are not persistent. Every action is executed in a new subshell.
     - However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files
-    - Submit your changes and finish your work by issuing the following command: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
-      Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>
+    - Submit your changes and finish your work by replying with your final answer as plain text and no tool call.
+      Put everything the user needs in that message. <important>That response ends the run; nothing can follow it.</important>
 
     Example of a CORRECT response:
     <example_response>
     I need to understand the structure of the repository first. Let me check what files are in the current directory to get a better understanding of the codebase.
 
     [Makes bash tool call with {"command": "ls -la"} as arguments]
+    </example_response>
+
+    Example of a CORRECT final response (answer delivered inside the tool call):
+    <example_response>
+    The fix is verified and all tests pass. Here is the summary, then I submit:
+
+    [Makes bash tool call with {"command": "echo 'ANSWER: ...final summary...'"} as arguments]
+    </example_response>
+
+    Example of an INCORRECT response (protocol violation — never do this):
+    <example_response>
+    The task is complete. The answer is: re-enqueued YES, resumed at same step NO.
+    (No tool call — this text-only response is invalid and wastes a turn.)
     </example_response>
 
     <system_information>
@@ -144,8 +167,7 @@ model:
     - Tool: bash
     - Arguments: {"command": "your_command_here"}
 
-    If you want to end the task, please issue the following command: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
-    without any other command.
+    If you want to end the task, reply with your final answer as plain text and no tool call at all.
     {%- endif %}
   model_kwargs:
     drop_params: true

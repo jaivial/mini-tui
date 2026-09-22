@@ -84,9 +84,10 @@ class LitellmModel:
                 response = self._query(self._prepare_messages_for_api(messages), **kwargs)
         cost_output = self._calculate_cost(response)
         GLOBAL_MODEL_STATS.add(cost_output["cost"])
+        final_answer = self._final_answer(response)
         # Note: all model.query() implementations must persist the response and cost on FormatError.
         try:
-            actions = self._parse_actions(response)
+            actions = [] if final_answer is not None else self._parse_actions(response)
         except FormatError as e:
             e.messages[0]["extra"].update(cost_output)
             try:
@@ -103,6 +104,8 @@ class LitellmModel:
             **cost_output,
             "timestamp": time.time(),
         }
+        if final_answer is not None:
+            message["extra"]["submission"] = final_answer
         return message
 
     def _calculate_cost(self, response) -> dict[str, float]:
@@ -133,6 +136,20 @@ class LitellmModel:
             format_error_template=self.config.format_error_template,
             template_kwargs={"finish_reason": response.choices[0].finish_reason},
         )
+
+    def _final_answer(self, response) -> str | None:
+        """A response with text but no tool calls is the plain-text final answer.
+
+        The agent turns it into a submission, so the model can finish by simply
+        answering instead of shuttling its answer through a bash call.
+        """
+        message = response.choices[0].message
+        if message.tool_calls:
+            return None
+        content = message.content
+        if not isinstance(content, str):
+            return None
+        return content.strip() or None
 
     def format_message(self, **kwargs) -> dict:
         return expand_multimodal_content(kwargs, pattern=self.config.multimodal_regex)
