@@ -7,6 +7,7 @@
  */
 
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "./schema";
+import { collapseSkillPrompt } from "../skills";
 
 export interface ParseOptions {
   /** Emit the (huge) system prompt as a notice instead of dropping it. */
@@ -146,14 +147,14 @@ export function commandFor(message: TrajectoryMessage, toolCallId: string | unde
 /** Strip the harness' task template wrapper — the UI shows only the prompt the user sent. */
 export function cleanTaskText(text: string): string {
   const prefix = "Please solve this issue: ";
-  if (!text.startsWith(prefix)) return text.trim();
+  if (!text.startsWith(prefix)) return collapseSkillPrompt(text.trim());
   const body = text.slice(prefix.length);
   let end = body.length;
   for (const anchor of ["\n\nYou can execute bash commands", "\n\n## Recommended Workflow", "\n\n<system-reminder>"]) {
     const index = body.indexOf(anchor);
     if (index >= 0 && index < end) end = index;
   }
-  return body.slice(0, end).trim();
+  return collapseSkillPrompt(body.slice(0, end).trim());
 }
 
 function hasInterruptType(message: TrajectoryMessage): string | undefined {

@@ -24,6 +24,11 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
   ![command palette](docs/screenshots/command-palette.png)
 
+- **`$skill` — Claude Code skills in the prompt.** Typing `$` completes over the skills in
+  `~/.claude/skills/<name>/SKILL.md` (override with `MINITUI_SKILLS_DIR`). Sending
+  `$good-code tidy the parser` hands mini the skill's full instructions followed by your
+  request; the transcript shows just `$good-code tidy the parser`.
+
 - **Only what you sent.** The transcript shows your prompt as typed — never the harness' task
   template wrapping — the **final answer is rendered as proper markdown** (bold, code, links), and
   the redundant `exit Submitted` echo of it is never shown.
@@ -152,6 +157,7 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `Enter` | send the prompt (starts a task, or continues the running conversation) |
 | `Alt+Enter` / `Ctrl+J` | insert a newline in the prompt (`Shift+Enter` too where the terminal reports it) |
 | `/` | opens the command palette: `↑`/`↓` or click to select · `Enter`/`Tab` fills the prompt (never sends) |
+| `$` | opens the skills palette (`~/.claude/skills`) · `$<skill> <request>` runs the request with that skill |
 | `Esc` | close the palette / leave the prompt · **double `Esc` interrupts the run** |
 | `ctrl+c` | clear the prompt · on an empty prompt (twice) closes |
 | `/quit` · `/exit` | close mini-tui |

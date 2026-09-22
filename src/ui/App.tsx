@@ -51,10 +51,13 @@ import {
   type SessionRecord,
 } from "../sessions";
 import { generateTitle } from "../title";
+import { SKILLS_DIR, expandSkillPrompt, listSkills, parseSkillPrompt } from "../skills";
 import { loadSettings, saveSettings, type Settings } from "../settings";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 
 const COMMAND_OPTIONS = buildOptions(MODELS);
+/** Prompts starting with these open the completion palette: `/` commands, `$` skills. */
+const isPaletteText = (text: string) => text.startsWith("/") || text.startsWith("$");
 const ESC_DOUBLE_MS = 800;
 /**
  * How many transcript items stay mounted at once. Each mounted item owns native text
@@ -86,6 +89,8 @@ export interface AppProps {
   dbPath?: string;
   /** Override prompt submission (tests); otherwise runs a task or continues the run. */
   onSend?: (text: string) => void;
+  /** Skills folder for `$skill` prompts (tests); defaults to `~/.claude/skills`. */
+  skillsDir?: string;
   /** Override clipboard writes (tests); defaults to OSC 52 + tmux buffer + native tools. */
   onCopy?: (text: string) => void;
   /** Observe double-Esc interrupts (tests). */
@@ -266,9 +271,28 @@ export function App(props: AppProps) {
   const modelOptions = useMemo(() => [...MODELS, ...connectionModelOptions(connections)], [connections]);
   const commandOptions = useMemo(() => buildOptions(modelOptions), [modelOptions]);
   commandOptionsRef.current = commandOptions;
+  const skillsDir = props.skillsDir ?? SKILLS_DIR;
+  // Read once per launch: `$` completes against the skills installed right now.
+  const skillOptions = useMemo<CommandOption[]>(
+    () =>
+      listSkills(skillsDir).map((skill) => ({
+        insert: `$${skill.name} `,
+        label: `$${skill.name}`,
+        detail: skill.description.length > 72 ? `${skill.description.slice(0, 71)}…` : skill.description,
+      })),
+    [skillsDir],
+  );
+  const skillOptionsRef = useRef<CommandOption[]>([]);
+  skillOptionsRef.current = skillOptions;
+  /** Palette rows for the prompt text: commands after `/`, skills after `$`. */
+  const paletteFor = (text: string): CommandOption[] =>
+    text.startsWith("/")
+      ? matchOptions(text, commandOptionsRef.current)
+      : text.startsWith("$")
+        ? matchOptions(text, skillOptionsRef.current)
+        : [];
 
-  const paletteOptions =
-    promptText.startsWith("/") && !paletteDismissed ? matchOptions(promptText, commandOptionsRef.current) : [];
+  const paletteOptions = !paletteDismissed ? paletteFor(promptText) : [];
   const paletteOpen = paletteOptions.length > 0 && inputFocused && overlayState === "none";
   // Soft-wrapped rows: long lines continue on the next row and grow the box (up to 8).
   const promptContentWidth = Math.max(12, dims.width - 4);
@@ -277,15 +301,21 @@ export function App(props: AppProps) {
     promptText.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil((line.length + 1) / promptContentWidth)), 0),
   );
 
-  const applyPromptText = (text: string) => {
+  /** Replace the prompt buffer and park the cursor at its end (typing continues after it). */
+  const writePrompt = (text: string) => {
     textareaRef.current?.setText(text);
+    textareaRef.current?.gotoBufferEnd();
+  };
+
+  const applyPromptText = (text: string) => {
+    writePrompt(text);
     setPromptText(text);
-    if (!text.startsWith("/")) setPaletteDismissed(false);
+    if (!isPaletteText(text)) setPaletteDismissed(false);
     setPaletteIdx(0);
   };
 
   const completeOption = (option: CommandOption) => {
-    textareaRef.current?.setText(option.insert);
+    writePrompt(option.insert);
     setPromptText(option.insert);
     setPaletteDismissed(true);
     setPaletteIdx(0);
@@ -487,13 +517,21 @@ export function App(props: AppProps) {
       if (model) return applyModel(model);
       return;
     }
+    // `$skill request`: mini gets the skill's SKILL.md instructions ahead of the request.
+    const skillCall = parseSkillPrompt(trimmed);
+    const task = skillCall ? expandSkillPrompt(trimmed, skillsDir) : trimmed;
+    if (task === null) {
+      applyPromptText(trimmed); // keep the prompt so a typo is one edit away
+      setHintText(`no skill named $${skillCall?.name} in ${shortPath(skillsDir)}`);
+      return;
+    }
     if (props.onSend) {
-      props.onSend(trimmed);
+      props.onSend(task);
       return;
     }
     const liveRun = live.current.run;
     if (liveRun && !exitedRef.current) {
-      liveRun.sendUserMessage(trimmed);
+      liveRun.sendUserMessage(task);
       setHintText("sent → continues the conversation from the next step");
       return;
     }
@@ -527,7 +565,7 @@ export function App(props: AppProps) {
         resumePath = undefined;
       }
     }
-    startRun({ task: trimmed, model: modelOverride, cwd: props.cwd, resumePath });
+    startRun({ task, model: modelOverride, cwd: props.cwd, resumePath });
     setHintText(undefined);
   };
 
@@ -736,9 +774,9 @@ export function App(props: AppProps) {
     if (inputRefocus.current) {
       if (key.ctrl && key.name === "c") return ctrlCPress();
 
-      if (!dismissedRef.current && promptRef.current.startsWith("/")) {
-        // slash completion: App owns the keys while the popover is open
-        const options = matchOptions(promptRef.current, commandOptionsRef.current);
+      if (!dismissedRef.current && isPaletteText(promptRef.current)) {
+        // `/` and `$` completion: App owns the keys while the popover is open
+        const options = paletteFor(promptRef.current);
         if (options.length === 0) return;
         if (key.name === "escape") return escapePress();
         if (key.name === "up") return setPaletteIdx(Math.max(0, paletteIdxRef.current - 1));
@@ -765,7 +803,7 @@ export function App(props: AppProps) {
           return; // renderer torn down between the key and the sync
         }
         setPromptText(text);
-        if (!text.startsWith("/")) setPaletteDismissed(false);
+        if (!isPaletteText(text)) setPaletteDismissed(false);
         else if (text.length <= 1) {
           setPaletteDismissed(false);
           setPaletteIdx(0);
@@ -896,7 +934,7 @@ export function App(props: AppProps) {
           stickyStart="bottom"
           scrollAcceleration={wheelAccel}
           width="100%"
-          height={Math.max(6, dims.height - bottomRows - paletteOptions.length)}
+          height={Math.max(6, dims.height - bottomRows - (paletteOpen ? paletteOptions.length + 2 : 0))}
           contentOptions={CONTENT_OPTIONS}
         >
           {start > 0 ? (
@@ -971,7 +1009,7 @@ export function App(props: AppProps) {
         onSend={send}
         onTextChange={(text) => {
           setPromptText(text);
-          if (!text.startsWith("/")) setPaletteDismissed(false);
+          if (!isPaletteText(text)) setPaletteDismissed(false);
           else if (text.length <= 1) {
             setPaletteDismissed(false);
             setPaletteIdx(0);
