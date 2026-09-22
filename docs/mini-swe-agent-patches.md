@@ -89,9 +89,15 @@ def _drain_control(self) -> tuple[str | None, list[str]]:
         if line.startswith("MODEL "):
             model_name = line[len("MODEL ") :].strip() or None
         elif line.startswith("MESSAGE "):
-            text = line[len("MESSAGE ") :].strip()
-            if text:
-                messages.append(text)
+            payload = line[len("MESSAGE ") :].strip()
+            if payload.startswith('"'):
+                # JSON-quoted so multi-line prompts survive the line-based protocol.
+                try:
+                    payload = json.loads(payload)
+                except ValueError:
+                    pass
+            if payload:
+                messages.append(str(payload))
     return model_name, messages
 
 @staticmethod

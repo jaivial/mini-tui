@@ -11,9 +11,9 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
 ## Features
 
-- **Prompt bar, Claude-Code style.** A prompt input pinned to the bottom of the screen: type your
-  task, hit Enter, and keep typing follow-ups while the agent works (or after it submits) — they
-  continue the *same* conversation.
+- **Prompt bar, Claude-Code style.** A multi-line prompt input pinned to the bottom of the screen:
+  type your task (`Alt+Enter` / `Ctrl+J` for a new line), hit Enter, and keep typing follow-ups
+  while the agent works (or after it submits) — they continue the *same* conversation.
 
   ![prompt bar](docs/screenshots/prompt.png)
 
@@ -77,6 +77,7 @@ Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 | Key | Action |
 | --- | --- |
 | `Enter` | send the prompt (starts a task, or continues the running conversation) |
+| `Alt+Enter` / `Ctrl+J` | insert a newline in the prompt (`Shift+Enter` too where the terminal reports it) |
 | `Esc` | leave the prompt and navigate the transcript |
 | `i` / `Enter` | (navigation mode) jump back to the prompt |
 | `/model` | typed in the prompt: open the model picker (or `/model <id>`) |

@@ -138,8 +138,12 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   await setup.renderOnce();
   save("final-answer", setup);
 
-  // 4) the prompt (empty transcript, ready to type)
+  // 4) the multi-line prompt (empty transcript, ready to type)
   setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 24 });
+  await setup.renderOnce();
+  await setup.mockInput.typeText(
+    "Refactor the billing service to use the new tax rules\nand update the tests. Run the suite afterwards.",
+  );
   await setup.renderOnce();
   save("prompt", setup);
 });

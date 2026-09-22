@@ -93,7 +93,7 @@ describe("App rendering", () => {
     setup.renderer.destroy();
   });
 
-  test("prompt: Enter sends the typed task to onSend", async () => {
+  test("prompt: multi-line text is sent on Enter", async () => {
     const sent: string[] = [];
     const setup = await testRender(
       <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
@@ -102,12 +102,12 @@ describe("App rendering", () => {
     await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("prompt"); // the prompt bar is always there
 
-    await setup.mockInput.typeText("fix the failing test");
+    await setup.mockInput.typeText("line one\nline two"); // \n inserts a newline (Ctrl+J semantics)
     await act(async () => {
-      setup.mockInput.pressEnter();
+      setup.mockInput.pressEnter(); // send
     });
     await setup.renderOnce();
-    expect(sent).toEqual(["fix the failing test"]);
+    expect(sent).toEqual(["line one\nline two"]);
     setup.renderer.destroy();
   });
 

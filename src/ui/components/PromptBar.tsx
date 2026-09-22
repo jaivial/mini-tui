@@ -1,15 +1,25 @@
 import { useRef } from "react";
-import type { InputRenderable } from "@opentui/core";
+import type { TextareaRenderable } from "@opentui/core";
 
 import { colors } from "../theme";
 
-/** Claude-Code-style prompt bar pinned to the bottom: always one Enter away. */
+// Claude-Code style: Enter sends; Alt+Enter / Ctrl+J insert a newline (Shift+Enter too,
+// on terminals that report it through the kitty keyboard protocol).
+const PROMPT_KEY_BINDINGS = [
+  { name: "return", shift: false, ctrl: false, meta: false, action: "submit" },
+  { name: "return", meta: true, action: "newline" },
+  { name: "return", shift: true, action: "newline" },
+  { name: "kpenter", action: "submit" },
+  { name: "linefeed", action: "newline" },
+];
+
+/** Multi-line prompt bar pinned to the bottom: always one Enter away. */
 export function PromptBar(props: {
   focused: boolean;
   busy: boolean;
   onSend: (text: string) => void;
 }) {
-  const inputRef = useRef<InputRenderable>(null);
+  const ref = useRef<TextareaRenderable>(null);
   const hint = props.busy ? "continue the conversation…" : "what should mini do?";
   return (
     <box
@@ -19,18 +29,19 @@ export function PromptBar(props: {
       titleColor={props.focused ? colors.accent : colors.dim}
       paddingX={1}
     >
-      <input
-        ref={inputRef}
+      <textarea
+        ref={ref}
         focused={props.focused}
-        placeholder={`${hint}  (Enter send · /model switch model)`}
+        height={3}
+        keyBindings={PROMPT_KEY_BINDINGS as never}
+        placeholder={`${hint}  (Enter send · Alt+Enter/Ctrl+J newline · /model switch model)`}
         textColor={colors.text}
         backgroundColor={colors.bg}
-        cursorColor={colors.accent}
-        onSubmit={((value: string | { value?: string }) => {
-          const text = typeof value === "string" ? value : String(value?.value ?? "");
-          if (inputRef.current) inputRef.current.value = "";
+        onSubmit={() => {
+          const text = (ref.current?.editorView.getText() ?? "").replace(/\n+$/, "");
+          ref.current?.setText("");
           props.onSend(text);
-        }) as never}
+        }}
       />
     </box>
   );

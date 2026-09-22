@@ -83,8 +83,8 @@ export function spawnMini(spec: TaskSpec): MiniRun {
       appendFileSync(session.controlPath, `MODEL ${model}\n`);
     },
     sendUserMessage(text: string) {
-      // Continues the same conversation from the agent's next step (or at exit hold).
-      appendFileSync(session.controlPath, `MESSAGE ${text.replace(/\s*\n\s*/g, " ")}\n`);
+      // JSON-quoted so multi-line prompts survive the line-based protocol.
+      appendFileSync(session.controlPath, `MESSAGE ${JSON.stringify(text)}\n`);
     },
   };
 }
