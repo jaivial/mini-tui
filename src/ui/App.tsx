@@ -6,7 +6,7 @@ import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { colors, markdownSyntaxStyle, applyTheme, DEFAULT_THEME } from "./theme";
 import { StatusLine } from "./components/StatusLine";
 import { TaskCard } from "./components/TaskCard";
-import { StepCard } from "./components/StepCard";
+import { StepCard, clipText } from "./components/StepCard";
 import { NoticeLine } from "./components/NoticeLine";
 import { ExitBanner } from "./components/ExitBanner";
 import { StatusBar } from "./components/StatusBar";
@@ -55,6 +55,14 @@ import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/s
 
 const COMMAND_OPTIONS = buildOptions(MODELS);
 const ESC_DOUBLE_MS = 800;
+/**
+ * How many transcript items stay mounted at once. Each mounted item owns native text
+ * buffers (~1 MB in practice: every rendered line is a full terminal-width row of
+ * cells), so mounting a whole long run grows into the GBs. `g` pages older items in.
+ */
+const MOUNTED_ITEMS = 120;
+/** Stable identity: a fresh literal would re-apply (and re-render) on every commit. */
+const CONTENT_OPTIONS = { gap: 1 };
 
 export interface AppProps {
   cwd: string;
@@ -105,8 +113,11 @@ export function buildItems(events: RunEvent[]): Item[] {
     if (event.type !== "tool_call") return;
     const pair: Pair = { toolIndex: index, observationIndex: null };
     pairs.push(pair);
-    if (event.id) byId.set(event.id, [...(byId.get(event.id) ?? []), pair]);
-    else freePairs.push(pair);
+    if (event.id) {
+      const queue = byId.get(event.id);
+      if (queue) queue.push(pair);
+      else byId.set(event.id, [pair]);
+    } else freePairs.push(pair);
   });
 
   events.forEach((event, index) => {
@@ -118,10 +129,11 @@ export function buildItems(events: RunEvent[]): Item[] {
   });
 
   const claimed = new Set(pairs.map((p) => p.observationIndex).filter((i): i is number => i !== null));
+  const pairAt = new Map(pairs.map((p) => [p.toolIndex, p] as const));
   const items: Item[] = [];
   events.forEach((event, index) => {
     if (event.type === "tool_call") {
-      const pair = pairs.find((p) => p.toolIndex === index);
+      const pair = pairAt.get(index);
       if (pair) items.push({ kind: "pair", toolIndex: pair.toolIndex, observationIndex: pair.observationIndex });
       return;
     }
@@ -141,6 +153,8 @@ export function App(props: AppProps) {
   const [errorText, setErrorText] = useState("");
   const [focusIdx, setFocusIdx] = useState(0);
   const [flipped, setFlipped] = useState<Set<number>>(new Set());
+  /** Top of the mounted transcript window when reading history (null = follow the live tail). */
+  const [anchor, setAnchor] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
   const [settings, setSettings] = useState<Settings>(() => {
@@ -297,13 +311,15 @@ export function App(props: AppProps) {
   useEffect(() => {
     const id = sessionIdRef.current;
     if (!persist || !id) return;
+    // 2s debounce: each save stringifies the full transcript (multi-MB on long runs),
+    // so the 500ms cadence churned tens of MB/s of garbage while a run streams.
     const timer = setTimeout(() => {
       try {
         saveTranscript(db(), id, events, info, messagesRef.current);
       } catch {
         // persistence is best-effort
       }
-    }, 500);
+    }, 2000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, info]);
@@ -515,7 +531,13 @@ export function App(props: AppProps) {
     return () => clearTimeout(timer);
   }, [events]);
 
-  const items = buildItems(events);
+  // Sliding window over the transcript: only `MOUNTED_ITEMS` items are mounted at a time
+  // (native text buffers make each mounted item cost ~1 MB). By default it follows the live
+  // tail; `g` pins the top (`anchor`) to page older items in, `G` releases it.
+  const allItems = useMemo(() => buildItems(events), [events]);
+  const tailStart = Math.max(0, allItems.length - MOUNTED_ITEMS);
+  const start = Math.min(anchor ?? tailStart, tailStart);
+  const items = allItems.slice(start, start + MOUNTED_ITEMS);
   const pairItems = items.filter((item): item is Extract<Item, { kind: "pair" }> => item.kind === "pair");
 
   const quit = () => {
@@ -756,11 +778,31 @@ export function App(props: AppProps) {
     }
     if (key.name === "g" && key.shift) {
       followRef.current = true;
-      return scrollRef.current?.scrollBy(1_000_000);
+      setAnchor(null);
+      scrollRef.current?.scrollBy(1_000_000);
+      // re-align once the window has re-rendered (its height may have changed)
+      setTimeout(() => {
+        try {
+          scrollRef.current?.scrollBy(1_000_000);
+        } catch {
+          // renderable torn down between the key and the re-align
+        }
+      }, 0);
+      return;
     }
     if (key.name === "g") {
       followRef.current = false;
-      return scrollRef.current?.scrollBy(-1_000_000);
+      // page one window of older items in (the hint line says how much is left)
+      setAnchor(Math.max(0, start - MOUNTED_ITEMS));
+      scrollRef.current?.scrollBy(-1_000_000);
+      setTimeout(() => {
+        try {
+          scrollRef.current?.scrollBy(-1_000_000);
+        } catch {
+          // renderable torn down between the key and the re-align
+        }
+      }, 0);
+      return;
     }
   });
 
@@ -817,24 +859,36 @@ export function App(props: AppProps) {
           scrollAcceleration={wheelAccel}
           width="100%"
           height={Math.max(6, dims.height - bottomRows - paletteOptions.length)}
-          contentOptions={{ gap: 1 }}
+          contentOptions={CONTENT_OPTIONS}
         >
+          {start > 0 ? (
+            <text key="history-hint" fg={colors.faint}>
+              ↑ {start} earlier entries hidden · press g to load more
+            </text>
+          ) : null}
           {items.map((item) => {
             if (item.kind === "event") {
               const event = events[item.index];
               if (!event) return null;
-              if (event.type === "task") return <TaskCard key={item.index} text={event.text} />;
+              if (event.type === "task") return <TaskCard key={item.index} text={clipText(event.text, 24, 6).text} />;
               if (event.type === "assistant")
                 return (
                   <box key={item.index} paddingX={1} gap={0}>
                     <text fg={colors.faint}>assistant</text>
-                    <markdown content={event.text} syntaxStyle={markdownSyntaxStyle} streaming />
+                    <markdown content={clipText(event.text, 80, 16).text} syntaxStyle={markdownSyntaxStyle} streaming />
                   </box>
                 );
-              if (event.type === "notice") return <NoticeLine key={item.index} text={event.text} interruptType={event.interruptType} />;
+              if (event.type === "notice")
+                return <NoticeLine key={item.index} text={clipText(event.text, 24, 6).text} interruptType={event.interruptType} />;
               // `Submitted` just repeats the final answer rendered above — show only real errors.
               if (event.type === "exit" && event.exitStatus !== "Submitted")
-                return <ExitBanner key={item.index} exitStatus={event.exitStatus} submission={event.submission} />;
+                return (
+                  <ExitBanner
+                    key={item.index}
+                    exitStatus={event.exitStatus}
+                    submission={clipText(event.submission, 40).text}
+                  />
+                );
               if (event.type === "observation")
                 return (
                   <StepCard

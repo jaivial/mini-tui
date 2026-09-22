@@ -4,20 +4,33 @@ import type { OutputMode } from "../../settings";
 const COLLAPSED_HEAD = 8;
 const COLLAPSED_TAIL = 12;
 const TRIM_HEAD = 2;
-const EXPANDED_CAP = 5000;
+// Every rendered line costs a full terminal-width row of native text buffer, so the
+// expanded cap must stay bounded: 5000 lines × a wide terminal ≈ tens of MB per card.
+const EXPANDED_CAP = 500;
+/** Hard clamp for pathological single-line outputs (wrap makes one line many rows). */
+const CHAR_CAP = 40_000;
+
+/**
+ * Keep at most `head + tail` lines (and `maxChars` characters) of a text block, marking
+ * what was dropped. Shared by tool outputs and the free-text blocks (assistant markdown,
+ * task, notices) so every text renderable stays memory-bounded.
+ */
+export function clipText(text: string, head: number, tail = 0, maxChars = CHAR_CAP): { text: string; hidden: number } {
+  const lines = text.replace(/\n+$/, "").split("\n");
+  const hidden = lines.length > head + tail + 1 ? lines.length - head - tail : 0;
+  let clipped = hidden
+    ? [...lines.slice(0, head), `... ${hidden} lines hidden ...`, ...(tail ? lines.slice(-tail) : [])].join("\n")
+    : lines.join("\n");
+  if (clipped.length > maxChars) clipped = `${clipped.slice(0, maxChars)}\n... output truncated ...`;
+  return { text: clipped, hidden };
+}
 
 /** Clip outputs according to the display mode (full reveal when flipped open). */
 export function clipOutput(output: string, mode: OutputMode, forceExpand = false): { text: string; hidden: number } {
-  const lines = output.replace(/\n+$/, "").split("\n");
   const expanded = forceExpand || mode === "expanded";
   const head = expanded ? EXPANDED_CAP : mode === "trim" ? TRIM_HEAD : COLLAPSED_HEAD;
   const tail = expanded ? 0 : mode === "trim" ? 0 : COLLAPSED_TAIL;
-  if (lines.length <= head + tail + 1) return { text: lines.join("\n"), hidden: 0 };
-  const hidden = lines.length - head - tail;
-  const text = [...lines.slice(0, head), `... ${hidden} lines hidden ...`, ...(tail ? lines.slice(-tail) : [])].join(
-    "\n",
-  );
-  return { text, hidden };
+  return clipText(output, head, tail);
 }
 
 /**

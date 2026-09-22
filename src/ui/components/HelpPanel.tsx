@@ -14,7 +14,7 @@ export function HelpPanel() {
     ["Esc", "leave the prompt · double Esc interrupts the run"],
     ["ctrl+c", "clear the prompt · twice (or on empty) closes"],
     ["j k  ·  e", "move between steps · expand/collapse the focused output"],
-    ["PgUp PgDn  ·  g G", "scroll · top / bottom"],
+    ["PgUp PgDn  ·  g G", "scroll · g loads older steps / G back to live bottom"],
   ];
   return (
     <box borderStyle="rounded" borderColor={colors.border} backgroundColor={colors.panel} width="80%" paddingX={1} gap={0}>

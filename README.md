@@ -33,7 +33,11 @@ outputs — into cards, badges and banners. The harness runs completely untouche
   (`⣾ ▓░░░░ working · 34s`), the selected model, the working path and the checked-out git branch.
 - **Output display modes** — collapsed (just a `1 tool call` line), trimmed to 2 lines, or fully
   expanded. Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still
-  expands or collapses any block individually.
+  expands or collapses any block individually. Expanded output is capped at 500 lines with a
+  `... N lines hidden ...` marker.
+- **Flat memory, always.** The transcript is mounted in a sliding window (120 blocks; `g` pages
+  older ones in, `G` returns to the live bottom) and every text block is clipped, so an all-day
+  run keeps a flat footprint instead of growing with the conversation.
 - **Six themes** — `shadcn` (zinc, default) plus `nord`, `dracula`, `gruvbox`, `tokyo night` and
   `catppuccin`. Also in `/settings` (`Tab` switches group): moving the selection repaints the
   whole UI live and the choice persists.
@@ -157,7 +161,7 @@ Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
 | `e` | expand / collapse the focused output block |
 | `PgUp` / `PgDn` | scroll half a screen · mouse wheel scrolls 3–5× (burst-accelerated) |
-| `g` / `G` | top / bottom |
+| `g` / `G` | load older steps (pages of 120) / back to the live bottom |
 
 ## How it works
 

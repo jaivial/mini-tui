@@ -4,7 +4,7 @@
  * to `<session>/mini.log`.
  */
 
-import { appendFileSync, closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, readSync, statSync, writeFileSync } from "node:fs";
 
 import { MINI_BIN, createSessionDir, type SessionPaths } from "../config";
 
@@ -119,11 +119,19 @@ export function spawnMini(spec: TaskSpec): MiniRun {
   };
 }
 
-/** Tail of the raw `mini` output, for error banners. */
+/** Tail of the raw `mini` output, for error banners (last 64 KB — the log can be huge). */
 export function tailLog(logPath: string, lines = 12): string {
   try {
-    const text = readFileSync(logPath, "utf8");
-    return text.split("\n").slice(-lines).join("\n").trim();
+    const size = statSync(logPath).size;
+    const length = Math.min(size, 64 * 1024);
+    const buffer = Buffer.alloc(length);
+    const fd = openSync(logPath, "r");
+    try {
+      readSync(fd, buffer, 0, length, Math.max(0, size - length));
+    } finally {
+      closeSync(fd);
+    }
+    return buffer.toString("utf8").split("\n").slice(-lines).join("\n").trim();
   } catch {
     return "";
   }
