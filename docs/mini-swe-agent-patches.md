@@ -1,8 +1,9 @@
 # Companion mini-swe-agent patches
 
-`mini-tui` works with an unmodified
-[mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent). Three small, optional patches to
-your local checkout unlock the behaviors below. All are inert unless you use them.
+These three patches are **already included** in the vendored `agent/` directory — this document
+is the upstreamable description of the exact changes. `mini-tui` also works with an unmodified
+[mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent); without the patches, everything
+is inert except live `/model` switching, conversational follow-ups and `/resume`.
 
 ## 1. Plain-text final answer (no temporary markdown file)
 

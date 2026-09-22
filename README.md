@@ -110,13 +110,15 @@ the whole UI live and the choice persists.
 ## Requirements
 
 - [Bun](https://bun.sh) ≥ 1.3 (OpenTUI ships a native Zig renderer; Node ≥ 26.4 also works)
-- `mini` on your `PATH`, configured as usual (your `~/.config/mini-swe-agent/.env` is honored)
+- Python ≥ 3.10 with the bundled agent installed (`pip install -e ./agent`) — or any `mini` on
+  your `PATH`; your `~/.config/mini-swe-agent/.env` is honored either way
 
 ## Install
 
 ```bash
 git clone https://github.com/jaivial/mini-tui && cd mini-tui
 bun install
+python3 -m pip install -e ./agent   # the bundled mini-swe-agent → `mini` on your PATH
 
 # optional: make `mini-tui` available everywhere
 cp bin/mini-tui ~/.local/bin/mini-tui && chmod +x ~/.local/bin/mini-tui
@@ -140,8 +142,8 @@ mini-tui run ... --show-system
 ```
 
 Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
-(`traj.json`, `mini.log`, `pid`, `control`). mini-tui never touches
-`~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes its own `-o`.
+(`traj.json` + its append-only `traj.jsonl` journal, `mini.log`, `pid`, `control`). mini-tui never
+touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes its own `-o`.
 
 ## Keys
 
@@ -186,11 +188,11 @@ mini-tui appends `MESSAGE <text>` / `MODEL <id>` lines to the run's control file
   a submission via an *exit hold* (the run stays open so one conversation can span many turns);
 - applies `MODEL` switches from the next step.
 
-## Companion mini-swe-agent patches (optional)
+## Bundled mini-swe-agent
 
-Three small patches to your local mini-swe-agent unlock the nicest behaviors. Everything works
-without them except live `/model` switching, conversational follow-ups and context-carrying
-`/resume`. See [docs/mini-swe-agent-patches.md](docs/mini-swe-agent-patches.md) for the exact changes:
+`agent/` vendors [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) (v2.4.6 base via
+`git subtree --squash`) together with everything mini-tui's nicest behaviors need, so
+`pip install -e ./agent` is one install that carries:
 
 1. **Plain-text final answer** — a response with text and no tool calls is the submission
    (no more `cat > /tmp/final_answer.md` round-trips).
@@ -199,6 +201,15 @@ without them except live `/model` switching, conversational follow-ups and conte
    `MSWEA_CONTROL_FILE` is unset).
 3. **`--resume`** — reloads a previous conversation's message history as context and treats
    the new task as a follow-up (what `/resume` + prompt uses).
+4. **Custom model providers** — xiaomi (MiMo), rosetta, cliproxy, deepseek, opencode_go and
+   openai model classes, with `mini extra <provider>-models` to list their catalogs.
+5. **Append-only trajectory journal** — `<traj>.jsonl` gets one line per message (O(1) per
+   step, never torn) and the full `traj.json` export is compact, atomic and throttled;
+   mini-tui reads the journal and parses only the new bytes per tick.
+
+Upstream sync: `git subtree pull --prefix=agent --squash <upstream> <ref>`. The original patch
+descriptions (kept for upstreaming) live in
+[docs/mini-swe-agent-patches.md](docs/mini-swe-agent-patches.md).
 
 ## Development
 
