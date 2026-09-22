@@ -17,6 +17,14 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
   ![prompt bar](docs/screenshots/prompt.png)
 
+- **Command palette.** Typing `/` opens real-time completion over the available commands
+  (`/model`, `/settings`, `/model <id>`): filter as you write, pick with `↑`/`↓` or a mouse click,
+  fill into the prompt with `Enter`/`Tab` (it never sends for you).
+
+  ![command palette](docs/screenshots/command-palette.png)
+
+- **Only what you sent.** The transcript shows your prompt as typed — never the harness' task
+  template wrapping — and the **final answer is rendered as proper markdown** (bold, code, links).
 - **One quiet card per bash step** (command + its output), shadcn-style: zinc neutrals, rounded
   surfaces, a single subtle accent and semantic colors used sparingly.
 - **Output display modes** — collapsed (first + last lines), trimmed to 2 lines, or fully expanded.
@@ -25,7 +33,7 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
   ![settings panel](docs/screenshots/settings.png)
 
-- **Tool call cards** with syntax-highlighted bash commands and a focused-block indicator.
+- **Tool call cards** with syntax-highlighted bash commands and a quiet focus marker.
 - **Output cards** with `rc=0` / `rc=N` badges, exception info, and collapsible bodies
   (`… 220 lines hidden · [e] expand`) so huge outputs never blow up the layout.- **Live header** with model, step count, running cost and a spinner while a step is in flight.
 - **`/model` — switch models mid-conversation.** Type `/model` in the prompt to open the model
@@ -85,7 +93,8 @@ Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 | --- | --- |
 | `Enter` | send the prompt (starts a task, or continues the running conversation) |
 | `Alt+Enter` / `Ctrl+J` | insert a newline in the prompt (`Shift+Enter` too where the terminal reports it) |
-| `Esc` | leave the prompt and navigate the transcript |
+| `/` | opens the command palette: `↑`/`↓` or click to select · `Enter`/`Tab` fills the prompt (never sends) |
+| `Esc` | close the palette / leave the prompt and navigate the transcript |
 | `i` / `Enter` | (navigation mode) jump back to the prompt |
 | `/model` | typed in the prompt: open the model picker (or `/model <id>`) |
 | `/settings` | typed in the prompt: output display (collapsed / trimmed / expanded) |

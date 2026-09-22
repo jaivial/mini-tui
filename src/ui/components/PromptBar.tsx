@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import type { RefObject } from "react";
 import type { TextareaRenderable } from "@opentui/core";
 
 import { colors } from "../theme";
@@ -17,9 +17,10 @@ const PROMPT_KEY_BINDINGS = [
 export function PromptBar(props: {
   focused: boolean;
   busy: boolean;
+  textareaRef: RefObject<TextareaRenderable | null>;
   onSend: (text: string) => void;
+  onTextChange: (text: string) => void;
 }) {
-  const ref = useRef<TextareaRenderable>(null);
   const hint = props.busy ? "continue the conversation…" : "what should mini do?";
   return (
     <box
@@ -28,17 +29,18 @@ export function PromptBar(props: {
       paddingX={1}
     >
       <textarea
-        ref={ref}
+        ref={props.textareaRef}
         focused={props.focused}
         height={3}
         keyBindings={PROMPT_KEY_BINDINGS as never}
-        placeholder={`${hint}  (Enter send · Alt+Enter/Ctrl+J newline · /model · /settings)`}
+        placeholder={hint}
         textColor={colors.text}
         placeholderColor={colors.faint}
         backgroundColor={colors.bg}
+        onContentChange={() => props.onTextChange(props.textareaRef.current?.editorView.getText() ?? "")}
         onSubmit={() => {
-          const text = (ref.current?.editorView.getText() ?? "").replace(/\n+$/, "");
-          ref.current?.setText("");
+          const text = (props.textareaRef.current?.editorView.getText() ?? "").replace(/\n+$/, "");
+          props.textareaRef.current?.setText("");
           props.onSend(text);
         }}
       />

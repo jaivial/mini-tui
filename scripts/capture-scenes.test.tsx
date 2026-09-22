@@ -92,7 +92,7 @@ const FINAL_EVENTS: RunEvent[] = [
     type: "exit",
     exitStatus: "Submitted",
     submission:
-      "The failure was a float comparison without tolerance in `test_round_trip`.\nI replaced `== 0.3` with `== pytest.approx(0.3)` and the suite passes: 8 passed.",
+      "**Fixed:** the float comparison in `test_round_trip`.\nReplaced `== 0.3` with `== pytest.approx(0.3)` — **8 passed in 0.12s**.",
   },
 ];
 
@@ -151,7 +151,15 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   await setup.renderOnce();
   save("final-answer", setup);
 
-  // 5) the multi-line prompt (empty transcript, ready to type)
+  // 5) the command palette (slash completion)
+  setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 24 });
+  await setup.renderOnce();
+  await setup.mockInput.typeText("/model xia");
+  await Bun.sleep(30);
+  await setup.renderOnce();
+  save("command-palette", setup);
+
+  // 6) the multi-line prompt (empty transcript, ready to type)
   setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 24 });
   await setup.renderOnce();
   await setup.mockInput.typeText(

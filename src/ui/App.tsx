@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import type { ScrollBoxRenderable } from "@opentui/core";
+import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
 import { colors, markdownSyntaxStyle } from "./theme";
 import { Header } from "./components/Header";
@@ -10,8 +10,9 @@ import { NoticeLine } from "./components/NoticeLine";
 import { ExitBanner } from "./components/ExitBanner";
 import { StatusBar } from "./components/StatusBar";
 import { PromptBar } from "./components/PromptBar";
-import { ModelPicker } from "./components/ModelPicker";
+import { ModelPicker, MODELS } from "./components/ModelPicker";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { CommandPalette, buildOptions, matchOptions, type CommandOption } from "./components/CommandPalette";
 import { messagesToEvents, parseInfo } from "../traj/parse";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
@@ -20,6 +21,7 @@ import { loadSettings, saveSettings, type Settings } from "../settings";
 import type { RunEvent, RunInfo, Trajectory } from "../traj/schema";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const COMMAND_OPTIONS = buildOptions(MODELS);
 
 export interface AppProps {
   cwd: string;
@@ -102,11 +104,19 @@ export function App(props: AppProps) {
   const [inputFocused, setInputFocusedState] = useState(true);
   const [overlayState, setOverlayState] = useState<"none" | "model" | "settings">("none");
   const [hintText, setHintText] = useState<string | undefined>(undefined);
+  const [promptText, setPromptTextState] = useState("");
+  const [paletteDismissed, setPaletteDismissedState] = useState(false);
+  const [paletteIdx, setPaletteIdxState] = useState(0);
   // Key handlers can fire several times before React re-renders; mirror what they
   // read/write into refs so state is never stale inside a batch of keystrokes.
   const inputRefocus = useRef(true);
   const overlayRef = useRef<"none" | "model" | "settings">("none");
   const exitedRef = useRef(false);
+  const promptRef = useRef("");
+  const dismissedRef = useRef(false);
+  const paletteIdxRef = useRef(0);
+  const textareaRef = useRef<TextareaRenderable | null>(null);
+
   const setInputFocused = (value: boolean) => {
     inputRefocus.current = value;
     setInputFocusedState(value);
@@ -115,9 +125,39 @@ export function App(props: AppProps) {
     overlayRef.current = value;
     setOverlayState(value);
   };
+  const setPromptText = (value: string) => {
+    promptRef.current = value;
+    setPromptTextState(value);
+  };
+  const setPaletteDismissed = (value: boolean) => {
+    dismissedRef.current = value;
+    setPaletteDismissedState(value);
+  };
+  const setPaletteIdx = (value: number) => {
+    paletteIdxRef.current = value;
+    setPaletteIdxState(value);
+  };
   const dims = useTerminalDimensions();
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const live = useRef<{ watch?: WatchHandle; run?: MiniRun }>({});
+
+  const paletteOptions = promptText.startsWith("/") && !paletteDismissed ? matchOptions(promptText, COMMAND_OPTIONS) : [];
+  const paletteOpen = paletteOptions.length > 0 && inputFocused && overlayState === "none";
+
+  const applyPromptText = (text: string) => {
+    textareaRef.current?.setText(text);
+    setPromptText(text);
+    if (!text.startsWith("/")) setPaletteDismissed(false);
+    if (text !== promptRef.current) setPaletteIdx(0);
+  };
+
+  const completeOption = (option: CommandOption) => {
+    textareaRef.current?.setText(option.insert);
+    setPromptText(option.insert);
+    setPaletteDismissed(true);
+    setPaletteIdx(0);
+    setInputFocused(true);
+  };
 
   const applySnapshot = (traj: Trajectory) => {
     setEvents(messagesToEvents(traj.messages ?? [], { showSystem: props.showSystem }));
@@ -192,6 +232,9 @@ export function App(props: AppProps) {
 
   const send = (text: string) => {
     const trimmed = text.trim();
+    setPromptText("");
+    setPaletteDismissed(false);
+    setPaletteIdx(0);
     if (!trimmed) return;
     const command = trimmed.replace(/^\//, "").toLowerCase();
     if (command === "model") return setOverlay("model");
@@ -241,8 +284,43 @@ export function App(props: AppProps) {
     }
 
     if (inputRefocus.current) {
-      if (key.name === "escape") return setInputFocused(false);
       if (key.ctrl && key.name === "c") return quit();
+
+      if (!dismissedRef.current && promptRef.current.startsWith("/")) {
+        // slash completion: App owns the keys while the popover is open
+        const options = matchOptions(promptRef.current, COMMAND_OPTIONS);
+        if (options.length === 0) return;
+        if (key.name === "escape") return setPaletteDismissed(true);
+        if (key.name === "up") return setPaletteIdx(Math.max(0, paletteIdxRef.current - 1));
+        if (key.name === "down") return setPaletteIdx(Math.min(options.length - 1, paletteIdxRef.current + 1));
+        if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
+          const option = options[Math.min(paletteIdxRef.current, options.length - 1)];
+          if (option) completeOption(option);
+          return;
+        }
+        if (key.name === "backspace") return applyPromptText(promptRef.current.slice(0, -1));
+        const ch = key.sequence;
+        if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ") return applyPromptText(promptRef.current + ch);
+        return;
+      }
+
+      if (key.name === "escape") return setInputFocused(false);
+      // Keep the palette query in sync with the textarea (onContentChange is not
+      // reliable across bindings, so re-read the buffer right after each key).
+      setTimeout(() => {
+        let text = "";
+        try {
+          text = textareaRef.current?.editorView.getText() ?? "";
+        } catch {
+          return; // renderer torn down between the key and the sync
+        }
+        setPromptText(text);
+        if (!text.startsWith("/")) setPaletteDismissed(false);
+        else if (text.length <= 1) {
+          setPaletteDismissed(false);
+          setPaletteIdx(0);
+        }
+      }, 0);
       return; // the prompt input owns the other keys
     }
 
@@ -317,7 +395,7 @@ export function App(props: AppProps) {
           stickyScroll
           stickyStart="bottom"
           width="100%"
-          height={Math.max(6, dims.height - 9)}
+          height={Math.max(6, dims.height - 9 - paletteOptions.length)}
           contentOptions={{ gap: 1 }}
         >
           {items.map((item) => {
@@ -327,8 +405,8 @@ export function App(props: AppProps) {
               if (event.type === "task") return <TaskCard key={item.index} text={event.text} />;
               if (event.type === "assistant")
                 return (
-                  <box key={item.index} borderStyle="rounded" borderColor={colors.border} paddingX={1} gap={0}>
-                    <text fg={colors.dim}>assistant</text>
+                  <box key={item.index} paddingX={1} gap={0}>
+                    <text fg={colors.faint}>assistant</text>
                     <markdown content={event.text} syntaxStyle={markdownSyntaxStyle} streaming />
                   </box>
                 );
@@ -369,14 +447,34 @@ export function App(props: AppProps) {
             );
           })}
           {errorText ? (
-            <box borderStyle="rounded" borderColor={colors.border} paddingX={1} gap={0}>
+            <box paddingX={1} gap={0}>
               <text fg={colors.err}>mini.log tail</text>
               <text fg={colors.dim}>{errorText}</text>
             </box>
           ) : null}
         </scrollbox>
       )}
-      <PromptBar focused={inputFocused && overlayState === "none"} busy={busy} onSend={send} />
+      {paletteOpen ? (
+        <CommandPalette
+          options={paletteOptions}
+          selectedIndex={Math.min(paletteIdx, paletteOptions.length - 1)}
+          onPick={completeOption}
+        />
+      ) : null}
+      <PromptBar
+        focused={inputFocused && overlayState === "none" && !paletteOpen}
+        busy={busy}
+        textareaRef={textareaRef}
+        onSend={send}
+        onTextChange={(text) => {
+          setPromptText(text);
+          if (!text.startsWith("/")) setPaletteDismissed(false);
+          else if (text.length <= 1) {
+            setPaletteDismissed(false);
+            setPaletteIdx(0);
+          }
+        }}
+      />
       <StatusBar hint={hint} />
     </box>
   );

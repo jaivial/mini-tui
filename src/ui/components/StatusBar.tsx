@@ -1,10 +1,11 @@
 import { colors } from "../theme";
 
+/** Transient feedback only (no static key legend). */
 export function StatusBar(props: { hint?: string }) {
+  if (!props.hint) return null;
   return (
-    <box paddingX={1} flexDirection="row" gap={2}>
-      <text fg={colors.faint}>Enter send · Alt+Enter/Ctrl+J newline · Esc navigate · j/k · e expand · PgUp/PgDn · /model · /settings</text>
-      {props.hint ? <text fg={colors.dim}>{props.hint}</text> : null}
+    <box paddingX={1}>
+      <text fg={colors.faint}>{props.hint}</text>
     </box>
   );
 }

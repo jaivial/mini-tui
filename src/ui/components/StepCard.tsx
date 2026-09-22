@@ -21,8 +21,8 @@ export function clipOutput(output: string, mode: OutputMode, forceExpand = false
 }
 
 /**
- * One card per bash step: command + its output. shadcn-like: a single rounded
- * surface with a quiet header row and a divider between the two sections.
+ * One borderless block per bash step: command + its output. shadcn-quiet: labels in
+ * muted zinc, semantic colors only on the return-code badge, a small focus marker.
  */
 export function StepCard(props: {
   index?: number;
@@ -42,20 +42,14 @@ export function StepCard(props: {
   const totalLines = props.output.replace(/\n+$/, "").split("\n").length;
   const label = props.index !== undefined ? `${props.name ?? "bash"} #${props.index}` : "output";
   return (
-    <box
-      borderStyle="rounded"
-      borderColor={props.focused ? colors.borderActive : colors.border}
-      paddingX={1}
-      gap={0}
-    >
-      <box flexDirection="row" gap={2}>
+    <box paddingX={1} gap={0}>
+      <box flexDirection="row" gap={1}>
+        <text fg={colors.accent}>{props.focused ? "▍" : " "}</text>
         <text fg={colors.dim}>{label}</text>
         <text fg={badgeColor}>{badge}</text>
         {props.exceptionInfo ? <text fg={colors.err}>· {props.exceptionInfo}</text> : null}
       </box>
-      {props.command !== undefined ? (
-        <code content={props.command} filetype="bash" syntaxStyle={bashSyntaxStyle} />
-      ) : null}
+      {props.command !== undefined ? <code content={props.command} filetype="bash" syntaxStyle={bashSyntaxStyle} /> : null}
       {text ? <text fg={colors.dim}>{text}</text> : null}
       {totalLines > 2 ? (
         <text fg={colors.faint}>

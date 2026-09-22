@@ -143,6 +143,19 @@ export function commandFor(message: TrajectoryMessage, toolCallId: string | unde
   return commandFromArguments(fallbackArguments);
 }
 
+/** Strip the harness' task template wrapper — the UI shows only the prompt the user sent. */
+export function cleanTaskText(text: string): string {
+  const prefix = "Please solve this issue: ";
+  if (!text.startsWith(prefix)) return text.trim();
+  const body = text.slice(prefix.length);
+  let end = body.length;
+  for (const anchor of ["\n\nYou can execute bash commands", "\n\n## Recommended Workflow", "\n\n<system-reminder>"]) {
+    const index = body.indexOf(anchor);
+    if (index >= 0 && index < end) end = index;
+  }
+  return body.slice(0, end).trim();
+}
+
 function hasInterruptType(message: TrajectoryMessage): string | undefined {
   const interruptType = extraOf(message).interrupt_type;
   return typeof interruptType === "string" ? interruptType : undefined;
@@ -215,7 +228,7 @@ export function messagesToEvents(messages: TrajectoryMessage[], options: ParseOp
         if (interruptType === "UserNewTask") {
           // A follow-up prompt (initial tasks have no interrupt_type).
           const text = getContentString(message).replace(/^The user added a new task:\s*/s, "");
-          events.push({ type: "task", text });
+          events.push({ type: "task", text: cleanTaskText(text) });
         } else if (interruptType) {
           events.push({ type: "notice", text: getContentString(message), interruptType });
         } else if (actions.length > 0) {
@@ -229,7 +242,7 @@ export function messagesToEvents(messages: TrajectoryMessage[], options: ParseOp
           }
         } else if (!taskSeen) {
           taskSeen = true;
-          events.push({ type: "task", text: getContentString(message) });
+          events.push({ type: "task", text: cleanTaskText(getContentString(message)) });
         } else {
           events.push({ type: "notice", text: getContentString(message) });
         }

@@ -6,6 +6,8 @@ import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 
 import { App } from "../src/ui/App";
+import { CommandPalette, buildOptions } from "../src/ui/components/CommandPalette";
+import { MODELS } from "../src/ui/components/ModelPicker";
 import { parseTrajectory } from "../src/traj/parse";
 import type { RunEvent, Trajectory } from "../src/traj/schema";
 
@@ -84,7 +86,7 @@ describe("App rendering", () => {
     setup.mockInput.pressKey(String.fromCharCode(27) + "[5~"); // PageUp
     await setup.renderOnce();
     const afterPageUp = setup.captureCharFrame();
-    expect(afterPageUp).toContain("CARD-6");
+    expect(afterPageUp).toContain("bash #6"); // the view moved up over earlier steps
     expect(afterPageUp).not.toContain("CARD-8");
 
     setup.mockInput.pressKey("g");
@@ -120,13 +122,17 @@ describe("App rendering", () => {
     await setup.renderOnce();
 
     await setup.mockInput.typeText("/model");
+    await Bun.sleep(20); // palette query syncs right after the key batch
     await act(async () => {
-      setup.mockInput.pressEnter();
+      setup.mockInput.pressEnter(); // complete into the prompt (does not send)
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter(); // now send the command
     });
     await setup.renderOnce();
     const pickerFrame = setup.captureCharFrame();
-    expect(pickerFrame).toContain("/model"); // picker title
-    expect(pickerFrame).toContain("xiaomi/mimo-v2.6-pro");
+    expect(pickerFrame).toContain("Xiaomi MiMo V2.6 Pro"); // picker is open
     expect(pickerFrame).toContain("DeepSeek flash");
 
     await act(async () => {
@@ -134,6 +140,45 @@ describe("App rendering", () => {
     });
     await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("model →"); // switch notice in the transcript
+    setup.renderer.destroy();
+  });
+
+  test("slash palette: real-time filter and fill without sending", async () => {
+    const sent: string[] = [];
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+
+    await setup.mockInput.typeText("/");
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    let frame = setup.captureCharFrame();
+    expect(frame).toContain("open the model picker"); // palette is open with all commands
+    expect(frame).toContain("output display settings");
+
+    await setup.mockInput.typeText("set");
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    expect(frame).toContain("/settings");
+    expect(frame).not.toContain("gpt-6-astra"); // filtered out
+
+    await act(async () => {
+      setup.mockInput.pressEnter(); // select → fills the prompt
+    });
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    expect(sent).toEqual([]); // selection must NOT send
+    expect(frame).not.toContain("output display settings"); // palette closed
+    expect(frame).toContain("/settings"); // filled into the prompt
+
+    await act(async () => {
+      setup.mockInput.pressEnter(); // now it runs the command
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("settings · output display");
     setup.renderer.destroy();
   });
 
@@ -204,5 +249,43 @@ describe("App rendering", () => {
     expect(fullFrame).toContain("line 40");
     expect(fullFrame).not.toContain("lines hidden");
     full.renderer.destroy();
+  });
+});
+
+describe("markdown and palette extras", () => {
+  test("final answer renders as markdown (no literal ** or ` markers)", async () => {
+    const events: RunEvent[] = [
+      { type: "task", text: "Summarize the fix" },
+      {
+        type: "exit",
+        exitStatus: "Submitted",
+        submission: "**Fixed:** use `pytest.approx(0.3)` instead of `== 0.3` — **8 passed**.",
+      },
+    ];
+    const setup = await testRender(<App cwd="." events={events} info={{ cost: 0, apiCalls: 1 }} onQuit={() => {}} />, {
+      width: 100,
+      height: 24,
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Fixed:");
+    expect(frame).toContain("8 passed");
+    expect(frame).not.toContain("**");
+    expect(frame).not.toContain("`");
+    setup.renderer.destroy();
+  });
+
+  test("command palette rows respond to a mouse click", async () => {
+    const picks: string[] = [];
+    const options = buildOptions(MODELS).slice(0, 3);
+    const setup = await testRender(
+      <CommandPalette options={options} selectedIndex={0} onPick={(option) => picks.push(option.insert)} />,
+      { width: 80, height: 10 },
+    );
+    await setup.renderOnce();
+    await setup.mockMouse.click(10, 2); // second row (row 0 is the border)
+    await setup.renderOnce();
+    expect(picks).toEqual([options[1].insert]);
+    setup.renderer.destroy();
   });
 });

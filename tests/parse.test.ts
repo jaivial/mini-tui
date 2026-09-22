@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "bun:test";
 
-import { messagesToEvents, parseTrajectory } from "../src/traj/parse";
+import { cleanTaskText, messagesToEvents, parseTrajectory } from "../src/traj/parse";
 import { readTrajectory, watchTrajectory } from "../src/traj/watch";
 import type { RunEvent, Trajectory } from "../src/traj/schema";
 
@@ -13,6 +13,22 @@ function loadFixture(name: string): Trajectory {
   const path = fileURLToPath(new URL(`./fixtures/${name}.json`, import.meta.url));
   return JSON.parse(readFileSync(path, "utf8")) as Trajectory;
 }
+
+describe("cleanTaskText", () => {
+  test("strips the harness task template, keeping only the user prompt", () => {
+    const wrapped =
+      "Please solve this issue: Fix the bug in `x.py`\n\n" +
+      "You can execute bash commands and edit files to implement the necessary changes.\n\n" +
+      "## Recommended Workflow\n\n1. Analyze the codebase\n2. Do things";
+    expect(cleanTaskText(wrapped)).toBe("Fix the bug in `x.py`");
+  });
+
+  test("keeps multi-line prompts intact and passes unknown shapes through", () => {
+    const wrapped = "Please solve this issue: line one\nline two\n\nYou can execute bash commands and edit files.";
+    expect(cleanTaskText(wrapped)).toBe("line one\nline two");
+    expect(cleanTaskText("Already clean prompt")).toBe("Already clean prompt");
+  });
+});
 
 describe("messagesToEvents", () => {
   test("normal step: task, assistant, tool call, observation, exit", () => {
