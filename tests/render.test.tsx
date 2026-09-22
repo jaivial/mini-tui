@@ -1,4 +1,5 @@
-import { readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -196,6 +197,38 @@ describe("App rendering", () => {
     await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("settings · Tab switches group");
     setup.renderer.destroy();
+  });
+
+  test("$ palette lists ~/.claude/skills and sends the skill instructions with the request", async () => {
+    const skillsDir = mkdtempSync(join(tmpdir(), "mini-tui-skills-ui-"));
+    mkdirSync(join(skillsDir, "good-code"));
+    writeFileSync(join(skillsDir, "good-code", "SKILL.md"), "---\ndescription: minimum code needed\n---\nKEEP-IT-SMALL\n");
+    const sent: string[] = [];
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} skillsDir={skillsDir} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
+      { width: 100, height: 24 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("$go");
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("minimum code needed"); // skill row in the palette
+
+    await act(async () => {
+      setup.mockInput.pressEnter(); // fill `$good-code `, never sends
+    });
+    expect(sent).toEqual([]);
+    await setup.mockInput.typeText("tidy up");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("KEEP-IT-SMALL");
+    expect(sent[0]!.endsWith("tidy up")).toBe(true);
+
+    setup.renderer.destroy();
+    rmSync(skillsDir, { recursive: true, force: true });
   });
 
   test("settings: /settings opens the output display panel", async () => {

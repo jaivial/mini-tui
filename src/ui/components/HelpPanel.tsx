@@ -7,6 +7,7 @@ export function HelpPanel() {
     ["/resume", "browse sessions saved in this folder (search, pages)"],
     ["/connect", "connect a BYOK provider (key → model → connection test)"],
     ["/settings", "output display: collapsed / trimmed (2 lines) / expanded"],
+    ["$skill [request]", "run the request with a skill from ~/.claude/skills"],
     ["/help", "this panel"],
     ["/quit  ·  /exit", "close mini-tui"],
     ["Enter", "send the prompt (Alt+Enter / Ctrl+J for a newline)"],

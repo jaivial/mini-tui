@@ -2,6 +2,20 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **`$skill` prompts.** `$` opens a completion palette over `~/.claude/skills` (name +
+  description); `$<skill> <request>` sends mini the skill's `SKILL.md` ahead of the request,
+  and the transcript collapses it back to `$<skill> <request>`. Unknown skills keep the prompt
+  and say so in the hint line.
+
+### Fixed
+
+- Filling the prompt from the palette parks the cursor at the end, so typing continues after
+  `/model ` / `$skill ` instead of before it.
+
 ## 0.5.0 — 2026-09-22
 
 Leaner blocks, leaner agent — fases 0–2 del plan de RAM ([docs/PLAN-ram-reduction.md](docs/PLAN-ram-reduction.md)).
