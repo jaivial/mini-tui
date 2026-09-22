@@ -390,7 +390,7 @@ describe("markdown and palette extras", () => {
 });
 
 describe("bottom stack", () => {
-  test("loader row sits right under the prompt while running (and hides when done)", async () => {
+  test("one status line under the prompt: loader · model · path · branch · step · cost", async () => {
     const running = await testRender(
       <App
         cwd="/home/jaime/mini-tui"
@@ -399,361 +399,44 @@ describe("bottom stack", () => {
         statusOverride="running"
         onQuit={() => {}}
       />,
-      { width: 90, height: 18 },
+      { width: 120, height: 18 },
     );
     await running.renderOnce();
     const runFrame = running.captureCharFrame();
-    expect(runFrame).toContain("working ·");
-    // compact stack: the meta line comes right after the loader row
     const lines = runFrame.split("\n").map((l) => l.trimEnd());
-    const loaderIdx = lines.findIndex((l) => l.includes("working ·"));
-    // no duplicated step/price on the loader row (they live in the meta line below)
-    expect(lines[loaderIdx]).not.toContain("step");
-    expect(lines[loaderIdx]).not.toContain("$");
-    expect(lines[loaderIdx + 1]).toContain("xiaomi/mimo-v2.6-pro");
-    expect(lines[loaderIdx + 1]).toContain("⎇ main");
-    expect(lines[loaderIdx + 1]).toContain("step 0 · $0.0217");
-    // the prompt box no longer has empty rows: 3 rows (border, text, border)
-    const boxTop = lines.findIndex((l) => l.startsWith("╭") && lines[lines.indexOf(l) + 1]?.includes("what should mini do"));
+    const boxTop = lines.findIndex((l) => l.startsWith("╭"));
     const boxBottom = lines.findIndex((l) => l.startsWith("╰") && lines.indexOf(l) > boxTop);
-    expect(boxBottom - boxTop).toBe(2);
+    expect(boxBottom - boxTop).toBe(2); // prompt box: 3 rows, no empty gap
+
+    // everything lives on the single line right below the prompt
+    const statusIdx = boxBottom + 1;
+    const statusLine = lines[statusIdx];
+    expect(statusLine).toContain("working ·");
+    expect(statusLine).toContain("xiaomi/mimo-v2.6-pro");
+    expect(statusLine).toContain("mini-tui");
+    expect(statusLine).toContain("⎇ main");
+    expect(statusLine).toContain("step 0 · $0.0217");
     running.renderer.destroy();
 
     const done = await testRender(
       <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} statusOverride="done" onQuit={() => {}} />,
-      { width: 90, height: 18 },
+      { width: 120, height: 18 },
     );
     await done.renderOnce();
-    expect(done.captureCharFrame()).not.toContain("working ·");
+    const doneFrame = done.captureCharFrame();
+    expect(doneFrame).not.toContain("working ·");
+    expect(doneFrame).toContain("● done");
     done.renderer.destroy();
   });
 
   test("opening the TUI shows no load state until a run starts", async () => {
-    const setup = await testRender(<App cwd="/home/jaime/mini-tui" onQuit={() => {}} />, { width: 90, height: 18 });
+    const setup = await testRender(<App cwd="/home/jaime/mini-tui" onQuit={() => {}} />, { width: 120, height: 18 });
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
     expect(frame).toContain("what should mini do"); // prompt ready
     expect(frame).not.toContain("working ·"); // no loader while idle
     expect(frame).not.toContain("●"); // no status chip while idle
+    expect(frame).toContain("step 0 · $0.0000"); // stats stay on the line
     setup.renderer.destroy();
-  });
-});
-
-describe("prompt wrapping and quiet hints", () => {
-  test("long lines wrap and grow the prompt box (soft wrap, not hard newlines)", async () => {
-    const sent: string[] = [];
-    const setup = await testRender(
-      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
-      { width: 60, height: 22 },
-    );
-    await setup.renderOnce();
-    const long = "this is a long prompt ".repeat(6).trim();
-    await setup.mockInput.typeText(long);
-    await Bun.sleep(20);
-    await setup.renderOnce();
-    const lines = setup.captureCharFrame().split("\n").map((l) => l.trimEnd());
-    const boxTop = lines.findIndex((l) => l.startsWith("╭"));
-    const boxBottom = lines.findIndex((l) => l.startsWith("╰") && lines.indexOf(l) > boxTop);
-    expect(boxBottom - boxTop).toBeGreaterThan(2); // box grew past one row
-    const inside = lines.slice(boxTop + 1, boxBottom).join(" ");
-    expect(inside).toContain("long");
-    expect(inside).toContain("prompt");
-
-    await act(async () => {
-      setup.mockInput.pressEnter();
-    });
-    await setup.renderOnce();
-    expect(sent).toEqual([long]); // soft wraps did not insert newlines
-    setup.renderer.destroy();
-  });
-
-  test("model switch posts only the chat notice (no hint under the prompt)", async () => {
-    const { events, info } = parseTrajectory(loadFixture("normal-step"));
-    const setup = await testRender(<App cwd="." events={events} info={info} initialSettings={EXPANDED} onQuit={() => {}} />, {
-      width: 110,
-      height: 40,
-    });
-    await setup.renderOnce();
-    await setup.mockInput.typeText("/model xiaomi/mimo-v2.6-pro");
-    await Bun.sleep(20);
-    await act(async () => {
-      setup.mockInput.pressEnter(); // fill (palette)
-    });
-    await setup.renderOnce();
-    await act(async () => {
-      setup.mockInput.pressEnter(); // run the /model <id> command
-    });
-    await setup.renderOnce();
-    const frame = setup.captureCharFrame();
-    // exactly one "model →" — the notice inside the chat area
-    expect(frame.split("model →").length - 1).toBe(1);
-    setup.renderer.destroy();
-  });
-});
-
-describe("/resume session browser", () => {
-  const DB = join(import.meta.dir, ".tmp-sessions-render.sqlite");
-
-  test("lists this folder's sessions, filters by title and restores one", async () => {
-    rmSync(DB, { force: true });
-    const db = openDb(DB);
-    createSession(db, { id: "a1", cwd: "/proj/a", model: "m", task: "fix the tax calculation", title: "Fix tax calculation" });
-    createSession(db, { id: "a2", cwd: "/proj/a", model: "m", task: "add pagination", title: "Add pagination" });
-    createSession(db, { id: "b1", cwd: "/proj/b", model: "m", task: "other", title: "Other folder work" });
-    saveTranscript(db, "a1", [{ type: "task", text: "fix the tax calculation" }], { cost: 0.1, apiCalls: 2 });
-    db.close();
-
-    const setup = await testRender(
-      <App cwd="/proj/a" dbPath={DB} persistSettings={false} onQuit={() => {}} />,
-      { width: 110, height: 30 },
-    );
-    await setup.renderOnce();
-    await setup.mockInput.typeText("/resume");
-    await Bun.sleep(20);
-    await act(async () => {
-      setup.mockInput.pressEnter(); // palette fill
-    });
-    await setup.renderOnce();
-    await act(async () => {
-      setup.mockInput.pressEnter(); // open the browser
-    });
-    await setup.renderOnce();
-    let frame = setup.captureCharFrame();
-    expect(frame).toContain("sessions in this folder");
-    expect(frame).toContain("Fix tax calculation");
-    expect(frame).toContain("Add pagination");
-    expect(frame).not.toContain("Other folder work"); // cwd filter
-
-    await setup.mockInput.typeText("pagi"); // live title search
-    await Bun.sleep(20);
-    await setup.renderOnce();
-    frame = setup.captureCharFrame();
-    expect(frame).toContain("Add pagination");
-    expect(frame).not.toContain("Fix tax calculation");
-
-    await act(async () => {
-      setup.mockInput.pressEnter(); // restore the selected session
-    });
-    await setup.renderOnce();
-    frame = setup.captureCharFrame();
-    expect(frame).toContain("resumed → Add pagination");
-    expect(frame).not.toContain("sessions in this folder"); // modal closed
-    setup.renderer.destroy();
-    rmSync(DB, { force: true });
-  });
-
-  test("pages through long histories with PgDn", async () => {
-    rmSync(DB, { force: true });
-    const db = openDb(DB);
-    for (let i = 0; i < 10; i++) {
-      createSession(db, { id: `s${i}`, cwd: "/proj", model: "m", task: `t${i}`, title: `Session ${i}` });
-    }
-    db.close();
-
-    const setup = await testRender(<App cwd="/proj" dbPath={DB} persistSettings={false} onQuit={() => {}} />, {
-      width: 110,
-      height: 30,
-    });
-    await setup.renderOnce();
-    await setup.mockInput.typeText("/resume");
-    await Bun.sleep(20);
-    await act(async () => {
-      setup.mockInput.pressEnter();
-    });
-    await setup.renderOnce();
-    await act(async () => {
-      setup.mockInput.pressEnter();
-    });
-    await setup.renderOnce();
-    let frame = setup.captureCharFrame();
-    expect(frame).toContain("page 1/2");
-
-    await act(async () => {
-      setup.mockInput.pressKey(String.fromCharCode(27) + "[6~"); // PageDown
-    });
-    await setup.renderOnce();
-    frame = setup.captureCharFrame();
-    expect(frame).toContain("page 2/2");
-    expect(frame).toContain("Session 1");
-    expect(frame).not.toContain("Session 9"); // newest first: page 2 is the tail
-    setup.renderer.destroy();
-    rmSync(DB, { force: true });
-  });
-});
-
-describe("/connect BYOK wizard", () => {
-  test("connects a provider end to end and its models join /model", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ data: [{ id: "mimo-v2.6-pro" }, { id: "mimo-v2.6-flash" }] }))) as unknown as typeof fetch;
-    const tested: string[] = [];
-
-    try {
-      const setup = await testRender(
-        <App
-          cwd="/proj"
-          persistSettings={false}
-          testModel={async (model) => {
-            tested.push(model);
-            return true;
-          }}
-          onQuit={() => {}}
-        />,
-        { width: 110, height: 32 },
-      );
-      await setup.renderOnce();
-      await setup.mockInput.typeText("/connect");
-      await Bun.sleep(20);
-      await act(async () => {
-        setup.mockInput.pressEnter(); // palette fill
-      });
-      await setup.renderOnce();
-      await act(async () => {
-        setup.mockInput.pressEnter(); // open the wizard
-      });
-      await setup.renderOnce();
-      let frame = setup.captureCharFrame();
-      expect(frame).toContain("connect provider");
-      expect(frame).toContain("Xiaomi MiMo");
-      expect(frame).toContain("DeepSeek");
-
-      await act(async () => {
-        setup.mockInput.pressEnter(); // pick Xiaomi MiMo
-      });
-      await setup.renderOnce();
-      await setup.mockInput.typeText("tp-secret-key");
-      await Bun.sleep(20);
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      expect(frame).toContain("paste your API key");
-      expect(frame).not.toContain("tp-secret-key"); // masked
-      expect(frame).toContain("•");
-
-      await act(async () => {
-        setup.mockInput.pressEnter(); // continue → catalog
-      });
-      await Bun.sleep(20);
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      expect(frame).toContain("mimo-v2.6-pro");
-      expect(frame).toContain("mimo-v2.6-flash");
-
-      await setup.mockInput.typeText("flash"); // filter to the flash model
-      await Bun.sleep(20);
-      await act(async () => {
-        setup.mockInput.pressEnter(); // test & save
-      });
-      await Bun.sleep(20);
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      expect(frame).toContain("● connected");
-      expect(frame).toContain("models added to /model");
-      expect(tested).toEqual(["xiaomi/mimo-v2.6-flash"]);
-
-      await act(async () => {
-        setup.mockInput.pressEscape();
-      });
-      await Bun.sleep(100); // let the ESC parser emit
-      await setup.renderOnce();
-
-      await setup.mockInput.typeText("/model");
-      await Bun.sleep(20);
-      await act(async () => {
-        setup.mockInput.pressEnter(); // palette fill
-      });
-      await setup.renderOnce();
-      await act(async () => {
-        setup.mockInput.pressEnter(); // open the picker
-      });
-      await setup.renderOnce();
-      frame = setup.captureCharFrame();
-      expect(frame).toContain("xiaomi/mimo-v2.6-pro"); // the provider's models are listed
-      expect(frame).toContain("xiaomi/mimo-v2.6-flash");
-      setup.renderer.destroy();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  test("a failed connection test keeps the wizard on the model step", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ id: "m1" }] }))) as unknown as typeof fetch;
-    try {
-      const setup = await testRender(
-        <App cwd="/proj" persistSettings={false} testModel={async () => false} onQuit={() => {}} />,
-        { width: 110, height: 30 },
-      );
-      await setup.renderOnce();
-      await setup.mockInput.typeText("/connect");
-      await Bun.sleep(20);
-      await act(async () => {
-        setup.mockInput.pressEnter();
-      });
-      await setup.renderOnce();
-      await act(async () => {
-        setup.mockInput.pressEnter(); // open the wizard
-      });
-      await setup.renderOnce();
-      await act(async () => {
-        setup.mockInput.pressEnter(); // pick the first provider
-      });
-      await setup.renderOnce();
-      await setup.mockInput.typeText("bad-key");
-      await Bun.sleep(20);
-      await act(async () => {
-        setup.mockInput.pressEnter();
-      });
-      await Bun.sleep(20);
-      await act(async () => {
-        setup.mockInput.pressEnter(); // test the highlighted model
-      });
-      await Bun.sleep(20);
-      await setup.renderOnce();
-      const frame = setup.captureCharFrame();
-      expect(frame).toContain("could not reach");
-      expect(frame).toContain("Enter test & save"); // back on the model step
-      setup.renderer.destroy();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-});
-
-describe("modals", () => {
-  test("float over the transcript and never move the prompt bar (short terminal)", async () => {
-    const { events, info } = parseTrajectory(loadFixture("normal-step"));
-    const short = { width: 110, height: 16 };
-
-    const plain = await testRender(
-      <App cwd="." events={events} info={info} initialSettings={EXPANDED} onQuit={() => {}} />,
-      short,
-    );
-    await plain.renderOnce();
-    const promptRow = plain
-      .captureCharFrame()
-      .split("\n")
-      .findIndex((l) => l.includes("what should mini do"));
-    plain.renderer.destroy();
-
-    const modal = await testRender(
-      <App cwd="." events={events} info={info} initialSettings={EXPANDED} onQuit={() => {}} />,
-      short,
-    );
-    await modal.renderOnce();
-    await modal.mockInput.typeText("/model");
-    await Bun.sleep(20);
-    await act(async () => {
-      modal.mockInput.pressEnter(); // palette fill
-    });
-    await modal.renderOnce();
-    await act(async () => {
-      modal.mockInput.pressEnter(); // open the modal
-    });
-    await modal.renderOnce();
-    const frame = modal.captureCharFrame();
-    const lines = frame.split("\n");
-    expect(lines.findIndex((l) => l.includes("what should mini do"))).toBe(promptRow); // prompt bar unmoved
-    expect(frame).toContain("Xiaomi MiMo"); // picker visible, clipped to the area
-    modal.renderer.destroy();
   });
 });

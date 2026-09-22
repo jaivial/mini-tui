@@ -28,9 +28,10 @@ outputs — into cards, badges and banners. The harness runs completely untouche
   template wrapping — the **final answer is rendered as proper markdown** (bold, code, links), and
   the redundant `exit Submitted` echo of it is never shown.
 - **One quiet card per bash step** (command + its output), shadcn-style: zinc neutrals, rounded
-  surfaces, a single subtle accent and semantic colors used sparingly. Right under the prompt
-  sits an animated load state while the agent works (`⣾ ▓░░░░ working · 34s`), followed by the
-  selected model, the working path, the checked-out git branch and the run stats.
+  surfaces, a single subtle accent and semantic colors used sparingly. A single status line
+  under the prompt carries everything: the animated load state while the agent works
+  (`⣾ ▓░░░░ working · 34s`), the selected model, the working path, the checked-out git branch,
+  step count and cost.
 - **Output display modes** — collapsed (just a `1 tool call` line), trimmed to 2 lines, or fully
   expanded. Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still
   expands or collapses any block individually.

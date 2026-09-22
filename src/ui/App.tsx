@@ -4,8 +4,7 @@ import type { Database } from "bun:sqlite";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
 import { colors, markdownSyntaxStyle } from "./theme";
-import { MetaRow } from "./components/MetaRow";
-import { LoaderRow } from "./components/LoaderRow";
+import { StatusLine } from "./components/StatusLine";
 import { TaskCard } from "./components/TaskCard";
 import { StepCard } from "./components/StepCard";
 import { NoticeLine } from "./components/NoticeLine";
@@ -715,8 +714,8 @@ export function App(props: AppProps) {
       return next;
     });
 
-  // Compact bottom stack: prompt (grows with the text) · loader (while running) · meta · hint.
-  const bottomRows = 2 + promptRows + (displayStatus === "running" ? 1 : 0) + 1 + (hintText ? 1 : 0);
+  // Compact bottom stack: prompt (grows with the text) · single status line · hint.
+  const bottomRows = 2 + promptRows + 1 + (hintText ? 1 : 0);
   const modalAreaHeight = Math.max(4, dims.height - bottomRows);
 
   const overlayNode =
@@ -833,14 +832,15 @@ export function App(props: AppProps) {
           }
         }}
       />
-      {displayStatus === "running" ? <LoaderRow tick={tick} elapsedS={elapsedS} /> : null}
-      <MetaRow
+      <StatusLine
         model={(modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL) || "default model"}
         path={shortPath(props.cwd)}
         branch={branch}
         step={step}
         cost={info.cost}
         status={displayStatus}
+        tick={tick}
+        elapsedS={elapsedS}
       />
       <StatusBar hint={hintText} />
       {overlayNode ? <Modal areaHeight={modalAreaHeight}>{overlayNode}</Modal> : null}
