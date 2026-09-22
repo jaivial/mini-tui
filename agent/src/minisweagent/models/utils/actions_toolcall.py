@@ -3,7 +3,7 @@
 import json
 import time
 
-from jinja2 import StrictUndefined, Template
+from minisweagent.models.utils.templates import render as render_template
 
 from minisweagent.exceptions import FormatError
 from minisweagent.models.utils.openai_multimodal import expand_multimodal_content
@@ -41,7 +41,7 @@ def parse_toolcall_actions(
         raise FormatError(
             {
                 "role": "user",
-                "content": Template(format_error_template, undefined=StrictUndefined).render(
+                "content": render_template(format_error_template,
                     error="No tool calls found in the response. Every response MUST include at least one tool call.",
                     actions=[],
                     has_tool_calls=False,
@@ -66,7 +66,7 @@ def parse_toolcall_actions(
             raise FormatError(
                 {
                     "role": "user",
-                    "content": Template(format_error_template, undefined=StrictUndefined).render(
+                    "content": render_template(format_error_template,
                         actions=[], error=error_msg.strip(), has_tool_calls=True, **template_kwargs
                     ),
                     "extra": {"interrupt_type": "FormatError"},
@@ -89,7 +89,7 @@ def format_toolcall_observation_messages(
     padded_outputs = outputs + [not_executed] * (len(actions) - len(outputs))
     results = []
     for action, output in zip(actions, padded_outputs):
-        content = Template(observation_template, undefined=StrictUndefined).render(
+        content = render_template(observation_template,
             output=output, **(template_vars or {})
         )
         msg = {

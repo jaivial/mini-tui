@@ -10,7 +10,7 @@ import time
 import traceback
 from pathlib import Path
 
-from jinja2 import StrictUndefined, Template
+from minisweagent.models.utils.templates import render as render_template
 from pydantic import BaseModel
 
 from minisweagent import Environment, Model, __version__
@@ -70,8 +70,17 @@ class DefaultAgent:
             kwargs,
         )
 
+    #: A full `gc.collect()` walks every tracked object (~6 ms/step on a long run, most of the
+    #: agent's own overhead); generation 0 each step catches the per-step payloads, and the
+    #: full pass every `FULL_GC_EVERY_STEPS` still bounds hour-long runs.
+    FULL_GC_EVERY_STEPS = 50
+
+    def _collect_garbage(self) -> None:
+        self._gc_steps = getattr(self, "_gc_steps", 0) + 1
+        gc.collect(2 if self._gc_steps % self.FULL_GC_EVERY_STEPS == 0 else 0)
+
     def _render_template(self, template: str) -> str:
-        return Template(template, undefined=StrictUndefined).render(**self.get_template_vars())
+        return render_template(template, **self.get_template_vars())
 
     def add_messages(self, *messages: dict) -> list[dict]:
         self.logger.debug(messages)  # set log level to debug to see
@@ -135,7 +144,7 @@ class DefaultAgent:
             finally:
                 # force=False: the journal is always current; the full export throttles.
                 self.save(self.config.output_path, force=False)
-                gc.collect()  # reclaim per step: runs go on for hours with big payloads
+                self._collect_garbage()
             if self.messages[-1].get("role") == "exit":
                 exit_message = self.messages.pop()
                 # A TUI can hold the run open at exit and keep one conversation going:
@@ -309,7 +318,13 @@ class DefaultAgent:
     # rewrite only has to land periodically and at the end of the run (any save() with the
     # default force=True still writes it immediately, keeping callers' semantics unchanged).
     EXPORT_EVERY_MESSAGES = 20
-    EXPORT_EVERY_SECONDS = 10.0
+    EXPORT_EVERY_SECONDS = 60.0
+
+    def _export_every_messages(self) -> int:
+        """The full export is O(n) (~33 ms at 900 messages), so its cadence grows with the run:
+        one rewrite per 10 % of new messages keeps the amortized cost per step constant. The
+        journal stays the always-current, crash-safe copy either way."""
+        return max(self.EXPORT_EVERY_MESSAGES, len(self.messages) // 10)
 
     def save(self, path: Path | None, *extra_dicts, force: bool = True) -> dict:
         """Save the trajectory of the agent to a file if path is given. Returns full serialized data.
@@ -330,7 +345,7 @@ class DefaultAgent:
             if (
                 force
                 or is_exit
-                or len(self.messages) - self._export_messages >= self.EXPORT_EVERY_MESSAGES
+                or len(self.messages) - self._export_messages >= self._export_every_messages()
                 or now - self._export_at >= self.EXPORT_EVERY_SECONDS
             ):
                 tmp = path.with_name(path.name + ".tmp")

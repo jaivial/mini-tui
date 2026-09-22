@@ -113,3 +113,17 @@ def test_run_loop_writes_journal_end_to_end():
         entries = read_journal(traj)
         assert [e["m"] for e in entries if e["t"] == "msg"] == agent.messages
         assert json.loads(traj.read_text())["messages"] == agent.messages  # export complete at run end
+
+
+def test_full_export_cadence_grows_with_the_run():
+    agent = make_agent()
+    assert agent._export_every_messages() == agent.EXPORT_EVERY_MESSAGES  # short runs: every 20
+    agent.messages = [{"role": "user", "content": str(i)} for i in range(900)]
+    assert agent._export_every_messages() == 90  # long runs: one O(n) rewrite per 10 % growth
+
+
+def test_compiled_templates_are_cached():
+    from minisweagent.models.utils.templates import compiled, render
+
+    assert compiled("{{ a }}") is compiled("{{ a }}")
+    assert render("{{ a }}-{{ b }}", a=1, b=2) == "1-2"

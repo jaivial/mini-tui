@@ -2,6 +2,24 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Performance
+
+- **The agent's own overhead per step is 5× lower: 8.9 → 1.8 ms** (600-step bench, same
+  output). This is everything except the model and the command itself.
+  - **Young-generation GC per step, full pass every 50 steps.** A full `gc.collect()` walked
+    the whole heap on every step and was more than half of the agent's time.
+  - **Compiled Jinja templates are cached.** The observation, format-error and system templates
+    were re-parsed and re-compiled on every step (~1.5 ms each).
+  - **The full trajectory export scales its cadence** to one rewrite per 10 % of new messages,
+    and at least every 60 s. It is O(n): ~33 ms at 900 messages. The append-only journal stays
+    the always-current copy, and the export still lands at the end of every run.
+- **Keep-alive to the gateway.** `cliproxy/` · `rosetta/` · `xiaomi/` reuse one HTTP connection
+  across steps, with a transparent reconnect if the gateway dropped it while idle. The TLS
+  context is built once, which saves the TCP+TLS handshake on every step for remote HTTPS
+  gateways such as Xiaomi.
+
 ## 0.7.0 — 2026-09-22
 
 Fase 3 del plan de RAM: `mini` sin litellm para los gateways y una TUI más ligera en vivo.

@@ -3,7 +3,7 @@
 import json
 import time
 
-from jinja2 import StrictUndefined, Template
+from minisweagent.models.utils.templates import render as render_template
 
 from minisweagent.exceptions import FormatError
 
@@ -76,7 +76,7 @@ def parse_toolcall_actions_response(
                 item.model_dump() if hasattr(item, "model_dump") else dict(item) if not isinstance(item, dict) else item
             )
     if not tool_calls:
-        error_text = Template(format_error_template, undefined=StrictUndefined).render(
+        error_text = render_template(format_error_template,
             error="No tool calls found in the response. Every response MUST include at least one tool call.",
             actions=[],
             has_tool_calls=False,
@@ -96,7 +96,7 @@ def parse_toolcall_actions_response(
         if not isinstance(args, dict) or "command" not in args:
             error_msg += "Missing 'command' argument in bash tool call."
         if error_msg:
-            error_text = Template(format_error_template, undefined=StrictUndefined).render(
+            error_text = render_template(format_error_template,
                 error=error_msg.strip(), actions=[], has_tool_calls=True, **template_kwargs
             )
             raise FormatError(_format_error_message(error_text))
@@ -117,7 +117,7 @@ def format_toolcall_observation_messages(
     padded_outputs = outputs + [not_executed] * (len(actions) - len(outputs))
     results = []
     for action, output in zip(actions, padded_outputs):
-        content = Template(observation_template, undefined=StrictUndefined).render(
+        content = render_template(observation_template,
             output=output, **(template_vars or {})
         )
         msg: dict = {

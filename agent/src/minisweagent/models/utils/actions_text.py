@@ -6,7 +6,7 @@ As of mini-swe-agent v2.0, we strongly recommend to use toolcalls instead.
 import re
 import time
 
-from jinja2 import StrictUndefined, Template
+from minisweagent.models.utils.templates import render as render_template
 
 from minisweagent.exceptions import FormatError
 from minisweagent.models.utils.openai_multimodal import expand_multimodal_content
@@ -27,7 +27,7 @@ def parse_regex_actions(
         raise FormatError(
             {
                 "role": "user",
-                "content": Template(format_error_template, undefined=StrictUndefined).render(
+                "content": render_template(format_error_template,
                     actions=actions, error=error_msg, **(template_kwargs or {})
                 ),
                 "extra": {
@@ -50,7 +50,7 @@ def format_observation_messages(
     """Format execution outputs into user observation messages."""
     results = []
     for output in outputs:
-        content = Template(observation_template, undefined=StrictUndefined).render(
+        content = render_template(observation_template,
             output=output, **(template_vars or {})
         )
         msg: dict = {
