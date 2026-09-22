@@ -32,15 +32,8 @@ export function ModelPicker(props: {
 }) {
   const [selectedIndex, setSelectedIndex] = useState(() => indexForModel(props.current));
   return (
-    <box
-      borderStyle="double"
-      borderColor={colors.borderActive}
-      title="/model"
-      titleColor={colors.accent}
-      paddingX={1}
-      gap={0}
-    >
-      <text fg={colors.dim}>↑/↓ choose · Enter apply · Esc cancel · or type /model &lt;id&gt; (applies from the next step)</text>
+    <box borderStyle="rounded" borderColor={colors.border} paddingX={1} gap={0}>
+      <text fg={colors.dim}>model · ↑/↓ choose · Enter apply · Esc close (applies from the next step)</text>
       <select
         options={MODELS}
         selectedIndex={selectedIndex}
@@ -50,14 +43,14 @@ export function ModelPicker(props: {
         showScrollIndicator
         width="100%"
         height={14}
-        backgroundColor={colors.panel}
-        focusedBackgroundColor={colors.panel}
+        backgroundColor={colors.bg}
+        focusedBackgroundColor={colors.bg}
         focusedTextColor={colors.text}
-        textColor={colors.text}
-        selectedBackgroundColor={colors.borderActive}
-        selectedTextColor={colors.bg}
-        descriptionColor={colors.dim}
-        selectedDescriptionColor={colors.panel}
+        textColor={colors.dim}
+        selectedBackgroundColor={colors.panel}
+        selectedTextColor={colors.text}
+        descriptionColor={colors.faint}
+        selectedDescriptionColor={colors.dim}
         onChange={(index: number) => setSelectedIndex(index)}
         onSelect={(_index: number, option: SelectOption | null) => {
           if (option?.value) props.onPick(String(option.value));

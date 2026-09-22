@@ -17,10 +17,17 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
   ![prompt bar](docs/screenshots/prompt.png)
 
+- **One quiet card per bash step** (command + its output), shadcn-style: zinc neutrals, rounded
+  surfaces, a single subtle accent and semantic colors used sparingly.
+- **Output display modes** — collapsed (first + last lines), trimmed to 2 lines, or fully expanded.
+  Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still expands or
+  collapses any block individually.
+
+  ![settings panel](docs/screenshots/settings.png)
+
 - **Tool call cards** with syntax-highlighted bash commands and a focused-block indicator.
 - **Output cards** with `rc=0` / `rc=N` badges, exception info, and collapsible bodies
-  (`… 220 lines hidden · [e] expand`) so huge outputs never blow up the layout.
-- **Live header** with model, step count, running cost and a spinner while a step is in flight.
+  (`… 220 lines hidden · [e] expand`) so huge outputs never blow up the layout.- **Live header** with model, step count, running cost and a spinner while a step is in flight.
 - **`/model` — switch models mid-conversation.** Type `/model` in the prompt to open the model
   picker (or `/model <id>` to jump straight to one). During a live run the agent picks the new
   model up from its next step — no restart, no lost context.
@@ -54,9 +61,9 @@ cp bin/mini-tui ~/.local/bin/mini-tui && chmod +x ~/.local/bin/mini-tui
 ## Usage
 
 ```bash
-# Open the prompt and go (like `mini -y -m <model>`, but pretty)
-mini-tui run
-mini-tui run -m xiaomi/mimo-v2.6-flash
+# Just start it: the prompt bar is ready (like `mini -y -m <model>`, but pretty)
+mini-tui
+mini-tui -m xiaomi/mimo-v2.6-flash
 
 # Or start immediately with a task
 mini-tui run "Fix the failing test in test_utils.py" -m xiaomi/mimo-v2.6-flash
@@ -81,6 +88,7 @@ Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 | `Esc` | leave the prompt and navigate the transcript |
 | `i` / `Enter` | (navigation mode) jump back to the prompt |
 | `/model` | typed in the prompt: open the model picker (or `/model <id>`) |
+| `/settings` | typed in the prompt: output display (collapsed / trimmed / expanded) |
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
 | `e` | expand / collapse the focused output block |
 | `PgUp` / `PgDn` | scroll |

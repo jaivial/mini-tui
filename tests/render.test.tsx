@@ -100,7 +100,7 @@ describe("App rendering", () => {
       { width: 90, height: 16 },
     );
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("prompt"); // the prompt bar is always there
+    expect(setup.captureCharFrame()).toContain("what should mini do"); // the prompt bar is always there
 
     await setup.mockInput.typeText("line one\nline two"); // \n inserts a newline (Ctrl+J semantics)
     await act(async () => {
@@ -135,5 +135,74 @@ describe("App rendering", () => {
     await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("model →"); // switch notice in the transcript
     setup.renderer.destroy();
+  });
+
+  test("settings: /settings opens the output display panel", async () => {
+    const { events, info } = parseTrajectory(loadFixture("normal-step"));
+    const setup = await testRender(<App cwd="." events={events} info={info} onQuit={() => {}} />, {
+      width: 110,
+      height: 30,
+    });
+    await setup.renderOnce();
+
+    await setup.mockInput.typeText("/settings");
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("settings · output display");
+    expect(frame).toContain("collapsed");
+    expect(frame).toContain("trimmed (2 lines)");
+    expect(frame).toContain("expanded");
+
+    await act(async () => {
+      setup.mockInput.pressEnter(); // apply the highlighted mode
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("output display →");
+    setup.renderer.destroy();
+  });
+
+  test("output modes: trimmed shows 2 lines, expanded shows everything", async () => {
+    const events: RunEvent[] = [
+      { type: "tool_call", id: "call_x", name: "bash", command: "seq 1 40" },
+      {
+        type: "observation",
+        toolCallId: "call_x",
+        returncode: 0,
+        output: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n"),
+        exceptionInfo: "",
+      },
+    ];
+
+    const trimmed = await testRender(
+      <App cwd="." events={events} info={{ cost: 0, apiCalls: 1 }} initialSettings={{ outputMode: "trim" }} onQuit={() => {}} />,
+      { width: 90, height: 30 },
+    );
+    await trimmed.renderOnce();
+    const trimFrame = trimmed.captureCharFrame();
+    expect(trimFrame).toContain("line 1");
+    expect(trimFrame).toContain("line 2");
+    expect(trimFrame).not.toContain("line 3");
+    expect(trimFrame).toContain("lines hidden");
+    trimmed.renderer.destroy();
+
+    const full = await testRender(
+      <App
+        cwd="."
+        events={events}
+        info={{ cost: 0, apiCalls: 1 }}
+        initialSettings={{ outputMode: "expanded" }}
+        onQuit={() => {}}
+      />,
+      { width: 90, height: 60 },
+    );
+    await full.renderOnce();
+    const fullFrame = full.captureCharFrame();
+    expect(fullFrame).toContain("line 1");
+    expect(fullFrame).toContain("line 40");
+    expect(fullFrame).not.toContain("lines hidden");
+    full.renderer.destroy();
   });
 });

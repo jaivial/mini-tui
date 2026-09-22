@@ -25,8 +25,6 @@ export function PromptBar(props: {
     <box
       borderStyle="rounded"
       borderColor={props.focused ? colors.borderActive : colors.border}
-      title="prompt"
-      titleColor={props.focused ? colors.accent : colors.dim}
       paddingX={1}
     >
       <textarea
@@ -34,8 +32,9 @@ export function PromptBar(props: {
         focused={props.focused}
         height={3}
         keyBindings={PROMPT_KEY_BINDINGS as never}
-        placeholder={`${hint}  (Enter send · Alt+Enter/Ctrl+J newline · /model switch model)`}
+        placeholder={`${hint}  (Enter send · Alt+Enter/Ctrl+J newline · /model · /settings)`}
         textColor={colors.text}
+        placeholderColor={colors.faint}
         backgroundColor={colors.bg}
         onSubmit={() => {
           const text = (ref.current?.editorView.getText() ?? "").replace(/\n+$/, "");

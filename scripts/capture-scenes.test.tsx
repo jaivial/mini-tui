@@ -130,7 +130,20 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   await setup.renderOnce();
   save("model-picker", setup);
 
-  // 3) plain-text final answer + exit banner
+  // 3) /settings — output display panel
+  setup = await testRender(<App cwd="." events={BASE_EVENTS} info={info} statusOverride="running" onQuit={() => {}} />, {
+    width: 110,
+    height: 38,
+  });
+  await setup.renderOnce();
+  await setup.mockInput.typeText("/settings");
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await setup.renderOnce();
+  save("settings", setup);
+
+  // 4) plain-text final answer + exit banner
   setup = await testRender(<App cwd="." events={FINAL_EVENTS} info={{ ...info, apiCalls: 2 }} onQuit={() => {}} />, {
     width: 110,
     height: 38,
@@ -138,7 +151,7 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   await setup.renderOnce();
   save("final-answer", setup);
 
-  // 4) the multi-line prompt (empty transcript, ready to type)
+  // 5) the multi-line prompt (empty transcript, ready to type)
   setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 24 });
   await setup.renderOnce();
   await setup.mockInput.typeText(

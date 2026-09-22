@@ -18,22 +18,30 @@ interface CliArgs {
 const USAGE = `mini-tui — a pretty terminal UI for mini-swe-agent (the harness runs untouched).
 
 Usage:
+  mini-tui                                        start with the prompt (same as \`run\`)
   bun src/index.ts run ["task"] [-m <model>] [-c <spec>]... [--show-system]
   bun src/index.ts view <traj.json> [--follow] [--show-system]
 
 Commands:
   run     Launch a mini run (yolo) and watch tools/outputs stream in.
-          Without a positional task, an interactive start screen is shown.
+          Without a positional task, the prompt bar is ready for your task
+          (and for follow-ups: Enter send, Alt+Enter/Ctrl+J newline).
   view    Render an existing trajectory (e.g. ~/.config/mini-swe-agent/last_mini_run.traj.json).
+
+Prompt commands:
+  /model              open the model picker (or /model <id>)
+  /settings           output display: collapsed / trimmed (2 lines) / expanded
 
 Options:
   -m, --model <model>   Model for run (empty = mini's default)
   -c, --config <spec>   Extra mini config spec (repeatable)
   --follow              (view) keep watching the file for updates
   --show-system         Include the system prompt in the transcript
+  -h, --help            Show this help
 `;
 
 function parseArgs(argv: string[]): CliArgs | null {
+  if (argv.length === 0) return { command: "run" }; // bare `mini-tui` opens the prompt
   const [command, ...rest] = argv;
   if (command !== "run" && command !== "view") return null;
   const args: CliArgs = { command };

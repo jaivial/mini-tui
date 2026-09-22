@@ -5,17 +5,18 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { colors, markdownSyntaxStyle } from "./theme";
 import { Header } from "./components/Header";
 import { TaskCard } from "./components/TaskCard";
-import { ToolCallCard } from "./components/ToolCallCard";
-import { ObservationCard } from "./components/ObservationCard";
+import { StepCard } from "./components/StepCard";
 import { NoticeLine } from "./components/NoticeLine";
 import { ExitBanner } from "./components/ExitBanner";
 import { StatusBar } from "./components/StatusBar";
 import { PromptBar } from "./components/PromptBar";
 import { ModelPicker } from "./components/ModelPicker";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { messagesToEvents, parseInfo } from "../traj/parse";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
+import { loadSettings, saveSettings, type Settings } from "../settings";
 import type { RunEvent, RunInfo, Trajectory } from "../traj/schema";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -33,6 +34,8 @@ export interface AppProps {
   runSpec?: TaskSpec;
   /** Force the header status (for screenshot scenes); otherwise derived from the run. */
   statusOverride?: "running" | "done" | "error";
+  /** Override persisted settings (tests/screenshots). */
+  initialSettings?: Settings;
   /** Override prompt submission (tests); otherwise runs a task or continues the run. */
   onSend?: (text: string) => void;
   onQuit?: () => void;
@@ -95,29 +98,29 @@ export function App(props: AppProps) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [tick, setTick] = useState(0);
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
+  const [settings, setSettings] = useState<Settings>(() => props.initialSettings ?? loadSettings());
   const [inputFocused, setInputFocusedState] = useState(true);
-  const [pickerOpen, setPickerOpenState] = useState(false);
+  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings">("none");
   const [hintText, setHintText] = useState<string | undefined>(undefined);
   // Key handlers can fire several times before React re-renders; mirror what they
   // read/write into refs so state is never stale inside a batch of keystrokes.
   const inputRefocus = useRef(true);
-  const pickerRef = useRef(false);
+  const overlayRef = useRef<"none" | "model" | "settings">("none");
   const exitedRef = useRef(false);
   const setInputFocused = (value: boolean) => {
     inputRefocus.current = value;
     setInputFocusedState(value);
   };
-  const setPickerOpen = (value: boolean) => {
-    pickerRef.current = value;
-    setPickerOpenState(value);
+  const setOverlay = (value: "none" | "model" | "settings") => {
+    overlayRef.current = value;
+    setOverlayState(value);
   };
   const dims = useTerminalDimensions();
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const live = useRef<{ watch?: WatchHandle; run?: MiniRun }>({});
 
   const applySnapshot = (traj: Trajectory) => {
-    const parsed = messagesToEvents(traj.messages ?? [], { showSystem: props.showSystem });
-    setEvents(parsed);
+    setEvents(messagesToEvents(traj.messages ?? [], { showSystem: props.showSystem }));
     setInfo(parseInfo(traj));
   };
 
@@ -163,7 +166,7 @@ export function App(props: AppProps) {
   };
 
   const applyModel = (model: string) => {
-    setPickerOpen(false);
+    setOverlay("none");
     setModelOverride(model);
     const liveRun = live.current.run;
     liveRun?.switchModel(model);
@@ -179,11 +182,20 @@ export function App(props: AppProps) {
     setInputFocused(true);
   };
 
+  const applySettings = (next: Settings) => {
+    setOverlay("none");
+    setSettings(next);
+    saveSettings(next);
+    setHintText(`output display → ${next.outputMode}`);
+    setInputFocused(true);
+  };
+
   const send = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     const command = trimmed.replace(/^\//, "").toLowerCase();
-    if (command === "model") return setPickerOpen(true);
+    if (command === "model") return setOverlay("model");
+    if (command === "settings" || command === "config") return setOverlay("settings");
     if (command.startsWith("model ")) {
       const model = trimmed.replace(/^\//, "").slice("model ".length).trim();
       if (model) return applyModel(model);
@@ -220,12 +232,12 @@ export function App(props: AppProps) {
   };
 
   useKeyboard((key) => {
-    if (pickerRef.current) {
+    if (overlayRef.current !== "none") {
       if (key.name === "escape") {
-        setPickerOpen(false);
+        setOverlay("none");
         setInputFocused(true);
       }
-      return; // the Select owns the other keys
+      return; // the overlay Select owns the other keys
     }
 
     if (inputRefocus.current) {
@@ -262,16 +274,25 @@ export function App(props: AppProps) {
   const exitEvent = events.find((event) => event.type === "exit") as Extract<RunEvent, { type: "exit" }> | undefined;
   const displayStatus = props.statusOverride ?? (exitEvent ? "done" : status);
   const busy = Boolean(live.current.run) && !exitedRef.current;
+  const toggle = (key: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const hint =
     hintText ??
-    (pickerOpen
+    (overlayState === "model"
       ? "model picker"
-      : inputFocused
-        ? busy
-          ? "typing · Enter continues the conversation"
-          : "typing · Enter launches"
-        : "normal · i type · q quit");
+      : overlayState === "settings"
+        ? "settings"
+        : inputFocused
+          ? busy
+            ? "typing · Enter continues the conversation"
+            : "typing · Enter launches"
+          : "normal · i type · q quit");
 
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={colors.bg}>
@@ -282,10 +303,23 @@ export function App(props: AppProps) {
         status={displayStatus}
         spinner={SPINNER[tick % SPINNER.length]}
       />
-      {pickerOpen ? (
-        <ModelPicker current={modelOverride ?? info.model ?? DEFAULT_MODEL} onPick={applyModel} onCancel={() => setPickerOpen(false)} />
+      {overlayState === "model" ? (
+        <ModelPicker
+          current={modelOverride ?? info.model ?? DEFAULT_MODEL}
+          onPick={applyModel}
+          onCancel={() => setOverlay("none")}
+        />
+      ) : overlayState === "settings" ? (
+        <SettingsPanel settings={settings} onApply={applySettings} onCancel={() => setOverlay("none")} />
       ) : (
-        <scrollbox ref={scrollRef} stickyScroll stickyStart="bottom" width="100%" height={Math.max(6, dims.height - 12)}>
+        <scrollbox
+          ref={scrollRef}
+          stickyScroll
+          stickyStart="bottom"
+          width="100%"
+          height={Math.max(6, dims.height - 9)}
+          contentOptions={{ gap: 1 }}
+        >
           {items.map((item) => {
             if (item.kind === "event") {
               const event = events[item.index];
@@ -293,47 +327,56 @@ export function App(props: AppProps) {
               if (event.type === "task") return <TaskCard key={item.index} text={event.text} />;
               if (event.type === "assistant")
                 return (
-                  <box key={item.index} borderStyle="rounded" borderColor={colors.border} title="assistant" titleColor={colors.accent} paddingX={1}>
+                  <box key={item.index} borderStyle="rounded" borderColor={colors.border} paddingX={1} gap={0}>
+                    <text fg={colors.dim}>assistant</text>
                     <markdown content={event.text} syntaxStyle={markdownSyntaxStyle} streaming />
                   </box>
                 );
               if (event.type === "notice") return <NoticeLine key={item.index} text={event.text} interruptType={event.interruptType} />;
               if (event.type === "exit") return <ExitBanner key={item.index} exitStatus={event.exitStatus} submission={event.submission} />;
+              if (event.type === "observation")
+                return (
+                  <StepCard
+                    key={item.index}
+                    returncode={event.returncode}
+                    output={event.output}
+                    exceptionInfo={event.exceptionInfo}
+                    mode={settings.outputMode}
+                    expanded={expanded.has(item.index)}
+                    focused={false}
+                    onToggle={() => toggle(item.index)}
+                  />
+                );
               return null;
             }
             const tool = events[item.toolIndex];
             const obs = item.observationIndex !== null ? events[item.observationIndex] : null;
             const pairFocus = pairItems.findIndex((p) => p.toolIndex === item.toolIndex);
             return (
-              <box key={item.toolIndex} flexDirection="column" gap={0}>
-                {tool && tool.type === "tool_call" ? (
-                  <ToolCallCard
-                    index={pairFocus + 1}
-                    name={tool.name}
-                    command={tool.command}
-                    focused={pairFocus === focusedPair}
-                  />
-                ) : null}
-                {obs && obs.type === "observation" ? (
-                  <ObservationCard
-                    returncode={obs.returncode}
-                    output={obs.output}
-                    exceptionInfo={obs.exceptionInfo}
-                    expanded={expanded.has(item.toolIndex)}
-                    focused={pairFocus === focusedPair}
-                  />
-                ) : null}
-              </box>
+              <StepCard
+                key={item.toolIndex}
+                index={pairFocus + 1}
+                name={tool?.type === "tool_call" ? tool.name : undefined}
+                command={tool?.type === "tool_call" ? tool.command : undefined}
+                returncode={obs?.type === "observation" ? obs.returncode : null}
+                output={obs?.type === "observation" ? obs.output : ""}
+                exceptionInfo={obs?.type === "observation" ? obs.exceptionInfo : ""}
+                mode={settings.outputMode}
+                expanded={expanded.has(item.toolIndex)}
+                focused={pairFocus === focusedPair}
+                onToggle={() => toggle(item.toolIndex)}
+              />
             );
           })}
           {errorText ? (
-            <box borderStyle="single" borderColor={colors.err} title="mini.log tail" titleColor={colors.err} paddingX={1}>
-              <text fg={colors.err}>{errorText}</text>
+            <box borderStyle="rounded" borderColor={colors.border} paddingX={1} gap={0}>
+              <text fg={colors.err}>mini.log tail</text>
+              <text fg={colors.dim}>{errorText}</text>
             </box>
           ) : null}
         </scrollbox>
       )}
-      <PromptBar focused={inputFocused && !pickerOpen} busy={busy} onSend={send} />
+      <PromptBar focused={inputFocused && overlayState === "none"} busy={busy} onSend={send} />
       <StatusBar hint={hint} />
     </box>
   );
