@@ -36,6 +36,7 @@ import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
 import { copyText } from "../clipboard";
 import { gitBranch, shortPath } from "../git";
+import { WheelSpeed } from "../scroll";
 import {
   DEFAULT_DB_PATH,
   PAGE_SIZE,
@@ -227,6 +228,7 @@ export function App(props: AppProps) {
   };
   const dims = useTerminalDimensions();
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const wheelAccel = useMemo(() => new WheelSpeed(), []);
   const live = useRef<{ watch?: WatchHandle; run?: MiniRun }>({});
 
   const persist = props.persistSettings !== false;
@@ -795,6 +797,7 @@ export function App(props: AppProps) {
       <scrollbox
           ref={scrollRef}
           stickyStart="bottom"
+          scrollAcceleration={wheelAccel}
           width="100%"
           height={Math.max(6, dims.height - bottomRows - paletteOptions.length)}
           contentOptions={{ gap: 1 }}
