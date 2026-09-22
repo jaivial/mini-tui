@@ -64,12 +64,11 @@ def test_other_providers_are_unaffected():
 def test_xiaomi_model_defaults(clean_env):
     model = get_model("xiaomi/mimo-v2.6-pro")
     assert isinstance(model, XiaomiModel)
-    # The xiaomi/ prefix is replaced by litellm's openai provider prefix.
-    assert model.config.model_name == "openai/mimo-v2.6-pro"
-    assert model.config.model_kwargs["custom_llm_provider"] == "openai"
-    assert model.config.model_kwargs["api_base"] == DEFAULT_API_BASE == "https://token-plan-sgp.xiaomimimo.com/v1"
-    assert model.config.model_kwargs["api_key"] == DEFAULT_API_KEY == ""
-    assert model.config.model_kwargs["drop_params"] is True
+    # The xiaomi/ prefix is stripped: the gateway gets exactly the id it advertises.
+    assert model.config.model_name == "mimo-v2.6-pro"
+    assert model.config.api_base == DEFAULT_API_BASE == "https://token-plan-sgp.xiaomimimo.com/v1"
+    assert model.config.api_key == DEFAULT_API_KEY == ""
+    assert model.config.model_kwargs == {}  # connection settings live on the config, not in the body
     # The endpoint reports no per-token cost, so cost errors must not abort a run.
     assert model.config.cost_tracking == "ignore_errors"
 
@@ -78,22 +77,22 @@ def test_bare_model_id_is_served_verbatim(clean_env):
     """`mini -m mimo-v2.6-flash` must reach Xiaomi as exactly that id."""
     model = get_model("mimo-v2.6-flash")
     assert isinstance(model, XiaomiModel)
-    assert model.config.model_name == "openai/mimo-v2.6-flash"
+    assert model.config.model_name == "mimo-v2.6-flash"
 
 
 def test_xiaomi_model_respects_env_overrides(clean_env):
     with patch.dict(os.environ, {"XIAOMI_API_BASE": "https://example.com/v1/", "XIAOMI_API_KEY": "secret"}):
         model = get_model("xiaomi/mimo-v2.6-pro")
-    assert model.config.model_kwargs["api_base"] == "https://example.com/v1"
-    assert model.config.model_kwargs["api_key"] == "secret"
+    assert model.config.api_base == "https://example.com/v1"
+    assert model.config.api_key == "secret"
 
 
 def test_explicit_model_kwargs_are_not_overridden(clean_env):
     model = get_model("xiaomi/mimo-v2.6-pro", {"model_kwargs": {"api_base": "https://custom/v1", "temperature": 0.3}})
-    assert model.config.model_kwargs["api_base"] == "https://custom/v1"
+    assert model.config.api_base == "https://custom/v1"
     assert model.config.model_kwargs["temperature"] == 0.3
     # Defaults still fill in the gaps.
-    assert model.config.model_kwargs["api_key"] == DEFAULT_API_KEY
+    assert model.config.api_key == DEFAULT_API_KEY
 
 
 def test_xiaomi_does_not_get_anthropic_cache_control(clean_env):

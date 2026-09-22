@@ -42,18 +42,17 @@ import litellm
 
 from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
 from minisweagent.models.litellm_response_model import LitellmResponseModel
+from minisweagent.models.routing import (  # noqa: F401 (re-exported)
+    OPENAI_PREFIX,
+    is_openai_model,
+    openai_needs_responses_api,
+)
 
 #: Prefix used to route a model name to the OpenAI API.
-OPENAI_PREFIX = "openai/"
 
 DEFAULT_API_BASE = "https://api.openai.com/v1"
 DEFAULT_API_KEY = ""
 """litellm picks up `OPENAI_API_KEY` when no explicit key is set."""
-
-
-def is_openai_model(model_name: str) -> bool:
-    """Whether `model_name` should be served by the OpenAI API."""
-    return model_name.lower().startswith(OPENAI_PREFIX)
 
 
 def strip_openai_prefix(model_name: str) -> str:
@@ -63,15 +62,7 @@ def strip_openai_prefix(model_name: str) -> str:
     return model_name
 
 
-#: OpenAI ids that reject function tools on `/chat/completions` and therefore need the
-#: Responses API, e.g. `gpt-6-astra`:
-#: "Function tools with reasoning_effort are not supported ... use /v1/responses".
-_RESPONSES_ONLY_RE = re.compile(r"^gpt-6(?:$|[.-])")
-
-
-def needs_responses_api(model_name: str) -> bool:
-    """Whether `model_name` can only run the agent through the OpenAI Responses API."""
-    return bool(_RESPONSES_ONLY_RE.match(strip_openai_prefix(model_name)))
+needs_responses_api = openai_needs_responses_api
 
 
 #: OpenAI rejects a configured `temperature` on some reasoning ids (e.g. "Only the default

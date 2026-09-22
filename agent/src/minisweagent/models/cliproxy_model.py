@@ -24,18 +24,13 @@ cost tracking defaults to "ignore_errors" for these models.
 import os
 from typing import Any, Literal
 
-from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
+from minisweagent.models.routing import CLIPROXY_PREFIX, is_cliproxy_model  # noqa: F401 (re-exported)
+from minisweagent.models.openai_compat_model import OpenaiCompatModel, OpenaiCompatModelConfig, gateway_settings
 
-#: Prefix used to route a model name to cli-proxy-api.
-CLIPROXY_PREFIX = "cliproxy/"
 
 DEFAULT_API_BASE = "http://127.0.0.1:8317/v1"
 DEFAULT_API_KEY = "sk-cliproxy-local-2026"
 
-
-def is_cliproxy_model(model_name: str) -> bool:
-    """Whether `model_name` should be served by cli-proxy-api."""
-    return model_name.lower().startswith(CLIPROXY_PREFIX)
 
 
 def strip_cliproxy_prefix(model_name: str) -> str:
@@ -45,26 +40,20 @@ def strip_cliproxy_prefix(model_name: str) -> str:
     return model_name
 
 
-class CliproxyModelConfig(LitellmModelConfig):
+class CliproxyModelConfig(OpenaiCompatModelConfig):
     model_kwargs: dict[str, Any] = {}
     cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
     """cli-proxy does not report per-token costs, so cost errors are ignored by default."""
 
 
-class CliproxyModel(LitellmModel):
-    """Talks to a cli-proxy-api gateway through litellm's OpenAI-compatible provider."""
+class CliproxyModel(OpenaiCompatModel):
+    """Talks to the gateway's OpenAI-compatible `/chat/completions` directly (no litellm)."""
 
     def __init__(self, **kwargs):
         kwargs.setdefault("config_class", CliproxyModelConfig)
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
+        kwargs.update(gateway_settings(model_kwargs, "CLIPROXY_API_BASE", DEFAULT_API_BASE, "CLIPROXY_API_KEY", DEFAULT_API_KEY))
+        kwargs["model_kwargs"] = {k: v for k, v in model_kwargs.items() if k not in ("api_base", "api_key")}
         super().__init__(**kwargs)
-
-        upstream_name = strip_cliproxy_prefix(self.config.model_name)
-        self.config.model_name = f"openai/{upstream_name}"
-
-        model_kwargs = dict(self.config.model_kwargs)
-        model_kwargs.setdefault("custom_llm_provider", "openai")
-        model_kwargs.setdefault("api_base", os.getenv("CLIPROXY_API_BASE", DEFAULT_API_BASE).rstrip("/"))
-        model_kwargs.setdefault("api_key", os.getenv("CLIPROXY_API_KEY", DEFAULT_API_KEY))
-        # cli-proxy backends vary in which sampling params they accept.
-        model_kwargs.setdefault("drop_params", True)
-        self.config.model_kwargs = model_kwargs
+        # The routing prefix is stripped: the gateway receives exactly the id it advertises.
+        self.config.model_name = strip_cliproxy_prefix(self.config.model_name)
