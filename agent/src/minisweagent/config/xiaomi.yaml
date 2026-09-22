@@ -1,0 +1,18 @@
+# Xiaomi MiMo (https://xiaomimimo.com) profile.
+#
+# Merge it on top of the default config, it only pins the model:
+#
+#     mini -c mini.yaml -c xiaomi.yaml -t "Fix the failing test in test_utils.py"
+#
+# Every id from `mini-extra xiaomi-models` works, e.g. xiaomi/mimo-v2.6-flash or
+# xiaomi/mimo-v2.6-pro. Bare ids (`mimo-v2.6-flash`) work as well.
+#
+# The key is read from XIAOMI_API_KEY:
+#
+#     mini-extra config set XIAOMI_API_KEY tp-your-key
+#
+# Cost tracking is off for this endpoint (it reports no per-token prices), so no
+# cost limit can act as a backstop here.
+model:
+  model_name: "xiaomi/mimo-v2.6-flash"
+  model_kwargs: {}

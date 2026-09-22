@@ -6,6 +6,10 @@
       This should be run the first time you run `mini`.
     * By default we support all models using [`litellm`](https://github.com/BerriAI/litellm).
     * We also offer support for models via [Openrouter](https://openrouter.ai/) and [Portkey](https://portkey.ai/).
+    * DeepSeek models are available through the dedicated [`deepseek/` profile](deepseek.md).
+    * OpenCode Go models are available through the dedicated [`opencode-go/` profile](opencode_go.md).
+    * OpenAI models are available through the dedicated [`openai/` profile](openai.md).
+    * Xiaomi MiMo models are available through the dedicated [`xiaomi/` profile](xiaomi.md).
 
 ## Setting API keys
 

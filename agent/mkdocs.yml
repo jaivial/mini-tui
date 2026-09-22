@@ -72,6 +72,11 @@ nav:
     - "Language models":
       - "Quick start": models/quickstart.md
       - "Local models": models/local_models.md
+      - "Rosetta gateway": models/rosetta.md
+      - "DeepSeek API": models/deepseek.md
+      - "OpenCode Go": models/opencode_go.md
+      - "OpenAI API": models/openai.md
+      - "Xiaomi MiMo": models/xiaomi.md
       - "Troubleshooting": models/troubleshooting.md
     - "Configuration":
       - "Global configuration": advanced/global_configuration.md
@@ -95,6 +100,11 @@ nav:
       - "LitellmResponseModel": "reference/models/litellm_response_toolcall.md"
       - "OpenRouterModel": "reference/models/openrouter.md"
       - "RequestyModel": "reference/models/requesty.md"
+      - "RosettaModel": "reference/models/rosetta.md"
+      - "DeepseekModel": "reference/models/deepseek.md"
+      - "OpencodeGoModel": "reference/models/opencode_go.md"
+      - "OpenaiModel": "reference/models/openai.md"
+      - "XiaomiModel": "reference/models/xiaomi.md"
       - "PortkeyModel": "reference/models/portkey.md"
       - "PortkeyResponse": "reference/models/portkey_response.md"
       - "DeterministicModel": "reference/models/test_models.md"

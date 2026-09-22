@@ -16,6 +16,36 @@ subcommands = [
     ("minisweagent.run.benchmarks.swebench", ["swebench"], "Evaluate on SWE-bench (batch mode)"),
     ("minisweagent.run.benchmarks.swebench_single", ["swebench-single"], "Evaluate on SWE-bench (single instance)"),
     ("minisweagent.run.benchmarks.programbench", ["programbench"], "Run on ProgramBench (batch mode)"),
+    (
+        "minisweagent.run.utilities.rosetta_models",
+        ["rosetta-models", "rosetta"],
+        "List models available from the Rosetta LLM gateway",
+    ),
+    (
+        "minisweagent.run.utilities.deepseek_models",
+        ["deepseek-models", "deepseek"],
+        "List models available from the DeepSeek API",
+    ),
+    (
+        "minisweagent.run.utilities.opencode_go_models",
+        ["opencode-go-models", "opencode-go", "opencode"],
+        "List models available from OpenCode Go",
+    ),
+    (
+        "minisweagent.run.utilities.cliproxy_models",
+        ["cliproxy-models", "cliproxy"],
+        "List models available from the cli-proxy-api gateway",
+    ),
+    (
+        "minisweagent.run.utilities.openai_models",
+        ["openai-models", "openai"],
+        "List models available from the OpenAI API",
+    ),
+    (
+        "minisweagent.run.utilities.xiaomi_models",
+        ["xiaomi-models", "xiaomi", "mimo"],
+        "List models available from the Xiaomi MiMo API",
+    ),
 ]
 
 

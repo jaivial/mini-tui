@@ -42,6 +42,8 @@ Here's a few popular models and the required API keys:
 [bold green]anthropic/claude-opus-4-6-20260205[/bold green] ([bold green]ANTHROPIC_API_KEY[/bold green])
 [bold green]openai/gpt-5.4[/bold green] or [bold green]openai/gpt-5.4-mini[/bold green] ([bold green]OPENAI_API_KEY[/bold green])
 [bold green]gemini/gemini-3-pro-preview[/bold green] ([bold green]GEMINI_API_KEY[/bold green])
+[bold green]deepseek/deepseek-chat[/bold green] ([bold green]DEEPSEEK_API_KEY[/bold green])
+[bold green]xiaomi/mimo-v2.6-flash[/bold green] ([bold green]XIAOMI_API_KEY[/bold green])
 
 [bold]Note: Please always include the provider (e.g., "openai/") in the model name.[/bold]
 

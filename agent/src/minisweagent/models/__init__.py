@@ -52,9 +52,24 @@ def get_model(input_model_name: str | None = None, config: dict | None = None) -
 
     model_class = get_model_class(resolved_model_name, config.pop("model_class", ""))
 
+    from minisweagent.models.cliproxy_model import is_cliproxy_model
+    from minisweagent.models.deepseek_model import is_deepseek_model
+    from minisweagent.models.openai_model import is_openai_model
+    from minisweagent.models.opencode_go_model import is_opencode_go_model
+    from minisweagent.models.rosetta_model import is_rosetta_model
+    from minisweagent.models.xiaomi_model import is_xiaomi_model
+
     if (
         any(s in resolved_model_name.lower() for s in ["anthropic", "sonnet", "opus", "claude"])
         and "set_cache_control" not in config
+        # Rosetta / cli-proxy ids often contain "claude" but are served over the OpenAI protocol,
+        # which does not understand Anthropic cache_control markers.
+        and not is_rosetta_model(resolved_model_name)
+        and not is_cliproxy_model(resolved_model_name)
+        and not is_deepseek_model(resolved_model_name)
+        and not is_openai_model(resolved_model_name)
+        and not is_opencode_go_model(resolved_model_name)
+        and not is_xiaomi_model(resolved_model_name)
     ):
         # Select cache control for Anthropic models by default
         config["set_cache_control"] = "default_end"
@@ -85,6 +100,14 @@ _MODEL_CLASS_MAPPING = {
     "portkey": "minisweagent.models.portkey_model.PortkeyModel",
     "portkey_response": "minisweagent.models.portkey_response_model.PortkeyResponseAPIModel",
     "requesty": "minisweagent.models.requesty_model.RequestyModel",
+    "rosetta": "minisweagent.models.rosetta_model.RosettaModel",
+    "cliproxy": "minisweagent.models.cliproxy_model.CliproxyModel",
+    "deepseek": "minisweagent.models.deepseek_model.DeepseekModel",
+    "opencode_go": "minisweagent.models.opencode_go_model.OpencodeGoModel",
+    "opencode_go_response": "minisweagent.models.opencode_go_model.OpencodeGoResponseModel",
+    "openai": "minisweagent.models.openai_model.OpenaiModel",
+    "openai_response": "minisweagent.models.openai_model.OpenaiResponseModel",
+    "xiaomi": "minisweagent.models.xiaomi_model.XiaomiModel",
     "deterministic": "minisweagent.models.test_models.DeterministicModel",
 }
 
@@ -97,6 +120,35 @@ def get_model_class(model_name: str, model_class: str = "") -> type:
     it takes precedence over the `model_name`.
     Otherwise, the model_name is used to select the best model class.
     """
+    if not model_class:
+        from minisweagent.models.cliproxy_model import is_cliproxy_model
+        from minisweagent.models.deepseek_model import is_deepseek_model
+        from minisweagent.models.openai_model import is_openai_model, needs_responses_api
+        from minisweagent.models.opencode_go_model import (
+            is_opencode_go_model,
+        )
+        from minisweagent.models.opencode_go_model import (
+            needs_responses_api as needs_go_responses_api,
+        )
+        from minisweagent.models.rosetta_model import is_rosetta_model
+        from minisweagent.models.xiaomi_model import is_xiaomi_model
+
+        if is_opencode_go_model(model_name):
+            # Go serves ids on three endpoints; the Anthropic compatible one is picked inside
+            # OpencodeGoModel, the Responses API one needs a different class.
+            model_class = "opencode_go_response" if needs_go_responses_api(model_name) else "opencode_go"
+        elif is_rosetta_model(model_name):
+            model_class = "rosetta"
+        elif is_cliproxy_model(model_name):
+            model_class = "cliproxy"
+        elif is_deepseek_model(model_name):
+            model_class = "deepseek"
+        elif is_xiaomi_model(model_name):
+            model_class = "xiaomi"
+        elif is_openai_model(model_name):
+            # Some ids (e.g. gpt-6-astra) reject function tools on /chat/completions.
+            model_class = "openai_response" if needs_responses_api(model_name) else "openai"
+
     if model_class:
         full_path = _MODEL_CLASS_MAPPING.get(model_class, model_class)
         try:

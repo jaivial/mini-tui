@@ -1,0 +1,20 @@
+# OpenCode Go (https://opencode.ai/docs/go/) profile.
+#
+# Merge it on top of the default config, it only pins the model (and a cost limit that
+# matches the included monthly budget of the default model below):
+#
+#     mini -c mini.yaml -c opencode_go.yaml -t "Fix the failing test in test_utils.py"
+#
+# Every id from the `Endpoints` table at https://opencode.ai/docs/go/#endpoints works,
+# e.g. opencode-go/glm-5.3-flash, opencode-go/kimi-k3, opencode-go/minimax-m3 or
+# opencode-go/grok-4.6. Run `mini-extra opencode-go-models` for the full list.
+#
+# The key is read from OPENCODE_GO_API_KEY:
+#
+#     mini-extra config set OPENCODE_GO_API_KEY sk-your-key
+model:
+  model_name: "opencode-go/glm-5.3-flash"
+  # $60 of included monthly budget for this id; leave headroom for retries.
+  model_kwargs: {}
+agent:
+  cost_limit: 3.
