@@ -585,7 +585,7 @@ describe("/connect BYOK wizard", () => {
   test("connects a provider end to end and its models join /model", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ data: [{ id: "mimo-v2.6-pro" }, { id: "mimo-v2.6-flash" }] }))) as typeof fetch;
+      new Response(JSON.stringify({ data: [{ id: "mimo-v2.6-pro" }, { id: "mimo-v2.6-flash" }] }))) as unknown as typeof fetch;
     const tested: string[] = [];
 
     try {
@@ -677,7 +677,7 @@ describe("/connect BYOK wizard", () => {
 
   test("a failed connection test keeps the wizard on the model step", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ id: "m1" }] }))) as typeof fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ id: "m1" }] }))) as unknown as typeof fetch;
     try {
       const setup = await testRender(
         <App cwd="/proj" persistSettings={false} testModel={async () => false} onQuit={() => {}} />,

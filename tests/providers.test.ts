@@ -64,7 +64,7 @@ describe("BYOK providers", () => {
         }
         expect(headers.Authorization).toBe("Bearer tp");
         return new Response(JSON.stringify({ data: [{ id: "b-model" }, { id: "a-model" }, { id: "a-model" }] }));
-      }) as typeof fetch;
+      }) as unknown as typeof fetch;
 
       const openai = PROVIDERS.find((p) => p.probe === "openai")!;
       expect(await fetchProviderModels(openai, "tp")).toEqual(["a-model", "b-model"]); // sorted + deduped
@@ -72,7 +72,7 @@ describe("BYOK providers", () => {
       const anthropic = PROVIDERS.find((p) => p.probe === "anthropic")!;
       expect(await fetchProviderModels(anthropic, "sk-ant")).toEqual(["claude-sonnet-4-5"]);
 
-      globalThis.fetch = (async () => new Response("nope", { status: 401 })) as typeof fetch;
+      globalThis.fetch = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch;
       await expect(fetchProviderModels(openai, "bad")).rejects.toThrow("HTTP 401");
     } finally {
       globalThis.fetch = originalFetch;
