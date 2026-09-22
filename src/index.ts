@@ -3,6 +3,7 @@ import { createRoot, createElement } from "@opentui/react";
 
 import { App } from "./ui/App";
 import { DEFAULT_MODEL } from "./config";
+import { startProfiling } from "./profile";
 import type { TaskSpec } from "./mini/spawn";
 
 interface CliArgs {
@@ -75,6 +76,7 @@ const runSpec: TaskSpec | undefined =
     : undefined;
 
 const renderer = await createCliRenderer({ exitOnCtrlC: true });
+startProfiling();
 const quit = () => {
   renderer.destroy();
   process.exit(0);
