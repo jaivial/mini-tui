@@ -17,12 +17,18 @@ const PROMPT_KEY_BINDINGS = [
 export function PromptBar(props: {
   focused: boolean;
   busy: boolean;
+  /** First ctrl+c landed: the (now empty) prompt says a second one closes. */
+  closeArmed?: boolean;
   rows: number;
   textareaRef: RefObject<TextareaRenderable | null>;
   onSend: (text: string) => void;
   onTextChange: (text: string) => void;
 }) {
-  const hint = props.busy ? "continue the conversation…" : "what should mini do?";
+  const hint = props.closeArmed
+    ? "ctrl+c again to close"
+    : props.busy
+      ? "continue the conversation…"
+      : "what should mini do?";
   return (
     <box
       borderStyle="rounded"

@@ -10,7 +10,6 @@ import { StepCard } from "./components/StepCard";
 import { AssistantCard } from "./components/AssistantCard";
 import { NoticeLine } from "./components/NoticeLine";
 import { ExitBanner } from "./components/ExitBanner";
-import { StatusBar } from "./components/StatusBar";
 import { PromptBar } from "./components/PromptBar";
 import { ModelPicker, MODELS } from "./components/ModelPicker";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -62,7 +61,6 @@ const isPaletteText = (text: string) => text.startsWith("/") || text.startsWith(
 const ESC_DOUBLE_MS = 800;
 /** Window for the second ctrl+c that closes the TUI (the first one only clears the prompt). */
 const CTRL_C_DOUBLE_MS = 1500;
-const CTRL_C_HINT = "ctrl+c again to close";
 /**
  * How many transcript items stay mounted at once. Each mounted item owns native text
  * buffers (~1 MB in practice: every rendered line is a full terminal-width row of
@@ -163,11 +161,25 @@ export function buildItems(events: RunEvent[]): Item[] {
   return items;
 }
 
+export type RunStatus = "running" | "done" | "error" | "idle" | "interrupted";
+
+/**
+ * Status chip for the bottom line. The agent holds a run open at exit to take follow-ups
+ * (the exit stays in its append-only journal), so an exit only means "finished" while it is
+ * the *last* event — a follow-up after it is live work again, whatever the process says.
+ */
+export function deriveStatus(status: RunStatus, events: RunEvent[]): RunStatus {
+  if (status === "interrupted") return status;
+  const last = events[events.length - 1];
+  if (last?.type === "exit") return !last.exitStatus || last.exitStatus === "Submitted" ? "done" : "error";
+  return status;
+}
+
 export function App(props: AppProps) {
   const staticMode = Boolean(props.events);
   const [events, setEvents] = useState<RunEvent[]>(props.events ?? []);
   const [info, setInfo] = useState<RunInfo>(props.info ?? { cost: 0, apiCalls: 0 });
-  const [status, setStatus] = useState<"running" | "done" | "error" | "idle" | "interrupted">(
+  const [status, setStatus] = useState<RunStatus>(
     props.statusOverride ?? (props.runSpec ? "running" : staticMode || props.viewPath ? "done" : "idle"),
   );
   const [errorText, setErrorText] = useState("");
@@ -185,7 +197,8 @@ export function App(props: AppProps) {
   const [settingsGroup, setSettingsGroup] = useState(0);
   const [inputFocused, setInputFocusedState] = useState(true);
   const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help" | "resume" | "connect">("none");
-  const [hintText, setHintText] = useState<string | undefined>(undefined);
+  /** ctrl+c was pressed once: the prompt placeholder says a second press closes. */
+  const [closeArmed, setCloseArmed] = useState(false);
   const [promptText, setPromptTextState] = useState("");
   const [paletteDismissed, setPaletteDismissedState] = useState(false);
   const [paletteIdx, setPaletteIdxState] = useState(0);
@@ -405,7 +418,6 @@ export function App(props: AppProps) {
     setStatus("running");
     exitedRef.current = false;
     startedAtRef.current = Date.now();
-    setHintText(undefined);
     const run = spawnMini({
       ...spec,
       model: spec.model || modelOverride,
@@ -435,13 +447,9 @@ export function App(props: AppProps) {
   const interruptRun = () => {
     if (props.onInterrupt) props.onInterrupt();
     const run = live.current.run;
-    if (!run || exitedRef.current) {
-      setHintText("nothing to interrupt");
-      return;
-    }
+    if (!run || exitedRef.current) return;
     interruptedRef.current = true;
     run.interrupt();
-    setHintText("interrupted — stopping the run");
   };
 
   const openSession = (record: SessionRecord) => {
@@ -457,10 +465,9 @@ export function App(props: AppProps) {
       messagesRef.current = JSON.parse(record.messages_json) as TrajectoryMessage[];
       consumedRef.current = messagesRef.current.length;
     } catch {
-      setHintText("could not restore that session");
+      setEvents([{ type: "notice", text: "could not restore that session" }]);
     }
     setStatus("done");
-    setHintText(`resumed → ${record.title}`);
     setInputFocused(true);
   };
 
@@ -495,7 +502,6 @@ export function App(props: AppProps) {
     setAnchor(null);
     setOverlay("none");
     setInputFocused(true);
-    setHintText("new session");
   };
 
   const applyModel = (model: string) => {
@@ -527,12 +533,10 @@ export function App(props: AppProps) {
     setSettings(next);
     applyTheme(next.theme ?? DEFAULT_THEME);
     if (props.persistSettings !== false) saveSettings(next);
-    setHintText(patch.theme !== undefined ? `theme → ${next.theme}` : `output display → ${next.outputMode}`);
   };
 
   const doneSettings = () => {
     setOverlay("none");
-    setHintText(`output display → ${settings.outputMode} · theme → ${settings.theme ?? DEFAULT_THEME}`);
     setInputFocused(true);
   };
 
@@ -567,7 +571,7 @@ export function App(props: AppProps) {
     const task = skillCall ? expandSkillPrompt(trimmed, skillsDir) : trimmed;
     if (task === null) {
       applyPromptText(trimmed); // keep the prompt so a typo is one edit away
-      setHintText(`no skill named $${skillCall?.name} in ${shortPath(skillsDir)}`);
+      setEvents((prev) => [...prev, { type: "notice", text: `no skill named $${skillCall?.name} in ${shortPath(skillsDir)}` }]);
       return;
     }
     if (props.onSend) {
@@ -577,7 +581,7 @@ export function App(props: AppProps) {
     const liveRun = live.current.run;
     if (liveRun && !exitedRef.current) {
       liveRun.sendUserMessage(task);
-      setHintText("sent → continues the conversation from the next step");
+      startedAtRef.current = Date.now(); // a new turn: the working timer starts over
       return;
     }
     if (!sessionIdRef.current) {
@@ -611,7 +615,6 @@ export function App(props: AppProps) {
       }
     }
     startRun({ task, model: modelOverride, cwd: props.cwd, resumePath });
-    setHintText(undefined);
   };
 
   useEffect(() => {
@@ -669,8 +672,8 @@ export function App(props: AppProps) {
     if (now - lastCtrlCAt.current < CTRL_C_DOUBLE_MS) return quit();
     lastCtrlCAt.current = now;
     if (promptRef.current) applyPromptText("");
-    setHintText(CTRL_C_HINT);
-    setTimeout(() => setHintText((hint) => (hint === CTRL_C_HINT ? undefined : hint)), CTRL_C_DOUBLE_MS);
+    setCloseArmed(true);
+    setTimeout(() => setCloseArmed(false), CTRL_C_DOUBLE_MS);
   };
 
   // Mouse-highlight any text in the UI to copy it (clipboard works inside tmux too).
@@ -682,7 +685,6 @@ export function App(props: AppProps) {
     copyTimer.current = setTimeout(() => {
       if (props.onCopy) props.onCopy(text);
       else copyText(text);
-      setHintText(`copied ${text.length} chars → clipboard`);
     }, 350);
   });
 
@@ -941,8 +943,7 @@ export function App(props: AppProps) {
   });
 
   const focusedPair = Math.min(Math.max(focusIdx, 0), Math.max(pairItems.length - 1, 0));
-  const exitEvent = events.find((event) => event.type === "exit") as Extract<RunEvent, { type: "exit" }> | undefined;
-  const displayStatus = props.statusOverride ?? (status === "interrupted" ? "interrupted" : exitEvent ? "done" : status);
+  const displayStatus = props.statusOverride ?? deriveStatus(status, events);
   const busy = Boolean(live.current.run) && !exitedRef.current;
   const elapsedS = startedAtRef.current ? Math.floor((Date.now() - startedAtRef.current) / 1000) : 0;
   const toggle = useCallback(
@@ -966,8 +967,8 @@ export function App(props: AppProps) {
     return fn;
   };
 
-  // Compact bottom stack: prompt (grows with the text) · single status line · hint.
-  const bottomRows = 2 + promptRows + 1 + (hintText ? 1 : 0);
+  // Compact bottom stack: prompt (grows with the text) · single status line, nothing below.
+  const bottomRows = 2 + promptRows + 1;
   // PgUp/PgDn travel half a screen (at least 12 rows) — quick without being jumpy.
   const scrollStep = Math.max(12, Math.floor(dims.height / 2));
   const modalAreaHeight = Math.max(4, dims.height - bottomRows);
@@ -1075,6 +1076,7 @@ export function App(props: AppProps) {
       <PromptBar
         focused={inputFocused && overlayState === "none" && !paletteOpen}
         busy={busy}
+        closeArmed={closeArmed}
         rows={promptRows}
         textareaRef={textareaRef}
         onSend={send}
@@ -1095,7 +1097,6 @@ export function App(props: AppProps) {
         tick={tick}
         elapsedS={elapsedS}
       />
-      <StatusBar hint={hintText} />
       {overlayNode ? <Modal areaHeight={modalAreaHeight}>{overlayNode}</Modal> : null}
     </box>
   );
