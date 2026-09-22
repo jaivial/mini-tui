@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.8.0 — 2026-09-22
+
+Faster agent loop: 5× less overhead per step (8.9 → 1.8 ms) and keep-alive to the gateway.
 
 ### Performance
 
