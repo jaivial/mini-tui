@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 
+import { PYTHON_BIN } from "./helpers";
 import { fallbackTitle } from "./sessions";
 
 const SCRIPT = join(import.meta.dir, "..", "scripts", "gen_title.py");
@@ -11,7 +12,7 @@ const TIMEOUT_MS = 20_000;
  * title or `null` — callers fall back to `fallbackTitle(task)`.
  */
 export function generateTitle(task: string, model: string, onTitle: (title: string) => void): void {
-  const child = spawn("python3", [SCRIPT, task, model], { stdio: ["ignore", "pipe", "ignore"] });
+  const child = spawn(PYTHON_BIN, [SCRIPT, task, model], { stdio: ["ignore", "pipe", "ignore"] });
   const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT_MS);
   let out = "";
   child.stdout.on("data", (chunk) => (out += String(chunk)));

@@ -45,11 +45,14 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
   ![resume modal](docs/screenshots/resume.png)
 
-- **`/connect` — BYOK providers.** Pick a provider (Xiaomi MiMo, DeepSeek, MiniMax, OpenAI,
-  Anthropic, Moonshot, Zhipu, Groq, OpenRouter, OpenCode Go), paste your API key, choose a model
-  and the connection is **tested for real** (a one-token query through mini's own model layer)
-  before being saved locally. Every catalog model of a connected provider joins the `/model`
-  picker, and its key is injected into your runs.
+- **`/connect` — BYOK providers.** The whole MiniMax Code catalog — **Xiaomi MiMo, DeepSeek,
+  OpenCode Go, Z.AI (GLM coding), MiniMax** — plus OpenAI, Anthropic, Moonshot, Zhipu, Groq and
+  OpenRouter. Pick a provider, paste your API key, choose a model and the connection is
+  **tested for real** (a one-token query through mini's own litellm-based model layer) before
+  being saved locally. Every catalog model of a connected provider joins the `/model` picker,
+  and its key is injected into your runs. All providers go through **litellm**: native prefixes
+  (`xiaomi/…`, `deepseek/…`, `anthropic/…`, …) or litellm's `openai/` provider with
+  `OPENAI_API_BASE`/`OPENAI_API_KEY` for any OpenAI-compatible endpoint (Z.AI, MiniMax, …).
 
   ![connect wizard](docs/screenshots/connect.png)
 

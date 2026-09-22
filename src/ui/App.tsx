@@ -23,9 +23,9 @@ import { filterModels } from "../connect";
 import {
   PROVIDERS,
   connectionModelOptions,
-  connectionsEnv,
   fetchProviderModels,
   loadConnections,
+  modelEnv,
   saveConnection,
   testProviderModel,
   type ProviderDef,
@@ -318,7 +318,11 @@ export function App(props: AppProps) {
     exitedRef.current = false;
     startedAtRef.current = Date.now();
     setHintText(undefined);
-    const run = spawnMini({ ...spec, model: spec.model || modelOverride, env: connectionsEnv(connections) });
+    const run = spawnMini({
+      ...spec,
+      model: spec.model || modelOverride,
+      env: modelEnv(spec.model || modelOverride || DEFAULT_MODEL, connections),
+    });
     live.current = { run };
     live.current.watch = watchTrajectory(run.session.trajPath, applySnapshot);
     run.exited.then((code) => {
@@ -548,27 +552,31 @@ export function App(props: AppProps) {
           if (!model) return;
           setConnectStep({ kind: "testing", def: step.def, key: step.key, model });
           const modelName = `${step.def.prefix}/${model}`;
-          void (props.testModel ?? testProviderModel)(modelName, step.key).then((ok) => {
-            if (!ok) {
-              setConnectStep({ ...step, error: `could not reach ${modelName} with that key` });
-              return;
-            }
-            const full = step.models;
-            const connection = {
-              id: step.def.id,
-              name: step.def.name,
-              keyEnv: step.def.keyEnv,
-              extraEnv: step.def.extraEnv,
-              prefix: step.def.prefix,
-              key: step.key,
-              models: full,
-              defaultModel: model,
-              addedAt: Date.now(),
-            };
-            if (props.persistSettings !== false) saveConnection(connection);
-            setConnections((prev) => [...prev.filter((c) => c.id !== connection.id), connection]);
-            setConnectStep({ kind: "done", def: step.def, model, count: full.length });
-          });
+          void (props.testModel ?? ((model, key) => testProviderModel(step.def, model, key)))(modelName, step.key).then(
+            (ok) => {
+              if (!ok) {
+                setConnectStep({ ...step, error: `could not reach ${modelName} with that key` });
+                return;
+              }
+              const full = step.models;
+              const connection = {
+                id: step.def.id,
+                name: step.def.name,
+                route: step.def.route,
+                keyEnv: step.def.keyEnv,
+                extraEnv: step.def.extraEnv,
+                baseUrl: step.def.baseUrl,
+                prefix: step.def.prefix,
+                key: step.key,
+                models: full,
+                defaultModel: model,
+                addedAt: Date.now(),
+              };
+              if (props.persistSettings !== false) saveConnection(connection);
+              setConnections((prev) => [...prev.filter((c) => c.id !== connection.id), connection]);
+              setConnectStep({ kind: "done", def: step.def, model, count: full.length });
+            },
+          );
           return;
         }
         const ch = key.sequence;
