@@ -1,0 +1,24 @@
+{
+  "info": { "model_stats": { "instance_cost": 0.003, "api_calls": 1 } },
+  "trajectory_format": "mini-swe-agent-1.1",
+  "messages": [
+    { "role": "user", "content": "Look around." },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "Taking a look:" },
+        { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }
+      ],
+      "tool_calls": [
+        { "id": "call_w", "type": "function", "function": { "name": "bash", "arguments": "not valid json{" } }
+      ],
+      "extra": { "actions": [{ "command": "ls -la", "tool_call_id": "call_w" }] }
+    },
+    {
+      "role": "tool",
+      "content": "{\"returncode\": 3, \"output\": \"oops\"}",
+      "tool_call_id": "call_w"
+    },
+    { "role": "weirdo", "content": { "x": 1 }, "extra": { "surprise": true } }
+  ]
+}

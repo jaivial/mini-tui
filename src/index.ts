@@ -1,0 +1,86 @@
+import { createCliRenderer } from "@opentui/core";
+import { createRoot, createElement } from "@opentui/react";
+
+import { App } from "./ui/App";
+import { DEFAULT_MODEL } from "./config";
+import type { TaskSpec } from "./mini/spawn";
+
+interface CliArgs {
+  command: "run" | "view";
+  task?: string;
+  model?: string;
+  specs?: string[];
+  viewPath?: string;
+  follow?: boolean;
+  showSystem?: boolean;
+}
+
+const USAGE = `mini-tui — a pretty terminal UI for mini-swe-agent (the harness runs untouched).
+
+Usage:
+  bun src/index.ts run ["task"] [-m <model>] [-c <spec>]... [--show-system]
+  bun src/index.ts view <traj.json> [--follow] [--show-system]
+
+Commands:
+  run     Launch a mini run (yolo) and watch tools/outputs stream in.
+          Without a positional task, an interactive start screen is shown.
+  view    Render an existing trajectory (e.g. ~/.config/mini-swe-agent/last_mini_run.traj.json).
+
+Options:
+  -m, --model <model>   Model for run (empty = mini's default)
+  -c, --config <spec>   Extra mini config spec (repeatable)
+  --follow              (view) keep watching the file for updates
+  --show-system         Include the system prompt in the transcript
+`;
+
+function parseArgs(argv: string[]): CliArgs | null {
+  const [command, ...rest] = argv;
+  if (command !== "run" && command !== "view") return null;
+  const args: CliArgs = { command };
+  const positional: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (arg === "-m" || arg === "--model") args.model = rest[++i];
+    else if (arg === "-c" || arg === "--config") args.specs = [...(args.specs ?? []), rest[++i] ?? ""];
+    else if (arg === "--follow") args.follow = true;
+    else if (arg === "--show-system") args.showSystem = true;
+    else if (arg) positional.push(arg);
+  }
+  if (command === "view") {
+    args.viewPath = positional[0];
+    if (!args.viewPath) return null;
+  } else if (positional.length) {
+    args.task = positional.join(" ");
+  }
+  return args;
+}
+
+const args = parseArgs(process.argv.slice(2));
+if (!args) {
+  console.log(USAGE);
+  process.exit(1);
+}
+
+const runSpec: TaskSpec | undefined =
+  args.command === "run" && args.task
+    ? { task: args.task, model: args.model || DEFAULT_MODEL || undefined, specs: args.specs, cwd: process.cwd() }
+    : undefined;
+
+const renderer = await createCliRenderer({ exitOnCtrlC: true });
+const quit = () => {
+  renderer.destroy();
+  process.exit(0);
+};
+
+createRoot(renderer).render(
+  createElement(App, {
+    cwd: process.cwd(),
+    showSystem: args.showSystem,
+    viewPath: args.command === "view" ? args.viewPath : undefined,
+    follow: args.follow,
+    runSpec,
+    onQuit: quit,
+  }),
+);
+
+process.on("SIGTERM", quit);

@@ -1,0 +1,37 @@
+{
+  "info": {
+    "model_stats": { "instance_cost": 0.02, "api_calls": 1 },
+    "config": { "model": { "model_name": "xiaomi/mimo-v2.6-pro" } }
+  },
+  "trajectory_format": "mini-swe-agent-1.1",
+  "messages": [
+    { "role": "user", "content": "Find foo and bar." },
+    {
+      "role": "assistant",
+      "content": "Two greps:",
+      "tool_calls": [
+        { "id": "call_a", "type": "function", "function": { "name": "bash", "arguments": "{\"command\": \"grep -n foo f.txt\"}" } },
+        { "id": "call_b", "type": "function", "function": { "name": "bash", "arguments": "{\"command\": \"grep -n bar f.txt\"}" } }
+      ],
+      "extra": {
+        "actions": [
+          { "command": "grep -n foo f.txt", "tool_call_id": "call_a" },
+          { "command": "grep -n bar f.txt", "tool_call_id": "call_b" }
+        ],
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "tool",
+      "content": "",
+      "tool_call_id": "call_a",
+      "extra": { "raw_output": "1:foo\n", "returncode": 0, "exception_info": "" }
+    },
+    {
+      "role": "tool",
+      "content": "",
+      "tool_call_id": "call_b",
+      "extra": { "raw_output": "", "returncode": 1, "exception_info": "" }
+    }
+  ]
+}

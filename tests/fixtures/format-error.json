@@ -1,0 +1,27 @@
+{
+  "info": { "model_stats": { "instance_cost": 0.002, "api_calls": 2 } },
+  "trajectory_format": "mini-swe-agent-1.1",
+  "messages": [
+    { "role": "user", "content": "Run 'echo FORMAT_OK' and submit." },
+    { "role": "assistant", "content": "Let me think about that first." },
+    {
+      "role": "user",
+      "content": "Response not in right format. Format errors: Response must include a tool call.",
+      "extra": { "interrupt_type": "FormatError" }
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        { "id": "call_f", "type": "function", "function": { "name": "bash", "arguments": "{\"command\": \"echo FORMAT_OK\"}" } }
+      ],
+      "extra": { "actions": [{ "command": "echo FORMAT_OK", "tool_call_id": "call_f" }] }
+    },
+    {
+      "role": "tool",
+      "content": "",
+      "tool_call_id": "call_f",
+      "extra": { "raw_output": "FORMAT_OK\n", "returncode": 0, "exception_info": "" }
+    }
+  ]
+}

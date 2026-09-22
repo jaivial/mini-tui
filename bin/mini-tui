@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# mini-tui — a pretty terminal UI for mini-swe-agent.
+# Installed globally; the project lives at MINITUI_HOME (default ~/mini-tui).
+MINITUI_HOME="${MINITUI_HOME:-$HOME/mini-tui}"
+exec bun "$MINITUI_HOME/src/index.ts" "$@"

@@ -1,0 +1,21 @@
+{
+  "info": { "model_stats": { "instance_cost": 0.004, "api_calls": 1 } },
+  "trajectory_format": "mini-swe-agent-1.1",
+  "messages": [
+    { "role": "user", "content": "Sleep a bit." },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        { "id": "call_e", "type": "function", "function": { "name": "bash", "arguments": "{\"command\": \"sleep 1\"}" } }
+      ],
+      "extra": { "actions": [{ "command": "sleep 1", "tool_call_id": "call_e" }] }
+    },
+    {
+      "role": "tool",
+      "content": "",
+      "tool_call_id": "call_e",
+      "extra": { "raw_output": "boom\n", "returncode": 2, "exception_info": "timed out", "timestamp": "2026-09-21T22:00:09Z" }
+    }
+  ]
+}
