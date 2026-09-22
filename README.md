@@ -12,9 +12,9 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 ## Features
 
 - **Prompt bar, Claude-Code style.** A compact multi-line prompt pinned to the bottom of the
-  screen (it grows with your text): type your task (`Alt+Enter` / `Ctrl+J` for a new line), hit
-  Enter, and keep typing follow-ups while the agent works (or after it submits) — they continue
-  the *same* conversation.
+  screen — long lines wrap to the next row and the box grows with your text (up to 8 rows):
+  type your task (`Alt+Enter` / `Ctrl+J` for a hard new line), hit Enter, and keep typing
+  follow-ups while the agent works (or after it submits) — they continue the *same* conversation.
 
   ![prompt bar](docs/screenshots/prompt.png)
 

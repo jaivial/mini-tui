@@ -152,7 +152,12 @@ export function App(props: AppProps) {
 
   const paletteOptions = promptText.startsWith("/") && !paletteDismissed ? matchOptions(promptText, COMMAND_OPTIONS) : [];
   const paletteOpen = paletteOptions.length > 0 && inputFocused && overlayState === "none";
-  const promptRows = Math.max(1, promptText.split("\n").length);
+  // Soft-wrapped rows: long lines continue on the next row and grow the box (up to 8).
+  const promptContentWidth = Math.max(12, dims.width - 4);
+  const promptRows = Math.min(
+    8,
+    promptText.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil((line.length + 1) / promptContentWidth)), 0),
+  );
 
   const applyPromptText = (text: string) => {
     textareaRef.current?.setText(text);
@@ -220,7 +225,6 @@ export function App(props: AppProps) {
     setModelOverride(model);
     const liveRun = live.current.run;
     liveRun?.switchModel(model);
-    setHintText(`model → ${model}`);
     setEvents((prev) => [
       ...prev,
       {

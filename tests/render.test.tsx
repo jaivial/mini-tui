@@ -436,3 +436,55 @@ describe("bottom stack", () => {
     setup.renderer.destroy();
   });
 });
+
+describe("prompt wrapping and quiet hints", () => {
+  test("long lines wrap and grow the prompt box (soft wrap, not hard newlines)", async () => {
+    const sent: string[] = [];
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
+      { width: 60, height: 22 },
+    );
+    await setup.renderOnce();
+    const long = "this is a long prompt ".repeat(6).trim();
+    await setup.mockInput.typeText(long);
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    const lines = setup.captureCharFrame().split("\n").map((l) => l.trimEnd());
+    const boxTop = lines.findIndex((l) => l.startsWith("╭"));
+    const boxBottom = lines.findIndex((l) => l.startsWith("╰") && lines.indexOf(l) > boxTop);
+    expect(boxBottom - boxTop).toBeGreaterThan(2); // box grew past one row
+    const inside = lines.slice(boxTop + 1, boxBottom).join(" ");
+    expect(inside).toContain("long");
+    expect(inside).toContain("prompt");
+
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await setup.renderOnce();
+    expect(sent).toEqual([long]); // soft wraps did not insert newlines
+    setup.renderer.destroy();
+  });
+
+  test("model switch posts only the chat notice (no hint under the prompt)", async () => {
+    const { events, info } = parseTrajectory(loadFixture("normal-step"));
+    const setup = await testRender(<App cwd="." events={events} info={info} initialSettings={EXPANDED} onQuit={() => {}} />, {
+      width: 110,
+      height: 40,
+    });
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/model xiaomi/mimo-v2.6-pro");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter(); // fill (palette)
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter(); // run the /model <id> command
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    // exactly one "model →" — the notice inside the chat area
+    expect(frame.split("model →").length - 1).toBe(1);
+    setup.renderer.destroy();
+  });
+});

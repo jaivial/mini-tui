@@ -32,7 +32,8 @@ export function PromptBar(props: {
       <textarea
         ref={props.textareaRef}
         focused={props.focused}
-        height={Math.max(1, Math.min(3, props.rows))}
+        height={Math.max(1, props.rows)}
+        wrapMode="word"
         keyBindings={PROMPT_KEY_BINDINGS as never}
         placeholder={hint}
         textColor={colors.text}
