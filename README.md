@@ -159,7 +159,7 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `/` | opens the command palette: `↑`/`↓` or click to select · `Enter`/`Tab` fills the prompt (never sends) |
 | `$` | opens the skills palette (`~/.claude/skills`) · `$<skill> <request>` runs the request with that skill |
 | `Esc` | close the palette / leave the prompt · **double `Esc` interrupts the run** |
-| `ctrl+c` | clear the prompt · on an empty prompt (twice) closes |
+| `ctrl+c` | clear the prompt · press it twice (within 1.5 s) to close |
 | `/quit` · `/exit` | close mini-tui |
 | `/help` | commands and keys |
 | `/model` | open the model picker (or `/model <id>` for a direct switch) |

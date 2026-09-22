@@ -59,6 +59,9 @@ const COMMAND_OPTIONS = buildOptions(MODELS);
 /** Prompts starting with these open the completion palette: `/` commands, `$` skills. */
 const isPaletteText = (text: string) => text.startsWith("/") || text.startsWith("$");
 const ESC_DOUBLE_MS = 800;
+/** Window for the second ctrl+c that closes the TUI (the first one only clears the prompt). */
+const CTRL_C_DOUBLE_MS = 1500;
+const CTRL_C_HINT = "ctrl+c again to close";
 /**
  * How many transcript items stay mounted at once. Each mounted item owns native text
  * buffers (~1 MB in practice: every rendered line is a full terminal-width row of
@@ -202,6 +205,7 @@ export function App(props: AppProps) {
   const dismissedRef = useRef(false);
   const paletteIdxRef = useRef(0);
   const lastEscAt = useRef(0);
+  const lastCtrlCAt = useRef(0);
   const followRef = useRef(true);
   const startedAtRef = useRef(0);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -618,10 +622,14 @@ export function App(props: AppProps) {
     return setInputFocused(!inputRefocus.current);
   };
 
-  /** ctrl+c: clear the prompt; on an empty prompt (i.e. twice) close. */
+  /** ctrl+c: the first press clears the prompt; a second one within the window closes. */
   const ctrlCPress = () => {
-    if (inputRefocus.current && promptRef.current) return applyPromptText("");
-    return quit();
+    const now = Date.now();
+    if (now - lastCtrlCAt.current < CTRL_C_DOUBLE_MS) return quit();
+    lastCtrlCAt.current = now;
+    if (promptRef.current) applyPromptText("");
+    setHintText(CTRL_C_HINT);
+    setTimeout(() => setHintText((hint) => (hint === CTRL_C_HINT ? undefined : hint)), CTRL_C_DOUBLE_MS);
   };
 
   // Mouse-highlight any text in the UI to copy it (clipboard works inside tmux too).
@@ -814,7 +822,7 @@ export function App(props: AppProps) {
 
     // normal mode: transcript navigation
     if (key.name === "escape") return escapePress();
-    if (key.ctrl && key.name === "c") return quit();
+    if (key.ctrl && key.name === "c") return ctrlCPress();
     if (key.name === "i" || key.name === "return" || key.name === "enter") return setInputFocused(true);
     if (key.name === "q") return quit();
     if (key.name === "e" && pairItems.length) {
