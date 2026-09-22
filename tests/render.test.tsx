@@ -362,6 +362,50 @@ describe("App rendering", () => {
     setup.renderer.destroy();
   });
 
+  test("↑/↓ in the prompt recall the prompts sent in this session", async () => {
+    const sent: string[] = [];
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
+      { width: 80, height: 16 },
+    );
+    await setup.renderOnce();
+    for (const text of ["first task", "/help", "second task"]) {
+      await setup.mockInput.typeText(text);
+      await Bun.sleep(20);
+      await act(async () => {
+        setup.mockInput.pressEnter(); // "/help" fills from the palette first
+      });
+      if (text === "/help") {
+        await act(async () => {
+          setup.mockInput.pressEnter();
+        });
+        setup.mockInput.pressEscape(); // close the help panel
+        await Bun.sleep(60);
+      }
+    }
+    expect(sent).toEqual(["first task", "second task"]);
+    await setup.mockInput.typeText("draft");
+    await Bun.sleep(20);
+    const prompt = async () => {
+      await Bun.sleep(20);
+      await setup.renderOnce();
+      return setup.captureCharFrame().split("\n").slice(-6).join("\n"); // the bottom stack
+    };
+    await act(async () => setup.mockInput.pressArrow("up"));
+    expect(await prompt()).toContain("second task");
+    await act(async () => setup.mockInput.pressArrow("up"));
+    expect(await prompt()).toContain("/help");
+    await act(async () => setup.mockInput.pressArrow("up")); // palette stays closed → keeps browsing
+    expect(await prompt()).toContain("first task");
+    await act(async () => setup.mockInput.pressArrow("down"));
+    await act(async () => setup.mockInput.pressArrow("down"));
+    await act(async () => setup.mockInput.pressArrow("down"));
+    expect(await prompt()).toContain("draft"); // the half-written draft comes back
+    await act(async () => setup.mockInput.pressEnter());
+    expect(sent).toEqual(["first task", "second task", "draft"]);
+    setup.renderer.destroy();
+  });
+
   test("ctrl+c once clears the prompt, twice closes (also from navigation mode)", async () => {
     let quits = 0;
     const setup = await testRender(

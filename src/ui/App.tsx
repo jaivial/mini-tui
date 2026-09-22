@@ -51,6 +51,7 @@ import {
   type SessionRecord,
 } from "../sessions";
 import { generateTitle } from "../title";
+import { PromptHistory } from "../history";
 import { SKILLS_DIR, expandSkillPrompt, listSkills, parseSkillPrompt } from "../skills";
 import { loadSettings, saveSettings, type Settings } from "../settings";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
@@ -206,6 +207,7 @@ export function App(props: AppProps) {
   const paletteIdxRef = useRef(0);
   const lastEscAt = useRef(0);
   const lastCtrlCAt = useRef(0);
+  const historyRef = useRef(new PromptHistory());
   const followRef = useRef(true);
   const startedAtRef = useRef(0);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -446,7 +448,9 @@ export function App(props: AppProps) {
     setResumeQuery("");
     sessionIdRef.current = record.id;
     try {
-      setEvents(JSON.parse(record.events_json) as RunEvent[]);
+      const restoredEvents = JSON.parse(record.events_json) as RunEvent[];
+      setEvents(restoredEvents);
+      historyRef.current.reset(restoredEvents.flatMap((event) => (event.type === "task" ? [event.text] : [])));
       const restored = JSON.parse(record.info_json) as RunInfo;
       setInfo({ ...restored, cost: restored.cost ?? 0, apiCalls: restored.apiCalls ?? 0 });
       messagesRef.current = JSON.parse(record.messages_json) as TrajectoryMessage[];
@@ -503,6 +507,7 @@ export function App(props: AppProps) {
     setPaletteDismissed(false);
     setPaletteIdx(0);
     if (!trimmed) return;
+    historyRef.current.push(trimmed);
     const command = trimmed.replace(/^\//, "").toLowerCase();
     if (command === "model") return setOverlay("model");
     if (command === "settings" || command === "config") {
@@ -801,6 +806,28 @@ export function App(props: AppProps) {
       }
 
       if (key.name === "escape") return escapePress();
+      // ↑ on the first line / ↓ on the last line browse this session's sent prompts
+      // (inside a multi-line prompt they keep moving the cursor between lines).
+      if ((key.name === "up" || key.name === "down") && !key.ctrl && !key.meta && !key.shift) {
+        const area = textareaRef.current;
+        const row = area?.logicalCursor.row ?? 0;
+        const lastRow = Math.max(0, (area?.lineCount ?? 1) - 1);
+        const recalled =
+          key.name === "up"
+            ? row === 0
+              ? historyRef.current.prev(promptRef.current)
+              : null
+            : row === lastRow
+              ? historyRef.current.next()
+              : null;
+        if (recalled !== null) {
+          key.preventDefault();
+          applyPromptText(recalled);
+          // a recalled `/cmd` or `$skill` must not open the palette (it would take over ↑/↓)
+          if (isPaletteText(recalled)) setPaletteDismissed(true);
+          return;
+        }
+      }
       // Keep the palette query in sync with the textarea (onContentChange is not
       // reliable across bindings, so re-read the buffer right after each key).
       setTimeout(() => {
