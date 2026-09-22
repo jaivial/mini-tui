@@ -415,6 +415,7 @@ export function App(props: AppProps) {
     consumedRef.current = 0; // fresh trajectory: events rebuild from its first message
     live.current.watch = watchTrajectory(run.session.trajPath, applySnapshot);
     run.exited.then((code) => {
+      if (live.current.run !== run) return; // superseded (e.g. `/new`): don't touch the new session
       exitedRef.current = true;
       live.current.watch?.stop();
       const traj = readTrajectory(run.session.trajPath);
@@ -461,6 +462,40 @@ export function App(props: AppProps) {
     setStatus("done");
     setHintText(`resumed → ${record.title}`);
     setInputFocused(true);
+  };
+
+  /** `/new`: stop whatever runs and start a blank session (model and settings stay). */
+  const newSession = () => {
+    const id = sessionIdRef.current;
+    if (persist && id) {
+      try {
+        saveTranscript(db(), id, events, info, messagesRef.current); // flush the debounced save
+      } catch {
+        // persistence is best-effort
+      }
+    }
+    live.current.watch?.stop();
+    live.current.run?.kill();
+    live.current = {};
+    exitedRef.current = true;
+    interruptedRef.current = false;
+    sessionIdRef.current = null;
+    messagesRef.current = [];
+    consumedRef.current = 0;
+    startedAtRef.current = 0;
+    followRef.current = true;
+    historyRef.current.reset();
+    togglesRef.current.clear();
+    setEvents([]);
+    setInfo({ cost: 0, apiCalls: 0 });
+    setStatus("idle");
+    setErrorText("");
+    setFocusIdx(0);
+    setFlipped(new Set());
+    setAnchor(null);
+    setOverlay("none");
+    setInputFocused(true);
+    setHintText("new session");
   };
 
   const applyModel = (model: string) => {
@@ -521,6 +556,7 @@ export function App(props: AppProps) {
       return setOverlay("connect");
     }
     if (command === "quit" || command === "exit" || command === "q") return quit();
+    if (command === "new" || command === "clear") return newSession();
     if (command.startsWith("model ")) {
       const model = trimmed.replace(/^\//, "").slice("model ".length).trim();
       if (model) return applyModel(model);

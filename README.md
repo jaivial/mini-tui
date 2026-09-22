@@ -165,6 +165,7 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `/help` | commands and keys |
 | `/model` | open the model picker (or `/model <id>` for a direct switch) |
 | `/settings` | output display (collapsed / trimmed / expanded) |
+| `/new` | start a fresh session in place (stops the current run; model and settings stay) |
 | `/resume` | browse sessions saved in this folder (search + pages) |
 | `/connect` | connect a BYOK provider (key → model → tested connection) |
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
