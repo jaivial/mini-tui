@@ -11,28 +11,31 @@ import { MODELS } from "../src/ui/components/ModelPicker";
 import { parseTrajectory } from "../src/traj/parse";
 import type { RunEvent, Trajectory } from "../src/traj/schema";
 
+const EXPANDED = { outputMode: "expanded" as const };
+
 function loadFixture(name: string): Trajectory {
   const path = fileURLToPath(new URL(`./fixtures/${name}.json`, import.meta.url));
   return JSON.parse(readFileSync(path, "utf8")) as Trajectory;
 }
 
 describe("App rendering", () => {
-  test("renders the tool call, its output and the exit banner", async () => {
+  test("renders tool call and output (and skips the redundant Submitted exit)", async () => {
     const { events, info } = parseTrajectory(loadFixture("normal-step"));
-    const setup = await testRender(<App cwd="." events={events} info={info} onQuit={() => {}} />, {
-      width: 120,
-      height: 60,
-    });
+    const setup = await testRender(
+      <App cwd="." events={events} info={info} initialSettings={EXPANDED} onQuit={() => {}} />,
+      { width: 120, height: 60 },
+    );
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
     expect(frame).toContain("echo TUI_OK"); // the command
     expect(frame).toContain("rc=0"); // the returncode badge
     expect(frame).toContain("TUI_OK"); // the output
-    expect(frame).toContain("Submitted"); // the exit banner
+    expect(frame).not.toContain("Submitted"); // redundant with the final answer above
+    expect(frame).not.toContain("Echoed and submitted."); // no duplicate exit text
     setup.renderer.destroy();
   });
 
-  test("collapses huge outputs with a hidden-lines marker", async () => {
+  test("collapsed mode shows only a tool-call count line", async () => {
     const events: RunEvent[] = [
       { type: "tool_call", id: "call_x", name: "bash", command: "seq 1 400" },
       {
@@ -43,23 +46,32 @@ describe("App rendering", () => {
         exceptionInfo: "",
       },
     ];
-    const setup = await testRender(<App cwd="." events={events} info={{ cost: 0, apiCalls: 1 }} onQuit={() => {}} />, {
-      width: 120,
-      height: 60,
-    });
+    const setup = await testRender(
+      <App
+        cwd="."
+        events={events}
+        info={{ cost: 0, apiCalls: 1 }}
+        initialSettings={{ outputMode: "collapsed" }}
+        persistSettings={false}
+        onQuit={() => {}}
+      />,
+      { width: 120, height: 30 },
+    );
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
-    expect(frame).toContain("lines hidden");
+    expect(frame).toContain("1 tool call");
     expect(frame).toContain("[e] expand");
+    expect(frame).not.toContain("line 21");
+    expect(frame).not.toContain("seq 1 400");
     setup.renderer.destroy();
   });
 
   test("shows error badges and exception info", async () => {
     const { events, info } = parseTrajectory(loadFixture("error-obs"));
-    const setup = await testRender(<App cwd="." events={events} info={info} onQuit={() => {}} />, {
-      width: 120,
-      height: 40,
-    });
+    const setup = await testRender(
+      <App cwd="." events={events} info={info} initialSettings={EXPANDED} onQuit={() => {}} />,
+      { width: 120, height: 40 },
+    );
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
     expect(frame).toContain("rc=2");
@@ -73,12 +85,14 @@ describe("App rendering", () => {
       events.push({ type: "tool_call", id: `call_${i}`, name: "bash", command: `echo CARD-${i}` });
       events.push({ type: "observation", toolCallId: `call_${i}`, returncode: 0, output: `CARD-${i} done`, exceptionInfo: "" });
     }
-    const setup = await testRender(<App cwd="." events={events} info={{ cost: 0, apiCalls: 8 }} onQuit={() => {}} />, {
-      width: 80,
-      height: 16,
-    });
+    const setup = await testRender(
+      <App cwd="." events={events} info={{ cost: 0, apiCalls: 8 }} initialSettings={EXPANDED} onQuit={() => {}} />,
+      { width: 80, height: 16 },
+    );
     await setup.renderOnce();
-    // sticky to bottom on first paint
+    await Bun.sleep(20); // the follow-the-bottom toggle settles after the first paint
+    await setup.renderOnce();
+    // sticky to bottom once the content is taller than the viewport
     expect(setup.captureCharFrame()).toContain("CARD-8");
 
     setup.mockInput.pressEscape(); // leave the prompt input (normal mode)
@@ -115,7 +129,7 @@ describe("App rendering", () => {
 
   test("/model typed in the prompt opens the model picker and switching posts a notice", async () => {
     const { events, info } = parseTrajectory(loadFixture("normal-step"));
-    const setup = await testRender(<App cwd="." events={events} info={info} onQuit={() => {}} />, {
+    const setup = await testRender(<App cwd="." events={events} info={info} initialSettings={EXPANDED} onQuit={() => {}} />, {
       width: 110,
       height: 40,
     });
@@ -184,15 +198,20 @@ describe("App rendering", () => {
 
   test("settings: /settings opens the output display panel", async () => {
     const { events, info } = parseTrajectory(loadFixture("normal-step"));
-    const setup = await testRender(<App cwd="." events={events} info={info} onQuit={() => {}} />, {
-      width: 110,
-      height: 30,
-    });
+    const setup = await testRender(
+      <App cwd="." events={events} info={info} initialSettings={EXPANDED} persistSettings={false} onQuit={() => {}} />,
+      { width: 110, height: 30 },
+    );
     await setup.renderOnce();
 
     await setup.mockInput.typeText("/settings");
+    await Bun.sleep(20);
     await act(async () => {
-      setup.mockInput.pressEnter();
+      setup.mockInput.pressEnter(); // fill
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter(); // run
     });
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
@@ -234,13 +253,7 @@ describe("App rendering", () => {
     trimmed.renderer.destroy();
 
     const full = await testRender(
-      <App
-        cwd="."
-        events={events}
-        info={{ cost: 0, apiCalls: 1 }}
-        initialSettings={{ outputMode: "expanded" }}
-        onQuit={() => {}}
-      />,
+      <App cwd="." events={events} info={{ cost: 0, apiCalls: 1 }} initialSettings={EXPANDED} onQuit={() => {}} />,
       { width: 90, height: 60 },
     );
     await full.renderOnce();
@@ -250,12 +263,95 @@ describe("App rendering", () => {
     expect(fullFrame).not.toContain("lines hidden");
     full.renderer.destroy();
   });
+
+  test("meta row shows model, path and git branch", async () => {
+    const setup = await testRender(
+      <App
+        cwd="/home/jaime/mini-tui"
+        events={[]}
+        info={{ cost: 0, apiCalls: 0, model: "xiaomi/mimo-v2.6-flash" }}
+        onQuit={() => {}}
+      />,
+      { width: 100, height: 16 },
+    );
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("xiaomi/mimo-v2.6-flash");
+    expect(frame).toContain("mini-tui");
+    expect(frame).toContain("⎇ main");
+    setup.renderer.destroy();
+  });
+
+  test("/help opens the help panel", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onQuit={() => {}} />,
+      { width: 100, height: 26 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/help");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("help · Esc close");
+    expect(frame).toContain("/quit  ·  /exit");
+    expect(frame).toContain("double Esc closes");
+    setup.renderer.destroy();
+  });
+
+  test("/quit closes the TUI (fill does not, run does)", async () => {
+    let quits = 0;
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onQuit={() => (quits += 1)} />,
+      { width: 80, height: 16 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/quit");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter(); // palette fill
+    });
+    await setup.renderOnce();
+    expect(quits).toBe(0);
+    await act(async () => {
+      setup.mockInput.pressEnter(); // execute
+    });
+    await setup.renderOnce();
+    expect(quits).toBe(1);
+    setup.renderer.destroy();
+  });
+
+  test("double Esc closes the TUI", async () => {
+    let quits = 0;
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onQuit={() => (quits += 1)} />,
+      { width: 80, height: 16 },
+    );
+    await setup.renderOnce();
+    setup.mockInput.pressEscape();
+    await Bun.sleep(100); // inside the double-press window (and past the ESC parser timeout)
+    setup.mockInput.pressEscape();
+    await Bun.sleep(100); // the second bare ESC is only emitted after the parser timeout
+    await setup.renderOnce();
+    expect(quits).toBe(1);
+    setup.renderer.destroy();
+  });
 });
 
 describe("markdown and palette extras", () => {
   test("final answer renders as markdown (no literal ** or ` markers)", async () => {
     const events: RunEvent[] = [
       { type: "task", text: "Summarize the fix" },
+      {
+        type: "assistant",
+        text: "**Fixed:** use `pytest.approx(0.3)` instead of `== 0.3` — **8 passed**.",
+      },
       {
         type: "exit",
         exitStatus: "Submitted",
@@ -272,6 +368,7 @@ describe("markdown and palette extras", () => {
     expect(frame).toContain("8 passed");
     expect(frame).not.toContain("**");
     expect(frame).not.toContain("`");
+    expect(frame).not.toContain("Submitted"); // duplicate exit card is gone
     setup.renderer.destroy();
   });
 

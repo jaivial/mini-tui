@@ -10,8 +10,8 @@ export interface Settings {
 }
 
 export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description: string }> = [
-  { value: "collapsed", name: "collapsed", description: "first and last lines, expandable per block" },
-  { value: "trim", name: "trimmed (2 lines)", description: "just two lines, expandable per block" },
+  { value: "collapsed", name: "collapsed", description: "just a tool-call count line, expandable per block" },
+  { value: "trim", name: "trimmed (2 lines)", description: "two lines of output, expandable per block" },
   { value: "expanded", name: "expanded", description: "show every output in full" },
 ];
 

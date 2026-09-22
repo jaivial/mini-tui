@@ -24,14 +24,20 @@ outputs — into cards, badges and banners. The harness runs completely untouche
   ![command palette](docs/screenshots/command-palette.png)
 
 - **Only what you sent.** The transcript shows your prompt as typed — never the harness' task
-  template wrapping — and the **final answer is rendered as proper markdown** (bold, code, links).
+  template wrapping — the **final answer is rendered as proper markdown** (bold, code, links), and
+  the redundant `exit Submitted` echo of it is never shown.
 - **One quiet card per bash step** (command + its output), shadcn-style: zinc neutrals, rounded
-  surfaces, a single subtle accent and semantic colors used sparingly.
-- **Output display modes** — collapsed (first + last lines), trimmed to 2 lines, or fully expanded.
-  Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still expands or
-  collapses any block individually.
+  surfaces, a single subtle accent and semantic colors used sparingly. The meta row below the
+  prompt shows the selected model, the working path and the checked-out git branch.
+- **Output display modes** — collapsed (just a `1 tool call` line), trimmed to 2 lines, or fully
+  expanded. Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still
+  expands or collapses any block individually.
 
   ![settings panel](docs/screenshots/settings.png)
+
+- **`/help`** lists every command and key in one panel.
+
+  ![help panel](docs/screenshots/help.png)
 
 - **Tool call cards** with syntax-highlighted bash commands and a quiet focus marker.
 - **Output cards** with `rc=0` / `rc=N` badges, exception info, and collapsible bodies
@@ -94,15 +100,16 @@ Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 | `Enter` | send the prompt (starts a task, or continues the running conversation) |
 | `Alt+Enter` / `Ctrl+J` | insert a newline in the prompt (`Shift+Enter` too where the terminal reports it) |
 | `/` | opens the command palette: `↑`/`↓` or click to select · `Enter`/`Tab` fills the prompt (never sends) |
-| `Esc` | close the palette / leave the prompt and navigate the transcript |
-| `i` / `Enter` | (navigation mode) jump back to the prompt |
-| `/model` | typed in the prompt: open the model picker (or `/model <id>`) |
-| `/settings` | typed in the prompt: output display (collapsed / trimmed / expanded) |
+| `Esc` | close the palette / leave the prompt · **double `Esc` closes** (interrupting the run) |
+| `ctrl+c` | clear the prompt · on an empty prompt (twice) closes |
+| `/quit` · `/exit` | close mini-tui |
+| `/help` | commands and keys |
+| `/model` | open the model picker (or `/model <id>` for a direct switch) |
+| `/settings` | output display (collapsed / trimmed / expanded) |
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
 | `e` | expand / collapse the focused output block |
 | `PgUp` / `PgDn` | scroll |
 | `g` / `G` | top / bottom |
-| `q` | (navigation mode) quit — `ctrl+c` also quits while typing |
 
 ## How it works
 

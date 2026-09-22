@@ -21,8 +21,8 @@ export function clipOutput(output: string, mode: OutputMode, forceExpand = false
 }
 
 /**
- * One borderless block per bash step: command + its output. shadcn-quiet: labels in
- * muted zinc, semantic colors only on the return-code badge, a small focus marker.
+ * One borderless block per bash step. Display modes: `collapsed` renders only a
+ * `N tool calls` count line, `trim` two lines of output, `expanded` everything.
  */
 export function StepCard(props: {
   index?: number;
@@ -38,13 +38,26 @@ export function StepCard(props: {
 }) {
   const badge = props.returncode === null ? "rc=?" : `rc=${props.returncode}`;
   const badgeColor = props.returncode === 0 ? colors.ok : props.returncode === null ? colors.dim : colors.err;
+  const marker = <text fg={colors.accent}>{props.focused ? "▍" : " "}</text>;
+
+  if (props.mode === "collapsed" && !props.expanded) {
+    const count = props.command !== undefined ? "1 tool call" : "output";
+    return (
+      <box paddingX={1} gap={1} flexDirection="row" onMouseDown={props.onToggle}>
+        {marker}
+        <text fg={colors.dim}>{count}</text>
+        <text fg={colors.faint}>[e] expand</text>
+      </box>
+    );
+  }
+
   const { text, hidden } = clipOutput(props.output, props.mode, props.expanded);
   const totalLines = props.output.replace(/\n+$/, "").split("\n").length;
   const label = props.index !== undefined ? `${props.name ?? "bash"} #${props.index}` : "output";
   return (
     <box paddingX={1} gap={0}>
       <box flexDirection="row" gap={1}>
-        <text fg={colors.accent}>{props.focused ? "▍" : " "}</text>
+        {marker}
         <text fg={colors.dim}>{label}</text>
         <text fg={badgeColor}>{badge}</text>
         {props.exceptionInfo ? <text fg={colors.err}>· {props.exceptionInfo}</text> : null}

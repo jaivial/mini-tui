@@ -159,7 +159,22 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   await setup.renderOnce();
   save("command-palette", setup);
 
-  // 6) the multi-line prompt (empty transcript, ready to type)
+  // 6) the /help panel
+  setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 26 });
+  await setup.renderOnce();
+  await setup.mockInput.typeText("/help");
+  await Bun.sleep(30);
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await setup.renderOnce();
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await setup.renderOnce();
+  save("help", setup);
+
+  // 7) the multi-line prompt (empty transcript, ready to type)
   setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 24 });
   await setup.renderOnce();
   await setup.mockInput.typeText(

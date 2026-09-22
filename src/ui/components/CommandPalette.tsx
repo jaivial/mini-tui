@@ -11,6 +11,9 @@ export function buildOptions(models: SelectOption[]): CommandOption[] {
   return [
     { insert: "/model", label: "/model", detail: "open the model picker" },
     { insert: "/settings", label: "/settings", detail: "output display settings" },
+    { insert: "/help", label: "/help", detail: "commands and keys" },
+    { insert: "/quit", label: "/quit", detail: "close mini-tui" },
+    { insert: "/exit", label: "/exit", detail: "close mini-tui" },
     ...models.map((m) => ({
       insert: `/model ${m.value}`,
       label: `/model ${m.value}`,

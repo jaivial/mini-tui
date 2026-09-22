@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
 import { colors, markdownSyntaxStyle } from "./theme";
-import { Header } from "./components/Header";
+import { MetaRow } from "./components/MetaRow";
 import { TaskCard } from "./components/TaskCard";
 import { StepCard } from "./components/StepCard";
 import { NoticeLine } from "./components/NoticeLine";
@@ -12,16 +12,19 @@ import { StatusBar } from "./components/StatusBar";
 import { PromptBar } from "./components/PromptBar";
 import { ModelPicker, MODELS } from "./components/ModelPicker";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { HelpPanel } from "./components/HelpPanel";
 import { CommandPalette, buildOptions, matchOptions, type CommandOption } from "./components/CommandPalette";
 import { messagesToEvents, parseInfo } from "../traj/parse";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
+import { gitBranch, shortPath } from "../git";
 import { loadSettings, saveSettings, type Settings } from "../settings";
 import type { RunEvent, RunInfo, Trajectory } from "../traj/schema";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const COMMAND_OPTIONS = buildOptions(MODELS);
+const ESC_DOUBLE_MS = 800;
 
 export interface AppProps {
   cwd: string;
@@ -38,6 +41,8 @@ export interface AppProps {
   statusOverride?: "running" | "done" | "error";
   /** Override persisted settings (tests/screenshots). */
   initialSettings?: Settings;
+  /** Persist settings changes to disk (tests set this to false). */
+  persistSettings?: boolean;
   /** Override prompt submission (tests); otherwise runs a task or continues the run. */
   onSend?: (text: string) => void;
   onQuit?: () => void;
@@ -102,7 +107,7 @@ export function App(props: AppProps) {
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
   const [settings, setSettings] = useState<Settings>(() => props.initialSettings ?? loadSettings());
   const [inputFocused, setInputFocusedState] = useState(true);
-  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings">("none");
+  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help">("none");
   const [hintText, setHintText] = useState<string | undefined>(undefined);
   const [promptText, setPromptTextState] = useState("");
   const [paletteDismissed, setPaletteDismissedState] = useState(false);
@@ -110,18 +115,21 @@ export function App(props: AppProps) {
   // Key handlers can fire several times before React re-renders; mirror what they
   // read/write into refs so state is never stale inside a batch of keystrokes.
   const inputRefocus = useRef(true);
-  const overlayRef = useRef<"none" | "model" | "settings">("none");
+  const overlayRef = useRef<"none" | "model" | "settings" | "help">("none");
   const exitedRef = useRef(false);
   const promptRef = useRef("");
   const dismissedRef = useRef(false);
   const paletteIdxRef = useRef(0);
+  const lastEscAt = useRef(0);
+  const followRef = useRef(true);
   const textareaRef = useRef<TextareaRenderable | null>(null);
+  const branch = useMemo(() => gitBranch(props.cwd), [props.cwd]);
 
   const setInputFocused = (value: boolean) => {
     inputRefocus.current = value;
     setInputFocusedState(value);
   };
-  const setOverlay = (value: "none" | "model" | "settings") => {
+  const setOverlay = (value: "none" | "model" | "settings" | "help") => {
     overlayRef.current = value;
     setOverlayState(value);
   };
@@ -148,7 +156,7 @@ export function App(props: AppProps) {
     textareaRef.current?.setText(text);
     setPromptText(text);
     if (!text.startsWith("/")) setPaletteDismissed(false);
-    if (text !== promptRef.current) setPaletteIdx(0);
+    setPaletteIdx(0);
   };
 
   const completeOption = (option: CommandOption) => {
@@ -225,7 +233,7 @@ export function App(props: AppProps) {
   const applySettings = (next: Settings) => {
     setOverlay("none");
     setSettings(next);
-    saveSettings(next);
+    if (props.persistSettings !== false) saveSettings(next);
     setHintText(`output display → ${next.outputMode}`);
     setInputFocused(true);
   };
@@ -239,6 +247,8 @@ export function App(props: AppProps) {
     const command = trimmed.replace(/^\//, "").toLowerCase();
     if (command === "model") return setOverlay("model");
     if (command === "settings" || command === "config") return setOverlay("settings");
+    if (command === "help" || command === "h") return setOverlay("help");
+    if (command === "quit" || command === "exit" || command === "q") return quit();
     if (command.startsWith("model ")) {
       const model = trimmed.replace(/^\//, "").slice("model ".length).trim();
       if (model) return applyModel(model);
@@ -264,14 +274,46 @@ export function App(props: AppProps) {
     return () => clearInterval(timer);
   }, [status]);
 
+  // Follow-the-bottom when the transcript grows (OpenTUI's sticky scroll blanks out
+  // for short content, so it only turns on when content exceeds the viewport).
+  // `followRef` detaches the auto-follow once the user scrolls up.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const scroll = scrollRef.current;
+      if (!scroll) return;
+      try {
+        const tall = (scroll.content?.height ?? 0) > (scroll.viewport?.height ?? 1);
+        scroll.stickyScroll = tall;
+        if (tall && followRef.current) scroll.scrollBy(1_000_000);
+      } catch {
+        // renderable torn down between render and this check
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [events]);
+
   const items = buildItems(events);
   const pairItems = items.filter((item): item is Extract<Item, { kind: "pair" }> => item.kind === "pair");
 
   const quit = () => {
     live.current.watch?.stop();
-    live.current.run?.kill();
+    live.current.run?.kill(); // quitting interrupts any run in flight
     if (props.onQuit) props.onQuit();
     else process.exit(0);
+  };
+
+  /** Esc: double press closes (interrupting the run), single press toggles prompt/navigation. */
+  const escapePress = () => {
+    const now = Date.now();
+    if (now - lastEscAt.current < ESC_DOUBLE_MS) return quit();
+    lastEscAt.current = now;
+    return setInputFocused(!inputRefocus.current);
+  };
+
+  /** ctrl+c: clear the prompt; on an empty prompt (i.e. twice) close. */
+  const ctrlCPress = () => {
+    if (inputRefocus.current && promptRef.current) return applyPromptText("");
+    return quit();
   };
 
   useKeyboard((key) => {
@@ -280,17 +322,17 @@ export function App(props: AppProps) {
         setOverlay("none");
         setInputFocused(true);
       }
-      return; // the overlay Select owns the other keys
+      return; // the overlay owns the other keys
     }
 
     if (inputRefocus.current) {
-      if (key.ctrl && key.name === "c") return quit();
+      if (key.ctrl && key.name === "c") return ctrlCPress();
 
       if (!dismissedRef.current && promptRef.current.startsWith("/")) {
         // slash completion: App owns the keys while the popover is open
         const options = matchOptions(promptRef.current, COMMAND_OPTIONS);
         if (options.length === 0) return;
-        if (key.name === "escape") return setPaletteDismissed(true);
+        if (key.name === "escape") return escapePress();
         if (key.name === "up") return setPaletteIdx(Math.max(0, paletteIdxRef.current - 1));
         if (key.name === "down") return setPaletteIdx(Math.min(options.length - 1, paletteIdxRef.current + 1));
         if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
@@ -304,7 +346,7 @@ export function App(props: AppProps) {
         return;
       }
 
-      if (key.name === "escape") return setInputFocused(false);
+      if (key.name === "escape") return escapePress();
       // Keep the palette query in sync with the textarea (onContentChange is not
       // reliable across bindings, so re-read the buffer right after each key).
       setTimeout(() => {
@@ -325,6 +367,8 @@ export function App(props: AppProps) {
     }
 
     // normal mode: transcript navigation
+    if (key.name === "escape") return escapePress();
+    if (key.ctrl && key.name === "c") return quit();
     if (key.name === "i" || key.name === "return" || key.name === "enter") return setInputFocused(true);
     if (key.name === "q") return quit();
     if (key.name === "e" && pairItems.length) {
@@ -341,10 +385,22 @@ export function App(props: AppProps) {
     }
     if (key.name === "j" || key.name === "down") return setFocusIdx((f) => Math.min(f + 1, Math.max(pairItems.length - 1, 0)));
     if (key.name === "k" || key.name === "up") return setFocusIdx((f) => Math.max(f - 1, 0));
-    if (key.name === "pageup") return scrollRef.current?.scrollBy(-10);
-    if (key.name === "pagedown") return scrollRef.current?.scrollBy(10);
-    if (key.name === "g" && key.shift) return scrollRef.current?.scrollBy(1_000_000);
-    if (key.name === "g") return scrollRef.current?.scrollBy(-1_000_000);
+    if (key.name === "pageup") {
+      followRef.current = false;
+      return scrollRef.current?.scrollBy(-10);
+    }
+    if (key.name === "pagedown") {
+      followRef.current = true;
+      return scrollRef.current?.scrollBy(10);
+    }
+    if (key.name === "g" && key.shift) {
+      followRef.current = true;
+      return scrollRef.current?.scrollBy(1_000_000);
+    }
+    if (key.name === "g") {
+      followRef.current = false;
+      return scrollRef.current?.scrollBy(-1_000_000);
+    }
   });
 
   const step = events.filter((event) => event.type === "assistant").length;
@@ -366,36 +422,32 @@ export function App(props: AppProps) {
       ? "model picker"
       : overlayState === "settings"
         ? "settings"
-        : inputFocused
-          ? busy
-            ? "typing · Enter continues the conversation"
-            : "typing · Enter launches"
-          : "normal · i type · q quit");
+        : overlayState === "help"
+          ? "help"
+          : inputFocused
+            ? busy
+              ? "typing · Enter continues the conversation"
+              : "typing · Enter launches"
+            : "normal · i type · q quit");
 
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={colors.bg}>
-      <Header
-        model={modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL}
-        step={step}
-        cost={info.cost}
-        status={displayStatus}
-        spinner={SPINNER[tick % SPINNER.length]}
-      />
       {overlayState === "model" ? (
         <ModelPicker
-          current={modelOverride ?? info.model ?? DEFAULT_MODEL}
+          current={modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL}
           onPick={applyModel}
           onCancel={() => setOverlay("none")}
         />
       ) : overlayState === "settings" ? (
         <SettingsPanel settings={settings} onApply={applySettings} onCancel={() => setOverlay("none")} />
+      ) : overlayState === "help" ? (
+        <HelpPanel />
       ) : (
         <scrollbox
           ref={scrollRef}
-          stickyScroll
           stickyStart="bottom"
           width="100%"
-          height={Math.max(6, dims.height - 9 - paletteOptions.length)}
+          height={Math.max(6, dims.height - 10 - paletteOptions.length)}
           contentOptions={{ gap: 1 }}
         >
           {items.map((item) => {
@@ -411,7 +463,9 @@ export function App(props: AppProps) {
                   </box>
                 );
               if (event.type === "notice") return <NoticeLine key={item.index} text={event.text} interruptType={event.interruptType} />;
-              if (event.type === "exit") return <ExitBanner key={item.index} exitStatus={event.exitStatus} submission={event.submission} />;
+              // `Submitted` just repeats the final answer rendered above — show only real errors.
+              if (event.type === "exit" && event.exitStatus !== "Submitted")
+                return <ExitBanner key={item.index} exitStatus={event.exitStatus} submission={event.submission} />;
               if (event.type === "observation")
                 return (
                   <StepCard
@@ -474,6 +528,15 @@ export function App(props: AppProps) {
             setPaletteIdx(0);
           }
         }}
+      />
+      <MetaRow
+        model={(modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL) || "default model"}
+        path={shortPath(props.cwd)}
+        branch={branch}
+        step={step}
+        cost={info.cost}
+        status={displayStatus}
+        spinner={SPINNER[tick % SPINNER.length]}
       />
       <StatusBar hint={hint} />
     </box>
