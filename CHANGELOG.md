@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.6.1 — 2026-09-22
+
+An honest status chip and a quieter bottom stack.
 
 ### Fixed
 
