@@ -2,6 +2,36 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.4.0 — 2026-09-22
+
+One repo, one install — mini-swe-agent now lives in `agent/`, and trajectory persistence got
+55× lighter.
+
+### Added
+
+- **Vendored mini-swe-agent** (`agent/`, `git subtree --squash` on upstream v2.4.6) carrying the
+  three TUI integration patches as real code (plain-text final answer · control file ·
+  `--resume`) and the custom model providers (xiaomi, rosetta, cliproxy, deepseek, opencode_go,
+  openai, with their `mini extra <provider>-models` listings). One `pip install -e ./agent` and
+  `mini` runs it all; [docs/mini-swe-agent-patches.md](docs/mini-swe-agent-patches.md) remains
+  as the upstreamable description of the patches.
+
+### Performance
+
+- **Append-only trajectory journal** (`<traj>.jsonl`): the agent appends one line per message
+  plus a fresh info line on every save (O(1) per step, never torn), and mini-tui consumes only
+  the new bytes per tick. The full `traj.json` export is now compact (no `indent=2`), atomic
+  (tmp + rename) and throttled (every 20 messages / 10 s — always written at run end).
+  Benchmark on a synthetic 300-step run: **55× less IO** (235 MB → 4.3 MB written) and **8×
+  faster persistence** (0.99 s → 0.12 s).
+- Trajectories from unpatched producers keep working: the TUI falls back to whole-file reads
+  when no journal exists.
+
+### Fixed
+
+- Torn mid-write trajectory reads can no longer happen (atomic export; journal appends are
+  single whole lines and partial tails are held back until complete).
+
 ## 0.3.0 — 2026-09-22
 
 Lighter and faster. Identical 400-step repro run (200×50 terminal): **−30 % CPU** (18.6 s → 13.1 s)
