@@ -31,6 +31,7 @@ import {
   type ProviderDef,
 } from "../providers";
 import { messagesToEvents, parseInfo } from "../traj/parse";
+import { slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
@@ -61,6 +62,10 @@ const isPaletteText = (text: string) => text.startsWith("/") || text.startsWith(
 const ESC_DOUBLE_MS = 800;
 /** Window for the second ctrl+c that closes the TUI (the first one only clears the prompt). */
 const CTRL_C_DOUBLE_MS = 1500;
+/** Transcript saves while a run streams: at most one per this interval (plus one per turn). */
+const SAVE_EVERY_MS = 30_000;
+/** Quiet time before a save (batches the burst of snapshots a single step produces). */
+const SAVE_SETTLE_MS = 1000;
 /**
  * How many transcript items stay mounted at once. Each mounted item owns native text
  * buffers (~1 MB in practice: every rendered line is a full terminal-width row of
@@ -187,7 +192,6 @@ export function App(props: AppProps) {
   const [flipped, setFlipped] = useState<Set<number>>(new Set());
   /** Top of the mounted transcript window when reading history (null = follow the live tail). */
   const [anchor, setAnchor] = useState<number | null>(null);
-  const [tick, setTick] = useState(0);
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
   const [settings, setSettings] = useState<Settings>(() => {
     const loaded = props.initialSettings ?? loadSettings();
@@ -222,7 +226,8 @@ export function App(props: AppProps) {
   const lastCtrlCAt = useRef(0);
   const historyRef = useRef(new PromptHistory());
   const followRef = useRef(true);
-  const startedAtRef = useRef(0);
+  /** Start of the current turn, as state so the status line restarts its timer. */
+  const [turnStartedAt, setTurnStartedAt] = useState(0);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<TextareaRenderable | null>(null);
   const sessionIdRef = useRef<string | null>(null);
@@ -352,7 +357,10 @@ export function App(props: AppProps) {
     const contiguous = from > 0 && messages.length >= from && sameMessage(prev[from - 1], messages[from - 1]);
     const startFrom = contiguous ? from : 0;
     const fresh = messagesToEvents(messages, { showSystem: props.showSystem }, startFrom);
-    messagesRef.current = messages;
+    // Events are built: keep only the slim copy of the new messages (heavy extras dropped).
+    const kept = startFrom === 0 ? [] : prev.slice(0, startFrom);
+    for (let i = startFrom; i < messages.length; i++) kept.push(slimMessage(messages[i]!));
+    messagesRef.current = kept;
     consumedRef.current = messages.length;
     setEvents((prevEvents) => (startFrom === 0 ? fresh : fresh.length ? [...prevEvents, ...fresh] : prevEvents));
     setInfo(parseInfo(traj));
@@ -378,19 +386,26 @@ export function App(props: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep the session transcript saved (debounced) once a session exists.
-  useEffect(() => {
+  // Keep the session transcript saved once a session exists. Each save stringifies the whole
+  // transcript (MBs on long runs), so while a run streams it is throttled to SAVE_EVERY_MS;
+  // a finished turn (trailing exit) or a quiet transcript saves right away.
+  const lastSaveAt = useRef(0);
+  const latestSave = useRef<() => void>(() => {});
+  latestSave.current = () => {
     const id = sessionIdRef.current;
     if (!persist || !id) return;
-    // 2s debounce: each save stringifies the full transcript (multi-MB on long runs),
-    // so the 500ms cadence churned tens of MB/s of garbage while a run streams.
-    const timer = setTimeout(() => {
-      try {
-        saveTranscript(db(), id, events, info, messagesRef.current);
-      } catch {
-        // persistence is best-effort
-      }
-    }, 2000);
+    lastSaveAt.current = Date.now();
+    try {
+      saveTranscript(db(), id, events, info, messagesRef.current);
+    } catch {
+      // persistence is best-effort
+    }
+  };
+  useEffect(() => {
+    if (!persist || !sessionIdRef.current) return;
+    const turnOver = events[events.length - 1]?.type === "exit";
+    const due = Math.max(0, lastSaveAt.current + SAVE_EVERY_MS - Date.now());
+    const timer = setTimeout(() => latestSave.current(), turnOver ? SAVE_SETTLE_MS : Math.max(due, SAVE_SETTLE_MS));
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, info]);
@@ -417,7 +432,7 @@ export function App(props: AppProps) {
   const startRun = (spec: TaskSpec) => {
     setStatus("running");
     exitedRef.current = false;
-    startedAtRef.current = Date.now();
+    setTurnStartedAt(Date.now());
     const run = spawnMini({
       ...spec,
       model: spec.model || modelOverride,
@@ -473,14 +488,7 @@ export function App(props: AppProps) {
 
   /** `/new`: stop whatever runs and start a blank session (model and settings stay). */
   const newSession = () => {
-    const id = sessionIdRef.current;
-    if (persist && id) {
-      try {
-        saveTranscript(db(), id, events, info, messagesRef.current); // flush the debounced save
-      } catch {
-        // persistence is best-effort
-      }
-    }
+    latestSave.current(); // flush the throttled save
     live.current.watch?.stop();
     live.current.run?.kill();
     live.current = {};
@@ -489,7 +497,7 @@ export function App(props: AppProps) {
     sessionIdRef.current = null;
     messagesRef.current = [];
     consumedRef.current = 0;
-    startedAtRef.current = 0;
+    setTurnStartedAt(0);
     followRef.current = true;
     historyRef.current.reset();
     togglesRef.current.clear();
@@ -581,7 +589,7 @@ export function App(props: AppProps) {
     const liveRun = live.current.run;
     if (liveRun && !exitedRef.current) {
       liveRun.sendUserMessage(task);
-      startedAtRef.current = Date.now(); // a new turn: the working timer starts over
+      setTurnStartedAt(Date.now()); // a new turn: the working timer starts over
       return;
     }
     if (!sessionIdRef.current) {
@@ -617,11 +625,6 @@ export function App(props: AppProps) {
     startRun({ task, model: modelOverride, cwd: props.cwd, resumePath });
   };
 
-  useEffect(() => {
-    if (status !== "running") return;
-    const timer = setInterval(() => setTick((t) => (t + 1) % 1000), 120);
-    return () => clearInterval(timer);
-  }, [status]);
 
   // Follow-the-bottom when the transcript grows (OpenTUI's sticky scroll blanks out
   // for short content, so it only turns on when content exceeds the viewport).
@@ -652,6 +655,7 @@ export function App(props: AppProps) {
   const pairRank = new Map(pairItems.map((p, i) => [p.toolIndex, i] as const));
 
   const quit = () => {
+    latestSave.current(); // the throttled save may be pending: flush before leaving
     live.current.watch?.stop();
     live.current.run?.kill(); // quitting interrupts any run in flight
     if (props.onQuit) props.onQuit();
@@ -953,7 +957,6 @@ export function App(props: AppProps) {
   const focusedPair = Math.min(Math.max(focusIdx, 0), Math.max(pairItems.length - 1, 0));
   const displayStatus = props.statusOverride ?? deriveStatus(status, events);
   const busy = Boolean(live.current.run) && !exitedRef.current;
-  const elapsedS = startedAtRef.current ? Math.floor((Date.now() - startedAtRef.current) / 1000) : 0;
   const toggle = useCallback(
     (key: number) =>
       setFlipped((prev) => {
@@ -1102,8 +1105,7 @@ export function App(props: AppProps) {
         path={shortPath(props.cwd)}
         branch={branch}
         status={displayStatus}
-        tick={tick}
-        elapsedS={elapsedS}
+        startedAt={turnStartedAt}
       />
       {overlayNode ? <Modal areaHeight={modalAreaHeight}>{overlayNode}</Modal> : null}
     </box>

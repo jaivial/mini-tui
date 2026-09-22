@@ -13,6 +13,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } fro
 
 import type { Trajectory, TrajectoryInfo, TrajectoryMessage } from "./schema";
 import { POLL_MS } from "../config";
+import { slimMessage } from "./slim";
 
 /** `<traj>.json` → `<traj>.jsonl`, mirroring Python's `Path.with_suffix(".jsonl")`. */
 export function journalPathFor(trajPath: string): string {
@@ -116,11 +117,16 @@ export interface WatchHandle {
   stop(): void;
 }
 
+/**
+ * Poll a trajectory and call `onSnapshot` on every change. The snapshot is only valid during
+ * the callback: afterwards the journal-backed messages are slimmed in place (see `slim.ts`).
+ */
 export function watchTrajectory(path: string, onSnapshot: (traj: Trajectory) => void, options: WatchOptions = {}): WatchHandle {
   const intervalMs = options.intervalMs ?? POLL_MS;
   const journal = journalPathFor(path);
   const state = newJournalState();
   let journalMode = false;
+  let slimmed = 0;
   let lastStamp = "";
   let stopped = false;
 
@@ -128,7 +134,15 @@ export function watchTrajectory(path: string, onSnapshot: (traj: Trajectory) => 
     if (stopped) return;
     if (journalMode || existsSync(journal)) {
       journalMode = true;
-      if (consumeJournal(state, journal)) onSnapshot(journalTrajectory(state));
+      const before = state.messages;
+      if (consumeJournal(state, journal)) {
+        if (state.messages !== before) slimmed = 0; // journal truncated and replayed from scratch
+        onSnapshot(journalTrajectory(state));
+        // The consumer has read the full messages: keep only their slim form from now on
+        // (a live run otherwise retains every API response and raw output twice over).
+        for (let i = slimmed; i < state.messages.length; i++) state.messages[i] = slimMessage(state.messages[i]!);
+        slimmed = state.messages.length;
+      }
       return;
     }
     let stamp = "";

@@ -12,6 +12,16 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
   sooner** (litellm's import alone was 198 MB / 2.1 s). DeepSeek, OpenAI and OpenCode Go keep
   litellm (price tables, protocol adapters). Picking a model class no longer imports litellm.
 - The gateway API key is no longer written into the trajectory's model config (`***`).
+- **The TUI keeps only the slim conversation.** Once raw messages become UI events, their heavy
+  extras (`extra.response`, `extra.raw_output`) are dropped from memory, both in the App and in
+  the journal watcher. The trajectory files on disk stay complete, and `--resume` context is
+  unchanged. A saved 817-message session shrinks from **5.7 to 3.1 MB**.
+- **Fewer transcript saves.** A save happens when a turn ends and at most every 30 s while a run
+  streams, instead of 2 s after every change (each save stringified MBs). Quitting and `/new`
+  flush the pending save.
+- **The spinner no longer re-renders the app.** The working indicator owns its 8 fps tick, so the
+  transcript tree stays still. CPU at rest while "working" drops **1.8 → 0.5 %**.
+- Live replay of a real 817-message session: CPU **−13 %**, peak RSS **229/241 → 199/211 MB**.
 
 ## 0.6.1 — 2026-09-22
 
