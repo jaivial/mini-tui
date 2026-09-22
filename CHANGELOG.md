@@ -2,6 +2,22 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.3.0 — 2026-09-22
+
+Lighter and faster. Identical 400-step repro run (200×50 terminal): **−30 % CPU** (18.6 s → 13.1 s)
+and **−30 % memory** (peak 323 → 228 MB, settles at 280 → 198 MB).
+
+### Performance
+
+- Transcript cards are memoized with stable per-block callbacks (`StepCard`, `TaskCard`, the new
+  `AssistantCard`, `NoticeLine`, `ExitBanner`): the 120 ms spinner tick now re-renders just the
+  status line — before, every mounted card re-rendered and re-clipped its text 8×/s.
+- Trajectory snapshots parse incrementally — messages are append-only per run, so only the delta
+  is parsed and appended instead of rebuilding every event on each step. A replaced file
+  (`view --follow` on another run's output) is detected at the message boundary and re-parsed whole.
+- `messagesToEvents` scans the consumed prefix without allocating a slice per snapshot.
+- Step numbering is O(1) per card (was a linear search per card — O(n²) per render).
+
 ## 0.2.0 — 2026-09-22
 
 Memory: long runs no longer grow into the GBs. A transcript keeps every step mounted as native
