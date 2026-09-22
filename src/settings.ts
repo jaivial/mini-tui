@@ -7,6 +7,8 @@ export type OutputMode = "collapsed" | "trim" | "expanded";
 export interface Settings {
   /** How bash outputs are displayed: collapsed, trimmed to 2 lines, or fully expanded. */
   outputMode: OutputMode;
+  /** UI theme id (see `THEMES` in ui/theme.ts). */
+  theme?: string;
 }
 
 export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description: string }> = [
@@ -15,7 +17,7 @@ export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description:
   { value: "expanded", name: "expanded", description: "show every output in full" },
 ];
 
-export const DEFAULT_SETTINGS: Settings = { outputMode: "collapsed" };
+export const DEFAULT_SETTINGS: Settings = { outputMode: "collapsed", theme: "shadcn" };
 
 const SETTINGS_PATH = join(homedir(), ".config", "mini-tui", "settings.json");
 
@@ -23,7 +25,10 @@ export function loadSettings(): Settings {
   try {
     const data = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
     const mode = data?.outputMode;
-    if (mode === "collapsed" || mode === "trim" || mode === "expanded") return { outputMode: mode };
+    const theme = data?.theme;
+    if (mode === "collapsed" || mode === "trim" || mode === "expanded") {
+      return { outputMode: mode, theme: typeof theme === "string" ? theme : DEFAULT_SETTINGS.theme };
+    }
   } catch {
     // missing or broken settings fall back to defaults
   }

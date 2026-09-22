@@ -35,6 +35,9 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 - **Output display modes** — collapsed (just a `1 tool call` line), trimmed to 2 lines, or fully
   expanded. Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still
   expands or collapses any block individually.
+- **Six themes** — `shadcn` (zinc, default) plus `nord`, `dracula`, `gruvbox`, `tokyo night` and
+  `catppuccin`. Also in `/settings` (`Tab` switches group): moving the selection repaints the
+  whole UI live and the choice persists.
 
   ![settings panel](docs/screenshots/settings.png)
 

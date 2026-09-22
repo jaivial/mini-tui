@@ -17,7 +17,7 @@ export function HelpPanel() {
     ["PgUp PgDn  ·  g G", "scroll · top / bottom"],
   ];
   return (
-    <box borderStyle="rounded" borderColor={colors.border} width="80%" paddingX={1} gap={0}>
+    <box borderStyle="rounded" borderColor={colors.border} backgroundColor={colors.panel} width="80%" paddingX={1} gap={0}>
       <text fg={colors.dim}>help · Esc close</text>
       {rows.map(([key, detail]) => (
         <box key={key} flexDirection="row" gap={2}>

@@ -11,7 +11,7 @@ export function SessionModal(props: {
   onPick: (session: SessionRecord) => void;
 }) {
   return (
-    <box borderStyle="rounded" borderColor={colors.border} width="80%" marginLeft="auto" marginRight="auto" paddingX={1} gap={0}>
+    <box borderStyle="rounded" borderColor={colors.border} backgroundColor={colors.panel} width="80%" marginLeft="auto" marginRight="auto" paddingX={1} gap={0}>
       <text fg={colors.dim}>resume · sessions in this folder · Esc close</text>
       <box flexDirection="row" gap={1}>
         <text fg={colors.faint}>search</text>

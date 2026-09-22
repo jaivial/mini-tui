@@ -3,7 +3,7 @@ import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import type { Database } from "bun:sqlite";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
-import { colors, markdownSyntaxStyle } from "./theme";
+import { colors, markdownSyntaxStyle, applyTheme, DEFAULT_THEME } from "./theme";
 import { StatusLine } from "./components/StatusLine";
 import { TaskCard } from "./components/TaskCard";
 import { StepCard } from "./components/StepCard";
@@ -137,7 +137,12 @@ export function App(props: AppProps) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [tick, setTick] = useState(0);
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
-  const [settings, setSettings] = useState<Settings>(() => props.initialSettings ?? loadSettings());
+  const [settings, setSettings] = useState<Settings>(() => {
+    const loaded = props.initialSettings ?? loadSettings();
+    applyTheme(loaded.theme ?? DEFAULT_THEME);
+    return loaded;
+  });
+  const [settingsGroup, setSettingsGroup] = useState(0);
   const [inputFocused, setInputFocusedState] = useState(true);
   const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help" | "resume" | "connect">("none");
   const [hintText, setHintText] = useState<string | undefined>(undefined);
@@ -380,11 +385,17 @@ export function App(props: AppProps) {
     setInputFocused(true);
   };
 
-  const applySettings = (next: Settings) => {
-    setOverlay("none");
+  const changeSettings = (patch: Partial<Settings>) => {
+    const next = { ...settings, ...patch };
     setSettings(next);
+    applyTheme(next.theme ?? DEFAULT_THEME);
     if (props.persistSettings !== false) saveSettings(next);
-    setHintText(`output display → ${next.outputMode}`);
+    setHintText(patch.theme !== undefined ? `theme → ${next.theme}` : `output display → ${next.outputMode}`);
+  };
+
+  const doneSettings = () => {
+    setOverlay("none");
+    setHintText(`output display → ${settings.outputMode} · theme → ${settings.theme ?? DEFAULT_THEME}`);
     setInputFocused(true);
   };
 
@@ -396,7 +407,10 @@ export function App(props: AppProps) {
     if (!trimmed) return;
     const command = trimmed.replace(/^\//, "").toLowerCase();
     if (command === "model") return setOverlay("model");
-    if (command === "settings" || command === "config") return setOverlay("settings");
+    if (command === "settings" || command === "config") {
+      setSettingsGroup(0);
+      return setOverlay("settings");
+    }
     if (command === "help" || command === "h") return setOverlay("help");
     if (command === "resume" || command === "sessions") return setOverlay("resume");
     if (command === "connect") {
@@ -614,6 +628,19 @@ export function App(props: AppProps) {
       return;
     }
 
+    if (overlayRef.current === "settings") {
+      if (key.name === "escape") {
+        setOverlay("none");
+        setInputFocused(true);
+        return;
+      }
+      // Tab moves between the two groups; the focused select owns the other keys
+      if (key.name === "tab" || key.name === "left" || key.name === "right") {
+        return setSettingsGroup((group) => (group + 1) % 2);
+      }
+      return;
+    }
+
     if (overlayRef.current !== "none") {
       if (key.name === "escape") {
         setOverlay("none");
@@ -730,7 +757,7 @@ export function App(props: AppProps) {
     ) : overlayState === "connect" && connectStep ? (
       <ConnectWizard step={connectStep} providers={PROVIDERS} areaHeight={modalAreaHeight} />
     ) : overlayState === "settings" ? (
-      <SettingsPanel settings={settings} onApply={applySettings} onCancel={() => setOverlay("none")} />
+      <SettingsPanel settings={settings} group={settingsGroup} onChange={changeSettings} onDone={doneSettings} />
     ) : overlayState === "help" ? (
       <HelpPanel />
     ) : overlayState === "resume" ? (

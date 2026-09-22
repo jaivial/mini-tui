@@ -39,7 +39,7 @@ export function ModelPicker(props: {
   };
   const [selectedIndex, setSelectedIndex] = useState(() => indexFor(props.current));
   return (
-    <box borderStyle="rounded" borderColor={colors.border} width="80%" paddingX={1} gap={0}>
+    <box borderStyle="rounded" borderColor={colors.border} backgroundColor={colors.panel} width="80%" paddingX={1} gap={0}>
       <text fg={colors.dim}>model · ↑/↓ choose · Enter apply · Esc close (applies from the next step)</text>
       <select
         options={models}

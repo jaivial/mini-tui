@@ -194,7 +194,7 @@ describe("App rendering", () => {
       setup.mockInput.pressEnter(); // now it runs the command
     });
     await setup.renderOnce();
-    expect(setup.captureCharFrame()).toContain("settings · output display");
+    expect(setup.captureCharFrame()).toContain("settings · Tab switches group");
     setup.renderer.destroy();
   });
 
@@ -217,7 +217,7 @@ describe("App rendering", () => {
     });
     await setup.renderOnce();
     const frame = setup.captureCharFrame();
-    expect(frame).toContain("settings · output display");
+    expect(frame).toContain("settings · Tab switches group");
     expect(frame).toContain("collapsed");
     expect(frame).toContain("trimmed (2 lines)");
     expect(frame).toContain("expanded");
@@ -437,6 +437,41 @@ describe("bottom stack", () => {
     expect(frame).not.toContain("working ·"); // no loader while idle
     expect(frame).not.toContain("●"); // no status chip while idle
     expect(frame).toContain("step 0 · $0.0000"); // stats stay on the line
+    setup.renderer.destroy();
+  });
+});
+
+describe("theme selector", () => {
+  test("switching theme from the settings panel applies it live", async () => {
+    const setup = await testRender(
+      <App cwd="/proj" persistSettings={false} initialSettings={{ outputMode: "expanded", theme: "shadcn" }} onQuit={() => {}} />,
+      { width: 110, height: 34 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/settings");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter(); // palette fill
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter(); // open the panel
+    });
+    await setup.renderOnce();
+    let frame = setup.captureCharFrame();
+    expect(frame).toContain("theme");
+    expect(frame).toContain("catppuccin");
+    expect(frame).toContain("tokyo night");
+
+    await act(async () => {
+      setup.mockInput.pressTab(); // move to the theme group
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressKey(String.fromCharCode(27) + "[B"); // ↓ → nord
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("theme → nord");
     setup.renderer.destroy();
   });
 });

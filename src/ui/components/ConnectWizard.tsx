@@ -8,7 +8,7 @@ export function ConnectWizard(props: { step: ConnectStep; providers: ProviderDef
   // Keep the panel inside the available area: window the lists instead of overflowing.
   const budget = Math.max(4, (props.areaHeight ?? 24) - 4);
   return (
-    <box borderStyle="rounded" borderColor={colors.border} width="80%" marginLeft="auto" marginRight="auto" paddingX={1} gap={0}>
+    <box borderStyle="rounded" borderColor={colors.border} backgroundColor={colors.panel} width="80%" marginLeft="auto" marginRight="auto" paddingX={1} gap={0}>
       <text fg={colors.dim}>connect provider · Esc close</text>
 
       {step.kind === "provider" ? (
