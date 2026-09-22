@@ -212,7 +212,11 @@ export function messagesToEvents(messages: TrajectoryMessage[], options: ParseOp
       } else if (role === "user") {
         const interruptType = hasInterruptType(message);
         const actions = actionsOf(message);
-        if (interruptType) {
+        if (interruptType === "UserNewTask") {
+          // A follow-up prompt (initial tasks have no interrupt_type).
+          const text = getContentString(message).replace(/^The user added a new task:\s*/s, "");
+          events.push({ type: "task", text });
+        } else if (interruptType) {
           events.push({ type: "notice", text: getContentString(message), interruptType });
         } else if (actions.length > 0) {
           for (const action of actions) {

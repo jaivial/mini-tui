@@ -61,38 +61,93 @@ the `cat > /tmp/final_answer.md` / `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` 
 
 The legacy marker protocol keeps working unchanged.
 
-## 2. Control file (live `/model` switching)
+## 2. Control file (live `/model` switching and follow-up prompts)
 
-`src/minisweagent/agents/default.py` — apply out-of-band commands before each model call:
+`src/minisweagent/agents/default.py` — a small out-of-band command channel, applied before each
+model call and at exit:
 
 ```python
-def _apply_control_commands(self) -> None:
-    """Apply out-of-band commands from MSWEA_CONTROL_FILE (e.g. a TUI `/model` switch)."""
+def _drain_control(self) -> tuple[str | None, list[str]]:
+    """Read and consume the control file. Returns (model_name, user_messages)."""
     control_path = os.environ.get("MSWEA_CONTROL_FILE")
     if not control_path:
-        return
+        return None, []
+    path = Path(control_path)
     try:
-        lines = Path(control_path).read_text().splitlines()
+        raw = path.read_text()
     except OSError:
-        return
-    for line in lines:
+        return None, []
+    if not raw.strip():
+        return None, []
+    try:
+        path.write_text("")
+    except OSError:
+        pass
+    model_name, messages = None, []
+    for line in raw.splitlines():
         line = line.strip()
-        if not line.startswith("MODEL "):
-            continue
-        name = line[len("MODEL ") :].strip()
-        if name and name != getattr(self, "_control_model_name", None):
-            from minisweagent.models import get_model
+        if line.startswith("MODEL "):
+            model_name = line[len("MODEL ") :].strip() or None
+        elif line.startswith("MESSAGE "):
+            text = line[len("MESSAGE ") :].strip()
+            if text:
+                messages.append(text)
+    return model_name, messages
 
-            self._control_model_name = name
-            self.model = get_model(name)
+@staticmethod
+def _user_task_message(text: str) -> dict:
+    """Same shape the interactive agent uses when the user adds a new task."""
+    return {
+        "role": "user",
+        "content": f"The user added a new task: {text}",
+        "extra": {"interrupt_type": "UserNewTask"},
+    }
+
+def _apply_model_switch(self, name: str | None) -> None:
+    if name and name != getattr(self, "_control_model_name", None):
+        from minisweagent.models import get_model
+        self._control_model_name = name
+        self.model = get_model(name)
+
+def _apply_control_commands(self) -> None:
+    model_name, messages = self._drain_control()
+    self._apply_model_switch(model_name)
+    for text in messages:
+        self.add_messages(self._user_task_message(text))
+
+def _wait_for_control_followup(self) -> bool:
+    """Hold at exit so a TUI can continue the conversation ("type to continue")."""
+    if not os.environ.get("MSWEA_CONTROL_FILE"):
+        return False
+    while True:
+        model_name, messages = self._drain_control()
+        self._apply_model_switch(model_name)
+        if messages:
+            for text in messages:
+                self.add_messages(self._user_task_message(text))
+            return True
+        time.sleep(0.2)
 ```
 
-Call it at the top of `DefaultAgent.query()`. Semantics:
+Call `_apply_control_commands()` at the top of `DefaultAgent.query()`, and hold at exit in
+`DefaultAgent.run()`:
 
-- No-op unless `MSWEA_CONTROL_FILE` is set (mini-tui sets it per run), so plain `mini` runs behave
-  exactly as before.
-- Supported line: `MODEL <model name>` (last one wins; applied lazily before the next model call).
-- The new model is built with `get_model(name)` defaults — exactly like starting `mini -m <name>`.
+```python
+if self.messages[-1].get("role") == "exit":
+    exit_message = self.messages.pop()
+    if self._wait_for_control_followup():
+        continue          # same conversation continues; the exit marker is dropped
+    self.messages.append(exit_message)
+    break
+```
 
-mini-tui writes `MODEL <id>` to `<session>/control` when you pick a model with `/model`, and the
-header/transcript show the switch as `model → <id> (from next step)`.
+Semantics:
+
+- No-op unless `MSWEA_CONTROL_FILE` is set (mini-tui sets it per run and appends `MODEL <id>` /
+  `MESSAGE <text>` lines), so plain `mini` runs behave exactly as before.
+- `MODEL <name>`: the running agent switches model from its next step (built with `get_model(name)`
+  defaults — exactly like starting `mini -m <name>`).
+- `MESSAGE <text>`: injected as a `UserNewTask` user message (the same shape
+  `InteractiveAgent` uses), so follow-up prompts continue the same conversation — mid-run from
+  the next step, or after a submission via the exit hold.
+- The hold ends when the TUI kills the process (Ctrl+C / `q` in mini-tui).

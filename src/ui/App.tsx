@@ -10,7 +10,7 @@ import { ObservationCard } from "./components/ObservationCard";
 import { NoticeLine } from "./components/NoticeLine";
 import { ExitBanner } from "./components/ExitBanner";
 import { StatusBar } from "./components/StatusBar";
-import { StartScreen } from "./components/StartScreen";
+import { PromptBar } from "./components/PromptBar";
 import { ModelPicker } from "./components/ModelPicker";
 import { messagesToEvents, parseInfo } from "../traj/parse";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
@@ -29,10 +29,12 @@ export interface AppProps {
   /** View mode: an existing trajectory file. */
   viewPath?: string;
   follow?: boolean;
-  /** Run mode: start immediately (skips the StartScreen). */
+  /** Run mode: start immediately with this task (otherwise wait for the prompt). */
   runSpec?: TaskSpec;
   /** Force the header status (for screenshot scenes); otherwise derived from the run. */
   statusOverride?: "running" | "done" | "error";
+  /** Override prompt submission (tests); otherwise runs a task or continues the run. */
+  onSend?: (text: string) => void;
   onQuit?: () => void;
 }
 
@@ -85,7 +87,6 @@ export function App(props: AppProps) {
   const staticMode = Boolean(props.events);
   const [events, setEvents] = useState<RunEvent[]>(props.events ?? []);
   const [info, setInfo] = useState<RunInfo>(props.info ?? { cost: 0, apiCalls: 0 });
-  const [phase, setPhase] = useState<"start" | "run" | "view">(staticMode || props.viewPath ? "view" : props.runSpec ? "run" : "start");
   const [status, setStatus] = useState<"running" | "done" | "error">(
     props.statusOverride ?? (staticMode || props.viewPath ? "done" : "running"),
   );
@@ -94,15 +95,17 @@ export function App(props: AppProps) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [tick, setTick] = useState(0);
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
-  const [cmdBuffer, setCmdBufferState] = useState<string | null>(null);
+  const [inputFocused, setInputFocusedState] = useState(true);
   const [pickerOpen, setPickerOpenState] = useState(false);
-  // Key handlers can fire several times before React re-renders; mirror the two values
-  // they read/write into refs so state is never stale inside a batch of keystrokes.
-  const cmdRef = useRef<string | null>(null);
+  const [hintText, setHintText] = useState<string | undefined>(undefined);
+  // Key handlers can fire several times before React re-renders; mirror what they
+  // read/write into refs so state is never stale inside a batch of keystrokes.
+  const inputRefocus = useRef(true);
   const pickerRef = useRef(false);
-  const setCmdBuffer = (value: string | null) => {
-    cmdRef.current = value;
-    setCmdBufferState(value);
+  const exitedRef = useRef(false);
+  const setInputFocused = (value: boolean) => {
+    inputRefocus.current = value;
+    setInputFocusedState(value);
   };
   const setPickerOpen = (value: boolean) => {
     pickerRef.current = value;
@@ -113,7 +116,8 @@ export function App(props: AppProps) {
   const live = useRef<{ watch?: WatchHandle; run?: MiniRun }>({});
 
   const applySnapshot = (traj: Trajectory) => {
-    setEvents(messagesToEvents(traj.messages ?? [], { showSystem: props.showSystem }));
+    const parsed = messagesToEvents(traj.messages ?? [], { showSystem: props.showSystem });
+    setEvents(parsed);
     setInfo(parseInfo(traj));
   };
 
@@ -138,12 +142,14 @@ export function App(props: AppProps) {
   }, []);
 
   const startRun = (spec: TaskSpec) => {
-    setPhase("run");
     setStatus("running");
+    exitedRef.current = false;
+    setHintText(undefined);
     const run = spawnMini({ ...spec, model: spec.model || modelOverride });
-    live.current.run = run;
+    live.current = { run };
     live.current.watch = watchTrajectory(run.session.trajPath, applySnapshot);
     run.exited.then((code) => {
+      exitedRef.current = true;
       live.current.watch?.stop();
       const traj = readTrajectory(run.session.trajPath);
       if (traj) applySnapshot(traj);
@@ -158,18 +164,43 @@ export function App(props: AppProps) {
 
   const applyModel = (model: string) => {
     setPickerOpen(false);
-    setCmdBuffer(null);
     setModelOverride(model);
     const liveRun = live.current.run;
     liveRun?.switchModel(model);
+    setHintText(`model → ${model}`);
     setEvents((prev) => [
       ...prev,
       {
         type: "notice",
-        text: liveRun ? `model → ${model} (from next step)` : `model → ${model} (next run)`,
+        text: liveRun && !exitedRef.current ? `model → ${model} (from next step)` : `model → ${model} (next run)`,
         interruptType: "model",
       },
     ]);
+    setInputFocused(true);
+  };
+
+  const send = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const command = trimmed.replace(/^\//, "").toLowerCase();
+    if (command === "model") return setPickerOpen(true);
+    if (command.startsWith("model ")) {
+      const model = trimmed.replace(/^\//, "").slice("model ".length).trim();
+      if (model) return applyModel(model);
+      return;
+    }
+    if (props.onSend) {
+      props.onSend(trimmed);
+      return;
+    }
+    const liveRun = live.current.run;
+    if (liveRun && !exitedRef.current) {
+      liveRun.sendUserMessage(trimmed);
+      setHintText("sent → continues the conversation from the next step");
+    } else {
+      startRun({ task: trimmed, model: modelOverride, cwd: props.cwd });
+      setHintText(undefined);
+    }
   };
 
   useEffect(() => {
@@ -189,42 +220,22 @@ export function App(props: AppProps) {
   };
 
   useKeyboard((key) => {
-    if (phase === "start") return;
-
     if (pickerRef.current) {
       if (key.name === "escape") {
         setPickerOpen(false);
-        setCmdBuffer(null);
+        setInputFocused(true);
       }
       return; // the Select owns the other keys
     }
 
-    if (cmdRef.current !== null) {
-      if (key.name === "escape") return setCmdBuffer(null);
-      if (key.name === "backspace") {
-        const current = cmdRef.current ?? "";
-        return setCmdBuffer(current.length > 0 ? current.slice(0, -1) : null);
-      }
-      if (key.name === "return" || key.name === "enter") {
-        const typed = (cmdRef.current ?? "").trim();
-        setCmdBuffer(null);
-        const command = typed.toLowerCase();
-        if (command === "model") return setPickerOpen(true);
-        if (command.startsWith("model ")) {
-          const model = typed.slice("model ".length).trim();
-          if (model) return applyModel(model);
-        }
-        return setEvents((prev) => [
-          ...prev,
-          { type: "notice", text: `unknown command: /${typed}`, interruptType: "mini-tui" },
-        ]);
-      }
-      const ch = key.sequence;
-      if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ") return setCmdBuffer((cmdRef.current ?? "") + ch);
-      return;
+    if (inputRefocus.current) {
+      if (key.name === "escape") return setInputFocused(false);
+      if (key.ctrl && key.name === "c") return quit();
+      return; // the prompt input owns the other keys
     }
 
-    if (key.name === "/" || key.sequence === "/") return setCmdBuffer("");
+    // normal mode: transcript navigation
+    if (key.name === "i" || key.name === "return" || key.name === "enter") return setInputFocused(true);
     if (key.name === "q") return quit();
     if (key.name === "e" && pairItems.length) {
       const target = pairItems[Math.min(Math.max(focusIdx, 0), pairItems.length - 1)]?.toolIndex;
@@ -249,19 +260,18 @@ export function App(props: AppProps) {
   const step = events.filter((event) => event.type === "assistant").length;
   const focusedPair = Math.min(Math.max(focusIdx, 0), Math.max(pairItems.length - 1, 0));
   const exitEvent = events.find((event) => event.type === "exit") as Extract<RunEvent, { type: "exit" }> | undefined;
-  void exitEvent;
+  const displayStatus = props.statusOverride ?? (exitEvent ? "done" : status);
+  const busy = Boolean(live.current.run) && !exitedRef.current;
 
-  const hint = pickerOpen
-    ? "model picker"
-    : cmdBuffer !== null
-      ? `/${cmdBuffer}▏`
-      : phase === "run"
-        ? status === "running"
-          ? "follow"
-          : (info.exitStatus ?? status)
-        : props.viewPath
-          ? "view"
-          : undefined;
+  const hint =
+    hintText ??
+    (pickerOpen
+      ? "model picker"
+      : inputFocused
+        ? busy
+          ? "typing · Enter continues the conversation"
+          : "typing · Enter launches"
+        : "normal · i type · q quit");
 
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={colors.bg}>
@@ -269,15 +279,13 @@ export function App(props: AppProps) {
         model={modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL}
         step={step}
         cost={info.cost}
-        status={status}
+        status={displayStatus}
         spinner={SPINNER[tick % SPINNER.length]}
       />
-      {phase === "start" ? (
-        <StartScreen cwd={props.cwd} defaultModel={modelOverride ?? DEFAULT_MODEL} onSubmit={startRun} />
-      ) : pickerOpen ? (
+      {pickerOpen ? (
         <ModelPicker current={modelOverride ?? info.model ?? DEFAULT_MODEL} onPick={applyModel} onCancel={() => setPickerOpen(false)} />
       ) : (
-        <scrollbox ref={scrollRef} stickyScroll stickyStart="bottom" width="100%" height={Math.max(6, dims.height - 6)}>
+        <scrollbox ref={scrollRef} stickyScroll stickyStart="bottom" width="100%" height={Math.max(6, dims.height - 12)}>
           {items.map((item) => {
             if (item.kind === "event") {
               const event = events[item.index];
@@ -325,6 +333,7 @@ export function App(props: AppProps) {
           ) : null}
         </scrollbox>
       )}
+      <PromptBar focused={inputFocused && !pickerOpen} busy={busy} onSend={send} />
       <StatusBar hint={hint} />
     </box>
   );

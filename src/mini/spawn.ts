@@ -4,7 +4,7 @@
  * to `<session>/mini.log`.
  */
 
-import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 
 import { MINI_BIN, createSessionDir, type SessionPaths } from "../config";
 
@@ -24,6 +24,8 @@ export interface MiniRun {
   kill(): void;
   /** Ask the running agent to switch model from its next step (control file). */
   switchModel(model: string): void;
+  /** Send a follow-up prompt that continues the same conversation (control file). */
+  sendUserMessage(text: string): void;
 }
 
 export function spawnMini(spec: TaskSpec): MiniRun {
@@ -78,7 +80,11 @@ export function spawnMini(spec: TaskSpec): MiniRun {
     },
     switchModel(model: string) {
       // The agent reads MSWEA_CONTROL_FILE before each model call (last `MODEL` line wins).
-      writeFileSync(session.controlPath, `MODEL ${model}\n`);
+      appendFileSync(session.controlPath, `MODEL ${model}\n`);
+    },
+    sendUserMessage(text: string) {
+      // Continues the same conversation from the agent's next step (or at exit hold).
+      appendFileSync(session.controlPath, `MESSAGE ${text.replace(/\s*\n\s*/g, " ")}\n`);
     },
   };
 }

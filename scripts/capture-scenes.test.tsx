@@ -117,18 +117,13 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   await setup.renderOnce();
   save("run", setup);
 
-  // 2) /model picker
+  // 2) /model picker (typed in the prompt)
   setup = await testRender(<App cwd="." events={BASE_EVENTS} info={info} statusOverride="running" onQuit={() => {}} />, {
     width: 110,
     height: 38,
   });
   await setup.renderOnce();
-  for (const ch of "/model") {
-    await act(async () => {
-      setup.mockInput.pressKey(ch);
-    });
-    await setup.renderOnce();
-  }
+  await setup.mockInput.typeText("/model");
   await act(async () => {
     setup.mockInput.pressEnter();
   });
@@ -143,8 +138,8 @@ test.skipIf(!CAPTURE)("capture screenshot scenes", async () => {
   await setup.renderOnce();
   save("final-answer", setup);
 
-  // 4) start screen
-  setup = await testRender(<App cwd="/home/jaime/project" onQuit={() => {}} />, { width: 110, height: 24 });
+  // 4) the prompt (empty transcript, ready to type)
+  setup = await testRender(<App cwd="/home/jaime/project" onSend={() => {}} onQuit={() => {}} />, { width: 110, height: 24 });
   await setup.renderOnce();
-  save("start", setup);
+  save("prompt", setup);
 });

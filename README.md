@@ -11,19 +11,25 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 
 ## Features
 
+- **Prompt bar, Claude-Code style.** A prompt input pinned to the bottom of the screen: type your
+  task, hit Enter, and keep typing follow-ups while the agent works (or after it submits) — they
+  continue the *same* conversation.
+
+  ![prompt bar](docs/screenshots/prompt.png)
+
 - **Tool call cards** with syntax-highlighted bash commands and a focused-block indicator.
 - **Output cards** with `rc=0` / `rc=N` badges, exception info, and collapsible bodies
   (`… 220 lines hidden · [e] expand`) so huge outputs never blow up the layout.
 - **Live header** with model, step count, running cost and a spinner while a step is in flight.
-- **`/model` — switch models mid-conversation.** Type `/model` to open the model picker (or
-  `/model <id>` to jump straight to one). During a live run the agent picks the new model up from
-  its next step — no restart, no lost context.
+- **`/model` — switch models mid-conversation.** Type `/model` in the prompt to open the model
+  picker (or `/model <id>` to jump straight to one). During a live run the agent picks the new
+  model up from its next step — no restart, no lost context.
 
   ![model picker](docs/screenshots/model-picker.png)
 
 - **Plain-text final answers** (with the companion patch below): the agent finishes by simply
   answering instead of shuttling its answer through a temporary markdown file. The answer lands in
-  the green `exit` banner.
+  the green `exit` banner, and you can type a follow-up to keep going.
 
   ![final answer](docs/screenshots/final-answer.png)
 
@@ -48,11 +54,12 @@ cp bin/mini-tui ~/.local/bin/mini-tui && chmod +x ~/.local/bin/mini-tui
 ## Usage
 
 ```bash
-# Launch a run (yolo) and watch it live
-mini-tui run "Fix the failing test in test_utils.py" -m xiaomi/mimo-v2.6-flash
-
-# Without a positional task you get a start screen (task / model / extra -c specs)
+# Open the prompt and go (like `mini -y -m <model>`, but pretty)
 mini-tui run
+mini-tui run -m xiaomi/mimo-v2.6-flash
+
+# Or start immediately with a task
+mini-tui run "Fix the failing test in test_utils.py" -m xiaomi/mimo-v2.6-flash
 
 # Render an existing trajectory (add --follow to keep watching it)
 mini-tui view ~/.config/mini-swe-agent/last_mini_run.traj.json
@@ -60,10 +67,6 @@ mini-tui view ~/.config/mini-swe-agent/last_mini_run.traj.json
 # Include the system prompt in the transcript
 mini-tui run ... --show-system
 ```
-
-The start screen:
-
-![start screen](docs/screenshots/start.png)
 
 Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 (`traj.json`, `mini.log`, `pid`, `control`). mini-tui never touches
@@ -73,15 +76,15 @@ Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 
 | Key | Action |
 | --- | --- |
-| `q` | quit (SIGTERM to `mini`, then SIGKILL after 5 s) |
-| `/model` | open the model picker (or type `/model <id>`) |
-| `j` / `k` (or ↓ / ↑) | move between tool call blocks |
+| `Enter` | send the prompt (starts a task, or continues the running conversation) |
+| `Esc` | leave the prompt and navigate the transcript |
+| `i` / `Enter` | (navigation mode) jump back to the prompt |
+| `/model` | typed in the prompt: open the model picker (or `/model <id>`) |
+| `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
 | `e` | expand / collapse the focused output block |
 | `PgUp` / `PgDn` | scroll |
 | `g` / `G` | top / bottom |
-| `Esc` | cancel the picker / clear the command line |
-
-On the start screen: `Tab` / `ctrl+n` / `ctrl+p` switch fields, `Enter` launches, `Esc` quits.
+| `q` | (navigation mode) quit — `ctrl+c` also quits while typing |
 
 ## How it works
 
@@ -91,42 +94,49 @@ mini-tui run
   │                      raw stdout/stderr → <session>/mini.log
   ├─ src/traj/watch.ts   polls <session>/traj.json every 200 ms (rewritten by the harness per step)
   ├─ src/traj/parse.ts   pure parser: messages → RunEvent[] (tools, outputs, notices, exit)
-  └─ src/ui/             OpenTUI + React renderer (cards, badges, banners, /model picker)
+  └─ src/ui/             OpenTUI + React renderer (cards, badges, banners, prompt, /model picker)
 ```
 
 The parser tolerates mid-write reads (the harness rewrites the file non-atomically after every
 step), unknown message shapes, and multimodal content in any of the message formats mini produces.
 
-### `/model` under the hood
+### Follow-ups and `/model` under the hood
 
-mini-tui writes `MODEL <id>` to the run's control file (`<session>/control`, exported to `mini` as
-`MSWEA_CONTROL_FILE`). The companion harness patch makes the agent read that file before each model
-call, so a switch applies from the next step, mid-run.
+mini-tui appends `MESSAGE <text>` / `MODEL <id>` lines to the run's control file
+(`<session>/control`, exported to `mini` as `MSWEA_CONTROL_FILE`). The companion harness patch:
+
+- injects `MESSAGE` lines as `UserNewTask` prompts — from the agent's next step mid-run, and after
+  a submission via an *exit hold* (the run stays open so one conversation can span many turns);
+- applies `MODEL` switches from the next step.
 
 ## Companion mini-swe-agent patches (optional)
 
-Two small patches to your local mini-swe-agent unlock the nicest behaviors. Everything works without
-them except live `/model` switching and plain-text final answers. See
+Two small patches to your local mini-swe-agent unlock the nicest behaviors. Everything works
+without them except live `/model` switching and conversational follow-ups. See
 [docs/mini-swe-agent-patches.md](docs/mini-swe-agent-patches.md) for the exact changes:
 
 1. **Plain-text final answer** — a response with text and no tool calls is the submission
    (no more `cat > /tmp/final_answer.md` round-trips).
-2. **Control file** — `MSWEA_CONTROL_FILE` with a `MODEL <id>` line switches the running agent's
-   model from its next step (no-op when the variable is unset).
+2. **Control file** — `MODEL <id>` switches the running agent's model from its next step;
+   `MESSAGE <text>` continues the conversation mid-run or at the exit hold (both no-ops when
+   `MSWEA_CONTROL_FILE` is unset).
 
 ## Development
 
 ```bash
-bun test          # parser fixtures + in-memory render tests (no TTY, no network)
+bun test          # parser fixtures + in-memory OpenTUI render tests (no TTY, no network)
 bun run typecheck
 bun run screenshots   # regenerates docs/screenshots/*.png from scripted scenes
 ```
 
 ## Notes and known limits
 
-- Yolo only: runs use `mini -y --exit-immediately` — the UI visualizes, it never steers or confirms.
+- Yolo only: runs use `mini -y --exit-immediately` — the UI visualizes and forwards prompts, it
+  never confirms or rejects commands.
 - No token streaming: the trajectory updates once per step, so the spinner covers model calls and
-  command execution.
+  command execution. Follow-ups sent mid-step are picked up at the next step.
+- After a submission the run stays open ("type to continue") while the TUI is attached; quitting
+  the TUI ends it.
 - The code highlighter degrades to plain text when a tree-sitter grammar is unavailable.
 - If the TUI is killed hard, the `mini` child may survive: check `<session>/pid` and
   `pgrep -af "mini -y --exit-immediately"`.

@@ -65,7 +65,7 @@ describe("App rendering", () => {
     setup.renderer.destroy();
   });
 
-  test("keyboard: pageup scrolls up and g jumps to the top", async () => {
+  test("keyboard: Esc leaves the prompt, pageup scrolls up and g jumps to the top", async () => {
     const events: RunEvent[] = [];
     for (let i = 1; i <= 8; i++) {
       events.push({ type: "tool_call", id: `call_${i}`, name: "bash", command: `echo CARD-${i}` });
@@ -79,6 +79,8 @@ describe("App rendering", () => {
     // sticky to bottom on first paint
     expect(setup.captureCharFrame()).toContain("CARD-8");
 
+    setup.mockInput.pressEscape(); // leave the prompt input (normal mode)
+    await Bun.sleep(60); // bare ESC is only emitted after the key parser's sequence timeout
     setup.mockInput.pressKey(String.fromCharCode(27) + "[5~"); // PageUp
     await setup.renderOnce();
     const afterPageUp = setup.captureCharFrame();
@@ -91,7 +93,25 @@ describe("App rendering", () => {
     setup.renderer.destroy();
   });
 
-  test("/model opens the model picker and switching posts a notice", async () => {
+  test("prompt: Enter sends the typed task to onSend", async () => {
+    const sent: string[] = [];
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
+      { width: 90, height: 16 },
+    );
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("prompt"); // the prompt bar is always there
+
+    await setup.mockInput.typeText("fix the failing test");
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await setup.renderOnce();
+    expect(sent).toEqual(["fix the failing test"]);
+    setup.renderer.destroy();
+  });
+
+  test("/model typed in the prompt opens the model picker and switching posts a notice", async () => {
     const { events, info } = parseTrajectory(loadFixture("normal-step"));
     const setup = await testRender(<App cwd="." events={events} info={info} onQuit={() => {}} />, {
       width: 110,
@@ -99,15 +119,7 @@ describe("App rendering", () => {
     });
     await setup.renderOnce();
 
-    // One act() per keystroke, mirroring how keys arrive in a real terminal.
-    for (const ch of "/model") {
-      await act(async () => {
-        setup.mockInput.pressKey(ch);
-      });
-      await setup.renderOnce();
-    }
-    expect(setup.captureCharFrame()).toContain("/model▏"); // command buffer in the status bar
-
+    await setup.mockInput.typeText("/model");
     await act(async () => {
       setup.mockInput.pressEnter();
     });
@@ -121,8 +133,7 @@ describe("App rendering", () => {
       setup.mockInput.pressEnter(); // pick the highlighted model
     });
     await setup.renderOnce();
-    const afterPick = setup.captureCharFrame();
-    expect(afterPick).toContain("model →"); // switch notice in the transcript
+    expect(setup.captureCharFrame()).toContain("model →"); // switch notice in the transcript
     setup.renderer.destroy();
   });
 });
