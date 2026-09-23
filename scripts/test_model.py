@@ -15,12 +15,17 @@ def main() -> None:
 
         model = get_model(model_name)
         message = model.query([{"role": "user", "content": "Reply with the single word: ok"}])
-        text = str(message.get("content") or (message.get("extra") or {}).get("submission") or "").strip()
-        if text:
+        extra = message.get("extra") or {}
+        text = str(message.get("content") or extra.get("submission") or "").strip()
+        # A tool-call reply proves reachability just like text — coding models often answer
+        # a one-word prompt by calling the bash tool instead of writing the word.
+        if text or extra.get("actions"):
             print("ok")
             return
+        print("error: the model answered with an empty message", file=sys.stderr)
     except Exception as error:  # noqa: BLE001 - any failure means the connection is broken
-        print(f"error: {error}", file=sys.stderr)
+        detail = str(error) or repr(error)
+        print(f"error: {type(error).__name__}: {detail}", file=sys.stderr)
     raise SystemExit(1)
 
 

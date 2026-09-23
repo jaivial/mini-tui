@@ -54,8 +54,9 @@ class ResponsesCompatModel(OpenaiCompatModel):
                 response = self._query(self._prepare_messages_for_api(messages), **kwargs)
         cost_output = self._calculate_cost(response)
         GLOBAL_MODEL_STATS.add(cost_output["cost"])
+        final_answer = self._final_answer(response)
         try:
-            actions = self._parse_actions(response)
+            actions = [] if final_answer is not None else self._parse_actions(response)
         except FormatError as e:
             e.messages[0]["extra"].update(cost_output)
             try:
@@ -69,7 +70,30 @@ class ResponsesCompatModel(OpenaiCompatModel):
             **cost_output,
             "timestamp": time.time(),
         }
+        if final_answer is not None:
+            message["extra"]["submission"] = final_answer
         return message
+
+    @staticmethod
+    def _final_answer(response) -> str | None:
+        """Output text without tool calls is the plain-text final answer.
+
+        Same rule as `LitellmModel`/the chat client (`mini-swe-agent-patches.md` §1): the model
+        can finish by simply answering — no bash-call round-trip, and connection tests (which
+        ask for one word) stop failing on models that just answer.
+        """
+        texts: list[str] = []
+        for item in response.get("output") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "function_call":
+                return None
+            if item.get("type") == "message":
+                for block in item.get("content") or []:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        texts.append(block["text"])
+        text = "\n".join(texts).strip()
+        return text or None
 
     def _parse_actions(self, response) -> list[dict]:
         return parse_toolcall_actions_response(

@@ -58,9 +58,18 @@ def test_query_posts_to_responses_and_keeps_the_trajectory_shape():
     assert "submission" not in message["extra"]
 
 
-def test_missing_tool_calls_raise_format_error_with_response_persisted():
+def test_plain_text_output_is_the_final_answer():
     model = _model()
     with patch.object(ResponsesCompatModel, "_post", lambda self, path, body, headers=None: _reply(calls=False)):
+        message = model.query([{"role": "user", "content": "hi"}])
+    assert message["extra"]["submission"] == "running"
+    assert message["extra"]["actions"] == []
+
+
+def test_malformed_tool_calls_raise_format_error_with_response_persisted():
+    model = _model()
+    broken = {"object": "response", "output": [{"type": "function_call", "call_id": "c1", "name": "bash", "arguments": "not json"}], "status": "completed", "usage": {}}
+    with patch.object(ResponsesCompatModel, "_post", lambda self, path, body, headers=None: broken):
         with pytest.raises(FormatError) as exc:
             model.query([{"role": "user", "content": "hi"}])
     extra = exc.value.messages[0]["extra"]
