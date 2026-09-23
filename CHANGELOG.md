@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.10.1 — 2026-09-23
+
+Paste your API key — for real this time; the Go catalog matches the docs again.
 
 ### Fixed
 
