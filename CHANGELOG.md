@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.9.0 — 2026-09-23
+
+Every provider on its own direct base URL; litellm becomes an optional extra.
 
 ### Changed
 
