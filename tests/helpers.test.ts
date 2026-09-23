@@ -37,3 +37,28 @@ describe("helper interpreter resolution", () => {
     expect(resolvePython("no-such-mini", { PATH: dir })).toBe("python3");
   });
 });
+
+describe("startup settle window", () => {
+  test("waits for input to go quiet (and respects the minimum)", async () => {
+    let last = Date.now();
+    const spam = setInterval(() => {
+      last = Date.now();
+    }, 10);
+    setTimeout(() => clearInterval(spam), 120);
+    const t0 = Date.now();
+    const { waitForQuietInput } = await import("../src/helpers");
+    await waitForQuietInput(() => Date.now() - last, { minMs: 40, quietMs: 30, maxMs: 500 });
+    const took = Date.now() - t0;
+    expect(took).toBeGreaterThanOrEqual(140); // ~120ms of input + the quiet window
+    expect(took).toBeLessThan(500);
+  });
+
+  test("the max caps the wait even under continuous input", async () => {
+    const t0 = Date.now();
+    const { waitForQuietInput } = await import("../src/helpers");
+    await waitForQuietInput(() => 0, { minMs: 40, quietMs: 30, maxMs: 150 });
+    const took = Date.now() - t0;
+    expect(took).toBeGreaterThanOrEqual(150);
+    expect(took).toBeLessThan(320);
+  });
+});

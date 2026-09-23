@@ -2,6 +2,7 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot, createElement } from "@opentui/react";
 
 import { App } from "./ui/App";
+import { waitForQuietInput } from "./helpers";
 import { DEFAULT_MODEL } from "./config";
 import { startProfiling } from "./profile";
 import type { TaskSpec } from "./mini/spawn";
@@ -76,12 +77,25 @@ const runSpec: TaskSpec | undefined =
     : undefined;
 
 // ctrl+c belongs to the App: once clears the prompt, twice closes.
-const renderer = await createCliRenderer({ exitOnCtrlC: false });
+// Input (capability replies at startup) is only observed: every reply re-renders the
+// frame, so the UI mounts after the reply storm settles (one paint, no open flash).
+let lastInputAt = 0;
+const renderer = await createCliRenderer({
+  exitOnCtrlC: false,
+  prependInputHandlers: [
+    () => {
+      lastInputAt = Date.now();
+      return false;
+    },
+  ],
+});
 startProfiling();
 const quit = () => {
   renderer.destroy();
   process.exit(0);
 };
+
+await waitForQuietInput(() => Date.now() - lastInputAt);
 
 createRoot(renderer).render(
   createElement(App, {
