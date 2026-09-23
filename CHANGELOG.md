@@ -2,6 +2,27 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **Pasting into the `/connect` API key field works now.** The wizard's inputs are display-only
+  and never handled paste, so the key had to be typed character by character. Bracketed pastes
+  (the usual ctrl+shift+v / shift+insert in modern terminals) are wired into the key field, the
+  model search and the `/resume` search; ctrl+v and shift+insert read the system clipboard
+  directly (wl-clipboard · xclip · xsel · pbpaste · tmux buffer); and pastes that arrive as
+  plain input bursts land as one token. Pasted keys collapse to a single whitespace-free token
+  (line-wrapped clipboard values included).
+
+### Changed
+
+- **The OpenCode Go catalog matches the docs `Endpoints` table** (32 models). Added with their
+  documented prices and limits: `grok-4.7` (responses, tiered above 200K like 4.6),
+  `MiMo-V2.6-Flash` / `MiMo-V2.6-Pro` (chat) and the free-for-now `Space Bunny Free` (chat,
+  replacing `union-alpha` as the promo model). The TUI's static fallback list drops the ids
+  the docs no longer advertise (`glm-5`, `grok-4.5`, `kimi-k2.5`, `mimo-v2-omni`, `mimo-v2-pro`,
+  `omen-alpha`, `ox-alpha-free`, `qwen3.5-plus`), and the pi sync fallbacks cover the new ids.
+
 ## 0.10.0 — 2026-09-23
 
 Your prompt is on screen the instant you send it; the model's thinking can be too.

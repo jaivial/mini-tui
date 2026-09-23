@@ -73,3 +73,43 @@ export function copyText(text: string): string[] {
 
   return used;
 }
+
+/**
+ * Read text back from the system clipboard (the inverse of `copyText`): the first
+ * clipboard tool that answers wins, then the tmux paste buffer. Returns "" when
+ * nothing can be read (e.g. over SSH without a local tool).
+ */
+export function pasteText(): string {
+  for (const [cmd, args] of [
+    ["wl-paste", ["-n"]],
+    ["xclip", ["-selection", "clipboard", "-o"]],
+    ["xsel", ["--clipboard", "--output"]],
+    ["pbpaste", []],
+  ] as Array<[string, string[]]>) {
+    try {
+      const result = spawnSync(cmd, args, { encoding: "utf8", timeout: 500 });
+      if (result.status === 0 && result.stdout) return result.stdout;
+    } catch {
+      // try the next tool
+    }
+  }
+  if (process.env.TMUX) {
+    try {
+      const result = spawnSync("tmux", ["show-buffer"], { encoding: "utf8", timeout: 500 });
+      if (result.status === 0 && result.stdout) return result.stdout;
+    } catch {
+      // tmux missing despite $TMUX
+    }
+  }
+  return "";
+}
+
+/** Pasted text as a single token (API keys, model ids): no whitespace, no control chars. */
+export function pastedToken(text: string): string {
+  return text.replace(/\s+/g, "");
+}
+
+/** Pasted text as a single search line (titles can contain spaces). */
+export function pastedLine(text: string): string {
+  return text.replace(/\r/g, "").split("\n")[0] ?? "";
+}

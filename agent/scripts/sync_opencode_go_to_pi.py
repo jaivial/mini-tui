@@ -60,6 +60,11 @@ FALLBACKS: dict[str, str] = {
     "minimax-m2.5": "minimax-m2.7",
     # pi lists this model under its previous id.
     "union-alpha": "omen-alpha",
+    # New since the last docs refresh — metadata copied from the closest sibling.
+    "grok-4.7": "grok-4.6",
+    "mimo-v2.6-flash": "mimo-v2.5",
+    "mimo-v2.6-pro": "mimo-v2.5-pro",
+    "space-bunny-free": "omen-alpha",
 }
 
 

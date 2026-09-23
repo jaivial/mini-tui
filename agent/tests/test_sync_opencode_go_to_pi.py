@@ -49,7 +49,7 @@ def test_prices_and_tiers_are_copied(sync):
         {"inputTokensAbove": 200000, "input": 4.0, "output": 12.0, "cacheRead": 1.0, "cacheWrite": 0.0}
     ]
     assert "tiers" not in by_id["kimi-k3"]["cost"]
-    assert by_id["union-alpha"]["cost"]["input"] == 0
+    assert by_id["space-bunny-free"]["cost"]["input"] == 0
 
 
 def test_pi_metadata_is_preferred_over_the_docs(sync):

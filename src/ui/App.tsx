@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useKeyboard, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
+import { useKeyboard, usePaste, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
 import type { Database } from "bun:sqlite";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
@@ -37,7 +37,7 @@ import { slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
-import { copyText } from "../clipboard";
+import { copyText, pasteText, pastedLine, pastedToken } from "../clipboard";
 import { gitBranch, shortPath } from "../git";
 import { WheelSpeed } from "../scroll";
 import {
@@ -102,6 +102,8 @@ export interface AppProps {
   skillsDir?: string;
   /** Override clipboard writes (tests); defaults to OSC 52 + tmux buffer + native tools. */
   onCopy?: (text: string) => void;
+  /** Override clipboard reads for ctrl+v/shift+insert (tests); defaults to `pasteText`. */
+  onPasteText?: () => string;
   /** Observe double-Esc interrupts (tests). */
   onInterrupt?: () => void;
   /** Override the provider connection test (tests); defaults to a real one-token query. */
@@ -734,6 +736,38 @@ export function App(props: AppProps) {
     }, 350);
   });
 
+  /** What ctrl+v/shift+insert read (tests override via `onPasteText`). */
+  const readClipboard = () => (props.onPasteText ?? pasteText)();
+  /** The pasted text of a key event that carries some (non-bracketed paste fallback). */
+  const pastedSequence = (key: { sequence?: string; ctrl?: boolean; meta?: boolean }) => {
+    const ch = key.sequence ?? "";
+    return ch && ch.length > 1 && !key.ctrl && !key.meta && ch >= " " ? ch : "";
+  };
+
+  // Bracketed pastes (the usual ctrl+shift+v / shift+insert in modern terminals) arrive as
+  // PasteEvents. The wizard's and session browser's inputs are display-only, so wire them
+  // by hand — the prompt textarea pastes natively and is left alone.
+  usePaste((event) => {
+    if (overlayRef.current === "connect") {
+      const step = connectRef.current;
+      if (!step) return;
+      const token = pastedToken(new TextDecoder().decode(event.bytes));
+      if (!token) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (step.kind === "key") setConnectStep({ ...step, value: step.value + token });
+      else if (step.kind === "models") setConnectStep({ ...step, query: step.query + token, index: 0 });
+      return;
+    }
+    if (overlayRef.current === "resume") {
+      const line = pastedLine(new TextDecoder().decode(event.bytes));
+      if (!line) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setResumeQuery(resumeQueryRef.current + line);
+    }
+  });
+
   useKeyboard((key) => {
     if (overlayRef.current === "connect") {
       // the BYOK wizard owns the keys (its inputs are display-only)
@@ -754,6 +788,10 @@ export function App(props: AppProps) {
       if (step.kind === "key") {
         if (key.name === "escape") return setConnectStep({ kind: "provider", index: 0 });
         if (key.name === "backspace") return setConnectStep({ ...step, value: step.value.slice(0, -1) });
+        if ((key.ctrl && key.name === "v") || (key.shift && key.name === "insert")) {
+          const token = pastedToken(readClipboard());
+          return token ? setConnectStep({ ...step, value: step.value + token }) : undefined;
+        }
         if (key.name === "return" || key.name === "enter") {
           if (!step.value.trim()) return;
           // load the provider catalog (static fallback when the request fails)
@@ -769,6 +807,8 @@ export function App(props: AppProps) {
             .catch(() => undefined);
           return;
         }
+        const paste = pastedSequence(key);
+        if (paste) return setConnectStep({ ...step, value: step.value + paste });
         const ch = key.sequence;
         if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ") return setConnectStep({ ...step, value: step.value + ch });
         return;
@@ -780,6 +820,10 @@ export function App(props: AppProps) {
         if (key.name === "up") return setConnectStep({ ...step, index: Math.max(0, step.index - 1) });
         if (key.name === "down") return setConnectStep({ ...step, index: Math.min(Math.max(filtered.length - 1, 0), step.index + 1) });
         if (key.name === "backspace") return setConnectStep({ ...step, query: step.query.slice(0, -1), index: 0 });
+        if ((key.ctrl && key.name === "v") || (key.shift && key.name === "insert")) {
+          const token = pastedToken(readClipboard());
+          return token ? setConnectStep({ ...step, query: step.query + token, index: 0 }) : undefined;
+        }
         if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
           const model = filtered[Math.min(step.index, Math.max(filtered.length - 1, 0))];
           if (!model) return;
@@ -812,6 +856,8 @@ export function App(props: AppProps) {
           );
           return;
         }
+        const paste = pastedSequence(key);
+        if (paste) return setConnectStep({ ...step, query: step.query + paste, index: 0 });
         const ch = key.sequence;
         if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ")
           return setConnectStep({ ...step, query: step.query + ch, index: 0 });
@@ -841,6 +887,12 @@ export function App(props: AppProps) {
         return;
       }
       if (key.name === "backspace") return setResumeQuery(resumeQueryRef.current.slice(0, -1));
+      if ((key.ctrl && key.name === "v") || (key.shift && key.name === "insert")) {
+        const line = pastedLine(readClipboard());
+        return line ? setResumeQuery(resumeQueryRef.current + line) : undefined;
+      }
+      const paste = pastedSequence(key);
+      if (paste) return setResumeQuery(resumeQueryRef.current + pastedLine(paste));
       const ch = key.sequence;
       if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ")
         return setResumeQuery(resumeQueryRef.current + ch);
