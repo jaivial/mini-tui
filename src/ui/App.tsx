@@ -21,7 +21,7 @@ import { SessionModal } from "./components/SessionModal";
 import { CommandPalette, buildOptions, matchOptions, type CommandOption } from "./components/CommandPalette";
 import { ConnectWizard } from "./components/ConnectWizard";
 import type { ConnectStep } from "../connect";
-import { filterModels } from "../connect";
+import { filterModels, filterProviders } from "../connect";
 import {
   PROVIDERS,
   connectionModelOptions,
@@ -599,7 +599,7 @@ export function App(props: AppProps) {
     if (command === "help" || command === "h") return setOverlay("help");
     if (command === "resume" || command === "sessions") return setOverlay("resume");
     if (command === "connect") {
-      setConnectStep({ kind: "provider", index: 0 });
+      setConnectStep({ kind: "provider", index: 0, query: "" });
       return setOverlay("connect");
     }
     if (command === "quit" || command === "exit" || command === "q") return quit();
@@ -756,7 +756,8 @@ export function App(props: AppProps) {
       event.preventDefault();
       event.stopPropagation();
       if (step.kind === "key") setConnectStep({ ...step, value: step.value + token });
-      else if (step.kind === "models") setConnectStep({ ...step, query: step.query + token, index: 0 });
+      else if (step.kind === "models" || step.kind === "provider")
+        setConnectStep({ ...step, query: step.query + token, index: 0 });
       return;
     }
     if (overlayRef.current === "resume") {
@@ -776,17 +777,30 @@ export function App(props: AppProps) {
       if (step.kind === "testing") return; // the connection test is in flight
 
       if (step.kind === "provider") {
+        const filtered = filterProviders(PROVIDERS, step.query);
         if (key.name === "escape") return setOverlay("none");
         if (key.name === "up") return setConnectStep({ ...step, index: Math.max(0, step.index - 1) });
-        if (key.name === "down") return setConnectStep({ ...step, index: Math.min(PROVIDERS.length - 1, step.index + 1) });
-        if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
-          return setConnectStep({ kind: "key", def: PROVIDERS[step.index], value: "" });
+        if (key.name === "down")
+          return setConnectStep({ ...step, index: Math.min(Math.max(filtered.length - 1, 0), step.index + 1) });
+        if (key.name === "backspace") return setConnectStep({ ...step, query: step.query.slice(0, -1), index: 0 });
+        if ((key.ctrl && key.name === "v") || (key.shift && key.name === "insert")) {
+          const token = pastedToken(readClipboard());
+          return token ? setConnectStep({ ...step, query: step.query + token, index: 0 }) : undefined;
         }
+        if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
+          const def = filtered[Math.min(step.index, Math.max(filtered.length - 1, 0))];
+          return def ? setConnectStep({ kind: "key", def, value: "" }) : undefined;
+        }
+        const paste = pastedSequence(key);
+        if (paste) return setConnectStep({ ...step, query: step.query + paste, index: 0 });
+        const ch = key.sequence;
+        if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ")
+          return setConnectStep({ ...step, query: step.query + ch, index: 0 });
         return;
       }
 
       if (step.kind === "key") {
-        if (key.name === "escape") return setConnectStep({ kind: "provider", index: 0 });
+        if (key.name === "escape") return setConnectStep({ kind: "provider", index: 0, query: "" });
         if (key.name === "backspace") return setConnectStep({ ...step, value: step.value.slice(0, -1) });
         if ((key.ctrl && key.name === "v") || (key.shift && key.name === "insert")) {
           const token = pastedToken(readClipboard());

@@ -1,5 +1,5 @@
 import { colors } from "../theme";
-import { filterModels, visibleSlice, type ConnectStep } from "../../connect";
+import { filterModels, filterProviders, visibleSlice, type ConnectStep } from "../../connect";
 import type { ProviderDef } from "../../providers";
 
 /** `/connect` wizard: provider → API key → model → connection test. */
@@ -7,15 +7,20 @@ export function ConnectWizard(props: { step: ConnectStep; providers: ProviderDef
   const step = props.step;
   // Keep the panel inside the available area: window the lists instead of overflowing.
   const budget = Math.max(4, (props.areaHeight ?? 24) - 4);
+  const providers = filterProviders(props.providers, "query" in step ? step.query : "");
   return (
     <box borderStyle="rounded" borderColor={colors.border} backgroundColor={colors.panel} width="80%" marginLeft="auto" marginRight="auto" paddingX={1} gap={0}>
       <text fg={colors.dim}>connect provider · Esc close</text>
 
       {step.kind === "provider" ? (
         <>
-          {visibleSlice(props.providers, step.index, budget).items.map((provider) => {
-            const index = props.providers.indexOf(provider);
-            const selected = index === step.index;
+          <box flexDirection="row" gap={1}>
+            <text fg={colors.faint}>search</text>
+            <text fg={colors.text}>{step.query}▏</text>
+          </box>
+          {providers.length === 0 ? <text fg={colors.faint}>no providers match</text> : null}
+          {visibleSlice(providers, step.index, budget - 1).items.map((provider) => {
+            const selected = provider === providers[step.index];
             return (
               <box key={provider.id} flexDirection="row" gap={2}>
                 <text fg={colors.accent}>{selected ? "▸" : " "}</text>

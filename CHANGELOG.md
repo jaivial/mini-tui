@@ -2,6 +2,15 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Search in the `/model` and `/connect` provider modals.** Both lists take a name search
+  now — type or paste to filter (the picker's focused select keeps ↑/↓ and Enter), with a
+  `no match` line for dead ends. The `/connect` model step and the `/resume` browser already
+  had theirs.
+
 ## 0.10.1 — 2026-09-23
 
 Paste your API key — for real this time; the Go catalog matches the docs again.
