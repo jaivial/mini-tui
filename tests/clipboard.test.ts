@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildOsc52 } from "../src/clipboard";
+import { buildOsc52, pasteText, pastedLine, pastedToken } from "../src/clipboard";
 
 const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
@@ -22,5 +22,21 @@ describe("clipboard (tmux-proof OSC 52)", () => {
     // the inner OSC 52 payload still decodes to the original text
     const payload = plain.slice((ESC + "]52;c;").length, -1);
     expect(Buffer.from(payload, "base64").toString("utf8")).toBe("héllo");
+  });
+});
+
+describe("paste helpers", () => {
+  test("pastedToken collapses pasted keys and ids to one token", () => {
+    expect(pastedToken("  sk-abc\n123\txyz ")).toBe("sk-abc123xyz");
+    expect(pastedToken("sk-clean")).toBe("sk-clean");
+  });
+
+  test("pastedLine keeps the first line of a pasted search (spaces stay)", () => {
+    expect(pastedLine("my saved session\r\nsecond line")).toBe("my saved session");
+    expect(pastedLine("one-liner")).toBe("one-liner");
+  });
+
+  test("pasteText returns a string even without clipboard tools", () => {
+    expect(typeof pasteText()).toBe("string");
   });
 });

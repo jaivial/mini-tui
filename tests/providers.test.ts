@@ -30,7 +30,7 @@ describe("provider registry", () => {
       "MiniMax-M2.7-highspeed",
       "MiniMax-M2.7",
     ]);
-    expect(byId.get("opencode-go")!.staticModels.length).toBe(37);
+    expect(byId.get("opencode-go")!.staticModels.length).toBe(32); // the docs Endpoints table
     expect(byId.get("deepseek")!.staticModels).toContain("deepseek-v4-pro");
     // every provider has a direct route (its own env slot or the openai-compat slot)
     for (const provider of PROVIDERS) {

@@ -910,3 +910,108 @@ describe("task echo and thinking", () => {
     setup.renderer.destroy();
   });
 });
+
+describe("pasting into display-only inputs", () => {
+  async function openConnectKeyStep(setup: Awaited<ReturnType<typeof testRender>>) {
+    await setup.mockInput.typeText("/connect");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter(); // palette fill
+    });
+    await act(async () => {
+      setup.mockInput.pressEnter(); // run the command
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter(); // pick the first provider
+    });
+    await setup.renderOnce();
+  }
+
+  test("bracketed paste fills the API key field", async () => {
+    let tested = "";
+    const setup = await testRender(
+      <App
+        cwd="."
+        events={[]}
+        info={{ cost: 0, apiCalls: 0 }}
+        persistSettings={false}
+        testModel={async () => {
+          tested = "yes";
+          return true;
+        }}
+        onQuit={() => {}}
+      />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    await openConnectKeyStep(setup);
+    expect(setup.captureCharFrame()).toContain("paste your API key");
+
+    await act(async () => {
+      await setup.mockInput.pasteBracketedText("sk-pasted-secret");
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("\u2022".repeat(15)); // the pasted key, masked by length
+
+    await act(async () => {
+      setup.mockInput.pressEnter(); // continue to the model list with the pasted key
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("pick the default model");
+    setup.renderer.destroy();
+  });
+
+  test("ctrl+v reads the clipboard into the API key field", async () => {
+    const setup = await testRender(
+      <App
+        cwd="."
+        events={[]}
+        info={{ cost: 0, apiCalls: 0 }}
+        persistSettings={false}
+        onPasteText={() => "sk-from-clipboard"}
+        onQuit={() => {}}
+      />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    await openConnectKeyStep(setup);
+
+    await act(async () => {
+      setup.mockInput.pressKey("v", { ctrl: true });
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("\u2022".repeat(17)); // "sk-from-clipboard"
+    setup.renderer.destroy();
+  });
+
+  test("pasting into the model search filters the list", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} persistSettings={false} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    await openConnectKeyStep(setup);
+    await act(async () => {
+      setup.mockInput.pressEnter(); // submit the (empty-key guard is bypassed by typing first)
+    });
+    // type a key first \u2014 Enter with an empty key is ignored
+    await setup.mockInput.typeText("sk-typed");
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("pick the default model");
+
+    await act(async () => {
+      await setup.mockInput.pasteBracketedText("v2.5");
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("v2.5"); // the pasted search text
+    expect(frame).toContain("mimo-v2.5-pro"); // matches
+    expect(frame).not.toContain("mimo-v2.6-pro"); // filtered out
+    setup.renderer.destroy();
+  });
+});

@@ -64,9 +64,44 @@ def test_every_documented_model_is_routed(model_id):
 
 
 def test_endpoint_flavors_match_the_docs():
-    assert endpoint_for("glm-5.3-flash") == "chat"
-    assert endpoint_for("minimax-m3") == "messages"
-    assert endpoint_for("grok-4.6") == "responses"
+    # The docs `Endpoints` table verbatim — all 32 available models.
+    documented = {
+        "grok-4.7": "responses",
+        "grok-4.6": "responses",
+        "gpt-5.6-luna": "responses",
+        "glm-5.3-flash": "chat",
+        "glm-5.3": "chat",
+        "glm-5.2": "chat",
+        "glm-5.1": "chat",
+        "kimi-k3": "chat",
+        "kimi-k2.7-code": "chat",
+        "kimi-k2.6": "chat",
+        "longcat-2.0": "chat",
+        "deepseek-v4.1-flash": "chat",
+        "deepseek-v4-pro": "chat",
+        "deepseek-v4-flash": "chat",
+        "deepseek-v4-flash-vision-exp": "chat",
+        "mimo-v2.6-flash": "chat",
+        "mimo-v2.6-pro": "chat",
+        "mimo-v2.5": "chat",
+        "mimo-v2.5-pro": "chat",
+        "minimax-m3": "messages",
+        "minimax-m2.7": "messages",
+        "minimax-m2.5": "messages",
+        "muse-spark-1.3-contributor": "responses",
+        "muse-spark-1.2-contributor": "responses",
+        "qwen3.8-max": "messages",
+        "qwen3.8-flash": "messages",
+        "qwen3.7-max": "messages",
+        "qwen3.7-plus": "messages",
+        "qwen3.6-plus": "messages",
+        "hy4-preview": "chat",
+        "hy3": "chat",
+        "space-bunny-free": "chat",
+    }
+    assert {model.id: model.endpoint for model in OPENCODE_GO_MODELS} == documented
+    for model_id, endpoint in documented.items():
+        assert endpoint_for(model_id) == endpoint
     # Undocumented ids fall back to the OpenAI compatible endpoint.
     assert endpoint_for("brand-new-model") == "chat"
     assert not needs_messages_api("brand-new-model")
@@ -113,7 +148,7 @@ def test_anthropic_flavor_gets_the_messages_base(clean_env):
 
 @pytest.mark.parametrize(
     ("model_id",),
-    [("grok-4.6",), ("muse-spark-1.3-contributor",), ("muse-spark-1.2-contributor",)],
+    [("grok-4.7",), ("grok-4.6",), ("muse-spark-1.3-contributor",), ("muse-spark-1.2-contributor",), ("gpt-5.6-luna",)],
 )
 def test_responses_flavor_gets_the_response_model(clean_env, model_id):
     assert endpoint_for(model_id) == "responses"
@@ -222,7 +257,7 @@ def test_tiered_models_declare_both_tiers():
     assert price.tier_input == pytest.approx(4.0)
     assert MODEL_BY_ID["qwen3.7-plus"].tiered
     assert not MODEL_BY_ID["kimi-k3"].tiered
-    assert MODEL_BY_ID["union-alpha"].free
+    assert MODEL_BY_ID["space-bunny-free"].free
 
 
 def test_ids_missing_from_the_docs_table_are_still_usable(clean_env):
