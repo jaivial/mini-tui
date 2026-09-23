@@ -157,6 +157,52 @@ export function cleanTaskText(text: string): string {
   return collapseSkillPrompt(body.slice(0, end).trim());
 }
 
+/**
+ * Chain-of-thought captured for one model call, whatever shape the provider uses:
+ * `reasoning_content`/`reasoning` on chat messages (DeepSeek, Qwen, …), Anthropic
+ * `thinking` blocks replayed in the content, or `reasoning` summary items on the
+ * Responses API. Empty string when the message carries thinking markers without text.
+ */
+export function thinkingTextOf(message: TrajectoryMessage): { text: string; present: boolean } {
+  const raw = message as Record<string, unknown>;
+  for (const key of ["reasoning_content", "reasoning"]) {
+    if (typeof raw[key] === "string" && raw[key].trim()) return { text: raw[key] as string, present: true };
+  }
+  const content = message.content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    let present = false;
+    for (const block of content) {
+      if (!isRecord(block)) continue;
+      if (block.type === "thinking" && typeof block.thinking === "string") {
+        present = true;
+        if (block.thinking.trim()) parts.push(block.thinking);
+      } else if (block.type === "redacted_thinking") {
+        present = true;
+        parts.push("(redacted thinking)");
+      }
+    }
+    if (present) return { text: parts.join("\n\n"), present: true };
+  }
+  const output = raw.output;
+  if (Array.isArray(output)) {
+    const parts: string[] = [];
+    let present = false;
+    for (const item of output) {
+      if (!isRecord(item) || item.type !== "reasoning") continue;
+      present = true;
+      const summary = item.summary;
+      if (Array.isArray(summary)) {
+        for (const entry of summary) {
+          if (isRecord(entry) && typeof entry.text === "string" && entry.text.trim()) parts.push(entry.text);
+        }
+      }
+    }
+    if (present) return { text: parts.join("\n\n"), present: true };
+  }
+  return { text: "", present: false };
+}
+
 function hasInterruptType(message: TrajectoryMessage): string | undefined {
   const interruptType = extraOf(message).interrupt_type;
   return typeof interruptType === "string" ? interruptType : undefined;
@@ -257,6 +303,15 @@ export function messagesToEvents(messages: TrajectoryMessage[], options: ParseOp
           events.push({ type: "notice", text: getContentString(message) });
         }
       } else if (role === "assistant") {
+        const thinking = thinkingTextOf(message);
+        if (thinking.present) {
+          const thinkSeconds = extraOf(message).thinking_seconds;
+          events.push({
+            type: "thinking",
+            text: thinking.text,
+            seconds: typeof thinkSeconds === "number" ? thinkSeconds : 0,
+          });
+        }
         const text = getContentText(message.content);
         const cost = extraOf(message).cost;
         if (text.trim()) {

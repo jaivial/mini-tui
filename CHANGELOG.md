@@ -2,6 +2,26 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Your prompt is on screen the moment you send it.** The task card used to wait for the
+  first journal write — which lands with the first assistant reply — so every prompt left a
+  visible gap before it appeared. The TUI now echoes the task immediately (typed prompts,
+  post-run follow-ups and `mini -t` run mode alike), and mini writes the prompt to its
+  trajectory journal *before* the first model call (control-file follow-ups too), so the real
+  transcript confirms the echo right away. Sent twice-by-later-parsing tasks dedupe to one.
+- **The model's thinking, in the same three states as tool outputs.** mini-swe-agent captures
+  chain-of-thought from all three provider flavors — `reasoning_content`/`reasoning` (DeepSeek,
+  Qwen), Anthropic `thinking` blocks (incl. redacted ones and replay signatures), and OpenAI
+  Responses `reasoning` summaries (live deltas do not exist here: the agent's query is a single
+  non-streaming call, so the thinking arrives complete with the reply). It renders above the
+  reply: `expanded` shows it in full, `trimmed (2 lines)` at most two lines, `collapsed` shows
+  just “Thinking...” while the model works and “Thought for {n} seconds” once it answers
+  (per-reply timing recorded as `extra.thinking_seconds`). The live “Thinking...” tail shows
+  in every mode while a turn is in flight.
+
 ## 0.9.0 — 2026-09-23
 
 Every provider on its own direct base URL; litellm becomes an optional extra.

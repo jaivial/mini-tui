@@ -11,6 +11,7 @@ import { AssistantCard } from "./components/AssistantCard";
 import { NoticeLine } from "./components/NoticeLine";
 import { ExitBanner } from "./components/ExitBanner";
 import { ErrorBanner } from "./components/ErrorBanner";
+import { ThinkingCard } from "./components/ThinkingCard";
 import { PromptBar } from "./components/PromptBar";
 import { ModelPicker, MODELS } from "./components/ModelPicker";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -31,7 +32,7 @@ import {
   testProviderModel,
   type ProviderDef,
 } from "../providers";
-import { messagesToEvents, parseInfo } from "../traj/parse";
+import { cleanTaskText, messagesToEvents, parseInfo } from "../traj/parse";
 import { slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
@@ -233,6 +234,8 @@ export function App(props: AppProps) {
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<TextareaRenderable | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  /** Tasks echoed into the thread at send time, waiting for their journal twin. */
+  const pendingTasksRef = useRef<string[]>([]);
   const messagesRef = useRef<TrajectoryMessage[]>([]);
   const dbRef = useRef<Database | null>(null);
   const resumeQueryRef = useRef("");
@@ -350,6 +353,12 @@ export function App(props: AppProps) {
 
   /** Messages are append-only per run: parse only what's new since the last snapshot. */
   const consumedRef = useRef(0);
+  /** Show the sent task at once — the trajectory only carries it with the next journal write. */
+  const echoTask = (task: string) => {
+    const text = cleanTaskText(task);
+    pendingTasksRef.current.push(text);
+    setEvents((prev) => [...prev, { type: "task", text }]);
+  };
   const applySnapshot = (traj: Trajectory) => {
     const messages = traj.messages ?? [];
     // Only continue incrementally when the file grew from what we already consumed —
@@ -359,12 +368,28 @@ export function App(props: AppProps) {
     const contiguous = from > 0 && messages.length >= from && sameMessage(prev[from - 1], messages[from - 1]);
     const startFrom = contiguous ? from : 0;
     const fresh = messagesToEvents(messages, { showSystem: props.showSystem }, startFrom);
+    // The TUI echoes every sent task at once; when the journal finally carries it, drop the
+    // echo's parsed twin so a task shows exactly once (a rebuild starts from the truth anyway).
+    let incoming = fresh;
+    if (startFrom === 0) {
+      pendingTasksRef.current = [];
+    } else if (pendingTasksRef.current.length) {
+      const pending = [...pendingTasksRef.current];
+      incoming = fresh.filter((event) => {
+        if (event.type !== "task") return true;
+        const at = pending.indexOf(event.text);
+        if (at === -1) return true;
+        pending.splice(at, 1);
+        return false;
+      });
+      pendingTasksRef.current = pending;
+    }
     // Events are built: keep only the slim copy of the new messages (heavy extras dropped).
     const kept = startFrom === 0 ? [] : prev.slice(0, startFrom);
     for (let i = startFrom; i < messages.length; i++) kept.push(slimMessage(messages[i]!));
     messagesRef.current = kept;
     consumedRef.current = messages.length;
-    setEvents((prevEvents) => (startFrom === 0 ? fresh : fresh.length ? [...prevEvents, ...fresh] : prevEvents));
+    setEvents((prevEvents) => (startFrom === 0 ? fresh : incoming.length ? [...prevEvents, ...incoming] : prevEvents));
     setInfo(parseInfo(traj));
   };
 
@@ -379,6 +404,7 @@ export function App(props: AppProps) {
         else setEvents([{ type: "notice", text: `Could not read trajectory: ${props.viewPath}` }]);
       }
     } else if (props.runSpec) {
+      echoTask(props.runSpec.task); // run mode: the task is on screen before mini even starts
       startRun(props.runSpec);
     }
     return () => {
@@ -477,6 +503,7 @@ export function App(props: AppProps) {
     setOverlay("none");
     setResumeQuery("");
     sessionIdRef.current = record.id;
+    pendingTasksRef.current = [];
     try {
       const restoredEvents = JSON.parse(record.events_json) as RunEvent[];
       setEvents(restoredEvents);
@@ -502,6 +529,7 @@ export function App(props: AppProps) {
     interruptedRef.current = false;
     sessionIdRef.current = null;
     messagesRef.current = [];
+    pendingTasksRef.current = [];
     consumedRef.current = 0;
     setTurnStartedAt(0);
     followRef.current = true;
@@ -587,6 +615,7 @@ export function App(props: AppProps) {
       setEvents((prev) => [...prev, { type: "notice", text: `no skill named $${skillCall?.name} in ${shortPath(skillsDir)}` }]);
       return;
     }
+    echoTask(task);
     if (props.onSend) {
       props.onSend(task);
       return;
@@ -1039,6 +1068,8 @@ export function App(props: AppProps) {
               if (event.type === "notice")
                 return <NoticeLine key={item.index} text={event.text} interruptType={event.interruptType} />;
               if (event.type === "error") return <ErrorBanner key={item.index} text={event.text} />;
+              if (event.type === "thinking")
+                return <ThinkingCard key={item.index} text={event.text} seconds={event.seconds} mode={settings.outputMode} />;
               // `Submitted` just repeats the final answer rendered above — show only real errors.
               if (event.type === "exit" && event.exitStatus !== "Submitted")
                 return <ExitBanner key={item.index} exitStatus={event.exitStatus} submission={event.submission} />;
@@ -1076,6 +1107,7 @@ export function App(props: AppProps) {
               />
             );
           })}
+          {displayStatus === "running" ? <ThinkingCard text="" seconds={0} mode={settings.outputMode} live /> : null}
         </scrollbox>
       {paletteOpen ? (
         <CommandPalette

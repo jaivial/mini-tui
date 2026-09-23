@@ -117,6 +117,9 @@ class DefaultAgent:
                 self.model.format_message(role="system", content=self._render_template(self.config.system_template)),
                 self.model.format_message(role="user", content=self._render_template(self.config.instance_template)),
             )
+        # The task must reach the journal before the first model call: the TUI (and any
+        # `view --follow`) shows the prompt immediately instead of with the first reply.
+        self.save(self.config.output_path, force=False)
         while True:
             try:
                 self.step()
@@ -242,6 +245,8 @@ class DefaultAgent:
         self._apply_model_switch(model_name)
         for text in messages:
             self.add_messages(self._user_task_message(text))
+        if messages:
+            self.save(self.config.output_path, force=False)
 
     def _wait_for_control_followup(self) -> bool:
         """Hold at exit for a follow-up prompt from the control channel.
@@ -258,6 +263,7 @@ class DefaultAgent:
             if messages:
                 for text in messages:
                     self.add_messages(self._user_task_message(text))
+                self.save(self.config.output_path, force=False)
                 return True
             time.sleep(0.2)
 
@@ -281,8 +287,12 @@ class DefaultAgent:
                 }
             )
         self.n_calls += 1
+        started = time.time()
         message = self.model.query(self.messages)
         self.cost += message.get("extra", {}).get("cost", 0.0)
+        # How long the model spent on this reply (chain-of-thought included): the TUI's
+        # collapsed thinking block reads "Thought for {n} seconds" from it.
+        message.setdefault("extra", {})["thinking_seconds"] = round(time.time() - started, 1)
         self.add_messages(message)
         return message
 
