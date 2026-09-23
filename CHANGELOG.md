@@ -2,6 +2,20 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **The `/connect` wizard's connection test actually runs now** — the last missing piece behind
+  “valid key, still errors” on every provider. The helper interpreter resolver read the `mini`
+  launcher as a *relative file path*: with `mini` living on PATH (the usual case) that read
+  always failed, and every helper script silently fell back to whatever `python3` sits first on
+  PATH — when that python cannot `import minisweagent`, every model test failed with
+  “could not reach … with that key” no matter how valid the key was. The resolver now searches
+  PATH for the launcher and understands both shebang styles (`#!/usr/bin/python3.10` and
+  `#!/usr/bin/env python3.11`); `MINITUI_PYTHON` still overrides. Session-title generation (the
+  other helper script) was silently falling back for the same reason and benefits too.
+
 ## 0.12.2 — 2026-09-23
 
 Valid OpenCode Go keys test green again — on every model.
