@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "bun:test";
 
-import { cleanTaskText, messagesToEvents, parseTrajectory } from "../src/traj/parse";
+import { cleanTaskText, messagesToEvents, parseTrajectory, thinkingTextOf } from "../src/traj/parse";
 import { readTrajectory, watchTrajectory } from "../src/traj/watch";
 import type { RunEvent, Trajectory } from "../src/traj/schema";
 
@@ -168,5 +168,65 @@ describe("watchTrajectory", () => {
 
   test("readTrajectory returns null for missing or broken files", () => {
     expect(readTrajectory("/definitely/not/here.json")).toBeNull();
+  });
+});
+
+describe("chain-of-thought", () => {
+  test("reasoning_content on chat messages (DeepSeek, Qwen style)", () => {
+    const events = messagesToEvents([
+      { role: "assistant", content: "the answer", reasoning_content: "hmm, let me think", extra: { thinking_seconds: 4.2 } },
+    ]);
+    expect(events[0]).toEqual({ type: "thinking", text: "hmm, let me think", seconds: 4.2 });
+    expect(events[1]).toEqual({ type: "assistant", text: "the answer", cost: undefined });
+  });
+
+  test("Anthropic thinking blocks replayed in the content", () => {
+    const { text, present } = thinkingTextOf({
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "step by step", signature: "sig" },
+        { type: "redacted_thinking" },
+        { type: "text", text: "done" },
+      ],
+    });
+    expect(present).toBe(true);
+    expect(text).toContain("step by step");
+    expect(text).toContain("(redacted thinking)");
+    // the thinking blocks never leak into the assistant text
+    const events = messagesToEvents([
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "step by step", signature: "sig" },
+          { type: "text", text: "done" },
+        ],
+        extra: { thinking_seconds: 2 },
+      },
+    ]);
+    expect(events[0]).toMatchObject({ type: "thinking", text: "step by step", seconds: 2 });
+    expect(events[1]).toMatchObject({ type: "assistant", text: "done" });
+  });
+
+  test("Responses API reasoning summaries", () => {
+    const { text, present } = thinkingTextOf({
+      role: "assistant",
+      object: "response",
+      output: [
+        { type: "reasoning", summary: [{ type: "summary_text", text: "first I checked the tests" }] },
+        { type: "message", content: [{ type: "output_text", text: "answer" }] },
+      ],
+    });
+    expect(present).toBe(true);
+    expect(text).toBe("first I checked the tests");
+  });
+
+  test("reasoning markers without text still count as thinking", () => {
+    expect(thinkingTextOf({ role: "assistant", content: "x", reasoning_content: "  " })).toEqual({ text: "", present: false });
+    expect(thinkingTextOf({ role: "assistant", output: [{ type: "reasoning", summary: [] }] })).toEqual({ text: "", present: true });
+  });
+
+  test("thinking_seconds defaults to 0 when the journal predates it", () => {
+    const events = messagesToEvents([{ role: "assistant", content: "a", reasoning_content: "t", extra: {} }]);
+    expect(events[0]).toEqual({ type: "thinking", text: "t", seconds: 0 });
   });
 });

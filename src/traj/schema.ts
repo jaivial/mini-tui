@@ -42,6 +42,8 @@ export interface Trajectory {
 export type RunEvent =
   | { type: "task"; text: string }
   | { type: "assistant"; text: string; cost?: number }
+  /** Chain-of-thought of one model call (reasoning content / thinking blocks). */
+  | { type: "thinking"; text: string; seconds: number }
   | { type: "tool_call"; id: string; name: string; command: string }
   | {
       type: "observation";

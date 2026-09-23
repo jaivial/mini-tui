@@ -842,3 +842,71 @@ describe("crash error in the thread", () => {
     expect(deriveStatus("interrupted", crashEvents)).toBe("interrupted");
   });
 });
+
+describe("task echo and thinking", () => {
+  test("the task card appears the moment the prompt is sent", async () => {
+    const sent: string[] = [];
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} initialSettings={EXPANDED} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
+      { width: 90, height: 18 },
+    );
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).not.toContain("INSTANT-ECHO");
+
+    await setup.mockInput.typeText("please do the INSTANT-ECHO thing");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(sent).toEqual(["please do the INSTANT-ECHO thing"]);
+    expect(frame).toContain("task"); // the card label
+    expect(frame).toContain("INSTANT-ECHO"); // on screen immediately — no first reply needed
+    setup.renderer.destroy();
+  });
+
+  test("thinking block: collapsed summary, trimmed to 2 lines, full text", async () => {
+    const events: RunEvent[] = [
+      { type: "thinking", text: "line one\nline two\nline three", seconds: 4.2 },
+      { type: "assistant", text: "the answer" },
+    ];
+    const render = (mode: "collapsed" | "trim" | "expanded") =>
+      testRender(
+        <App cwd="." events={events} info={{ cost: 0, apiCalls: 1 }} initialSettings={{ outputMode: mode }} onQuit={() => {}} />,
+        { width: 90, height: 24 },
+      );
+
+    const collapsed = await render("collapsed");
+    await collapsed.renderOnce();
+    const collapsedFrame = collapsed.captureCharFrame();
+    expect(collapsedFrame).toContain("Thought for 4 seconds");
+    expect(collapsedFrame).not.toContain("line one"); // collapsed shows only the summary
+    collapsed.renderer.destroy();
+
+    const trimmed = await render("trim");
+    await trimmed.renderOnce();
+    const trimFrame = trimmed.captureCharFrame();
+    expect(trimFrame).toContain("line one");
+    expect(trimFrame).toContain("line two");
+    expect(trimFrame).not.toContain("line three"); // at most 2 lines
+    trimmed.renderer.destroy();
+
+    const expanded = await render("expanded");
+    await expanded.renderOnce();
+    expect(expanded.captureCharFrame()).toContain("line three"); // full text
+    expanded.renderer.destroy();
+  });
+
+  test("while the model thinks the thread tail reads Thinking...", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} statusOverride="running" onQuit={() => {}} />,
+      { width: 90, height: 18 },
+    );
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Thinking...");
+    expect(frame).not.toContain("Thought for");
+    setup.renderer.destroy();
+  });
+});

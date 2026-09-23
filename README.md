@@ -38,7 +38,9 @@ outputs — into cards, badges and banners. The harness runs completely untouche
   (`⣾ ▓░░░░ working · 34s`), the selected model, the working path and the checked-out git branch.
   Nothing sits below it.
 - **Output display modes** — collapsed (just a `1 tool call` line), trimmed to 2 lines, or fully
-  expanded. Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still
+  expanded. The model's thinking follows the same three states (`Thinking...` while it works,
+  `Thought for {n} seconds` when done), and your prompt is echoed into the thread the moment
+  you send it. Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still
   expands or collapses any block individually. Expanded output is capped at 500 lines with a
   `... N lines hidden ...` marker.
 - **Flat memory, always.** The transcript is mounted in a sliding window (120 blocks; `g` pages
