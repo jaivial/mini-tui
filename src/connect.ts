@@ -2,7 +2,7 @@ import type { ProviderDef } from "./providers";
 
 export type ConnectStep =
   | { kind: "provider"; index: number; query: string }
-  | { kind: "key"; def: ProviderDef; value: string }
+  | { kind: "key"; def: ProviderDef; value: string; show?: boolean }
   | { kind: "models"; def: ProviderDef; key: string; models: string[]; query: string; index: number; error?: string }
   | { kind: "testing"; def: ProviderDef; key: string; model: string }
   | { kind: "done"; def: ProviderDef; model: string; count: number }

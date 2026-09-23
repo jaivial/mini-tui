@@ -2,6 +2,20 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **Long API keys no longer look truncated in the `/connect` key field.** The mask drew at
+  most 32 `•` no matter how long the key was, so a pasted 51-char key (e.g. an OpenCode Go
+  `oc_sk_…`) looked like the paste had been cut. The value was always stored complete — the
+  mask now shows one marker per character, exactly.
+
+### Added
+
+- **Tab shows/hides the key** in the `/connect` key field (masked by default, clear text on
+  demand — handy for verifying what pasted). The hint line says so.
+
 ## 0.11.0 — 2026-09-23
 
 Find models and providers by name.

@@ -1119,3 +1119,104 @@ describe("search in the model and provider modals", () => {
     setup.renderer.destroy();
   });
 });
+
+describe("API key: full paste and visibility", () => {
+  const REAL_KEY = "oc_sk_72598843d65e_8fvLFKl3hlLB3rdw81bGvff7Tf8PsVpc";
+
+  async function openKeyStep(setup: Awaited<ReturnType<typeof testRender>>) {
+    await setup.mockInput.typeText("/connect");
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter(); // palette fill
+    });
+    await act(async () => {
+      setup.mockInput.pressEnter(); // run the command
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter(); // pick the provider
+    });
+    await setup.renderOnce();
+  }
+
+  test("a pasted key lands complete (51 chars, opencode-go sample)", async () => {
+    let captured = "";
+    const setup = await testRender(
+      <App
+        cwd="."
+        events={[]}
+        info={{ cost: 0, apiCalls: 0 }}
+        persistSettings={false}
+        testModel={async (_model, key) => {
+          captured = key;
+          return true;
+        }}
+        onQuit={() => {}}
+      />,
+      { width: 110, height: 30 },
+    );
+    await setup.renderOnce();
+    await openKeyStep(setup);
+
+    await act(async () => {
+      await setup.mockInput.pasteBracketedText(REAL_KEY);
+    });
+    await setup.renderOnce();
+    await act(async () => {
+      setup.mockInput.pressEnter(); // continue to the model list
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("pick the default model");
+    await act(async () => {
+      setup.mockInput.pressEnter(); // pick a model -> the connection test gets the key
+    });
+    await Bun.sleep(20);
+    expect(captured).toBe(REAL_KEY); // nothing lost in the paste
+    setup.renderer.destroy();
+  });
+
+  test("the masked key shows its true length (no 32-cap truncation)", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} persistSettings={false} onQuit={() => {}} />,
+      { width: 110, height: 30 },
+    );
+    await setup.renderOnce();
+    await openKeyStep(setup);
+
+    await act(async () => {
+      await setup.mockInput.pasteBracketedText(REAL_KEY);
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("\u2022".repeat(REAL_KEY.length)); // 51 bullets, not 32
+    setup.renderer.destroy();
+  });
+
+  test("Tab toggles showing and hiding the key", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} persistSettings={false} onQuit={() => {}} />,
+      { width: 110, height: 30 },
+    );
+    await setup.renderOnce();
+    await openKeyStep(setup);
+    await act(async () => {
+      await setup.mockInput.pasteBracketedText(REAL_KEY);
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).not.toContain(REAL_KEY); // masked by default
+
+    await act(async () => {
+      setup.mockInput.pressTab(); // show
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain(REAL_KEY); // clear text
+
+    await act(async () => {
+      setup.mockInput.pressTab(); // hide again
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).not.toContain(REAL_KEY);
+    expect(setup.captureCharFrame()).toContain("\u2022".repeat(REAL_KEY.length));
+    setup.renderer.destroy();
+  });
+});

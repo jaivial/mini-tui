@@ -39,9 +39,10 @@ export function ConnectWizard(props: { step: ConnectStep; providers: ProviderDef
           <text fg={colors.dim}>paste your API key — it is stored locally and injected into mini runs</text>
           <box flexDirection="row" gap={1}>
             <text fg={colors.faint}>key</text>
-            <text fg={colors.text}>{step.value ? "•".repeat(Math.min(step.value.length, 32)) : "▏"}</text>
+            {/* one marker per character — never fewer, so long keys are not cut-looking */}
+            <text fg={colors.text}>{step.value ? (step.show ? step.value : "•".repeat(step.value.length)) : "▏"}</text>
           </box>
-          <text fg={colors.faint}>Enter continue · Esc back</text>
+          <text fg={colors.faint}>Enter continue · Esc back · Tab show/hide</text>
         </>
       ) : null}
 

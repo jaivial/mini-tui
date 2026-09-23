@@ -801,6 +801,7 @@ export function App(props: AppProps) {
 
       if (step.kind === "key") {
         if (key.name === "escape") return setConnectStep({ kind: "provider", index: 0, query: "" });
+        if (key.name === "tab") return setConnectStep({ ...step, show: !step.show });
         if (key.name === "backspace") return setConnectStep({ ...step, value: step.value.slice(0, -1) });
         if ((key.ctrl && key.name === "v") || (key.shift && key.name === "insert")) {
           const token = pastedToken(readClipboard());
