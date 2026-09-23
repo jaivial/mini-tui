@@ -40,11 +40,14 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import litellm
-
-from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
-from minisweagent.models.litellm_response_model import LitellmResponseModel
+from minisweagent.models import prices
+from minisweagent.models.anthropic_compat_model import AnthropicCompatModel, to_anthropic_messages
+from minisweagent.models.errors import ProviderAbortError, ProviderError
+from minisweagent.models.openai_compat_model import OpenaiCompatModel, OpenaiCompatModelConfig
+from minisweagent.models.responses_compat_model import ResponsesCompatModel
 from minisweagent.models.routing import OPENCODE_GO_PREFIX, is_opencode_go_model  # noqa: F401 (re-exported)
+from minisweagent.models.utils.anthropic_utils import _reorder_anthropic_thinking_blocks
+from minisweagent.models.utils.cache_control import set_cache_control
 
 logger = logging.getLogger(__name__)
 
@@ -744,56 +747,32 @@ def _with_session_headers(model_kwargs: dict[str, Any]) -> dict[str, Any]:
     return model_kwargs
 
 
-def _litellm_registry() -> dict[str, dict[str, Any]]:
-    """litellm model registry entries carrying the documented Go prices.
-
-    litellm does not know these ids, so without this every response would be costed at
-    0.0 and `--cost-limit` would never trip. Tiered models (Grok 4.6, GPT 5.6 Luna,
-    Qwen Plus) use litellm's `tiered_pricing` table, which picks one tier per request
-    from the input token count, exactly like the docs bill them.
-    """
-    registry: dict[str, dict[str, Any]] = {}
-    for model in OPENCODE_GO_MODELS:
-        entry: dict[str, Any] = {
-            "input_cost_per_token": model.input / 1e6,
-            "output_cost_per_token": model.output / 1e6,
-            "cache_read_input_token_cost": model.cache_read / 1e6,
-            "cache_creation_input_token_cost": model.cache_write / 1e6,
-            "litellm_provider": "anthropic" if model.endpoint == "messages" else "openai",
-            "mode": "chat",
-        }
-        if model.tiered:
-            base = {
-                "input_cost_per_token": model.input / 1e6,
-                "output_cost_per_token": model.output / 1e6,
-                "cache_read_input_token_cost": model.cache_read / 1e6,
-                "cache_creation_input_token_cost": model.cache_write / 1e6,
-            }
-            upper = {
-                "input_cost_per_token": model.tier_input / 1e6,
-                "output_cost_per_token": model.tier_output / 1e6,
-                "cache_read_input_token_cost": model.tier_cache_read / 1e6,
-                "cache_creation_input_token_cost": model.tier_cache_write / 1e6,
-            }
-            entry["tiered_pricing"] = [
-                dict(base, range=[0, model.tier_threshold]),
-                dict(upper, range=[model.tier_threshold, 10**12]),
-            ]
-        # litellm looks prices up under the provider-qualified name we send.
-        prefix = "anthropic/" if model.endpoint == "messages" else "openai/"
-        registry[f"{prefix}{model.id}"] = entry
-    return registry
+def _go_price(model: "GoModelInfo") -> prices.Price:
+    """`models.prices` row for a catalog entry (tiered rows bill per request by size)."""
+    if model.tiered:
+        return prices.Price(
+            input=model.input,
+            output=model.output,
+            cache_read=model.cache_read,
+            cache_write=model.cache_write,
+            tier_threshold=model.tier_threshold,
+            tier_input=model.tier_input,
+            tier_output=model.tier_output,
+            tier_cache_read=model.tier_cache_read,
+            tier_cache_write=model.tier_cache_write,
+        )
+    return prices.Price(input=model.input, output=model.output, cache_read=model.cache_read, cache_write=model.cache_write)
 
 
 _REGISTRY_REGISTERED = False
 
 
 def _ensure_pricing_registered() -> None:
-    """Register the Go prices with litellm once per process."""
+    """Register the documented Go prices with `models.prices` once per process."""
     global _REGISTRY_REGISTERED
     if _REGISTRY_REGISTERED:
         return
-    litellm.utils.register_model(_litellm_registry())
+    prices.register_prices("opencode-go", {model.id.lower(): _go_price(model) for model in OPENCODE_GO_MODELS})
     _REGISTRY_REGISTERED = True
 
 
@@ -878,57 +857,39 @@ def _normalize_model_kwargs(model_id: str, model_kwargs: dict[str, Any]) -> dict
     return model_kwargs
 
 
-class OpencodeGoModelConfig(LitellmModelConfig):
+class OpencodeGoModelConfig(OpenaiCompatModelConfig):
     model_kwargs: dict[str, Any] = {}
+    set_cache_control: Literal["default_end"] | None = None
+    """The Go gateway bills no cache writes — markers off unless asked for."""
     cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
     """Prices ship with this module, but a docs refresh can still lag behind a new id;
     unknown ids then report a cost of 0.0 instead of aborting the run."""
 
 
-class OpencodeGoModel(LitellmModel):
-    """Talks to OpenCode Go, picking the endpoint the gateway documents for the id."""
+def _go_filter_messages(messages: list[dict], keep_reasoning: bool) -> list[dict]:
+    """All message keys but `extra`; `developer` becomes `system`, and only the
+    reasoning backends in `REASONING_CONTENT_MODELS` accept echoed `reasoning_content`
+    (the rest get a 400 for it)."""
+    prepared = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        msg = {k: v for k, v in msg.items() if k != "extra"}
+        if msg.get("role") == "developer":
+            msg = {"role": "system", **{k: v for k, v in msg.items() if k != "role"}}
+        if not keep_reasoning:
+            msg = {k: v for k, v in msg.items() if k != "reasoning_content"}
+        prepared.append(msg)
+    return prepared
 
-    def __init__(self, **kwargs):
-        kwargs.setdefault("config_class", OpencodeGoModelConfig)
-        super().__init__(**kwargs)
-        _ensure_pricing_registered()
 
-        model_id = strip_opencode_go_prefix(self.config.model_name)
-        self.config.model_name = litellm_model_name(model_id)
-        if get_model_info(model_id) is None:
-            logger.warning(
-                "checkpoint=unknown_go_model model=%s: id not in the documented table, "
-                "served as OpenAI compatible /chat/completions; run "
-                "`mini-extra opencode-go-models` to list the ids your key accepts.",
-                model_id,
-            )
+class _GoQueryGuardMixin:
+    """Go-specific request headers and error rewrites over any of the direct clients."""
 
-        model_kwargs = {"api_base": anthropic_api_base() if needs_messages_api(model_id) else openai_api_base()}
-        # The Anthropic flavor hangs off the gateway root, litellm appends `/v1/messages`.
-        model_kwargs.update(self.config.model_kwargs)
-        model_kwargs = _normalize_model_kwargs(model_id, model_kwargs)
-        api_key = _resolve_api_key()
-        if api_key:
-            model_kwargs.setdefault("api_key", api_key)
-        # Backends differ in which sampling params they accept.
-        model_kwargs.setdefault("drop_params", True)
-        self.config.model_kwargs = _with_session_headers(model_kwargs)
+    def _go_keep_reasoning(self) -> bool:
+        return self.config.model_name.lower() in REASONING_CONTENT_MODELS
 
-    def _prepare_messages_for_api(self, messages: list[dict]) -> list[dict]:
-        """Like the parent's, but the gateway knows no `developer` role, and only
-        the reasoning backends in `REASONING_CONTENT_MODELS` accept echoed
-        `reasoning_content` assistant keys (the rest get a 400 for them)."""
-        keep_reasoning = self.config.model_name.split("/", 1)[-1].lower() in REASONING_CONTENT_MODELS
-        prepared = []
-        for msg in super()._prepare_messages_for_api(messages):
-            if isinstance(msg, dict) and msg.get("role") == "developer":
-                msg = {"role": "system", **{k: v for k, v in msg.items() if k != "role"}}
-            if isinstance(msg, dict) and not keep_reasoning:
-                msg = {k: v for k, v in msg.items() if k != "reasoning_content"}
-            prepared.append(msg)
-        return prepared
-
-    def _query(self, messages: list[dict[str, str]], **kwargs):
+    def _query(self, messages, **kwargs):
         headers = dict(self.config.model_kwargs.get("extra_headers") or {})
         headers.update(kwargs.get("extra_headers") or {})
         request_id = next((v for k, v in headers.items() if k.lower() == "x-request-id"), None)
@@ -941,49 +902,141 @@ class OpencodeGoModel(LitellmModel):
             response = super()._query(messages, **kwargs)
             logger.debug("checkpoint=upstream_received model=%s request_id=%s", self.config.model_name, request_id)
             return response
-        except litellm.exceptions.ServiceUnavailableError:
-            logger.warning(
-                "checkpoint=upstream_unavailable provider=opencode-go model=%s request_id=%s: "
-                "OpenCode Go returned a service-unavailable response; mini will apply its bounded retry policy. "
-                "Moving the same upstream to Rosetta does not restore its availability.",
-                self.config.model_name,
-                request_id,
-            )
-            raise
-        except litellm.exceptions.BadRequestError as e:
+        except ProviderError as e:
+            if e.status in (500, 502, 503, 504):
+                logger.warning(
+                    "checkpoint=upstream_unavailable provider=opencode-go model=%s request_id=%s: "
+                    "OpenCode Go returned a service-unavailable response; mini will apply its bounded retry policy. "
+                    "Moving the same upstream to Rosetta does not restore its availability.",
+                    self.config.model_name,
+                    request_id,
+                )
+                raise
+            if e.status != 400:
+                raise
             if not _is_missing_session_error(e):
                 if _strip_rejected_sampling_param(self.config.model_kwargs, e):
                     return super()._query(messages, **kwargs)
                 if _UNKNOWN_MODEL_RE.search(str(e)):
-                    raise litellm.exceptions.NotFoundError(
-                        f"{e} Use an id from `mini-extra opencode-go-models`.",
-                        model=self.config.model_name,
-                        llm_provider="opencode-go",
+                    raise ProviderAbortError(
+                        f"{e} Use an id from `mini-extra opencode-go-models`.", e.status
                     ) from e
                 if _AUTH_ERROR_RE.search(str(e)):
-                    raise litellm.exceptions.AuthenticationError(
+                    raise ProviderAbortError(
                         f"{e} You can permanently set your API key with "
                         "`mini-extra config set OPENCODE_GO_API_KEY YOUR_KEY`.",
-                        llm_provider="opencode-go",
-                        model=self.config.model_name,
+                        e.status,
                     ) from e
                 raise
             # Missing session configuration cannot be repaired by retrying.
-            raise litellm.exceptions.NotFoundError(
+            raise ProviderAbortError(
                 "OpenCode Go requires a stable 'x-opencode-session' header on every request, "
                 "which mini-swe-agent sends automatically. Set OPENCODE_GO_SESSION to pin one.",
-                model=self.config.model_name,
-                llm_provider="opencode-go",
+                e.status,
             ) from e
 
 
-class OpencodeGoResponseModelConfig(OpencodeGoModelConfig):
-    pass
+class _GoChatModel(_GoQueryGuardMixin, OpenaiCompatModel):
+    """OpenCode Go ids served on the OpenAI-compatible `/chat/completions`."""
+
+    _price_provider = "opencode-go"
+
+    def _prepare_messages_for_api(self, messages: list[dict]) -> list[dict]:
+        return _go_filter_messages(messages, self._go_keep_reasoning())
 
 
-class OpencodeGoResponseModel(OpencodeGoModel, LitellmResponseModel):
+class _GoMessagesModel(_GoQueryGuardMixin, AnthropicCompatModel):
+    """OpenCode Go ids served on the Anthropic-compatible `/messages`."""
+
+    _price_provider = "opencode-go"
+
+    def _prepare_messages_for_api(self, messages: list[dict]) -> dict:
+        prepared = _reorder_anthropic_thinking_blocks(_go_filter_messages(messages, self._go_keep_reasoning()))
+        if self.config.set_cache_control:
+            prepared = set_cache_control(prepared, mode=self.config.set_cache_control)
+        system_blocks, wire = to_anthropic_messages(prepared)
+        return {"system": system_blocks, "messages": wire}
+
+
+class _GoResponseModel(_GoQueryGuardMixin, ResponsesCompatModel):
+    """OpenCode Go ids served on the OpenAI Responses API (`/responses`)."""
+
+    _price_provider = "opencode-go"
+
+    def _prepare_messages_for_api(self, messages: list[dict]) -> list[dict]:
+        return ResponsesCompatModel._prepare_messages_for_api(self, _go_filter_messages(messages, self._go_keep_reasoning()))
+
+
+_GO_IMPLS = {"chat": _GoChatModel, "messages": _GoMessagesModel, "responses": _GoResponseModel}
+
+
+class OpencodeGoModel:
+    """Talks to OpenCode Go, picking the endpoint the gateway documents for the id.
+
+    A facade over the three direct clients: `chat` -> `/chat/completions`,
+    `messages` -> `/messages`, `responses` -> `/responses`.
+    """
+
+    _force_endpoint: Endpoint | None = None
+
+    def __init__(self, *, config_class=OpencodeGoModelConfig, **kwargs):
+        config = config_class(**kwargs)
+        self.requested_model_name = config.model_name
+        model_id = strip_opencode_go_prefix(config.model_name)
+        if get_model_info(model_id) is None:
+            logger.warning(
+                "checkpoint=unknown_go_model model=%s: id not in the documented table, "
+                "served as OpenAI compatible /chat/completions; run "
+                "`mini-extra opencode-go-models` to list the ids your key accepts.",
+                model_id,
+            )
+        endpoint = self._force_endpoint or endpoint_for(model_id)
+        _ensure_pricing_registered()
+        model_kwargs = _normalize_model_kwargs(model_id, dict(config.model_kwargs))
+        # The Anthropic flavor hangs off the gateway root; the client posts `/messages`
+        # after the `/v1` the Messages API lives under.
+        if endpoint == "messages":
+            base = anthropic_api_base()
+            default_base = base if base.endswith("/v1") else f"{base}/v1"
+        else:
+            default_base = openai_api_base()
+        api_base = str(model_kwargs.pop("api_base", "") or default_base).rstrip("/")
+        api_key = str(model_kwargs.pop("api_key", "") or _resolve_api_key())
+        model_kwargs.setdefault("drop_params", True)  # kept for config compatibility
+        self._impl = _GO_IMPLS[endpoint](
+            model_name=model_id,
+            api_base=api_base,
+            api_key=api_key,
+            model_kwargs=_with_session_headers(model_kwargs),
+            set_cache_control=config.set_cache_control,
+            cost_tracking=config.cost_tracking,
+            format_error_template=config.format_error_template,
+            observation_template=config.observation_template,
+            multimodal_regex=config.multimodal_regex,
+        )
+        self.config = self._impl.config
+
+    # --- Model protocol: delegate to the endpoint's client ------------------------------
+
+    def query(self, messages: list[dict[str, str]], **kwargs) -> dict:
+        return self._impl.query(messages, **kwargs)
+
+    def format_message(self, **kwargs) -> dict:
+        return self._impl.format_message(**kwargs)
+
+    def format_observation_messages(self, message: dict, outputs: list[dict], template_vars: dict | None = None) -> list[dict]:
+        return self._impl.format_observation_messages(message, outputs, template_vars)
+
+    def get_template_vars(self, **kwargs) -> dict[str, Any]:
+        return self._impl.get_template_vars(**kwargs)
+
+    def serialize(self) -> dict:
+        data = self._impl.serialize()
+        data["info"]["config"]["model_type"] = f"{type(self).__module__}.{type(self).__name__}"
+        return data
+
+
+class OpencodeGoResponseModel(OpencodeGoModel):
     """OpenCode Go ids served through the OpenAI Responses API (`/responses`)."""
 
-    def __init__(self, **kwargs):
-        kwargs.setdefault("config_class", OpencodeGoResponseModelConfig)
-        super().__init__(**kwargs)
+    _force_endpoint = "responses"

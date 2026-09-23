@@ -7,10 +7,11 @@ import type { SelectOption } from "@opentui/core";
 import { runHelperScript } from "./helpers";
 
 /**
- * How the provider reaches the model layer (litellm):
- * - `native`: a litellm/mini provider prefix + its key env is enough (`moonshot/kimi-k2`).
- * - `openai-compat`: any OpenAI-compatible endpoint, reached through litellm's `openai/`
- *   provider with `OPENAI_API_BASE`/`OPENAI_API_KEY` (and mini's `MSWEA_OPENAI_*`).
+ * How the provider reaches the model layer (direct base URLs, no litellm since 0.9):
+ * - `native`: a mini provider prefix + its own key/base env is enough (`moonshot/kimi-k2`).
+ * - `openai-compat`: any OpenAI-compatible endpoint through the generic `openai/` slot with
+ *   `OPENAI_API_BASE`/`OPENAI_API_KEY` (and mini's `MSWEA_OPENAI_*`) — kept working for
+ *   connections saved before each provider got its own env slot.
  */
 export type ProviderRoute = "native" | "openai-compat";
 
@@ -36,7 +37,7 @@ export interface ProviderDef {
 
 /**
  * BYOK providers — the MiniMax Code catalog (MiniMax, Z.AI, DeepSeek, OpenCode Go,
- * Xiaomi Token Plan) plus other common litellm providers. Order = display order.
+ * Xiaomi Token Plan) plus other common providers. Order = display order.
  */
 export const PROVIDERS: ProviderDef[] = [
   {
@@ -129,11 +130,12 @@ export const PROVIDERS: ProviderDef[] = [
     id: "zai",
     name: "Z.AI",
     description: "GLM coding models",
-    route: "openai-compat",
+    route: "native",
     keyEnv: "ZAI_API_KEY",
+    extraEnv: { ZAI_API_BASE: "https://api.z.ai/api/coding/paas/v4" },
     baseUrl: "https://api.z.ai/api/coding/paas/v4",
     probe: "openai",
-    prefix: "openai",
+    prefix: "zai",
     staticModels: [
       "glm-5.3-flash",
       "glm-5.3",
@@ -157,11 +159,12 @@ export const PROVIDERS: ProviderDef[] = [
     id: "minimax",
     name: "MiniMax",
     description: "MiniMax M-series",
-    route: "openai-compat",
+    route: "native",
     keyEnv: "MINIMAX_API_KEY",
+    extraEnv: { MINIMAX_API_BASE: "https://api.minimax.io/v1" },
     baseUrl: "https://api.minimax.io/v1",
     probe: "openai",
-    prefix: "openai",
+    prefix: "minimax",
     staticModels: ["MiniMax-M3.1", "MiniMax-M3", "MiniMax-M2.7-highspeed", "MiniMax-M2.7"],
   },
   {
@@ -269,12 +272,12 @@ export function saveConnection(connection: SavedConnection, path: string = CONNE
   }
 }
 
-/** litellm/mini model name for a catalog id (`<prefix>/<id>`, or `openai/<id>` for compat). */
-export function litellmName(prefix: string, id: string): string {
+/** mini model name for a catalog id (`<prefix>/<id>`). */
+export function providerModelName(prefix: string, id: string): string {
   return `${prefix}/${id}`;
 }
 
-/** Environment a connection contributes for its models (litellm reads these). */
+/** Environment a connection contributes for its models (mini's providers read these). */
 export function connectionEnv(connection: {
   route: ProviderRoute;
   keyEnv: string;
@@ -285,7 +288,7 @@ export function connectionEnv(connection: {
   if (connection.route === "native") {
     return { [connection.keyEnv]: connection.key, ...(connection.extraEnv ?? {}) };
   }
-  // OpenAI-compatible providers through litellm's `openai/` provider (MSWEA_ wins in mini).
+  // OpenAI-compatible providers through the generic `openai/` slot (MSWEA_ wins in mini).
   return {
     OPENAI_API_KEY: connection.key,
     OPENAI_API_BASE: connection.baseUrl,
@@ -310,8 +313,8 @@ export function connectionModelOptions(connections: SavedConnection[] = loadConn
   return connections.flatMap((connection) =>
     connection.models.map((id) => ({
       name: `${connection.name} · ${id}`,
-      description: `${connection.route === "native" ? "litellm" : "openai-compat"} · ${connection.baseUrl}`,
-      value: litellmName(connection.prefix, id),
+      description: `${connection.route === "native" ? "direct" : "openai-compat"} · ${connection.baseUrl}`,
+      value: providerModelName(connection.prefix, id),
     })),
   );
 }
@@ -336,7 +339,7 @@ export async function fetchProviderModels(def: ProviderDef, key: string): Promis
 }
 
 /**
- * Real connection test through mini's own (litellm-based) model layer — a passing
+ * Real connection test through mini's own model layer (direct clients) — a passing
  * test means a run will work with this key.
  */
 export function testProviderModel(def: ProviderDef, modelName: string, key: string): Promise<boolean> {

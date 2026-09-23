@@ -57,7 +57,9 @@ def test_explicit_model_class_wins_over_prefix():
 
 
 def test_other_providers_are_unaffected():
-    assert get_model_class("gemini/gemini-3-pro-preview") is LitellmModel
+    from minisweagent.models.openai_compat_model import OpenaiCompatModel
+
+    assert get_model_class("gemini/gemini-3-pro-preview") is OpenaiCompatModel
     assert get_model_class("opencode-go/mimo-v2.5") is not XiaomiModel
 
 

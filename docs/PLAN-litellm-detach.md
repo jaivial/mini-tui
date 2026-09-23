@@ -1,6 +1,9 @@
 # Plan: detach from litellm — one direct base URL per provider
 
-Status: **proposal (2026-09-23)** — plan only, no implementation yet.
+Status: **implemented (2026-09-23, 0.9.0)** — fases 1–4 landed together in one PR. Decision
+results: escape hatch kept for one release (\`--model-class litellm\` / \`[litellm]\` extra),
+openrouter became a registry row while portkey/requesty stayed behind the extra, price table
+is in-repo snapshots plus \`MSWEA_PRICE_TABLE_PATH\`, and the existing env names were kept.
 This is fase 3/A6 of [PLAN-ram-reduction.md](PLAN-ram-reduction.md) ("cliente HTTP propio para
 los proveedores directos"), extended to *every* provider. The pattern it generalizes is already
 proven in production: since 0.7.0 the gateways (`cliproxy/`, `rosetta/`, `xiaomi/`) call their

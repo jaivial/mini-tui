@@ -1,8 +1,10 @@
-"""OpenAI API support for mini-swe-agent.
+"""OpenAI API support for mini-swe-agent \u2014 direct, no litellm.
 
-OpenAI hosts its models behind an OpenAI-compatible `/chat/completions`
-surface at `https://api.openai.com`, which litellm supports through the
-native `openai/` provider.
+OpenAI hosts its models behind an OpenAI-compatible `/chat/completions` surface at
+`https://api.openai.com`, which `OpenaiCompatModel` calls directly. Some ids
+(e.g. `openai/gpt-6-astra`) reject function tools on `/chat/completions` and are served
+through the Responses API (`ResponsesCompatModel`) automatically. Cost tracking comes
+from `models/prices.py` (ids without a price row report cost 0.0).
 
 Usage:
 
@@ -10,10 +12,6 @@ Usage:
     mini -m openai/gpt-5.4-mini
     mini -m openai/gpt-4o
     mini -m openai/gpt-6-astra          # Responses API (see below)
-
-The `openai/` prefix is *not* stripped: it is exactly how litellm identifies
-the OpenAI provider, which gives us working cost tracking for every id that
-litellm knows the prices of (ids it does not know are reported as cost 0.0).
 
 Configuration (environment variables or `mini-extra config set KEY VALUE`):
 
@@ -30,29 +28,25 @@ apart:
 
     mini-extra config set MSWEA_OPENAI_API_KEY sk-your-key
 
-Some ids (e.g. `openai/gpt-6-astra`) reject function tools on
-`/chat/completions` and are served through the Responses API automatically.
+`OPENAI_API_BASE` also turns this into the generic OpenAI-compatible client for any
+endpoint re-serving OpenAI-style ids (local models, proxies).
 """
 
 import os
 import re
 from typing import Any, Literal
 
-import litellm
-
-from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
-from minisweagent.models.litellm_response_model import LitellmResponseModel
+from minisweagent.models.errors import ProviderError
+from minisweagent.models.openai_compat_model import OpenaiCompatModel, OpenaiCompatModelConfig
+from minisweagent.models.responses_compat_model import ResponsesCompatModel
 from minisweagent.models.routing import (  # noqa: F401 (re-exported)
     OPENAI_PREFIX,
     is_openai_model,
     openai_needs_responses_api,
 )
 
-#: Prefix used to route a model name to the OpenAI API.
-
 DEFAULT_API_BASE = "https://api.openai.com/v1"
 DEFAULT_API_KEY = ""
-"""litellm picks up `OPENAI_API_KEY` when no explicit key is set."""
 
 
 def strip_openai_prefix(model_name: str) -> str:
@@ -66,78 +60,95 @@ needs_responses_api = openai_needs_responses_api
 
 
 #: OpenAI rejects a configured `temperature` on some reasoning ids (e.g. "Only the default
-#: (1) value is supported" / "'temperature' is not supported with this model"). litellm's
-#: metadata does not know this, so `drop_params` cannot remove it; strip it and retry once.
+#: (1) value is supported" / "'temperature' is not supported with this model"). Strip it
+#: and retry once \u2014 same fallback as the litellm path had.
 _TEMPERATURE_ERROR_RE = re.compile(r"temperature.*(?:not supported|does not support|unsupported)", re.IGNORECASE)
 
 
 def _is_temperature_error(exception: Exception) -> bool:
-    return isinstance(exception, litellm.exceptions.BadRequestError) and bool(
-        _TEMPERATURE_ERROR_RE.search(str(exception))
-    )
+    return isinstance(exception, ProviderError) and bool(_TEMPERATURE_ERROR_RE.search(str(exception)))
 
 
 def _openai_model_kwargs(model_kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Fill in the OpenAI api_base/api_key/drop_params defaults without overriding explicit values."""
+    """Fill in the OpenAI api_base/api_key defaults without overriding explicit values."""
     model_kwargs = dict(model_kwargs or {})
     api_base = os.getenv("MSWEA_OPENAI_API_BASE") or os.getenv("OPENAI_API_BASE", DEFAULT_API_BASE)
     model_kwargs.setdefault("api_base", api_base.rstrip("/"))
     api_key = os.getenv("MSWEA_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", DEFAULT_API_KEY)
     if api_key:
-        # Otherwise leave it to litellm to resolve OPENAI_API_KEY and complain loudly.
         model_kwargs.setdefault("api_key", api_key)
-    # OpenAI's reasoning models (o-series, some gpt-5/gpt-6 ids) reject sampling parameters
-    # such as `temperature`; drop them instead of failing the whole run.
-    model_kwargs.setdefault("drop_params", True)
+    model_kwargs.setdefault("drop_params", True)  # kept for config compatibility
     return model_kwargs
+
+
+def _openai_wire_name(model_name: str) -> str:
+    """The wire gets the bare id (litellm used the prefix to pick its provider)."""
+    return strip_openai_prefix(model_name)
 
 
 class _TemperatureFallbackMixin:
     """Retry a rejected `temperature` without it, and remember the rejection for later turns."""
 
-    def _query(self, messages: list[dict[str, str]], **kwargs):
+    def _query(self, messages, **kwargs):
         try:
             return super()._query(messages, **kwargs)
-        except litellm.exceptions.BadRequestError as e:
+        except ProviderError as e:
             if not _is_temperature_error(e) or "temperature" not in self.config.model_kwargs:
                 raise
             self.config.model_kwargs.pop("temperature", None)
             return super()._query(messages, **kwargs)
 
 
-class OpenaiModelConfig(LitellmModelConfig):
+class OpenaiModelConfig(OpenaiCompatModelConfig):
     model_kwargs: dict[str, Any] = {}
     cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
-    """OpenAI ships new model ids faster than litellm maps their prices, and an unmapped id
-    would otherwise abort a run as soon as the first response comes back. Set `cost_tracking:
-    default` (or `export MSWEA_COST_TRACKING=default`) if you want unmapped ids to be fatal."""
+    """OpenAI ships new model ids faster than price tables track, and an unpriced id
+    would otherwise abort a run as soon as the first response comes back. Set
+    `cost_tracking: default` (or `export MSWEA_COST_TRACKING=default`) if you want
+    unpriced ids to be fatal."""
 
 
-class OpenaiModel(_TemperatureFallbackMixin, LitellmModel):
-    """Talks to the OpenAI API through litellm's native `openai` provider."""
+class OpenaiModel(_TemperatureFallbackMixin, OpenaiCompatModel):
+    """Talks to the OpenAI API (or any compatible endpoint) directly."""
+
+    _price_provider = "openai"
+
+    def _wire_model_name(self) -> str:
+        return _openai_wire_name(self.config.model_name)
 
     def __init__(self, **kwargs):
         kwargs.setdefault("config_class", OpenaiModelConfig)
+        model_kwargs = _openai_model_kwargs(dict(kwargs.get("model_kwargs") or {}))
+        kwargs["api_base"] = str(model_kwargs.pop("api_base", DEFAULT_API_BASE)).rstrip("/")
+        api_key = model_kwargs.pop("api_key", DEFAULT_API_KEY)
+        if api_key:
+            kwargs["api_key"] = api_key
+        kwargs["model_kwargs"] = model_kwargs
         super().__init__(**kwargs)
 
-        # The `openai/` prefix is kept: it is how litellm selects the provider and its prices.
-        self.config.model_kwargs = _openai_model_kwargs(self.config.model_kwargs)
+
+class OpenaiResponseModelConfig(OpenaiModelConfig):
+    pass
 
 
-class OpenaiResponseModelConfig(LitellmModelConfig):
-    model_kwargs: dict[str, Any] = {}
-    cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
-    """Same reasoning as `OpenaiModelConfig`: unmapped ids report a cost of 0.0 instead of aborting."""
-
-
-class OpenaiResponseModel(_TemperatureFallbackMixin, LitellmResponseModel):
-    """Talks to OpenAI through litellm's `openai` provider using the Responses API.
+class OpenaiResponseModel(_TemperatureFallbackMixin, ResponsesCompatModel):
+    """Talks to OpenAI through the Responses API, directly.
 
     The Responses API is required for models that reject function tools on the chat
-    completions endpoint (e.g. `openai/gpt-6-astra`). The `openai/` prefix is kept.
+    completions endpoint (e.g. `openai/gpt-6-astra`).
     """
+
+    _price_provider = "openai"
+
+    def _wire_model_name(self) -> str:
+        return _openai_wire_name(self.config.model_name)
 
     def __init__(self, **kwargs):
         kwargs.setdefault("config_class", OpenaiResponseModelConfig)
+        model_kwargs = _openai_model_kwargs(dict(kwargs.get("model_kwargs") or {}))
+        kwargs["api_base"] = str(model_kwargs.pop("api_base", DEFAULT_API_BASE)).rstrip("/")
+        api_key = model_kwargs.pop("api_key", DEFAULT_API_KEY)
+        if api_key:
+            kwargs["api_key"] = api_key
+        kwargs["model_kwargs"] = model_kwargs
         super().__init__(**kwargs)
-        self.config.model_kwargs = _openai_model_kwargs(self.config.model_kwargs)

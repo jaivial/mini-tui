@@ -1,7 +1,6 @@
 import os
 from unittest.mock import patch
 
-import litellm
 import pytest
 
 from minisweagent.models import get_model, get_model_class
@@ -15,7 +14,7 @@ from minisweagent.models.deepseek_model import (
     resolve_deepseek_alias,
     strip_deepseek_prefix,
 )
-from minisweagent.models.litellm_model import LitellmModel
+from minisweagent.models.errors import ProviderAbortError, ProviderError
 
 
 @pytest.fixture
@@ -104,11 +103,18 @@ def test_get_model_class_routes_deepseek():
 
 
 def test_explicit_model_class_wins_over_prefix():
+    pytest.importorskip("litellm")
+    from minisweagent.models.litellm_model import LitellmModel
+
     assert get_model_class("deepseek/deepseek-chat", "litellm") is LitellmModel
 
 
 def test_other_providers_are_unaffected():
-    assert get_model_class("gemini/gemini-3-pro-preview") is LitellmModel
+    # Detached from litellm: unknown providers are generic OpenAI-compatible endpoints
+    # (the litellm zoo is opt-in via `--model-class litellm`).
+    from minisweagent.models.openai_compat_model import OpenaiCompatModel
+
+    assert get_model_class("gemini/gemini-3-pro-preview") is OpenaiCompatModel
 
 
 def test_deepseek_model_defaults(clean_env):
@@ -116,7 +122,7 @@ def test_deepseek_model_defaults(clean_env):
     assert isinstance(model, DeepseekModel)
     # The deepseek/ prefix is kept: litellm uses it to select the provider and its prices.
     assert model.config.model_name == "deepseek/deepseek-chat"
-    assert model.config.model_kwargs["api_base"] == DEFAULT_API_BASE == "https://api.deepseek.com/v1"
+    assert model.config.api_base == DEFAULT_API_BASE == "https://api.deepseek.com/v1"
     # DeepSeek ships ids litellm has no prices for, so a missing price entry must not abort a run.
     assert model.config.cost_tracking == "ignore_errors"
 
@@ -149,19 +155,19 @@ def test_provider_qualified_names_pass_through(clean_env):
 def test_api_key_is_picked_up_from_env(clean_env):
     with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-test"}):
         model = get_model("deepseek/deepseek-chat")
-    assert model.config.model_kwargs["api_key"] == "sk-test"
+    assert model.config.api_key == "sk-test"
 
 
-def test_no_api_key_leaves_it_to_litellm(clean_env):
+def test_no_api_key_stays_unset(clean_env):
     model = get_model("deepseek/deepseek-chat")
-    assert "api_key" not in model.config.model_kwargs
+    assert model.config.api_key == ""
 
 
 def test_env_overrides_for_base_url(clean_env):
     with patch.dict(os.environ, {"DEEPSEEK_API_BASE": "http://example.com:8080/v1/", "DEEPSEEK_API_KEY": "sk-test"}):
         model = get_model("deepseek/deepseek-chat")
-    assert model.config.model_kwargs["api_base"] == "http://example.com:8080/v1"
-    assert model.config.model_kwargs["api_key"] == "sk-test"
+    assert model.config.api_base == "http://example.com:8080/v1"
+    assert model.config.api_key == "sk-test"
 
 
 def test_explicit_model_kwargs_are_not_overridden(clean_env):
@@ -169,8 +175,8 @@ def test_explicit_model_kwargs_are_not_overridden(clean_env):
         "deepseek/deepseek-chat",
         {"model_kwargs": {"api_base": "http://custom/v1", "api_key": "sk-mine", "temperature": 0.3}},
     )
-    assert model.config.model_kwargs["api_base"] == "http://custom/v1"
-    assert model.config.model_kwargs["api_key"] == "sk-mine"
+    assert model.config.api_base == "http://custom/v1"
+    assert model.config.api_key == "sk-mine"
     assert model.config.model_kwargs["temperature"] == 0.3
 
 
@@ -182,8 +188,8 @@ def test_deepseek_does_not_get_anthropic_cache_control(clean_env):
     assert get_model("deepseek/deepseek-chat").config.set_cache_control is None
 
 
-def _bad_request(message: str) -> litellm.exceptions.BadRequestError:
-    return litellm.exceptions.BadRequestError(message, model="deepseek/deepseek-chat", llm_provider="deepseek")
+def _bad_request(message: str) -> ProviderError:
+    return ProviderError(message, 400)
 
 
 @pytest.mark.parametrize(
@@ -204,7 +210,7 @@ def test_is_auth_error(message, expected):
 
 def test_auth_errors_abort_instead_of_retrying():
     """DeepSeek reports bad keys as a 400, which would otherwise be retried forever."""
-    assert litellm.exceptions.AuthenticationError in DeepseekModel.abort_exceptions
+    assert ProviderAbortError in DeepseekModel.abort_exceptions
 
 
 @pytest.mark.parametrize(

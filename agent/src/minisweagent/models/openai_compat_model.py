@@ -20,7 +20,14 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel
 
 from minisweagent.exceptions import FormatError
-from minisweagent.models import GLOBAL_MODEL_STATS
+from minisweagent.models import GLOBAL_MODEL_STATS, prices
+from minisweagent.models.errors import (  # noqa: F401 (historical names, re-exported)
+    OpenaiCompatAbortError,
+    OpenaiCompatError,
+    ProviderAbortError,
+    ProviderError,
+    classify_status,
+)
 from minisweagent.models.utils.actions_toolcall import (
     BASH_TOOL,
     format_toolcall_observation_messages,
@@ -43,19 +50,6 @@ _LITELLM_ONLY_KWARGS = {"drop_params", "custom_llm_provider", "api_base", "api_k
 def _ssl_context() -> ssl.SSLContext:
     """Loading the CA bundle costs ~1.5 ms; one context serves every connection."""
     return ssl.create_default_context()
-
-
-class OpenaiCompatError(Exception):
-    """An HTTP error from the gateway; `status` is None for transport failures."""
-
-    def __init__(self, message: str, status: int | None = None):
-        super().__init__(message)
-        self.status = status
-        self.message = message
-
-
-class OpenaiCompatAbortError(OpenaiCompatError):
-    """Errors retrying cannot fix (bad key, unknown model, bad request, context overflow)."""
 
 
 class _Obj(dict):
@@ -103,6 +97,23 @@ class OpenaiCompatModel:
 
     def __init__(self, *, config_class=OpenaiCompatModelConfig, **kwargs):
         self.config = config_class(**kwargs)
+        if not self.config.api_base:
+            # Direct base URL per provider: registry row first (moonshot/, zai/, ...),
+            # else the generic OpenAI-compatible slot (any endpoint via OPENAI_API_BASE).
+            from minisweagent.models import providers
+
+            provider = providers.lookup(self.config.model_name)
+            if provider is not None:
+                self._price_provider = provider.id
+                self.config.api_base, from_env = provider.settings()
+                self.config.api_key = self.config.api_key or from_env
+            else:
+                self.config.api_base = (
+                    os.getenv("MSWEA_OPENAI_API_BASE") or os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+                ).rstrip("/")
+                self.config.api_key = (
+                    self.config.api_key or os.getenv("MSWEA_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "")
+                )
 
     # --- transport -------------------------------------------------------------------------
 
@@ -125,12 +136,23 @@ class OpenaiCompatModel:
         if conn is not None:
             conn.close()
 
-    def _post(self, path: str, body: dict) -> dict:
+    #: Provider key for `models.prices` lookups (unknown ids cost 0.0).
+    _price_provider = "generic"
+
+    def _auth_headers(self) -> dict:
+        if not self.config.api_key:
+            return {}
+        return {"Authorization": f"Bearer {self.config.api_key}"}
+
+    def _post(self, path: str, body: dict, headers: dict | None = None) -> dict:
         url = urlsplit(self.config.api_base.rstrip("/") + path)
         target = url.path + (f"?{url.query}" if url.query else "")
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            **self._auth_headers(),
+            **(headers or {}),
+        }
         payload = json.dumps(body).encode()
         for reuse in (True, False):
             conn = self._connection(url)
@@ -157,20 +179,13 @@ class OpenaiCompatModel:
         except ValueError as e:
             raise OpenaiCompatError(f"invalid JSON from {self.config.api_base}: {text[:300]}") from e
 
-    def _http_error(self, status: int, text: str) -> OpenaiCompatError:
+    def _http_error(self, status: int, text: str) -> ProviderError:
         try:
             detail = json.loads(text).get("error") or text
             detail = detail.get("message", detail) if isinstance(detail, dict) else detail
         except (ValueError, AttributeError):
             detail = text
-        message = f"HTTP {status} from {self.config.api_base}: {str(detail)[:500]}"
-        lowered = str(detail).lower()
-        # 408/409/429/5xx are transient; anything else in 4xx will fail the same way again.
-        if status in (400, 401, 403, 404, 413, 422) and "rate limit" not in lowered:
-            if status in (401, 403):
-                message += " Check the API key (`mini-extra config set KEY VALUE`)."
-            return OpenaiCompatAbortError(message, status)
-        return OpenaiCompatError(message, status)
+        return classify_status(status, detail, self.config.api_base)
 
     # --- Model protocol --------------------------------------------------------------------
 
@@ -179,10 +194,19 @@ class OpenaiCompatModel:
         prepared = _reorder_anthropic_thinking_blocks(prepared)
         return set_cache_control(prepared, mode=self.config.set_cache_control)
 
+    def _wire_model_name(self) -> str:
+        """The id sent upstream: `config.model_name` keeps its user-facing form (routing
+        prefix included — it is what lands in the trajectory), the wire gets the bare id."""
+        from minisweagent.models import providers
+
+        provider = providers.lookup(self.config.model_name)
+        return provider.strip(self.config.model_name) if provider is not None else self.config.model_name
+
     def _query(self, messages: list[dict], **kwargs) -> _Obj:
         params = {k: v for k, v in (self.config.model_kwargs | kwargs).items() if k not in _LITELLM_ONLY_KWARGS}
-        body = {"model": self.config.model_name, "messages": messages, "tools": [BASH_TOOL], **params}
-        data = self._post("/chat/completions", body)
+        headers = params.pop("extra_headers", None) or {}
+        body = {"model": self._wire_model_name(), "messages": messages, "tools": [BASH_TOOL], **params}
+        data = self._post("/chat/completions", body, headers=headers)
         if not data.get("choices"):
             raise OpenaiCompatError(f"response without choices from {self.config.api_base}: {str(data)[:300]}")
         return _wrap(data)
@@ -191,8 +215,8 @@ class OpenaiCompatModel:
         for attempt in retry(logger=logger, abort_exceptions=self.abort_exceptions):
             with attempt:
                 response = self._query(self._prepare_messages_for_api(messages), **kwargs)
-        cost_output = {"cost": 0.0}
-        GLOBAL_MODEL_STATS.add(0.0)
+        cost_output = self._calculate_cost(response)
+        GLOBAL_MODEL_STATS.add(cost_output["cost"])
         choice = response.choices[0]
         message_obj = choice.message or _Obj()
         final_answer = self._final_answer(message_obj)
@@ -218,6 +242,22 @@ class OpenaiCompatModel:
         if final_answer is not None:
             message["extra"]["submission"] = final_answer
         return message
+
+    def _calculate_cost(self, response) -> dict[str, float]:
+        """Cost from `models.prices`; unknown ids cost 0.0 unless `cost_tracking: default`."""
+        usage = response.usage or {}
+        if prices.price_for(self._price_provider, self.config.model_name) is None:
+            if self.config.cost_tracking != "ignore_errors":
+                msg = (
+                    f"Error calculating cost for model {self.config.model_name}: no price row in "
+                    "models/prices.py (perhaps it's not registered?). You can ignore this issue from "
+                    "your config file with cost_tracking: 'ignore_errors' or globally with "
+                    "export MSWEA_COST_TRACKING='ignore_errors'."
+                )
+                logger.critical(msg)
+                raise RuntimeError(msg)
+            return {"cost": 0.0}
+        return {"cost": prices.cost_for(self._price_provider, self.config.model_name, usage)}
 
     def _parse_actions(self, response) -> list[dict]:
         return parse_toolcall_actions(

@@ -8,7 +8,7 @@ import {
   connectionEnv,
   connectionModelOptions,
   fetchProviderModels,
-  litellmName,
+  providerModelName,
   loadConnections,
   modelEnv,
   saveConnection,
@@ -32,24 +32,24 @@ describe("provider registry", () => {
     ]);
     expect(byId.get("opencode-go")!.staticModels.length).toBe(37);
     expect(byId.get("deepseek")!.staticModels).toContain("deepseek-v4-pro");
-    // every provider routes through litellm (native prefix or openai-compat)
+    // every provider has a direct route (its own env slot or the openai-compat slot)
     for (const provider of PROVIDERS) {
       expect(["native", "openai-compat"]).toContain(provider.route);
     }
   });
 
-  test("litellm routing: native prefixes vs openai-compat", () => {
+  test("model naming: native prefixes vs the openai-compat slot", () => {
     const xiaomi = PROVIDERS.find((p) => p.id === "xiaomi")!;
-    expect(litellmName(xiaomi.prefix, "mimo-v2.6-pro")).toBe("xiaomi/mimo-v2.6-pro");
+    expect(providerModelName(xiaomi.prefix, "mimo-v2.6-pro")).toBe("xiaomi/mimo-v2.6-pro");
     const zai = PROVIDERS.find((p) => p.id === "zai")!;
-    expect(litellmName(zai.prefix, "glm-5.3-flash")).toBe("openai/glm-5.3-flash");
+    expect(providerModelName(zai.prefix, "glm-5.3-flash")).toBe("zai/glm-5.3-flash");
 
     // native: the provider's own key env
     expect(
       connectionEnv({ route: "native", keyEnv: "XIAOMI_API_KEY", extraEnv: { XIAOMI_API_BASE: "b" }, baseUrl: "b", key: "k" }),
     ).toEqual({ XIAOMI_API_KEY: "k", XIAOMI_API_BASE: "b" });
 
-    // openai-compat: litellm's openai provider + mini's override env
+    // openai-compat (legacy saved connections): the generic openai slot + mini's override env
     expect(connectionEnv({ route: "openai-compat", keyEnv: "ZAI_API_KEY", baseUrl: "https://z.ai/v4", key: "zk" })).toEqual({
       OPENAI_API_KEY: "zk",
       OPENAI_API_BASE: "https://z.ai/v4",
@@ -94,24 +94,24 @@ describe("BYOK connections", () => {
     });
     expect(modelEnv("deepseek/deepseek-chat", saved)).toEqual({}); // other providers stay untouched
 
-    // every catalog model shows up in /model with its litellm name
+    // every catalog model shows up in /model with its provider name
     const options = connectionModelOptions(saved);
     expect(options.map((o) => o.value)).toEqual(["xiaomi/mimo-v2.6-pro", "xiaomi/mimo-v2.6-flash"]);
     expect(options[0].name).toContain("Xiaomi MiMo");
     rmSync(PATH, { force: true });
   });
 
-  test("openai-compat connections map models onto litellm's openai provider", () => {
+  test("legacy openai-compat connections keep mapping onto the openai slot", () => {
     rmSync(PATH, { force: true });
     const zai = PROVIDERS.find((p) => p.id === "zai")!;
     saveConnection(
       {
         id: "zai",
         name: zai.name,
-        route: zai.route,
+        route: "openai-compat",
         keyEnv: zai.keyEnv,
         baseUrl: zai.baseUrl,
-        prefix: zai.prefix,
+        prefix: "openai",
         key: "zk",
         models: ["glm-5.3-flash"],
         defaultModel: "glm-5.3-flash",

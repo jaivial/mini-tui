@@ -241,3 +241,33 @@ the command): **8.9 → 1.8 ms/step**.
 | `Template(src)` parse+compile: ~1.5 ms × each render | `models/utils/templates.py`: `lru_cache` of compiled templates |
 | Full export every 20 msgs / 10 s: O(n), 33 ms at 900 msgs | cadence `max(20, n // 10)` messages / 60 s; the journal is always current |
 | New TCP (+TLS) connection per model call | keep-alive `http.client` connection per model, one retry on a stale socket |
+
+## 6. Direct model clients — no litellm (0.9.0)
+
+Since 0.9.0 every provider is reached through **its own direct base URL** with zero litellm
+imports on any run path (litellm stays an optional `mini-swe-agent[litellm]` extra behind the
+opt-in `--model-class litellm`). The pattern §4 established for the gateways now covers all
+providers:
+
+- **Three thin clients, one message contract.** `models/openai_compat_model.py` (OpenAI
+  `/chat/completions` — DeepSeek, OpenAI, Moonshot, Zhipu, Groq, Z.AI, MiniMax, OpenRouter,
+  the gateways), `models/anthropic_compat_model.py` (`/v1/messages` — `anthropic/*` and
+  OpenCode Go's Anthropic flavor, with cache markers and thinking-block replay) and
+  `models/responses_compat_model.py` (`/responses` — `gpt-6*` and OpenCode Go's Responses
+  flavor). All three produce the exact message/trajectory shape `LitellmModel` did
+  (`tool_calls`, `extra.actions`, `extra.response` dict, `extra.cost`, plain-text final
+  answers as `extra.submission`), so the journal, `--resume` and the TUI are unchanged.
+- **`models/providers.py`** — the provider registry: one row of (prefix, base URL + env,
+  key env, protocol). Lookups are import-light (like `routing.py`), every provider has its
+  own env slot, and unknown names fall back to the generic OpenAI-compatible client
+  (`OPENAI_API_BASE`, `MSWEA_OPENAI_*` wins).
+- **`models/prices.py`** replaces litellm's price tables: per-provider rows in $/1M tokens
+  (input, output, cache read/write, tiered pricing for OpenCode Go), unknown ids cost 0.0
+  like before, and `MSWEA_PRICE_TABLE_PATH` loads extra rows
+  (`{provider: {id: [in, out, cache_read, cache_write]}}`).
+- **`models/errors.py`** replaces litellm's exception taxonomy: `ProviderError` /
+  `ProviderAbortError`, status-based abort-vs-retry classification shared by all clients.
+  Provider error bodies stay raw and short (they surface in mini-tui's `mini.log tail`).
+- The per-provider quirks carry over unchanged: DeepSeek's id aliases and error rewrites,
+  OpenAI's temperature fallback and `gpt-6*` → Responses routing, OpenCode Go's per-id
+  endpoint catalog and `x-opencode-session` header.

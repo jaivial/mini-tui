@@ -61,11 +61,12 @@ outputs — into cards, badges and banners. The harness runs completely untouche
 - **`/connect` — BYOK providers.** The whole MiniMax Code catalog — **Xiaomi MiMo, DeepSeek,
   OpenCode Go, Z.AI (GLM coding), MiniMax** — plus OpenAI, Anthropic, Moonshot, Zhipu, Groq and
   OpenRouter. Pick a provider, paste your API key, choose a model and the connection is
-  **tested for real** (a one-token query through mini's own litellm-based model layer) before
+  **tested for real** (a one-token query through mini's own model layer) before
   being saved locally. Every catalog model of a connected provider joins the `/model` picker,
-  and its key is injected into your runs. All providers go through **litellm**: native prefixes
-  (`xiaomi/…`, `deepseek/…`, `anthropic/…`, …) or litellm's `openai/` provider with
-  `OPENAI_API_BASE`/`OPENAI_API_KEY` for any OpenAI-compatible endpoint (Z.AI, MiniMax, …).
+  and its key is injected into your runs. Every provider runs on **its own direct base URL**
+  (`xiaomi/…`, `deepseek/…`, `anthropic/…`, …) with a dedicated key/base env slot — no
+  litellm. Saved connections on the generic `openai/` slot (`OPENAI_API_BASE`/`OPENAI_API_KEY`)
+  keep working for any OpenAI-compatible endpoint.
 
   ![connect wizard](docs/screenshots/connect.png)
 
@@ -238,7 +239,10 @@ block): the same repro now settles at 205 MB, and a plain-prose run at 152 MB. A
 `prompt_toolkit` loads lazily (35 → 20 MB import). In 0.7.0 the local/subscription gateways
 (`cliproxy/`, `rosetta/`, `xiaomi/`) talk to their OpenAI-compatible endpoint directly instead of
 through `litellm`: a real claude-opus-5-5 run peaks at **40 MB instead of 214 MB** and answers
-~2.3 s sooner. See [docs/PLAN-ram-reduction.md](docs/PLAN-ram-reduction.md) for the plan and numbers.
+~2.3 s sooner. Since 0.9.0 **every** provider (DeepSeek, OpenAI, Anthropic, OpenCode Go
+included) talks to its base URL directly and litellm is an optional extra
+([docs/PLAN-litellm-detach.md](docs/PLAN-litellm-detach.md)).
+See [docs/PLAN-ram-reduction.md](docs/PLAN-ram-reduction.md) for the plan and numbers.
 
 ## Development
 

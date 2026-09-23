@@ -65,3 +65,21 @@ def openai_needs_responses_api(model_name: str) -> bool:
     """Whether an OpenAI `model_name` can only run the agent through the Responses API."""
     bare = model_name[len(OPENAI_PREFIX) :] if is_openai_model(model_name) else model_name
     return bool(_OPENAI_RESPONSES_ONLY_RE.match(bare))
+
+
+ANTHROPIC_PREFIX = "anthropic/"
+
+#: Claude-ish bare ids are Anthropic-served (same heuristic `get_model` uses for
+#: cache_control), while Rosetta/cli-proxy ids merely *contain* "claude".
+_CLAUDE_HINTS = ("anthropic", "sonnet", "opus", "claude")
+_NON_ANTHROPIC_PREFIXES = ("cliproxy/", "rosetta/", "xiaomi/", "deepseek/", "openai/", "opencode-go/")
+
+
+def is_anthropic_model(model_name: str) -> bool:
+    """Whether `model_name` should be served by the Anthropic Messages API."""
+    lowered = model_name.lower()
+    if lowered.startswith(_NON_ANTHROPIC_PREFIXES):
+        return False
+    return lowered.startswith(ANTHROPIC_PREFIX) or (
+        "/" not in lowered and any(hint in lowered for hint in _CLAUDE_HINTS)
+    )
