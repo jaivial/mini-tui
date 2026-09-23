@@ -2,6 +2,20 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **The open flash is gone — the UI paints exactly once at startup.** The 0.12.1 fix removed
+  the scrollbar’s accidental second paint, but the terminal’s *capability replies* (colour,
+  cursor and mode queries — answered by tmux/terminals a round-trip after the probes) each
+  invalidated the renderer and forced a **second full-screen repaint of identical content**
+  ~15 ms after the first — the “full screen terminal re-render” flash that survived. The UI
+  now mounts after the startup reply storm settles (input is observed, never consumed: quiet
+  for 60 ms, at least 120 ms, at most 800 ms), so those invalidations land on the blank
+  alternate screen instead of on content. Measured byte-for-byte under tmux and on a bare
+  PTY: one content paint, no rewrite.
+
 ## 0.12.3 — 2026-09-23
 
 The connection test actually runs — valid keys work everywhere now.
