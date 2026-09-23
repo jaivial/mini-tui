@@ -10,6 +10,7 @@ import { StepCard } from "./components/StepCard";
 import { AssistantCard } from "./components/AssistantCard";
 import { NoticeLine } from "./components/NoticeLine";
 import { ExitBanner } from "./components/ExitBanner";
+import { ErrorBanner } from "./components/ErrorBanner";
 import { PromptBar } from "./components/PromptBar";
 import { ModelPicker, MODELS } from "./components/ModelPicker";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -172,11 +173,13 @@ export type RunStatus = "running" | "done" | "error" | "idle" | "interrupted";
  * Status chip for the bottom line. The agent holds a run open at exit to take follow-ups
  * (the exit stays in its append-only journal), so an exit only means "finished" while it is
  * the *last* event — a follow-up after it is live work again, whatever the process says.
+ * A trailing `error` (a crash's log tail) reads error the same way.
  */
 export function deriveStatus(status: RunStatus, events: RunEvent[]): RunStatus {
   if (status === "interrupted") return status;
   const last = events[events.length - 1];
   if (last?.type === "exit") return !last.exitStatus || last.exitStatus === "Submitted" ? "done" : "error";
+  if (last?.type === "error") return "error";
   return status;
 }
 
@@ -187,7 +190,6 @@ export function App(props: AppProps) {
   const [status, setStatus] = useState<RunStatus>(
     props.statusOverride ?? (props.runSpec ? "running" : staticMode || props.viewPath ? "done" : "idle"),
   );
-  const [errorText, setErrorText] = useState("");
   const [focusIdx, setFocusIdx] = useState(0);
   const [flipped, setFlipped] = useState<Set<number>>(new Set());
   /** Top of the mounted transcript window when reading history (null = follow the live tail). */
@@ -374,7 +376,7 @@ export function App(props: AppProps) {
       } else {
         const traj = readTrajectory(props.viewPath);
         if (traj) applySnapshot(traj);
-        else setErrorText(`Could not read trajectory: ${props.viewPath}`);
+        else setEvents([{ type: "notice", text: `Could not read trajectory: ${props.viewPath}` }]);
       }
     } else if (props.runSpec) {
       startRun(props.runSpec);
@@ -432,6 +434,7 @@ export function App(props: AppProps) {
   const startRun = (spec: TaskSpec) => {
     setStatus("running");
     exitedRef.current = false;
+    interruptedRef.current = false;
     setTurnStartedAt(Date.now());
     const run = spawnMini({
       ...spec,
@@ -453,7 +456,10 @@ export function App(props: AppProps) {
         setStatus("done");
       } else {
         setStatus("error");
-        setErrorText(tailLog(run.session.logPath));
+        // Post the raw log tail into the thread at the failure point: as a transcript item it
+        // scrolls up with the conversation instead of sticking to the bottom of the chat.
+        const tail = tailLog(run.session.logPath);
+        if (tail) setEvents((prev) => [...prev, { type: "error", text: tail }]);
       }
     });
   };
@@ -504,7 +510,6 @@ export function App(props: AppProps) {
     setEvents([]);
     setInfo({ cost: 0, apiCalls: 0 });
     setStatus("idle");
-    setErrorText("");
     setFocusIdx(0);
     setFlipped(new Set());
     setAnchor(null);
@@ -1033,6 +1038,7 @@ export function App(props: AppProps) {
               if (event.type === "assistant") return <AssistantCard key={item.index} text={event.text} />;
               if (event.type === "notice")
                 return <NoticeLine key={item.index} text={event.text} interruptType={event.interruptType} />;
+              if (event.type === "error") return <ErrorBanner key={item.index} text={event.text} />;
               // `Submitted` just repeats the final answer rendered above — show only real errors.
               if (event.type === "exit" && event.exitStatus !== "Submitted")
                 return <ExitBanner key={item.index} exitStatus={event.exitStatus} submission={event.submission} />;
@@ -1070,12 +1076,6 @@ export function App(props: AppProps) {
               />
             );
           })}
-          {errorText ? (
-            <box paddingX={1} gap={0}>
-              <text fg={colors.err}>mini.log tail</text>
-              <text fg={colors.dim}>{errorText}</text>
-            </box>
-          ) : null}
         </scrollbox>
       {paletteOpen ? (
         <CommandPalette

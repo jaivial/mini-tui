@@ -2,6 +2,22 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **A crashed run's `mini.log tail` no longer sticks to the bottom of the chat.** When `mini`
+  died mid-run (a `BadRequestError`, e.g. DeepSeek's "Insufficient Balance"), its log tail
+  pinned itself below the transcript and stayed there: after switching model and continuing
+  the conversation, every newer message rendered above it and the stale error sat at the very
+  bottom of the chat thread. The tail is now posted as a transcript item at the failure point,
+  so it moves up with the thread as the conversation continues (and clears when the thread
+  rebuilds from the resumed conversation on the next run).
+- An interrupted run no longer swallows what comes after it: a follow-up run's exit reported
+  "interrupted" and its crash tail was never posted.
+- An unreadable trajectory posts a transcript notice (it used to show under the mislabeled
+  `mini.log tail` block).
+
 ## 0.8.0 — 2026-09-22
 
 Faster agent loop: 5× less overhead per step (8.9 → 1.8 ms) and keep-alive to the gateway.
