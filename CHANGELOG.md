@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.10.0 — 2026-09-23
+
+Your prompt is on screen the instant you send it; the model's thinking can be too.
 
 ### Added
 
