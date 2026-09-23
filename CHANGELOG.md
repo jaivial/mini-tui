@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.12.4 — 2026-09-23
+
+Sin flash al abrir — una sola pintura de contenido.
 
 ### Fixed
 
