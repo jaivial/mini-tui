@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.12.1 — 2026-09-23
+
+One paint at open — no more full-screen second render.
 
 ### Fixed
 
