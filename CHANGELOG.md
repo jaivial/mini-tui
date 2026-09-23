@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.8.1 — 2026-09-23
+
+A crash error that scrolls with the chat.
 
 ### Fixed
 
