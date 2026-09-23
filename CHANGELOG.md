@@ -2,6 +2,17 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **The TUI paints once at open — no more full-screen second render.** Opening flashed a
+  second full paint ~15 ms after the first: the transcript's scrollbar rendered *visible*
+  before the first layout settled, then the next frame erased it — a full-height stripe
+  repainting down the right edge of the whole screen. The scrollbar now starts hidden and its
+  visibility is managed with the thread itself (and re-checked on resize): one clean paint at
+  startup, and the overflow thumb is still there whenever the thread is taller than the view.
+
 ## 0.12.0 — 2026-09-23
 
 Long keys, whole keys — and you can look at them.
