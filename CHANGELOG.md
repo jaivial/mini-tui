@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.12.3 — 2026-09-23
+
+The connection test actually runs — valid keys work everywhere now.
 
 ### Fixed
 
