@@ -18,8 +18,10 @@ import json
 import os
 from typing import Any, Literal
 
+from minisweagent.models.errors import ProviderError
 from minisweagent.models.openai_compat_model import (
     _Obj,
+    _LITELLM_ONLY_KWARGS,
     _wrap,
     OpenaiCompatModel,
     OpenaiCompatModelConfig,
@@ -154,9 +156,34 @@ class AnthropicCompatModel(OpenaiCompatModel):
         system_blocks, wire = to_anthropic_messages(super()._prepare_messages_for_api(messages))
         return {"system": system_blocks, "messages": wire}
 
+    @staticmethod
+    def _tool_choice(choice: Any, parallel: Any) -> dict | None:
+        """OpenAI-style tool options → the Messages API's `tool_choice` object.
+
+        The OpenAI shape (`tool_choice: "required"`, `parallel_tool_calls: false` — what
+        mini sends to keep the agent loop moving) is rejected by the Messages API as
+        "invalid params"; translate it instead of relying on litellm's `drop_params`.
+        """
+        if choice is None and parallel is None:
+            return None
+        if isinstance(choice, dict):
+            result = dict(choice)
+        elif choice in (None, "auto"):
+            result = {"type": "auto"}
+        elif choice == "required":
+            result = {"type": "any"}
+        elif choice == "none":
+            result = {"type": "none"}
+        else:
+            result = {"type": "tool", "name": str(choice)}
+        if parallel is False:
+            result["disable_parallel_tool_use"] = True
+        return result
+
     def _query(self, wire: dict, **kwargs) -> _Obj:
-        params = {k: v for k, v in (self.config.model_kwargs | kwargs).items() if k not in self._LITELLM_ONLY_KWARGS}
+        params = {k: v for k, v in (self.config.model_kwargs | kwargs).items() if k not in _LITELLM_ONLY_KWARGS}
         headers = params.pop("extra_headers", None) or {}
+        tool_choice = self._tool_choice(params.pop("tool_choice", None), params.pop("parallel_tool_calls", None))
         body = {
             "model": self._wire_model_name(),
             "messages": wire["messages"],
@@ -164,9 +191,20 @@ class AnthropicCompatModel(OpenaiCompatModel):
             "max_tokens": params.pop("max_tokens", self.config.max_tokens),
             **params,
         }
+        if tool_choice:
+            body["tool_choice"] = tool_choice
         if wire["system"]:
             body["system"] = wire["system"]
-        data = self._post("/messages", body, headers=headers)
+        try:
+            data = self._post("/messages", body, headers=headers)
+        except ProviderError as e:
+            # Some Messages flavors only speak `tool_choice: auto` (Qwen rejects `any` and
+            # `tool` outright). Retry the same request unforced before giving up — a real
+            # bad request fails identically without the parameter.
+            if e.status != 400 or not tool_choice:
+                raise
+            body.pop("tool_choice", None)
+            data = self._post("/messages", body, headers=headers)
         if "content" not in data:
             raise Exception(f"response without content from {self.config.api_base}: {str(data)[:300]}")
         return _wrap(self._normalize(data))

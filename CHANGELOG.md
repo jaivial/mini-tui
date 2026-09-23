@@ -2,6 +2,27 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **The `/connect` connection test now passes on every OpenCode Go model** (verified live with
+  a real key across all three endpoint flavors). Three distinct bugs made valid keys look
+  broken:
+  - **Messages flavors (MiniMax, Qwen)** — every request died on an `AttributeError` in the
+    direct Messages client (a module constant read as a member) and burned ten retries before
+    failing, and the OpenAI-style `tool_choice`/`parallel_tool_calls` mini sends to keep the
+    agent loop moving are rejected by that API (Qwen even rejects `{"type": "any"}` — the
+    client now translates the shapes and falls back to unforced tools on strict flavors);
+  - **Responses flavors (GPT 5.6 Luna, Grok 4.6/4.7, Muse Spark)** — a plain-text answer
+    raised a format error instead of counting as the final answer, so the one-word connection
+    probe could never succeed. Text without tool calls is now the final answer here too (the
+    same rule as the chat client — patch §1);
+  - **Chat flavors (GLM, Kimi, DeepSeek, MiMo, LongCat, Hy, Space Bunny)** — the connection
+    was fine, but the probe counted a tool-call reply (`bash: echo ok`) as “unreachable”.
+    Coding models answer one-word prompts that way often; a tool call proves reachability
+    just like text.
+
 ## 0.12.1 — 2026-09-23
 
 One paint at open — no more full-screen second render.
