@@ -2,7 +2,6 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot, createElement } from "@opentui/react";
 
 import { App } from "./ui/App";
-import { waitForQuietInput } from "./helpers";
 import { DEFAULT_MODEL } from "./config";
 import { startProfiling } from "./profile";
 import type { TaskSpec } from "./mini/spawn";
@@ -77,35 +76,18 @@ const runSpec: TaskSpec | undefined =
     : undefined;
 
 // ctrl+c belongs to the App: once clears the prompt, twice closes.
-// Smooth open: the renderer starts on the *main* screen (the shell stays visible) and
-// renders nothing while the terminal's capability replies settle — then the alternate
-// screen and the first (and only) content frame go out together, so the UI replaces the
-// shell in a single visual step: no blank gap, no full-screen re-render.
-let lastInputAt = 0;
-const renderer = await createCliRenderer({
-  exitOnCtrlC: false,
-  // the app's background from the very first cleared frame — the swap to the alternate
-  // screen shows it instead of the terminal default, so there is no color blink either
-  backgroundColor: "#09090B",
-  screenMode: "main-screen",
-  prependInputHandlers: [
-    () => {
-      lastInputAt = Date.now();
-      return false;
-    },
-  ],
-});
-renderer.stop();
+const renderer = await createCliRenderer({ exitOnCtrlC: false });
+
+// Smooth open: the renderer has just entered the alternate screen (its buffer starts
+// empty — the terminal's blank). Fill it with the app background in ONE sync batch right
+// now, so the UI develops onto the same dark canvas instead of flashing a blank screen;
+// the first content frame follows within the same beat (mounted immediately below).
+process.stdout.write("\u001b[?2026h\u001b[38;2;255;255;255m\u001b[48;2;9;9;11m\u001b[2J\u001b[H\u001b[?2026l");
 startProfiling();
 const quit = () => {
-  // leave the alternate screen by hand — the renderer never switched modes itself
-  // (the swap is ours, for the smooth open), so it would not restore the shell view.
-  process.stdout.write("\u001b[?2026h\u001b[?1049l\u001b[?2026l");
   renderer.destroy();
   process.exit(0);
 };
-
-await waitForQuietInput(() => Date.now() - lastInputAt);
 
 createRoot(renderer).render(
   createElement(App, {
@@ -117,14 +99,5 @@ createRoot(renderer).render(
     onQuit: quit,
   }),
 );
-
-// Swap to the alternate screen only once the content is mounted. The swap and an
-// app-background fill go out in ONE sync batch, so the terminal shows the same dark
-// canvas from the very first instant — shell → (dark canvas) → UI: no blank or
-// default-color blink anywhere. Frames render on it by absolute position, so the
-// renderer needs no mode switch at all (quit restores the shell by hand).
-process.stdout.write("\u001b[?2026h\u001b[?1049h\u001b[38;2;255;255;255m\u001b[48;2;9;9;11m\u001b[2J\u001b[H\u001b[?2026l");
-renderer.start();
-renderer.requestRender();
 
 process.on("SIGTERM", quit);
