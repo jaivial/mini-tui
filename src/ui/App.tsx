@@ -18,7 +18,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { HelpPanel } from "./components/HelpPanel";
 import { Modal } from "./components/Modal";
 import { SessionModal } from "./components/SessionModal";
-import { CommandPalette, buildOptions, matchOptions, type CommandOption } from "./components/CommandPalette";
+import { CommandPalette, PALETTE_ROWS, buildOptions, matchOptions, type CommandOption } from "./components/CommandPalette";
 import { ConnectWizard } from "./components/ConnectWizard";
 import type { ConnectStep } from "../connect";
 import { filterModels, filterProviders } from "../connect";
@@ -1124,7 +1124,7 @@ export function App(props: AppProps) {
           scrollAcceleration={wheelAccel}
           verticalScrollbarOptions={{ visible: false }}
           width="100%"
-          height={Math.max(6, dims.height - bottomRows - (paletteOpen ? paletteOptions.length + 2 : 0))}
+          height={Math.max(6, dims.height - bottomRows - (paletteOpen ? Math.min(paletteOptions.length, PALETTE_ROWS) + 2 : 0))}
           contentOptions={CONTENT_OPTIONS}
         >
           {start > 0 ? (

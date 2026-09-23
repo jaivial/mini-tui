@@ -17,6 +17,10 @@ import type { RunEvent, Trajectory } from "../src/traj/schema";
 
 const EXPANDED = { outputMode: "expanded" as const };
 
+// Tests never read the user's saved BYOK connections (the palette/list contents would
+// depend on whatever is in ~/.config/mini-tui/providers.json).
+process.env.MINITUI_CONNECTIONS_PATH = "/dev/null/mini-tui-no-connections.json";
+
 function loadFixture(name: string): Trajectory {
   const path = fileURLToPath(new URL(`./fixtures/${name}.json`, import.meta.url));
   return JSON.parse(readFileSync(path, "utf8")) as Trajectory;
@@ -1254,6 +1258,27 @@ describe("startup rendering", () => {
     await Bun.sleep(30);
     await setup.renderOnce();
     expect(edgeHasThumb(setup.captureCharFrame())).toBe(true); // the overflow thumb
+    setup.renderer.destroy();
+  });
+});
+
+describe("command palette windowing", () => {
+  test("many options cap at 12 rows and keep the selection in view", async () => {
+    const options = Array.from({ length: 60 }, (_, i) => ({
+      insert: `/model m${i}`,
+      label: `/model m${i}`,
+      detail: `model ${i}`,
+    }));
+    const setup = await testRender(
+      <CommandPalette options={options} selectedIndex={55} onPick={() => {}} />,
+      { width: 80, height: 30 },
+    );
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    const rows = frame.split("\n").filter((r) => r.includes("/model m"));
+    expect(rows.length).toBeLessThanOrEqual(12); // never overflows the panel
+    expect(frame).toContain("/model m55"); // the selection stays visible
+    expect(frame).not.toContain("/model m0 "); // old entries scroll out of the window
     setup.renderer.destroy();
   });
 });
