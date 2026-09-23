@@ -246,7 +246,12 @@ export interface SavedConnection {
 
 const CONNECTIONS_PATH = join(homedir(), ".config", "mini-tui", "providers.json");
 
-export function loadConnections(path: string = CONNECTIONS_PATH): SavedConnection[] {
+/** Overridable so tests never read the user's real connections (hermetic runs). */
+function connectionsPath(): string {
+  return process.env.MINITUI_CONNECTIONS_PATH ?? CONNECTIONS_PATH;
+}
+
+export function loadConnections(path: string = connectionsPath()): SavedConnection[] {
   try {
     const data = JSON.parse(readFileSync(path, "utf8"));
     return Array.isArray(data) ? (data as SavedConnection[]) : [];
@@ -255,7 +260,7 @@ export function loadConnections(path: string = CONNECTIONS_PATH): SavedConnectio
   }
 }
 
-export function saveConnection(connection: SavedConnection, path: string = CONNECTIONS_PATH): void {
+export function saveConnection(connection: SavedConnection, path: string = connectionsPath()): void {
   const all = loadConnections(path).filter((c) => c.id !== connection.id);
   all.push(connection);
   mkdirSync(dirname(path), { recursive: true });

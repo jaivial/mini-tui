@@ -2,6 +2,25 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **La apertura es continua de verdad: shell → lienzo oscuro → UI, sin parpadeos.** El
+  arranque ahora mantiene tu pantalla del shell visible mientras se asientan las respuestas
+  de capacidades del terminal (antes se entraba a la pantalla alterna en blanco y el
+  contenido llegaba ~250 ms después — el “flash”). El swap al alternate screen y un relleno
+  con el color de fondo de la app salen en **un solo lote sincronizado**, así que ni el
+  blanco por defecto del terminal ni un hueco vacío se ven ni un instante: la UI “despliega”
+  sobre el mismo lienzo oscuro, con una sola pintura de contenido (sin el segundo
+  repintado a pantalla completa). Al salir se restaura la vista del shell.
+- **La paleta de comandos ya no se desborda de la pantalla.** Con muchas conexiones BYOK
+  (p. ej. los 32 modelos de OpenCode Go) la paleta de `/` dibujaba todas las filas y el
+  contenido pisaba los bordes y la línea de estado. Ahora hay una ventana de 12 filas en
+  torno a la selección (como en `/connect`).
+- **Los tests de render ya no leen tu `providers.json` real** (`MINITUI_CONNECTIONS_PATH`
+  los aísla) — el estado de tus conexiones cambiaba resultados de tests.
+
 ## 0.12.4 — 2026-09-23
 
 Sin flash al abrir — una sola pintura de contenido.

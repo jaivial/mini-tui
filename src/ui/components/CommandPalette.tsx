@@ -37,15 +37,26 @@ export function matchOptions(query: string, options: CommandOption[]): CommandOp
   return [...starts, ...includes];
 }
 
+/** Row budget for the popover: connected providers can contribute hundreds of models. */
+export const PALETTE_ROWS = 12;
+
+/** Visible window of options around the selection (lists never overflow the panel). */
+export function paletteWindow(options: CommandOption[], selectedIndex: number): { start: number; items: CommandOption[] } {
+  const start = Math.max(0, Math.min(selectedIndex - Math.floor(PALETTE_ROWS / 2), Math.max(0, options.length - PALETTE_ROWS)));
+  return { start, items: options.slice(start, start + PALETTE_ROWS) };
+}
+
 /** Slash-command completion popover (↑/↓ select · Enter/Tab/click fill the prompt). */
 export function CommandPalette(props: {
   options: CommandOption[];
   selectedIndex: number;
   onPick: (option: CommandOption) => void;
 }) {
+  const { start, items } = paletteWindow(props.options, props.selectedIndex);
   return (
     <box borderStyle="rounded" borderColor={colors.border} paddingX={1} gap={0}>
-      {props.options.map((option, i) => {
+      {items.map((option, k) => {
+        const i = start + k;
         const selected = i === props.selectedIndex;
         return (
           <box key={option.insert} flexDirection="row" gap={1} onMouseDown={() => props.onPick(option)}>
