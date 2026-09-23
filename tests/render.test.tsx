@@ -1220,3 +1220,40 @@ describe("API key: full paste and visibility", () => {
     setup.renderer.destroy();
   });
 });
+
+describe("startup rendering", () => {
+  const edgeHasThumb = (frame: string) =>
+    frame
+      .split("\n")
+      .some((row) => row.endsWith("\u2588") || row.endsWith("\u2584") || row.endsWith("\u2580"));
+
+  test("no scrollbar flashes at startup \u2014 the empty thread paints once, clean", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onQuit={() => {}} />,
+      { width: 60, height: 24 },
+    );
+    await setup.renderOnce();
+    expect(edgeHasThumb(setup.captureCharFrame())).toBe(false); // first frame has no scrollbar
+    await Bun.sleep(30);
+    await setup.renderOnce();
+    expect(edgeHasThumb(setup.captureCharFrame())).toBe(false); // and none appears after settling
+    setup.renderer.destroy();
+  });
+
+  test("the scrollbar thumb is back when the thread is taller than the view", async () => {
+    const events: RunEvent[] = [];
+    for (let i = 1; i <= 60; i++) {
+      events.push({ type: "tool_call", id: `c${i}`, name: "bash", command: `echo ROW-${i}` });
+      events.push({ type: "observation", toolCallId: `c${i}`, returncode: 0, output: `ROW-${i} done`, exceptionInfo: "" });
+    }
+    const setup = await testRender(
+      <App cwd="." events={events} info={{ cost: 0, apiCalls: 60 }} initialSettings={EXPANDED} onQuit={() => {}} />,
+      { width: 60, height: 24 },
+    );
+    await setup.renderOnce();
+    await Bun.sleep(30);
+    await setup.renderOnce();
+    expect(edgeHasThumb(setup.captureCharFrame())).toBe(true); // the overflow thumb
+    setup.renderer.destroy();
+  });
+});

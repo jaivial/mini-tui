@@ -670,15 +670,20 @@ export function App(props: AppProps) {
       const scroll = scrollRef.current;
       if (!scroll) return;
       try {
-        const tall = (scroll.content?.height ?? 0) > (scroll.viewport?.height ?? 1);
+        // `+ 1`: an empty (or exactly-fitting) content box measures one row taller than the
+        // viewport without being scrollable — that slack must not count as overflow.
+        const tall = (scroll.content?.height ?? 0) > (scroll.viewport?.height ?? 1) + 1;
         scroll.stickyScroll = tall;
+        // Manual visibility (the auto one flashes at startup: the scrollbar paints before the
+        // first layout settles) — show the thumb exactly when the thread overflows the view.
+        scroll.verticalScrollBar.visible = tall;
         if (tall && followRef.current) scroll.scrollBy(1_000_000);
       } catch {
         // renderable torn down between render and this check
       }
     }, 0);
     return () => clearTimeout(timer);
-  }, [events]);
+  }, [events, dims.height, dims.width]);
 
   // Sliding window over the transcript: only `MOUNTED_ITEMS` items are mounted at a time
   // (native text buffers make each mounted item cost ~1 MB). By default it follows the live
@@ -1117,6 +1122,7 @@ export function App(props: AppProps) {
           ref={scrollRef}
           stickyStart="bottom"
           scrollAcceleration={wheelAccel}
+          verticalScrollbarOptions={{ visible: false }}
           width="100%"
           height={Math.max(6, dims.height - bottomRows - (paletteOpen ? paletteOptions.length + 2 : 0))}
           contentOptions={CONTENT_OPTIONS}
