@@ -1015,3 +1015,107 @@ describe("pasting into display-only inputs", () => {
     setup.renderer.destroy();
   });
 });
+
+describe("search in the model and provider modals", () => {
+  async function openOverlay(setup: Awaited<ReturnType<typeof testRender>>, command: string) {
+    await setup.mockInput.typeText(command);
+    await Bun.sleep(20);
+    await act(async () => {
+      setup.mockInput.pressEnter(); // palette fill
+    });
+    await act(async () => {
+      setup.mockInput.pressEnter(); // run the command
+    });
+    await setup.renderOnce();
+  }
+
+  test("/model picker: typing filters by name and Enter applies the match", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} persistSettings={false} onQuit={() => {}} />,
+      { width: 110, height: 30 },
+    );
+    await setup.renderOnce();
+    await openOverlay(setup, "/model");
+    expect(setup.captureCharFrame()).toContain("Xiaomi MiMo V2.6 Pro"); // full list
+    expect(setup.captureCharFrame()).toContain("search");
+
+    await setup.mockInput.typeText("deep");
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    const filtered = setup.captureCharFrame();
+    expect(filtered).toContain("DeepSeek chat"); // matches by name
+    expect(filtered).not.toContain("Xiaomi MiMo V2.6 Pro"); // filtered out
+
+    await act(async () => {
+      setup.mockInput.pressEnter(); // apply the first match
+    });
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("model \u2192 deepseek/deepseek-chat");
+    setup.renderer.destroy();
+  });
+
+  test("/model picker: bracketed paste fills the search", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} persistSettings={false} onQuit={() => {}} />,
+      { width: 110, height: 30 },
+    );
+    await setup.renderOnce();
+    await openOverlay(setup, "/model");
+
+    await act(async () => {
+      await setup.mockInput.pasteBracketedText("cliproxy");
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("cliproxy"); // the pasted search text
+    expect(frame).toContain("claude-opus-5-5"); // the single match
+    expect(frame).not.toContain("DeepSeek chat");
+    setup.renderer.destroy();
+  });
+
+  test("/connect provider step: typing filters providers and Enter selects the match", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} persistSettings={false} onQuit={() => {}} />,
+      { width: 110, height: 30 },
+    );
+    await setup.renderOnce();
+    await openOverlay(setup, "/connect");
+    expect(setup.captureCharFrame()).toContain("Xiaomi MiMo"); // full list
+    expect(setup.captureCharFrame()).toContain("search");
+
+    await setup.mockInput.typeText("moon");
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    const filtered = setup.captureCharFrame();
+    expect(filtered).toContain("Moonshot AI"); // matches by name
+    expect(filtered).not.toContain("Xiaomi MiMo"); // filtered out
+
+    await act(async () => {
+      setup.mockInput.pressEnter(); // select the match -> its key step
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Moonshot AI");
+    expect(frame).toContain("paste your API key");
+    setup.renderer.destroy();
+  });
+
+  test("/connect provider step: bracketed paste fills the search", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} persistSettings={false} onQuit={() => {}} />,
+      { width: 110, height: 30 },
+    );
+    await setup.renderOnce();
+    await openOverlay(setup, "/connect");
+
+    await act(async () => {
+      await setup.mockInput.pasteBracketedText("deepseek");
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("deepseek"); // the pasted search text
+    expect(frame).toContain("DeepSeek"); // the single match
+    expect(frame).not.toContain("Moonshot AI");
+    setup.renderer.destroy();
+  });
+});
