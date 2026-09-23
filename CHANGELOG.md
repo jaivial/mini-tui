@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.12.0 — 2026-09-23
+
+Long keys, whole keys — and you can look at them.
 
 ### Fixed
 
