@@ -2,7 +2,9 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.12.2 — 2026-09-23
+
+Valid OpenCode Go keys test green again — on every model.
 
 ### Fixed
 
