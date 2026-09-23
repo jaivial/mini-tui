@@ -47,31 +47,33 @@ class TestGetModelName:
 
 class TestGetModelClass:
     def test_anthropic_model_selection(self):
-        """Test that anthropic-related model names return LitellmModel by default."""
-        from minisweagent.models.litellm_model import LitellmModel
+        """Test that anthropic-related model names select the direct Messages client."""
+        from minisweagent.models.anthropic_compat_model import AnthropicCompatModel
 
         for name in ["anthropic", "sonnet", "opus", "claude-sonnet", "claude-opus"]:
-            assert get_model_class(name) == LitellmModel
+            assert get_model_class(name) == AnthropicCompatModel
 
-    def test_litellm_model_fallback(self):
-        """Test that non-anthropic model names return LitellmModel."""
-        from minisweagent.models.litellm_model import LitellmModel
+    def test_generic_openai_compat_fallback(self):
+        """Test that unknown names fall back to the generic OpenAI-compatible client."""
+        from minisweagent.models.openai_compat_model import OpenaiCompatModel
 
         for name in ["gpt-4", "gpt-3.5-turbo", "llama2", "random-model"]:
-            assert get_model_class(name) == LitellmModel
+            assert get_model_class(name) == OpenaiCompatModel
 
     def test_partial_matches(self):
         """Test that partial string matches work correctly."""
-        from minisweagent.models.litellm_model import LitellmModel
+        from minisweagent.models.anthropic_compat_model import AnthropicCompatModel
+        from minisweagent.models.openai_compat_model import OpenaiCompatModel
 
-        assert get_model_class("my-anthropic-model") == LitellmModel
-        assert get_model_class("sonnet-latest") == LitellmModel
-        assert get_model_class("opus-v2") == LitellmModel
-        assert get_model_class("gpt-anthropic-style") == LitellmModel
-        assert get_model_class("totally-different") == LitellmModel
+        assert get_model_class("my-anthropic-model") == AnthropicCompatModel
+        assert get_model_class("sonnet-latest") == AnthropicCompatModel
+        assert get_model_class("opus-v2") == AnthropicCompatModel
+        assert get_model_class("gpt-anthropic-style") == AnthropicCompatModel
+        assert get_model_class("totally-different") == OpenaiCompatModel
 
     def test_litellm_response_model_selection(self):
         """Test that litellm_response model class can be selected."""
+        pytest.importorskip("litellm")
         from minisweagent.models.litellm_response_model import LitellmResponseModel
 
         assert get_model_class("any-model", "litellm_response") == LitellmResponseModel

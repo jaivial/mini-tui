@@ -1,8 +1,9 @@
-"""DeepSeek API support for mini-swe-agent.
+"""DeepSeek API support for mini-swe-agent \u2014 direct, no litellm.
 
-DeepSeek hosts its models behind an OpenAI-compatible `/chat/completions`
-surface at `https://api.deepseek.com`, which litellm supports through the
-native `deepseek/` provider.
+DeepSeek hosts its models behind an OpenAI-compatible `/chat/completions` surface at
+`https://api.deepseek.com`, which `OpenaiCompatModel` calls directly (base URL per
+provider: `DEEPSEEK_API_BASE`). Cost tracking comes from `models/prices.py` (ids
+without a price row report cost 0.0).
 
 Usage:
 
@@ -11,10 +12,6 @@ Usage:
     mini -m deepseek-flash              # bare DeepSeek ids work too
     mini -m deepseek/deepseek-v4.1-flash
     mini -m deepseek-v41-flash          # spelling without the dot works too
-
-The `deepseek/` prefix is *not* stripped: it is exactly how litellm identifies
-the DeepSeek provider, which gives us working cost tracking for every id that
-litellm knows the prices of (ids it does not know are reported as cost 0.0).
 
 Configuration (environment variables or `mini-extra config set KEY VALUE`):
 
@@ -30,16 +27,13 @@ import os
 import re
 from typing import Any, Literal
 
-import litellm
-
-from minisweagent.models.litellm_model import LitellmModel, LitellmModelConfig
+from minisweagent.models.errors import ProviderAbortError, ProviderError
+from minisweagent.models.openai_compat_model import OpenaiCompatModel, OpenaiCompatModelConfig, gateway_settings
 from minisweagent.models.routing import DEEPSEEK_PREFIX, is_deepseek_model  # noqa: F401 (re-exported)
 
 
 DEFAULT_API_BASE = "https://api.deepseek.com/v1"
 DEFAULT_API_KEY = ""
-"""litellm picks up `DEEPSEEK_API_KEY` when no explicit key is set."""
-
 
 
 def strip_deepseek_prefix(model_name: str) -> str:
@@ -53,8 +47,8 @@ def strip_deepseek_prefix(model_name: str) -> str:
 #: them. DeepSeek re-points several ids at the same backend (`deepseek-chat`,
 #: `deepseek-v4-flash` and `deepseek-flash` all answer as `deepseek-flash`), while ids it
 #: does not know are rejected with a 400 before a single token is generated. Routing an
-#: advertised id to the canonical id DeepSeek serves keeps such runs alive and, whenever
-#: the canonical id is one litellm has prices for, keeps cost tracking exact.
+#: advertised id to the canonical id DeepSeek serves keeps such runs alive and keeps
+# cost tracking exact whenever the canonical id has a price row.
 DEEPSEEK_MODEL_ALIASES: dict[str, str] = {
     # `v4.1-flash` is the name DeepSeek markets and the OpenCode Go catalog lists; the
     # DeepSeek API itself still only accepts the `v4` spelling for the flash tier.
@@ -83,8 +77,8 @@ def _is_auth_error(exception: Exception) -> bool:
 
 
 # Model ids contain dots (e.g. `deepseek-v4.1-flash`), so `passed` is matched as a run of
-# id characters instead of "up to the next period". The message is quoted inside litellm's
-# BadRequestError text, hence the explicit character class.
+# id characters instead of "up to the next period". The message is quoted inside the
+# provider's 400 error body, hence the explicit character class.
 _UNSUPPORTED_MODEL_RE = re.compile(
     r"supported API model names are (?P<names>.+?), but you passed (?P<passed>[\w./-]+)",
     re.IGNORECASE,
@@ -99,7 +93,7 @@ def _unsupported_model(exception: Exception) -> tuple[str, str] | None:
     return None
 
 
-class DeepseekModelConfig(LitellmModelConfig):
+class DeepseekModelConfig(OpenaiCompatModelConfig):
     resolve_aliases: bool = True
     """Rewrite advertised DeepSeek ids (e.g. `deepseek-v4.1-flash`) to the id DeepSeek
     serves for them (`deepseek-v4-flash`). Turn this off for a DeepSeek-compatible
@@ -107,21 +101,26 @@ class DeepseekModelConfig(LitellmModelConfig):
 
     model_kwargs: dict[str, Any] = {}
     cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
-    """DeepSeek ships new model ids faster than litellm maps their prices, and an unmapped id
-    would otherwise abort a run as soon as the first response comes back. Set `cost_tracking:
-    default` (or `export MSWEA_COST_TRACKING=default` before starting `mini`) if you want
-    unmapped ids to be fatal."""
+    """DeepSeek ships new model ids faster than price tables track, and an unpriced id
+    would otherwise abort a run as soon as the first response comes back. Set
+    `cost_tracking: default` (or `export MSWEA_COST_TRACKING=default` before starting
+    `mini`) if you want unpriced ids to be fatal."""
 
 
-class DeepseekModel(LitellmModel):
-    """Talks to the DeepSeek API through litellm's native `deepseek` provider."""
+class DeepseekModel(OpenaiCompatModel):
+    """Talks to the DeepSeek API directly (OpenAI-compatible, no litellm)."""
+
+    _price_provider = "deepseek"
 
     def __init__(self, **kwargs):
         kwargs.setdefault("config_class", DeepseekModelConfig)
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
+        kwargs.update(gateway_settings(model_kwargs, "DEEPSEEK_API_BASE", DEFAULT_API_BASE, "DEEPSEEK_API_KEY", DEFAULT_API_KEY))
+        kwargs["model_kwargs"] = {k: v for k, v in model_kwargs.items() if k not in ("api_base", "api_key")}
         super().__init__(**kwargs)
 
         # A bare id (e.g. `deepseek-chat`) is unambiguous, so pin the provider prefix
-        # to it; provider-qualified names are passed through untouched.
+        # to it; provider-qualified names pass through.
         if "/" not in self.config.model_name:
             self.config.model_name = f"{DEEPSEEK_PREFIX}{self.config.model_name}"
 
@@ -131,45 +130,31 @@ class DeepseekModel(LitellmModel):
         if self.config.resolve_aliases:
             self.config.model_name = resolve_deepseek_alias(self.config.model_name)
 
-        model_kwargs = dict(self.config.model_kwargs)
-        model_kwargs.setdefault("api_base", os.getenv("DEEPSEEK_API_BASE", DEFAULT_API_BASE).rstrip("/"))
-        api_key = os.getenv("DEEPSEEK_API_KEY", DEFAULT_API_KEY)
-        if api_key:
-            # Otherwise leave it to litellm to resolve DEEPSEEK_API_KEY and complain loudly.
-            model_kwargs.setdefault("api_key", api_key)
-        self.config.model_kwargs = model_kwargs
+    def _wire_model_name(self) -> str:
+        # The wire gets the bare id (the API rejects provider-qualified names).
+        return strip_deepseek_prefix(self.config.model_name)
 
     def _query(self, messages: list[dict[str, str]], **kwargs):
         try:
             return super()._query(messages, **kwargs)
-        except litellm.exceptions.BadRequestError as e:
-            # DeepSeek reports both of these as 400s (litellm: BadRequestError), which the retry
-            # loop would hammer. Re-raise them as the errors they are, so the run aborts at once.
+        except ProviderError as e:
+            # DeepSeek reports both of these as 400s, which the retry loop would hammer.
+            # Re-raise them as the errors they are, so the run aborts at once.
             if unsupported := _unsupported_model(e):
                 names, passed = unsupported
                 suggested = DEEPSEEK_MODEL_ALIASES.get(passed.lower())
                 hint = (
-                    f" Request `{DEEPSEEK_PREFIX}{suggested}` instead: DeepSeek serves it as that id."
+                    f" Request `deepseek/{suggested}` instead: DeepSeek serves it as that id."
                     if suggested
                     else " Run `mini-extra deepseek-models` to list them."
                 )
-                raise litellm.exceptions.NotFoundError(
-                    f"DeepSeek has no model id '{passed}'. Ids your key accepts: {names}.{hint}",
-                    model=self.config.model_name,
-                    llm_provider="deepseek",
-                ) from e
-            if "LLM Provider NOT provided" in str(e):
-                # litellm could not infer a provider; nothing we can retry on.
-                raise litellm.exceptions.NotFoundError(
-                    f"{e.message} Use a DeepSeek id such as `deepseek/deepseek-flash`.",
-                    model=self.config.model_name,
-                    llm_provider="deepseek",
+                raise ProviderAbortError(
+                    f"DeepSeek has no model id '{passed}'. Ids your key accepts: {names}.{hint}", e.status
                 ) from e
             if not _is_auth_error(e):
                 raise
-            raise litellm.exceptions.AuthenticationError(
+            raise ProviderAbortError(
                 f"{e.message} You can permanently set your API key with "
                 "`mini-extra config set DEEPSEEK_API_KEY YOUR_KEY`.",
-                llm_provider="deepseek",
-                model=self.config.model_name,
+                e.status,
             ) from e

@@ -110,6 +110,9 @@ _MODEL_CLASS_MAPPING = {
     "openai": "minisweagent.models.openai_model.OpenaiModel",
     "openai_response": "minisweagent.models.openai_model.OpenaiResponseModel",
     "xiaomi": "minisweagent.models.xiaomi_model.XiaomiModel",
+    "openai_compat": "minisweagent.models.openai_compat_model.OpenaiCompatModel",
+    "anthropic_compat": "minisweagent.models.anthropic_compat_model.AnthropicCompatModel",
+    "responses_compat": "minisweagent.models.responses_compat_model.ResponsesCompatModel",
     "deterministic": "minisweagent.models.test_models.DeterministicModel",
 }
 
@@ -134,6 +137,8 @@ def get_model_class(model_name: str, model_class: str = "") -> type:
         )
         from minisweagent.models.routing import openai_needs_responses_api as needs_responses_api
 
+        from minisweagent.models.routing import is_anthropic_model
+
         if is_opencode_go_model(model_name):
             # Go serves ids on three endpoints; the Anthropic compatible one is picked inside
             # OpencodeGoModel, the Responses API one needs a different class.
@@ -151,6 +156,17 @@ def get_model_class(model_name: str, model_class: str = "") -> type:
         elif is_openai_model(model_name):
             # Some ids (e.g. gpt-6-astra) reject function tools on /chat/completions.
             model_class = "openai_response" if needs_responses_api(model_name) else "openai"
+        elif is_anthropic_model(model_name):
+            model_class = "anthropic_compat"
+        else:
+            # Registry rows (moonshot/, zhipu/, groq/, zai/, minimax/, openrouter/) pick
+            # their protocol; anything else is a generic OpenAI-compatible endpoint
+            # reached through `OPENAI_API_BASE` (the litellm zoo is now opt-in via
+            # `--model-class litellm` and the `[litellm]` extra).
+            from minisweagent.models import providers
+
+            protocol = providers.protocol_for(model_name)
+            model_class = {"messages": "anthropic_compat", "responses": "responses_compat"}.get(protocol, "openai_compat")
 
     if model_class:
         full_path = _MODEL_CLASS_MAPPING.get(model_class, model_class)
@@ -158,11 +174,20 @@ def get_model_class(model_name: str, model_class: str = "") -> type:
             module_name, class_name = full_path.rsplit(".", 1)
             module = importlib.import_module(module_name)
             return getattr(module, class_name)
-        except (ValueError, ImportError, AttributeError):
+        except ImportError as e:
+            if "litellm" in full_path:
+                msg = (
+                    f"Model class {full_path} needs litellm, which is an optional extra: "
+                    f"`pip install 'mini-swe-agent[litellm]'`. Original error: {e}"
+                )
+                raise ValueError(msg) from e
+            msg = f"Unknown model class: {model_class} (resolved to {full_path}, available: {_MODEL_CLASS_MAPPING})"
+            raise ValueError(msg) from e
+        except (ValueError, AttributeError):
             msg = f"Unknown model class: {model_class} (resolved to {full_path}, available: {_MODEL_CLASS_MAPPING})"
             raise ValueError(msg)
 
-    # Default to LitellmModel
-    from minisweagent.models.litellm_model import LitellmModel
+    # Default to the generic OpenAI-compatible client (any endpoint via OPENAI_API_BASE).
+    from minisweagent.models.openai_compat_model import OpenaiCompatModel
 
-    return LitellmModel
+    return OpenaiCompatModel

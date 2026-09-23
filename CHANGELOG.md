@@ -2,6 +2,28 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- **litellm is detached: every provider runs on its own direct base URL.** DeepSeek, OpenAI,
+  Anthropic, Moonshot, Zhipu, Groq, Z.AI, MiniMax and OpenRouter now call their endpoints
+  directly — three thin clients (OpenAI chat, Anthropic Messages, OpenAI Responses) with
+  zero litellm imports on any run path. `litellm` becomes an optional
+  `mini-swe-agent[litellm]` extra that only backs the opt-in `--model-class litellm`
+  escape hatch. Everything litellm silently provided is now explicit: cost tracking ships
+  in `models/prices.py` (per-provider price rows — DeepSeek/OpenAI/Anthropic prices kept,
+  OpenCode Go's documented prices and tiered billing included; unknown ids cost 0.0 like
+  before), and the protocol quirks carry over 1:1 (DeepSeek id aliases and error rewrites,
+  the `gpt-6*` Responses API, the temperature fallback, Anthropic cache markers and
+  thinking-block replay, OpenCode Go's three endpoints and session headers).
+- **One base URL/env slot per provider** (`ZAI_API_BASE`, `MINIMAX_API_BASE`, `MOONSHOT_API_BASE`,
+  …). Two OpenAI-compatible BYOK providers can now coexist — they used to collide on the
+  single `OPENAI_API_BASE` slot. Saved connections on that generic slot keep working.
+- Unknown model names fall back to the generic OpenAI-compatible client (any endpoint via
+  `OPENAI_API_BASE`) instead of litellm's model zoo. `MSWEA_PRICE_TABLE_PATH` adds custom
+  price rows; `LITELLM_MODEL_REGISTRY_PATH` is gone with the litellm path.
+
 ## 0.8.1 — 2026-09-23
 
 A crash error that scrolls with the chat.
