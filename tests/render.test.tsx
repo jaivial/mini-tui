@@ -800,3 +800,45 @@ describe("e toggles any block", () => {
     setup.renderer.destroy();
   });
 });
+
+describe("crash error in the thread", () => {
+  const crashEvents: RunEvent[] = [
+    { type: "task", text: "CRASH-TASK" },
+    { type: "exit", exitStatus: "BadRequestError", submission: "" },
+    {
+      type: "error",
+      text: 'BadRequestError: litellm.BadRequestError: DeepseekException -\n{"error":{"message":"Insufficient Balance"}} INSUFFICIENT-MARK',
+    },
+  ];
+
+  test("the mini.log tail sits at the failure point and newer messages render below it", async () => {
+    const events: RunEvent[] = [
+      ...crashEvents,
+      { type: "notice", text: "model → other/model-2 (next run)", interruptType: "model" },
+      { type: "task", text: "NEW-TASK" },
+      { type: "assistant", text: "NEW-ANSWER from the other model" },
+    ];
+    const setup = await testRender(
+      <App cwd="." events={events} info={{ cost: 0, apiCalls: 1 }} initialSettings={EXPANDED} onQuit={() => {}} />,
+      { width: 100, height: 30 },
+    );
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    const rows = frame.split("\n");
+    const rowOf = (needle: string) => rows.findIndex((r) => r.includes(needle));
+    expect(frame).toContain("INSUFFICIENT-MARK"); // the tail renders
+    // the tail is a transcript item at its point in the thread: as the conversation continues
+    // (model switch, follow-ups) it moves up — newer messages render below it, never above a
+    // block pinned to the bottom of the chat
+    expect(rowOf("exit BadRequestError")).toBeLessThan(rowOf("mini.log tail"));
+    expect(rowOf("mini.log tail")).toBeLessThan(rowOf("model →"));
+    expect(rowOf("model →")).toBeLessThan(rowOf("NEW-ANSWER"));
+    setup.renderer.destroy();
+  });
+
+  test("a transcript ending with a crash tail reads error; later work turns it live again", () => {
+    expect(deriveStatus("done", crashEvents)).toBe("error"); // e.g. a restored session
+    expect(deriveStatus("running", [...crashEvents, { type: "assistant", text: "live again" }])).toBe("running");
+    expect(deriveStatus("interrupted", crashEvents)).toBe("interrupted");
+  });
+});

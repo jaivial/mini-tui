@@ -51,7 +51,9 @@ export type RunEvent =
       exceptionInfo: string;
     }
   | { type: "notice"; text: string; interruptType?: string }
-  | { type: "exit"; exitStatus: string; submission: string };
+  | { type: "exit"; exitStatus: string; submission: string }
+  /** A crashed run's raw `mini.log` tail, posted into the thread at the failure point. */
+  | { type: "error"; text: string };
 
 /** Header-level facts extracted from `trajectory.info`. */
 export interface RunInfo {
