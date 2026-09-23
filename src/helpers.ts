@@ -62,30 +62,3 @@ export function runHelperScript(script: string, args: string[], env: Record<stri
     });
   });
 }
-
-/**
- * Hold the first content paint until terminal input goes quiet.
- *
- * The startup capability probes are answered *after* the renderer is up (terminals and
- * tmux reply within a round-trip), and every reply re-invalidates the frame — so the UI
- * painted once and then fully repainted identical content ~15 ms later: the visible
- * "full-screen re-render" flash at open. Mounting the UI after the reply storm settles
- * absorbs those invalidations into blank frames and paints the content exactly once.
- */
-export function waitForQuietInput(
-  quietFor: () => number,
-  opts: { minMs?: number; quietMs?: number; maxMs?: number } = {},
-): Promise<void> {
-  const minMs = opts.minMs ?? 120;
-  const quietMs = opts.quietMs ?? 60;
-  const maxMs = opts.maxMs ?? 800;
-  const start = Date.now();
-  return new Promise((resolve) => {
-    const tick = () => {
-      const elapsed = Date.now() - start;
-      if (elapsed >= maxMs || (elapsed >= minMs && quietFor() >= quietMs)) return resolve();
-      setTimeout(tick, 25);
-    };
-    setTimeout(tick, 25);
-  });
-}

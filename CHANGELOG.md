@@ -2,6 +2,20 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **El fresh start con `mini-tui` ya no parpadea: shell → lienzo oscuro → UI.** Medido con un
+  grabador de estados de pantalla (lo que el terminal muestra, muestreado a 50 Hz) sobre el
+  comando real: antes existía un estado **en blanco** entre el shell y la TUI en cada versión
+  (55 ms en 0.12.3 — más el segundo repintado · 250 ms en 0.12.4 · 165 ms y shell borrado en
+  0.12.5). Ahora el swap a la pantalla alterna se rellena en el **mismo lote sincronizado**
+  con el color de fondo de la app: el terminal nunca muestra su blanco y la UI se “despliega”
+  sobre el lienzo oscuro en ~30 ms, con una sola pintura de contenido. 0.12.5 había roto
+  además la vista del shell al iniciar en modo main-screen (la limpiaba): vuelve el modo
+  alternate-screen nativo, con sus diffs por frame y restauración normal al salir.
+
 ## 0.12.5 — 2026-09-23
 
 Apertura continua: shell → lienzo oscuro → UI.
