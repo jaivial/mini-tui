@@ -1,6 +1,7 @@
 import type { RunEvent } from "../traj/schema";
 import { buildItems } from "./items";
 import { clipText } from "./components/StepCard";
+import { boundEvent } from "../traj/slim";
 
 /**
  * Read-only transcript preview for the /resume browser: a saved session's events turned
@@ -86,7 +87,7 @@ export function previewBlocks(events: RunEvent[], maxBlocks = PREVIEW_MAX_BLOCKS
 export function parseSavedEvents(json: string): RunEvent[] {
   try {
     const events = JSON.parse(json);
-    return Array.isArray(events) ? (events as RunEvent[]) : [];
+    return Array.isArray(events) ? (events as RunEvent[]).map(boundEvent) : [];
   } catch {
     return [{ type: "notice", text: "could not read this session's transcript" }];
   }

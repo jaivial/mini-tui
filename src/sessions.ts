@@ -124,6 +124,17 @@ export function getSession(db: Database, id: string): SessionRecord | null {
   return (db.query("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRecord | undefined) ?? null;
 }
 
+/** The light columns: a listing never needs the (possibly 100+ MB) transcript blobs. */
+const META_COLUMNS = "id, title, cwd, model, task, created_at, updated_at, api_calls, cost, exit_status";
+
+/** One session for the read-only preview: everything but the raw `messages_json`. */
+export function getSessionPreview(db: Database, id: string): SessionRecord | null {
+  const row = db.query(`SELECT ${META_COLUMNS}, events_json, info_json FROM sessions WHERE id = ?`).get(id) as
+    | Omit<SessionRecord, "messages_json">
+    | undefined;
+  return row ? { ...row, messages_json: "[]" } : null;
+}
+
 export function countSessions(db: Database, cwd: string, query: string): number {
   const row = db
     .query("SELECT COUNT(*) AS n FROM sessions WHERE cwd = ? AND (? = '' OR title LIKE ?)")
@@ -131,14 +142,19 @@ export function countSessions(db: Database, cwd: string, query: string): number 
   return row.n;
 }
 
-/** Sessions started in `cwd`, title matching `query`, newest first, one page. */
+/**
+ * Sessions started in `cwd`, title matching `query`, newest first, one page. Metadata only:
+ * `events_json`/`info_json`/`messages_json` come back empty (`getSession`/`getSessionPreview`
+ * load one row's transcript on demand) — `SELECT *` pulled every listed transcript into RAM.
+ */
 export function listSessions(db: Database, cwd: string, query: string, page: number): SessionRecord[] {
-  return db
+  const rows = db
     .query(
-      `SELECT * FROM sessions
+      `SELECT ${META_COLUMNS} FROM sessions
        WHERE cwd = ? AND (? = '' OR title LIKE ?)
        ORDER BY updated_at DESC
        LIMIT ? OFFSET ?`,
     )
-    .all(cwd, query, `%${query}%`, PAGE_SIZE, page * PAGE_SIZE) as SessionRecord[];
+    .all(cwd, query, `%${query}%`, PAGE_SIZE, page * PAGE_SIZE) as Array<Omit<SessionRecord, "events_json" | "info_json" | "messages_json">>;
+  return rows.map((row) => ({ ...row, events_json: "[]", info_json: "{}", messages_json: "[]" }));
 }
