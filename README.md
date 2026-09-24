@@ -26,10 +26,20 @@ artifacts, so the integration is observable and reversible.
 
   ![command palette](docs/screenshots/command-palette.png)
 
-- **`$skill` — Claude Code skills in the prompt.** Typing `$` completes over the skills in
-  `~/.claude/skills/<name>/SKILL.md` (override with `MINITUI_SKILLS_DIR`). Sending
-  `$good-code tidy the parser` hands mini the skill's full instructions followed by your
-  request; the transcript shows just `$good-code tidy the parser`.
+- **`$skill` — skills anywhere in the prompt.** Type `$` at any point of the phrase and a
+  panel lists the skills, filtering as you type; `Enter`/`Tab` inserts `$name`, painted in the
+  skill color. A prompt like `follow $good-code, then use $better-ui, $pr-body, and finish with
+  $pr-fix-loop` hands mini every referenced skill's instructions, then your prompt verbatim;
+  the transcript shows just what you typed. Unknown `$names` stay plain text.
+- **Skills inherited from Claude Code.** mini-tui keeps its own folder,
+  `~/.config/mini-tui/skills/` (override with `MINITUI_SKILLS_DIR`). At install (`bun install`
+  runs the sync) and at every startup, each skill in `~/.claude/skills` that folder doesn't have
+  yet is copied in, including symlinked skills and the `synced/<bucket>/` layout. Copies are
+  never overwritten, and a skill you delete from mini-tui's folder is not re-imported.
+  `bun run sync-skills` runs the sync by hand.
+- **`/compact`.** Summarizes the conversation now, with or without a run in flight. While it
+  runs, the transcript shows `Compacting...` and the status line `compacting`. Auto-compaction
+  (at 80 % of the context window) shows the same state.
 
 - **Only what you sent.** The transcript shows your prompt as typed — never the harness' task
   template wrapping — the **final answer is rendered as proper markdown** (bold, code, links), and
@@ -164,7 +174,8 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `Enter` | send the prompt (starts a task, or continues the running conversation) |
 | `Alt+Enter` / `Ctrl+J` | insert a newline in the prompt (`Shift+Enter` too where the terminal reports it) |
 | `/` | opens the command palette: `↑`/`↓` or click to select · `Enter`/`Tab` fills the prompt (never sends) |
-| `$` | opens the skills palette (`~/.claude/skills`) · `$<skill> <request>` runs the request with that skill |
+| `$` | anywhere in the prompt: opens the skills panel (filters as you type) · `Enter`/`Tab` inserts `$name` |
+| `/compact` | summarize the conversation now (frees context) |
 | `↑` / `↓` (in the prompt) | browse the prompts sent in this session · `↓` past the newest restores your draft |
 | `Esc` | close the palette / leave the prompt · **double `Esc` interrupts the run** |
 | `ctrl+c` | clear the prompt · press it twice (within 1.5 s) to close |

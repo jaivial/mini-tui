@@ -98,10 +98,80 @@ class DefaultAgent:
     def _render_template(self, template: str) -> str:
         return render_template(template, **self.get_template_vars())
 
+    @staticmethod
+    def _tool_call_ids(message: dict) -> list[str]:
+        """IDs of OpenAI-style tool calls carried by an assistant message."""
+        return [str(call.get("id")) for call in message.get("tool_calls", []) if call and call.get("id")]
+
+    @staticmethod
+    def _synthetic_tool_results(pending: set[str]) -> list[dict]:
+        """Build deterministic placeholder results for unanswered tool-call IDs."""
+        return [
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": "Tool call was interrupted before execution; no result was available.",
+                "extra": {
+                    "raw_output": "",
+                    "returncode": -1,
+                    "exception_info": "action was not executed",
+                    "interrupted": True,
+                },
+            }
+            for call_id in sorted(pending)
+        ]
+
+    def _repair_tool_call_history(self, messages: list[dict]) -> list[dict]:
+        """Make assistant tool calls answerable without changing valid message order.
+
+        The normal agent loop adds observations before its next user turn. A live TUI
+        follow-up, an interrupted command, or an old saved trajectory can instead leave
+        an assistant ``tool_calls`` entry adjacent to a user turn. Claude's Messages API
+        rejects that boundary. Synthetic tool results are inserted only at such
+        boundaries; existing results and the append-only log are otherwise preserved.
+        """
+        repaired: list[dict] = []
+        pending: set[str] = set()
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if role == "assistant":
+                if pending:
+                    repaired.extend(self._synthetic_tool_results(pending))
+                pending = set(self._tool_call_ids(message))
+                repaired.append(message)
+            elif role == "tool":
+                pending.discard(str(message.get("tool_call_id") or ""))
+                repaired.append(message)
+            else:
+                if pending:
+                    repaired.extend(self._synthetic_tool_results(pending))
+                    pending.clear()
+                repaired.append(message)
+        if pending:
+            repaired.extend(self._synthetic_tool_results(pending))
+        return repaired
+
     def add_messages(self, *messages: dict) -> list[dict]:
         self.logger.debug(messages)  # set log level to debug to see
-        self.messages.extend(messages)
-        return list(messages)
+        prepared = list(messages)
+        # Keep the append-only trajectory, but never let a control-file follow-up (or
+        # another user interruption) split a tool call from its result on replay.
+        self.messages.extend(self._close_unanswered_tool_calls(self.messages, prepared))
+        self.messages.extend(prepared)
+        return prepared
+
+    @staticmethod
+    def _close_unanswered_tool_calls(previous: list[dict], additions: list[dict]) -> list[dict]:
+        """Return placeholders for pending calls before the first non-tool addition."""
+        if not previous or not additions:
+            return []
+        first = additions[0]
+        if first.get("role") != "user" or previous[-1].get("role") != "assistant":
+            return []
+        pending = set(DefaultAgent._tool_call_ids(previous[-1]))
+        return DefaultAgent._synthetic_tool_results(pending) if pending else []
 
     def handle_uncaught_exception(self, e: Exception) -> list[dict]:
         return self.add_messages(
@@ -117,16 +187,33 @@ class DefaultAgent:
             )
         )
 
-    def run(self, task: str = "", *, resume_messages: list[dict] | None = None, **kwargs) -> dict:
+    def run(self, task: str = "", *, resume_messages: list[dict] | None = None, compact_only: bool = False, **kwargs) -> dict:
         """Run step() until agent is finished. Returns dictionary with exit_status, submission keys.
 
         ``resume_messages`` continues an earlier conversation: its message history is
         reloaded as context (exit markers dropped) and ``task`` arrives as a follow-up.
         """
         self.extra_template_vars |= {"task": task, **kwargs}
+        if compact_only and not resume_messages:
+            raise ValueError("compact_only requires resume_messages")
         if resume_messages:
-            self.messages = [m for m in resume_messages if m.get("role") != "exit"]
-            self.add_messages(self._user_task_message(task))
+            # Older saved trajectories can contain a tool call with no result (for
+            # example, a run interrupted before the environment observation was appended).
+            # Repair that boundary before adding any new user follow-up; otherwise Claude's
+            # Messages API rejects the next request with a 400.
+            self.messages = self._repair_tool_call_history(
+                [m for m in resume_messages if m.get("role") != "exit"]
+            )
+            if compact_only:
+                # `/compact` with no run in flight: compact the saved conversation, then hold at exit
+                # for the next prompt (or stop) exactly like a finished turn.
+                self._compact_requested = True
+                self._apply_pending_compaction()  # its save() starts a fresh journal from the resumed log
+                if not self._wait_for_control_followup():
+                    self.save(self.config.output_path)
+                    return (self.messages[-1] if self.messages else {}).get("extra", {})
+            else:
+                self.add_messages(self._user_task_message(task))
         else:
             self.messages = []
             self.add_messages(
@@ -166,6 +253,9 @@ class DefaultAgent:
                 self._collect_garbage()
             if self.messages[-1].get("role") == "exit":
                 exit_message = self.messages.pop()
+                # The journal already holds the exit line: whatever comes next must still be
+                # appended after it (the index would otherwise skip the next message).
+                self._journaled_messages = min(self._journaled_messages, len(self.messages))
                 # A TUI can hold the run open at exit and keep one conversation going:
                 # a follow-up prompt continues where we left off (context preserved).
                 if self._wait_for_control_followup():
@@ -200,7 +290,8 @@ class DefaultAgent:
 
         Returns `(model_name, user_messages)`. The file is truncated on read, so
         `MESSAGE` lines are consumed exactly once. Writing side: append lines
-        `MODEL <name>` / `MESSAGE <text>`.
+        `MODEL <name>` / `MESSAGE <text>` / `COMPACT` (compact the context now; it sets
+        `self._compact_requested`, applied by `_apply_pending_compaction`).
         """
         control_path = self._control_file()
         if not control_path:
@@ -220,7 +311,9 @@ class DefaultAgent:
         messages = []
         for line in raw.splitlines():
             line = line.strip()
-            if line.startswith("MODEL "):
+            if line == "COMPACT":
+                self._compact_requested = True
+            elif line.startswith("MODEL "):
                 model_name = line[len("MODEL ") :].strip() or None
             elif line.startswith("MESSAGE "):
                 payload = line[len("MESSAGE ") :].strip()
@@ -259,9 +352,25 @@ class DefaultAgent:
         """
         model_name, messages = self._drain_control()
         self._apply_model_switch(model_name)
+        self._apply_pending_compaction()
         for text in messages:
             self.add_messages(self._user_task_message(text))
         if messages:
+            self.save(self.config.output_path, force=False)
+
+    def _apply_pending_compaction(self) -> None:
+        """Run a `/compact` requested over the control channel; always leaves a marker message."""
+        if not getattr(self, "_compact_requested", False):
+            return
+        self._compact_requested = False
+        if self.compact(reason="manual") is None:
+            self.add_messages(
+                {
+                    "role": "user",
+                    "content": "[Context compaction skipped: the conversation is too short to summarize.]",
+                    "extra": {"interrupt_type": "CompactionSkipped", "timestamp": time.time()},
+                }
+            )
             self.save(self.config.output_path, force=False)
 
     def _wait_for_control_followup(self) -> bool:
@@ -276,6 +385,7 @@ class DefaultAgent:
         while True:
             model_name, messages = self._drain_control()
             self._apply_model_switch(model_name)
+            self._apply_pending_compaction()
             if messages:
                 for text in messages:
                     self.add_messages(self._user_task_message(text))
@@ -377,6 +487,8 @@ class DefaultAgent:
         head = cmp.head_length(self.messages, max_chars=int(trigger * 0.1 / tpc))
         lower = head + (1 if indices[head:head + 1] and "compaction" in self.messages[indices[head]].get("extra", {}) else 0)
         keep = self.config.compaction.keep_recent_tokens or min(60000, int(trigger * 0.1))
+        if reason == "manual":  # the user asked: summarize most of it, whatever the size
+            keep = min(keep, int(cmp.messages_chars(view) * tpc * 0.25))
         tail_pos = cmp.tail_start(view, lower, int(keep / tpc))
         if tail_pos <= lower and not overflow:
             return None  # nothing old enough to summarize
@@ -385,6 +497,8 @@ class DefaultAgent:
             request = cmp.shrink(view, lower, int(trigger / tpc))
         request = [*request, {"role": "user", "content": cmp.SUMMARY_PROMPT}]
         summary_message, summary = None, ""
+        self._compacting = reason
+        self.save(self.config.output_path, force=False)  # the journal's info line tells the TUI
         for attempt in range(2):
             try:
                 summary_message = self.model.query(request)
@@ -399,6 +513,7 @@ class DefaultAgent:
                     break
                 cmp.learn_window(self.model, e)
                 request = [*cmp.shrink(request[:-1], lower, int(trigger / tpc / 2)), request[-1]]
+        self._compacting = None
         if summary_message:
             self.cost += summary_message.get("extra", {}).get("cost", 0.0)
         if len(summary) < 200:
@@ -477,6 +592,7 @@ class DefaultAgent:
                 "mini_version": __version__,
                 "exit_status": last_extra.get("exit_status", ""),
                 "submission": last_extra.get("submission", ""),
+                "compacting": getattr(self, "_compacting", None) or "",
             },
             "messages": self.messages,
             "trajectory_format": "mini-swe-agent-1.1",

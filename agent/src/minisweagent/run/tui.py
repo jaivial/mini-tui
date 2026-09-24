@@ -27,6 +27,7 @@ USAGE = """mini-swe-agent-tui - internal runner for mini-tui
 Usage:
   mini-swe-agent-tui -y --exit-immediately -o <trajectory> [-m <model>]
                     [-c <config>]... -t <task> [--resume <trajectory>]
+  mini-swe-agent-tui -y -o <trajectory> --resume <trajectory> --compact-only
 """
 
 
@@ -47,6 +48,7 @@ class Options:
     configs: list[str] | None = None
     yolo: bool = False
     exit_immediately: bool = False
+    compact_only: bool = False
 
 
 _VALUE_OPTIONS = {
@@ -87,6 +89,10 @@ def _parse_args(argv: list[str]) -> Options:
             options.exit_immediately = True
             index += 1
             continue
+        if arg == "--compact-only":
+            options.compact_only = True
+            index += 1
+            continue
         if arg in ("-h", "--help"):
             print(USAGE)
             raise SystemExit(0)
@@ -124,7 +130,9 @@ def _parse_args(argv: list[str]) -> Options:
 
     if positional:
         options.task = " ".join(positional)
-    if not options.task:
+    if options.compact_only and not options.resume:
+        raise UsageError("--compact-only needs --resume <trajectory>")
+    if not options.task and not options.compact_only:
         raise UsageError("a task is required\n\n{USAGE}")
     if not options.yolo:
         raise UsageError("mini-swe-agent-tui only supports yolo runs (-y)")
@@ -177,7 +185,9 @@ def _run_cli_main(argv: list[str] | None = None) -> object:
     resume_messages = None
     if options.resume is not None:
         resume_messages = json.loads(options.resume.read_text(encoding="utf-8")).get("messages", [])
-    if resume_messages:
+    if resume_messages and options.compact_only:
+        agent.run(options.task or "", resume_messages=resume_messages, compact_only=True)
+    elif resume_messages:
         agent.run(options.task or "", resume_messages=resume_messages)
     else:
         agent.run(options.task or "")

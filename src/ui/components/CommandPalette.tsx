@@ -11,6 +11,7 @@ export function buildOptions(models: SelectOption[]): CommandOption[] {
   return [
     { insert: "/model", label: "/model", detail: "open the model picker" },
     { insert: "/settings", label: "/settings", detail: "output display settings" },
+    { insert: "/compact", label: "/compact", detail: "summarize the conversation now (frees context)" },
     { insert: "/new", label: "/new", detail: "start a new session (stops the current run)" },
     { insert: "/resume", label: "/resume", detail: "browse sessions saved in this folder" },
     { insert: "/connect", label: "/connect", detail: "connect a provider with your own API key" },

@@ -13,6 +13,8 @@ export interface TrajectoryInfo {
   submission?: string;
   config?: { model?: { model_name?: string }; [key: string]: unknown };
   mini_version?: string;
+  /** Set while the agent runs a compaction summary ("auto" | "overflow" | "manual"). */
+  compacting?: string;
   [key: string]: unknown;
 }
 

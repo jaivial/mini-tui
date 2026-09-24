@@ -234,3 +234,217 @@ def test_single_huge_output_is_elided_after_overflow():
     assert agent.run("fix it")["submission"] == "done"
     assert all(tokens <= 20_000 for tokens, _ in model.prompts[-3:])
     assert any(m["role"] == "tool" and len(m["content"]) == 200_000 for m in agent.messages)  # log intact
+
+
+def test_manual_compact_via_control_file(tmp_path, monkeypatch):
+    control = tmp_path / "control"
+    control.write_text("")
+    monkeypatch.setenv("MSWEA_CONTROL_FILE", str(control))
+    model = ScriptedModel(steps=12, window=1_000_000)
+    agent = make_agent(model)
+    original = agent.execute_actions
+
+    def with_compact(message):
+        if model.calls == 8:
+            control.write_text("COMPACT\n")
+        return original(message)
+
+    agent.execute_actions = with_compact
+    agent._wait_for_control_followup = lambda: False
+    assert agent.run("fix it")["submission"] == "done"
+    compactions = [m for m in agent.messages if "compaction" in m.get("extra", {})]
+    assert [c["extra"]["compaction"]["reason"] for c in compactions] == ["manual"]
+    assert compactions[0]["extra"]["compaction"]["summarized_messages"] > 0
+    # the next model call already sees the compacted view
+    after = next(msgs for _, msgs in model.prompts if any("compaction" in m.get("extra", {}) for m in msgs) and msgs[-1]["content"] != cmp.SUMMARY_PROMPT)
+    assert len(after) < 12
+
+
+def test_manual_compact_on_a_tiny_conversation_is_skipped_with_a_marker(tmp_path, monkeypatch):
+    control = tmp_path / "control"
+    control.write_text("COMPACT\n")
+    monkeypatch.setenv("MSWEA_CONTROL_FILE", str(control))
+    agent = make_agent(ScriptedModel(steps=0))
+    agent._wait_for_control_followup = lambda: False
+    agent.run("fix it")
+    assert any(m.get("extra", {}).get("interrupt_type") == "CompactionSkipped" for m in agent.messages)
+
+
+def test_journal_reports_compacting_while_the_summary_runs(tmp_path):
+    model = ScriptedModel(steps=30, window=30_000)
+    agent = make_agent(model, reserve_tokens=2000)
+    agent.config.output_path = tmp_path / "traj.json"
+    seen = []
+    real = model.query
+
+    def query(messages, **kw):
+        if messages[-1]["content"] == cmp.SUMMARY_PROMPT:
+            infos = [json.loads(l)["i"] for l in (tmp_path / "traj.jsonl").read_text().splitlines() if '"t":"info"' in l]
+            seen.append(infos[-1]["compacting"])
+        return real(messages, **kw)
+
+    model.query = query
+    agent.run("fix it")
+    assert seen and set(seen) == {"auto"}
+    last_info = [json.loads(l)["i"] for l in (tmp_path / "traj.jsonl").read_text().splitlines() if '"t":"info"' in l][-1]
+    assert last_info["compacting"] == ""
+
+
+def test_messages_after_the_exit_wait_reach_the_journal(tmp_path, monkeypatch):
+    """A follow-up (or a /compact result) that arrives while the agent waits at exit must be
+    journaled: the TUI only sees the journal."""
+    control = tmp_path / "control"
+    control.write_text("")
+    monkeypatch.setenv("MSWEA_CONTROL_FILE", str(control))
+    model = ScriptedModel(steps=12, window=1_000_000)
+    agent = make_agent(model)
+    agent.config.output_path = tmp_path / "traj.json"
+    waits = {"n": 0}
+
+    def wait():
+        waits["n"] += 1
+        if waits["n"] == 1:
+            control.write_text("COMPACT\n")
+            agent._apply_control_commands()
+            agent.add_messages(agent._user_task_message("and now the follow-up"))
+            agent.save(agent.config.output_path, force=False)
+            model.calls, model.steps = 0, 0  # next reply submits
+            return True
+        return False
+
+    agent._wait_for_control_followup = wait
+    agent.run("fix it")
+    journal = [json.loads(l)["m"] for l in (tmp_path / "traj.jsonl").read_text().splitlines() if l.startswith('{"t":"msg"')]
+    assert any("compaction" in m.get("extra", {}) for m in journal)
+    assert any(m.get("content") == "The user added a new task: and now the follow-up" for m in journal)
+    assert journal[-1]["role"] == "exit"
+
+
+def test_followup_after_tool_call_gets_synthetic_result_before_user_message():
+    """A queued TUI follow-up must not strand an assistant tool call."""
+    model = ScriptedModel(steps=1, window=1_000_000)
+    agent = make_agent(model)
+    agent.add_messages(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_orphan", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ],
+        }
+    )
+    agent.add_messages(agent._user_task_message("continue"))
+
+    assert [m["role"] for m in agent.messages[-3:]] == ["assistant", "tool", "user"]
+    repaired = agent.messages[-2]
+    assert repaired["tool_call_id"] == "call_orphan"
+    assert repaired["extra"]["interrupted"] is True
+    assert "no result" in repaired["content"]
+
+
+def test_followup_repair_closes_all_parallel_tool_calls_once():
+    model = ScriptedModel(steps=0, window=1_000_000)
+    agent = make_agent(model)
+    agent.add_messages(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_a", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+                {"id": "call_b", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+            ],
+        }
+    )
+    agent.add_messages(agent._user_task_message("continue"))
+
+    repairs = [m for m in agent.messages if m.get("extra", {}).get("interrupted")]
+    assert [m["tool_call_id"] for m in repairs] == ["call_a", "call_b"]
+    assert all(m["role"] == "tool" for m in repairs)
+    assert agent.messages[-1]["role"] == "user"
+
+
+def test_followup_does_not_add_a_second_result_for_an_answered_call():
+    model = ScriptedModel(steps=0, window=1_000_000)
+    agent = make_agent(model)
+    agent.add_messages(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_done", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_done", "content": "done"},
+    )
+    agent.add_messages(agent._user_task_message("continue"))
+
+    assert not any(m.get("extra", {}).get("interrupted") for m in agent.messages)
+    assert [m["role"] for m in agent.messages[-2:]] == ["tool", "user"]
+
+
+def test_history_repair_preserves_an_existing_tool_result():
+    model = ScriptedModel(steps=0, window=1_000_000)
+    agent = make_agent(model)
+    repaired = agent._repair_tool_call_history(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_answered", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_answered", "content": "done"},
+            {"role": "user", "content": "next"},
+        ]
+    )
+    assert [m.get("tool_call_id") for m in repaired if m.get("role") == "tool"] == ["call_answered"]
+    assert not any(m.get("extra", {}).get("interrupted") for m in repaired)
+
+
+def test_resume_repairs_a_boundary_already_followed_by_user_message():
+    model = ScriptedModel(steps=0, window=1_000_000)
+    agent = make_agent(model)
+    agent.run(
+        "continue",
+        resume_messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_saved_boundary", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+                ],
+            },
+            {"role": "user", "content": "The user added a new task: continue"},
+        ],
+    )
+
+    repaired = next(m for m in agent.messages if m.get("tool_call_id") == "call_saved_boundary")
+    assert repaired["role"] == "tool"
+    assert repaired["extra"]["interrupted"] is True
+
+
+def test_resume_repairs_orphaned_tool_call_before_followup():
+    model = ScriptedModel(steps=0, window=1_000_000)
+    agent = make_agent(model)
+    agent.run(
+        "continue",
+        resume_messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_saved", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+                ],
+            },
+            {"role": "user", "content": "The user added a new task: continue"},
+        ],
+    )
+
+    repaired = next(m for m in agent.messages if m.get("tool_call_id") == "call_saved")
+    assert repaired["role"] == "tool"
+    assert repaired["extra"]["interrupted"] is True
+    assert any(m.get("content") == "The user added a new task: continue" for m in agent.messages)
