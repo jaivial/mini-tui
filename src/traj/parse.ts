@@ -8,6 +8,7 @@
 
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "./schema";
 import { collapseSkillPrompt } from "../skills";
+import { boundText } from "./slim";
 
 export interface ParseOptions {
   /** Emit the (huge) system prompt as a notice instead of dropping it. */
@@ -272,8 +273,9 @@ function toolEvent(message: TrajectoryMessage): RunEvent {
     type: "observation",
     toolCallId: typeof message.tool_call_id === "string" ? message.tool_call_id : null,
     returncode: returncode ?? null,
-    output: output ?? "",
-    exceptionInfo: exceptionInfo ?? "",
+    // bounded to what a card can display: huge raw outputs never stay resident
+    output: boundText(output ?? ""),
+    exceptionInfo: boundText(exceptionInfo ?? ""),
   };
 }
 

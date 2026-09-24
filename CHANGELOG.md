@@ -2,6 +2,34 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.16.1 — 2026-09-24
+
+Long sessions stay under 200 MB: tool outputs are kept only as far as the UI can show them.
+
+### Fixed
+
+- **Huge tool outputs no longer stay in RAM.** Every observation kept its full `raw_output`
+  (one `cat` of a big file was 20–30 MB), although a card never shows more than 500 lines or 40k
+  chars (the collapsed view shows the last 12 lines). Outputs are now bounded to that: head lines,
+  a `… N lines hidden …` marker, then the tail. Collapsed, trimmed and expanded cards look the same
+  as before. Trajectory files on disk stay complete.
+- **Saved sessions with huge transcripts are bounded when restored.** `/resume` open and preview
+  bound them too, so sessions saved before this fix don't bring their outputs back into memory.
+- **`/resume` lists metadata only.** Each page ran `SELECT *` and loaded the full
+  `events_json`/`messages_json` of 8 sessions (up to 148 MB each in a real database). Preview and
+  open now load one row when you ask for it.
+- **Journal ingest decodes line by line** instead of as one big string per delta, and it no
+  longer keeps the whole read buffer alive through the partial-line tail.
+
+Measured by replaying real journals into `view --follow` (200×50 terminal):
+
+| Journal | Before | After |
+| --- | --- | --- |
+| 47 MB / 1583 msgs (one 20 MB output) | 200–230 MB settled, JS heap 75 MB | **160–170 MB**, heap 34 MB |
+| 38 MB / 260 msgs (one 30 MB output) | 228 MB | **140 MB** |
+
+`bun scripts/repro-memory.tsx <traj.jsonl>` reproduces the measurement.
+
 ## 0.16.0 — 2026-09-24
 
 New terminals start on your last model, `/resume` previews sessions, and agent commits carry your identity.

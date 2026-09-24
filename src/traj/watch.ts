@@ -65,10 +65,17 @@ function consumeJournal(state: JournalState, journalPath: string): boolean {
     state.tail = data;
     return false;
   }
-  state.tail = data.subarray(end + 1);
+  // Copy the partial tail: a subarray would pin the whole (possibly many-MB) read buffer.
+  state.tail = Buffer.from(data.subarray(end + 1));
 
   let changed = false;
-  for (const line of data.subarray(0, end).toString("utf8").split("\n")) {
+  // Decode line by line: one string for the whole delta (tens of MB when a tool dumped a big
+  // output, twice that as UTF-16) plus its split copies was the ingest's peak allocation.
+  for (let start = 0; start < end; ) {
+    let nl = data.indexOf(0x0a, start);
+    if (nl < 0 || nl > end) nl = end;
+    const line = data.toString("utf8", start, nl);
+    start = nl + 1;
     if (!line) continue;
     let entry: { t?: string; m?: TrajectoryMessage; i?: TrajectoryInfo; trajectory_format?: string };
     try {

@@ -34,7 +34,7 @@ import {
   type ProviderDef,
 } from "../providers";
 import { cleanTaskText, createParseState, messagesToEvents, parseInfo, type ParseState } from "../traj/parse";
-import { slimMessage } from "../traj/slim";
+import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { runnerSupportsCompactOnly, spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
@@ -47,6 +47,8 @@ import {
   countSessions,
   createSession,
   fallbackTitle,
+  getSession,
+  getSessionPreview,
   listSessions,
   openDb,
   saveTranscript,
@@ -288,7 +290,16 @@ export function App(props: AppProps) {
     resumeIdxRef.current = value;
     setResumeIdxState(value);
   };
-  const setResumePreview = (value: SessionRecord | null) => {
+  const setResumePreview = (listed: SessionRecord | null) => {
+    // list rows carry metadata only: load this one session's transcript for the preview
+    let value = listed;
+    if (listed) {
+      try {
+        value = getSessionPreview(db(), listed.id) ?? listed;
+      } catch {
+        value = listed;
+      }
+    }
     resumePreviewRef.current = value;
     setResumePreviewState(value);
   };
@@ -596,13 +607,21 @@ export function App(props: AppProps) {
     run.interrupt();
   };
 
-  const openSession = (record: SessionRecord) => {
+  const openSession = (listed: SessionRecord) => {
+    // list/preview rows don't carry the raw messages: read the full row now
+    let record = listed;
+    try {
+      record = getSession(db(), listed.id) ?? listed;
+    } catch {
+      record = listed;
+    }
     setOverlay("none");
     setResumeQuery("");
     sessionIdRef.current = record.id;
     pendingTasksRef.current = [];
     try {
-      const restoredEvents = JSON.parse(record.events_json) as RunEvent[];
+      // bounded on the way in: sessions saved before outputs were bounded can hold 100+ MB
+      const restoredEvents = (JSON.parse(record.events_json) as RunEvent[]).map(boundEvent);
       itemAppendHint.current = false;
       setEvents(restoredEvents);
       historyRef.current.reset(restoredEvents.flatMap((event) => (event.type === "task" ? [event.text] : [])));
