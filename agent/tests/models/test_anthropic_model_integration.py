@@ -46,9 +46,9 @@ def test_sonnet_4_cache_control_integration():
     sent = captured["body"]["messages"]
     assert len(sent) == 3
     assert sent[0]["content"][0]["text"] == "Hello, how are you?"
-    assert "cache_control" not in sent[0]["content"][0]
+    # rolling breakpoints: end of the head (= end of the previous step here) and the last message
+    assert sent[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in sent[1]["content"][0]
-    # Only the last message should have cache control applied
     last = sent[2]["content"][0]
     assert last["type"] == "text"
     assert last["text"] == "Can you help me with coding?"

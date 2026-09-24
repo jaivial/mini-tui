@@ -16,7 +16,7 @@ interface CliArgs {
   showSystem?: boolean;
 }
 
-const USAGE = `mini-tui — a pretty terminal UI for mini-swe-agent (the harness runs untouched).
+const USAGE = `mini-tui — a pretty terminal UI for mini-swe-agent (integrated agent runner).
 
 Usage:
   mini-tui                                        start with the prompt (same as \`run\`)

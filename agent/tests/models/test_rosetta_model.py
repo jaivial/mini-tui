@@ -78,7 +78,7 @@ def test_rosetta_does_not_get_anthropic_cache_control():
 
 def test_real_anthropic_still_gets_cache_control():
     model = get_model("anthropic/claude-sonnet-4-5-20250929")
-    assert model.config.set_cache_control == "default_end"
+    assert model.config.set_cache_control == "rolling"
 
 
 def test_explicit_cache_control_is_respected():

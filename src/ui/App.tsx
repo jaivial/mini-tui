@@ -4,6 +4,7 @@ import type { Database } from "bun:sqlite";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
 import { colors, applyTheme, DEFAULT_THEME } from "./theme";
+import { buildItems, buildItemsIncremental, type Item, type ItemBuildCache } from "./items";
 import { StatusLine } from "./components/StatusLine";
 import { TaskCard } from "./components/TaskCard";
 import { StepCard } from "./components/StepCard";
@@ -32,7 +33,7 @@ import {
   testProviderModel,
   type ProviderDef,
 } from "../providers";
-import { cleanTaskText, messagesToEvents, parseInfo } from "../traj/parse";
+import { cleanTaskText, createParseState, messagesToEvents, parseInfo, type ParseState } from "../traj/parse";
 import { slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
@@ -69,11 +70,16 @@ const SAVE_EVERY_MS = 30_000;
 /** Quiet time before a save (batches the burst of snapshots a single step produces). */
 const SAVE_SETTLE_MS = 1000;
 /**
- * How many transcript items stay mounted at once. Each mounted item owns native text
- * buffers (~1 MB in practice: every rendered line is a full terminal-width row of
- * cells), so mounting a whole long run grows into the GBs. `g` pages older items in.
+ * Transcript mounts are bounded by the visible viewport, not by conversation
+ * length. Two viewports keep scrolling responsive while avoiding native text
+ * buffers for content the terminal cannot show. The 120-item ceiling preserves
+ * the previous UX on unusually tall terminals; `g` pages older items in.
  */
-const MOUNTED_ITEMS = 120;
+export function mountedItemLimit(viewportRows: number): number {
+  if (!Number.isFinite(viewportRows)) return 24;
+  const rows = Math.max(1, Math.floor(viewportRows));
+  return Math.max(24, Math.min(120, rows * 2));
+}
 /** Stable identity: a fresh literal would re-apply (and re-render) on every commit. */
 const CONTENT_OPTIONS = { gap: 1 };
 
@@ -111,16 +117,6 @@ export interface AppProps {
   onQuit?: () => void;
 }
 
-interface Pair {
-  toolIndex: number;
-  observationIndex: number | null;
-}
-
-type Item =
-  | { kind: "event"; index: number }
-  | { kind: "pair"; toolIndex: number; observationIndex: number | null };
-
-/** Group each tool call with its observation (FIFO, `tool_call_id` preferred). */
 /** Value-level message identity across re-parses (trajectory files are re-read whole). */
 function sameMessage(a: TrajectoryMessage | undefined, b: TrajectoryMessage | undefined): boolean {
   return (
@@ -131,43 +127,15 @@ function sameMessage(a: TrajectoryMessage | undefined, b: TrajectoryMessage | un
   );
 }
 
-export function buildItems(events: RunEvent[]): Item[] {
-  const pairs: Pair[] = [];
-  const freePairs: Pair[] = [];
-  const byId = new Map<string, Pair[]>();
-
-  events.forEach((event, index) => {
-    if (event.type !== "tool_call") return;
-    const pair: Pair = { toolIndex: index, observationIndex: null };
-    pairs.push(pair);
-    if (event.id) {
-      const queue = byId.get(event.id);
-      if (queue) queue.push(pair);
-      else byId.set(event.id, [pair]);
-    } else freePairs.push(pair);
-  });
-
-  events.forEach((event, index) => {
-    if (event.type !== "observation") return;
-    const queue = (event.toolCallId && byId.get(event.toolCallId)) || [];
-    const pair = queue.shift() ?? freePairs.shift();
-    if (queue.length === 0 && event.toolCallId) byId.delete(event.toolCallId);
-    if (pair) pair.observationIndex = index;
-  });
-
-  const claimed = new Set(pairs.map((p) => p.observationIndex).filter((i): i is number => i !== null));
-  const pairAt = new Map(pairs.map((p) => [p.toolIndex, p] as const));
-  const items: Item[] = [];
-  events.forEach((event, index) => {
-    if (event.type === "tool_call") {
-      const pair = pairAt.get(index);
-      if (pair) items.push({ kind: "pair", toolIndex: pair.toolIndex, observationIndex: pair.observationIndex });
-      return;
-    }
-    if (event.type === "observation" && claimed.has(index)) return;
-    items.push({ kind: "event", index });
-  });
-  return items;
+function sameRunInfo(a: RunInfo, b: RunInfo): boolean {
+  return (
+    a.model === b.model &&
+    a.cost === b.cost &&
+    a.apiCalls === b.apiCalls &&
+    a.exitStatus === b.exitStatus &&
+    a.submission === b.submission &&
+    a.trajectoryFormat === b.trajectoryFormat
+  );
 }
 
 export type RunStatus = "running" | "done" | "error" | "idle" | "interrupted";
@@ -189,6 +157,7 @@ export function deriveStatus(status: RunStatus, events: RunEvent[]): RunStatus {
 export function App(props: AppProps) {
   const staticMode = Boolean(props.events);
   const [events, setEvents] = useState<RunEvent[]>(props.events ?? []);
+  const itemAppendHint = useRef(false);
   const [info, setInfo] = useState<RunInfo>(props.info ?? { cost: 0, apiCalls: 0 });
   const [status, setStatus] = useState<RunStatus>(
     props.statusOverride ?? (props.runSpec ? "running" : staticMode || props.viewPath ? "done" : "idle"),
@@ -355,10 +324,12 @@ export function App(props: AppProps) {
 
   /** Messages are append-only per run: parse only what's new since the last snapshot. */
   const consumedRef = useRef(0);
+  const parseStateRef = useRef<ParseState | undefined>(createParseState());
   /** Show the sent task at once — the trajectory only carries it with the next journal write. */
   const echoTask = (task: string) => {
     const text = cleanTaskText(task);
     pendingTasksRef.current.push(text);
+    itemAppendHint.current = true;
     setEvents((prev) => [...prev, { type: "task", text }]);
   };
   const applySnapshot = (traj: Trajectory) => {
@@ -369,7 +340,10 @@ export function App(props: AppProps) {
     const prev = messagesRef.current;
     const contiguous = from > 0 && messages.length >= from && sameMessage(prev[from - 1], messages[from - 1]);
     const startFrom = contiguous ? from : 0;
-    const fresh = messagesToEvents(messages, { showSystem: props.showSystem }, startFrom);
+    if (startFrom === 0 || !parseStateRef.current) {
+      parseStateRef.current = createParseState(messages, startFrom);
+    }
+    const fresh = messagesToEvents(messages, { showSystem: props.showSystem }, startFrom, parseStateRef.current);
     // The TUI echoes every sent task at once; when the journal finally carries it, drop the
     // echo's parsed twin so a task shows exactly once (a rebuild starts from the truth anyway).
     let incoming = fresh;
@@ -387,12 +361,17 @@ export function App(props: AppProps) {
       pendingTasksRef.current = pending;
     }
     // Events are built: keep only the slim copy of the new messages (heavy extras dropped).
-    const kept = startFrom === 0 ? [] : prev.slice(0, startFrom);
+    // Reuse the retained array for append-only snapshots; slicing the entire
+    // prefix on every poll was another O(n) allocation in long runs.
+    const kept = startFrom === 0 ? [] : prev;
+    if (startFrom > 0) kept.length = startFrom;
     for (let i = startFrom; i < messages.length; i++) kept.push(slimMessage(messages[i]!));
     messagesRef.current = kept;
     consumedRef.current = messages.length;
+    itemAppendHint.current = startFrom > 0 && incoming.length > 0;
     setEvents((prevEvents) => (startFrom === 0 ? fresh : incoming.length ? [...prevEvents, ...incoming] : prevEvents));
-    setInfo(parseInfo(traj));
+    const nextInfo = parseInfo(traj);
+    setInfo((previous) => (sameRunInfo(previous, nextInfo) ? previous : nextInfo));
   };
 
   useEffect(() => {
@@ -403,7 +382,10 @@ export function App(props: AppProps) {
       } else {
         const traj = readTrajectory(props.viewPath);
         if (traj) applySnapshot(traj);
-        else setEvents([{ type: "notice", text: `Could not read trajectory: ${props.viewPath}` }]);
+        else {
+          itemAppendHint.current = false;
+          setEvents([{ type: "notice", text: `Could not read trajectory: ${props.viewPath}` }]);
+        }
       }
     } else if (props.runSpec) {
       echoTask(props.runSpec.task); // run mode: the task is on screen before mini even starts
@@ -471,6 +453,7 @@ export function App(props: AppProps) {
     });
     live.current = { run };
     consumedRef.current = 0; // fresh trajectory: events rebuild from its first message
+    parseStateRef.current = createParseState();
     live.current.watch = watchTrajectory(run.session.trajPath, applySnapshot);
     run.exited.then((code) => {
       if (live.current.run !== run) return; // superseded (e.g. `/new`): don't touch the new session
@@ -487,7 +470,10 @@ export function App(props: AppProps) {
         // Post the raw log tail into the thread at the failure point: as a transcript item it
         // scrolls up with the conversation instead of sticking to the bottom of the chat.
         const tail = tailLog(run.session.logPath);
-        if (tail) setEvents((prev) => [...prev, { type: "error", text: tail }]);
+        if (tail) {
+          itemAppendHint.current = true;
+          setEvents((prev) => [...prev, { type: "error", text: tail }]);
+        }
       }
     });
   };
@@ -508,13 +494,19 @@ export function App(props: AppProps) {
     pendingTasksRef.current = [];
     try {
       const restoredEvents = JSON.parse(record.events_json) as RunEvent[];
+      itemAppendHint.current = false;
       setEvents(restoredEvents);
       historyRef.current.reset(restoredEvents.flatMap((event) => (event.type === "task" ? [event.text] : [])));
       const restored = JSON.parse(record.info_json) as RunInfo;
       setInfo({ ...restored, cost: restored.cost ?? 0, apiCalls: restored.apiCalls ?? 0 });
       messagesRef.current = JSON.parse(record.messages_json) as TrajectoryMessage[];
       consumedRef.current = messagesRef.current.length;
+      // The restored prefix is already represented by restoredEvents. Let the
+      // next append establish parser state from that prefix once, without
+      // reparsing the entire saved session during the click handler.
+      parseStateRef.current = undefined;
     } catch {
+      itemAppendHint.current = false;
       setEvents([{ type: "notice", text: "could not restore that session" }]);
     }
     setStatus("done");
@@ -533,10 +525,12 @@ export function App(props: AppProps) {
     messagesRef.current = [];
     pendingTasksRef.current = [];
     consumedRef.current = 0;
+    parseStateRef.current = createParseState();
     setTurnStartedAt(0);
     followRef.current = true;
     historyRef.current.reset();
     togglesRef.current.clear();
+    itemAppendHint.current = false;
     setEvents([]);
     setInfo({ cost: 0, apiCalls: 0 });
     setStatus("idle");
@@ -560,6 +554,7 @@ export function App(props: AppProps) {
         // persistence is best-effort
       }
     }
+    itemAppendHint.current = true;
     setEvents((prev) => [
       ...prev,
       {
@@ -614,6 +609,7 @@ export function App(props: AppProps) {
     const task = skillCall ? expandSkillPrompt(trimmed, skillsDir) : trimmed;
     if (task === null) {
       applyPromptText(trimmed); // keep the prompt so a typo is one edit away
+      itemAppendHint.current = true;
       setEvents((prev) => [...prev, { type: "notice", text: `no skill named $${skillCall?.name} in ${shortPath(skillsDir)}` }]);
       return;
     }
@@ -685,13 +681,20 @@ export function App(props: AppProps) {
     return () => clearTimeout(timer);
   }, [events, dims.height, dims.width]);
 
-  // Sliding window over the transcript: only `MOUNTED_ITEMS` items are mounted at a time
+  // Sliding window over the transcript: only the viewport budget is mounted at a time
   // (native text buffers make each mounted item cost ~1 MB). By default it follows the live
   // tail; `g` pins the top (`anchor`) to page older items in, `G` releases it.
-  const allItems = useMemo(() => buildItems(events), [events]);
-  const tailStart = Math.max(0, allItems.length - MOUNTED_ITEMS);
+  const itemCacheRef = useRef<ItemBuildCache | undefined>(undefined);
+  const allItems = useMemo(() => {
+    const appendOnly = itemAppendHint.current;
+    itemAppendHint.current = false;
+    itemCacheRef.current = buildItemsIncremental(events, itemCacheRef.current, appendOnly);
+    return itemCacheRef.current.items;
+  }, [events]);
+  const mountedItems = mountedItemLimit(dims.height);
+  const tailStart = Math.max(0, allItems.length - mountedItems);
   const start = Math.min(anchor ?? tailStart, tailStart);
-  const items = allItems.slice(start, start + MOUNTED_ITEMS);
+  const items = allItems.slice(start, start + mountedItems);
   const pairItems = items.filter((item): item is Extract<Item, { kind: "pair" }> => item.kind === "pair");
   const pairRank = new Map(pairItems.map((p, i) => [p.toolIndex, i] as const));
 
@@ -1047,7 +1050,7 @@ export function App(props: AppProps) {
     if (key.name === "g") {
       followRef.current = false;
       // page one window of older items in (the hint line says how much is left)
-      setAnchor(Math.max(0, start - MOUNTED_ITEMS));
+      setAnchor(Math.max(0, start - mountedItems));
       scrollRef.current?.scrollBy(-1_000_000);
       setTimeout(() => {
         try {

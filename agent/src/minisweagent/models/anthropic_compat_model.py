@@ -129,7 +129,7 @@ class AnthropicCompatModelConfig(OpenaiCompatModelConfig):
     max_tokens: int = int(os.getenv("MSWEA_MAX_TOKENS", "8192"))
     """The Messages API requires a max output size on every request."""
     cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
-    set_cache_control: Literal["default_end"] | None = "default_end"
+    set_cache_control: Literal["default_end", "rolling"] | None = "rolling"
     """Anthropic caching is opt-in via markers — on by default, like the litellm path."""
 
 

@@ -916,7 +916,7 @@ def _normalize_model_kwargs(model_id: str, model_kwargs: dict[str, Any]) -> dict
 
 class OpencodeGoModelConfig(OpenaiCompatModelConfig):
     model_kwargs: dict[str, Any] = {}
-    set_cache_control: Literal["default_end"] | None = None
+    set_cache_control: Literal["default_end", "rolling"] | None = None
     """The Go gateway bills no cache writes — markers off unless asked for."""
     cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
     """Prices ship with this module, but a docs refresh can still lag behind a new id;

@@ -74,7 +74,16 @@ def get_model(input_model_name: str | None = None, config: dict | None = None) -
         and not is_xiaomi_model(resolved_model_name)
     ):
         # Select cache control for Anthropic models by default
-        config["set_cache_control"] = "default_end"
+        config["set_cache_control"] = "rolling"
+    elif (
+        "set_cache_control" not in config
+        and any(s in resolved_model_name.lower() for s in ["claude", "anthropic"])
+        and is_cliproxy_model(resolved_model_name)
+    ):
+        # Claude behind an OpenAI-compatible gateway: the gateway translates `cache_control`
+        # blocks to Anthropic breakpoints (verified with cli-proxy), which beats its own
+        # automatic single breakpoint when a turn carries many tool results.
+        config["set_cache_control"] = "rolling"
 
     return model_class(**config)
 

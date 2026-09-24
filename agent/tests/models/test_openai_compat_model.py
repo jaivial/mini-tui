@@ -91,8 +91,11 @@ def test_tool_call_round_trip(gateway, monkeypatch):
     assert body["temperature"] == 0.2
     assert "drop_params" not in body  # litellm-only knobs never reach the wire
     assert body["tools"][0]["function"]["name"] == "bash"
-    # only protocol keys are sent: no `extra`, no provider_specific_fields
-    assert all(set(m) <= {"role", "content", "tool_calls", "tool_call_id", "name"} for m in body["messages"])
+    # only protocol keys are sent (plus cache breakpoints): no `extra`, no provider_specific_fields
+    assert all(set(m) <= {"role", "content", "tool_calls", "tool_call_id", "name", "cache_control"} for m in body["messages"])
+    # Claude on cli-proxy gets rolling cache breakpoints: end of the head and the newest tool result
+    assert body["messages"][1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert body["messages"][3]["cache_control"] == {"type": "ephemeral"}
 
     assert message["role"] == "assistant"
     assert message["tool_calls"][0]["id"] == "call_1"

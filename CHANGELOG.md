@@ -2,6 +2,90 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.14.0 — 2026-09-24
+
+Long sessions no longer die at the context limit, and prompt caching survives compactions.
+
+### Added
+
+- **Automatic context compaction.** Once the prompt reaches 80 % of the model's context window
+  (800k for claude-opus-5-5), the agent asks the model for a structured summary (goal, facts,
+  files, errors, done, pending, next step) and continues from system prompt + first task +
+  summary + the newest messages verbatim. Every user request from the summarized part is copied
+  word for word. The trajectory stays append-only (the summary is one extra message), so the
+  journal, the transcript and `--resume` keep working. Replayed on the real session that failed
+  with `prompt is too long: 1000243 tokens > 1000000 maximum`, it compacts once at 804k → ~67k
+  and ends around 165k.
+- **Overflow safety net.** A context-overflow error compacts and retries once, and the real
+  limit parsed from the error is saved in `context_windows.json` so later runs compact in time.
+  A single command output larger than the window is elided in the request only.
+- **Rolling cache breakpoints** (`set_cache_control: rolling`, the new default for Claude on
+  cli-proxy and Anthropic direct): up to 4 markers on the head, the latest summary, the end of
+  the previous step and the last message. The head stays cached across compactions and the
+  summarizer call reuses the previous step's cache. `MSWEA_CACHE_TTL=1h` forwards a TTL.
+- The TUI shows compactions as one line:
+  `→ context · compacted (auto): 804k tokens of 1000k window, 640 messages summarized`.
+- Knobs: `MSWEA_AUTO_COMPACT=0`, `MSWEA_COMPACT_THRESHOLD` (0.8), `MSWEA_COMPACT_MAX_TOKENS`,
+  or `agent.compaction` in the config. See `docs/mini-swe-agent-patches.md` §8.
+
+## 0.13.2 — 2026-09-24
+
+Long-run TUI ingestion and transcript pairing now stay incremental.
+
+### Performance
+
+- Append-aware transcript item indexing removes the full pairing rebuild from live journal updates.
+  The randomized equivalence suite covers late observations and prefix replacement; a terminal-free
+  8,000-step stream now takes about **4 ms**, versus repeated full rebuilds that grow quadratically.
+- The trajectory parser state and retained slim-message reuse from 0.13.1 remain enabled, so the
+  combined path processes 10,002 messages in about **11–12 ms**.
+- Existing journal, resume, pairing, and rendered-event shapes are unchanged.
+
+## 0.13.1 — 2026-09-24
+
+Long-run TUI ingestion now scales with the new journal delta instead of transcript history.
+
+### Performance
+
+- The trajectory parser carries task state across append-only snapshots, avoiding an O(n) prefix
+  scan on every journal poll. The terminal-free `bun run benchmark:tui -- 5000` workload
+  processes 10,002 messages in about **11–12 ms** on the release machine.
+- The live App reuses its retained slim message array and skips no-op `RunInfo` state updates.
+  Existing journal, resume, and rendered-event shapes are unchanged.
+
+## 0.13.0 — 2026-09-23
+
+Integrated agent runner: less RAM, faster startup, and a smaller default install.
+
+### Added
+
+- **mini-swe-agent is now a first-class mini-tui runner.** Normal TUI runs use the bundled
+  `mini-swe-agent-tui` module/console entry instead of loading the public Typer/Rich interactive
+  CLI. The same config precedence, model loop, journal, resume format, and control-file protocol
+  remain shared with `mini`; custom or older agents automatically fall back to `mini`.
+- A reproducible cold-start benchmark at `scripts/benchmark-runtime.py`.
+- `mini-swe-agent[benchmarks]` keeps SWE-bench/ProgramBench datasets out of the default install;
+  `mini-swe-agent[full]` still installs them.
+
+### Performance
+
+- Deterministic seven-process benchmark: public `mini` **~205–212 ms / ~39 MiB peak RSS** vs the
+  integrated runner **~160–170 ms / ~34 MiB** (about 20% faster and roughly 5 MiB less RSS). The runner
+  does not import Typer, Rich, prompt_toolkit, or the interactive agent on the normal yolo path.
+- The TUI transcript mount budget is now viewport-aware (two viewports, 24–120 items), retaining
+  `g`/`G` history paging while reducing native buffers on ordinary terminals.
+- **Long-run ingestion is O(delta).** The parser now carries task state across append-only journal
+  snapshots and reuses the retained message array; the terminal-free benchmark at
+  `bun run benchmark:tui -- 5000` processes 10,002 messages in about **11–12 ms** instead of rescanning
+  the trajectory prefix on every poll.
+
+### Fixed
+
+- The bundled agent now installs correctly with older pip versions as well as current PEP 660
+  installers; the documented `pip install -e ./agent` path exposes the new console entry point.
+- Each TUI run owns its control-file environment, so a run cannot attach to a previous session's
+  follow-up channel.
+
 ## 0.12.6 — 2026-09-23
 
 Fresh start sin parpadeos: shell → lienzo oscuro → UI.

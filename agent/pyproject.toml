@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 
@@ -42,8 +42,6 @@ dependencies = [
     "platformdirs",
     "textual",
     "prompt_toolkit",
-    "datasets",
-    "openai != 1.100.0,!=1.100.1",  # https://github.com/SWE-agent/mini-swe-agent/issues/446
 ]
 
 [project.optional-dependencies]
@@ -52,8 +50,12 @@ dependencies = [
 litellm = [
     "litellm >= 1.75.5, != 1.82.7, != 1.82.8", # Security: Skip compromised 1.82.7/8; requires 1.75.5+ for GPT-5
 ]
+benchmarks = [
+    "datasets>=4.5.0",
+]
 full = [
     "mini-swe-agent[litellm]",
+    "mini-swe-agent[benchmarks]",
     "mini-swe-agent[dev]",
     "swe-rex>=1.4.0",
     "mini-swe-agent[modal]",
@@ -84,6 +86,7 @@ dev = [
 
 contree = [
     "contree-sdk>=0.2.0",
+    "typing-extensions>=4.0",
 ]
 
 [project.urls]
@@ -94,6 +97,7 @@ Repository = "https://github.com/SWE-agent/mini-swe-agent"
 [project.scripts]
 mini = "minisweagent.run.mini:app"
 mini-swe-agent = "minisweagent.run.mini:app"
+mini-swe-agent-tui = "minisweagent.run.tui:main"
 mini-extra = "minisweagent.run.utilities.mini_extra:main"
 mini-e= "minisweagent.run.utilities.mini_extra:main"
 
@@ -107,8 +111,16 @@ version = {attr = "minisweagent.__version__"}
 where = ["src"]
 include = ["minisweagent*"]
 
+[tool.setuptools.exclude-package-data]
+minisweagent = ["**/*.pyc", "**/__pycache__/*"]
+
 [tool.setuptools.package-data]
-minisweagent = ["config/**/*"]
+minisweagent = [
+    "config/*.yaml",
+    "config/*.tscss",
+    "config/README.md",
+    "config/benchmarks/*.yaml",
+]
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

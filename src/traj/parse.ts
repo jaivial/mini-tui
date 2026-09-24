@@ -14,6 +14,20 @@ export interface ParseOptions {
   showSystem?: boolean;
 }
 
+/** Incremental parser state carried across append-only trajectory snapshots. */
+export interface ParseState {
+  /** Whether the initial user task has already been emitted. */
+  taskSeen: boolean;
+}
+
+export function createParseState(messages: TrajectoryMessage[] = [], startIndex = 0): ParseState {
+  for (let i = 0; i < startIndex && i < messages.length; i++) {
+    const prior = messages[i] ?? {};
+    if (prior.role === "user" && !hasInterruptType(prior) && !hasActions(prior)) return { taskSeen: true };
+  }
+  return { taskSeen: false };
+}
+
 function formatToolCall(argsStr: unknown): string {
   try {
     const args = typeof argsStr === "string" ? JSON.parse(argsStr) : argsStr;
@@ -203,6 +217,15 @@ export function thinkingTextOf(message: TrajectoryMessage): { text: string; pres
   return { text: "", present: false };
 }
 
+/** One-line description of an automatic context compaction (see agent `compaction.py`). */
+export function compactionNotice(info: unknown): string {
+  const c = (info && typeof info === "object" ? info : {}) as Record<string, unknown>;
+  const k = (n: unknown) => (typeof n === "number" && n > 0 ? `${Math.round(n / 1000)}k` : "?");
+  const reason = c.reason === "overflow" ? "context overflow" : c.reason === "manual" ? "requested" : "auto";
+  const summarized = typeof c.summarized_messages === "number" ? `${c.summarized_messages} messages summarized` : "summarized";
+  return `compacted (${reason}): ${k(c.tokens_before)} tokens of ${k(c.context_window)} window, ${summarized}`;
+}
+
 function hasInterruptType(message: TrajectoryMessage): string | undefined {
   const interruptType = extraOf(message).interrupt_type;
   return typeof interruptType === "string" ? interruptType : undefined;
@@ -258,19 +281,26 @@ function toolEvent(message: TrajectoryMessage): RunEvent {
  * Convert `messages[startIndex:]` into UI events. Messages are append-only in the
  * trajectory, so callers can keep a `consumed` index and parse only new messages.
  */
-export function messagesToEvents(messages: TrajectoryMessage[], options: ParseOptions = {}, startIndex = 0): RunEvent[] {
+export function messagesToEvents(
+  messages: TrajectoryMessage[],
+  options: ParseOptions = {},
+  startIndex = 0,
+  state?: ParseState,
+): RunEvent[] {
   const events: RunEvent[] = [];
-  // Scan the prefix without slicing it: incremental callers pass a growing startIndex
-  // on every snapshot, so an allocating slice here would churn on every step.
-  let seenBefore = false;
-  for (let i = 0; i < startIndex && i < messages.length; i++) {
-    const prior = messages[i] ?? {};
-    if (prior.role === "user" && !hasInterruptType(prior) && !hasActions(prior)) {
-      seenBefore = true;
-      break;
+  // A live TUI carries `state` across snapshots, so the old prefix is never
+  // rescanned. The fallback preserves the pure one-shot API for callers that
+  // pass only a startIndex (and for trajectories without retained parser state).
+  let taskSeen = state?.taskSeen ?? false;
+  if (!state) {
+    for (let i = 0; i < startIndex && i < messages.length; i++) {
+      const prior = messages[i] ?? {};
+      if (prior.role === "user" && !hasInterruptType(prior) && !hasActions(prior)) {
+        taskSeen = true;
+        break;
+      }
     }
   }
-  let taskSeen = seenBefore;
 
   for (let i = startIndex; i < messages.length; i++) {
     const message = messages[i] ?? {};
@@ -285,6 +315,8 @@ export function messagesToEvents(messages: TrajectoryMessage[], options: ParseOp
           // A follow-up prompt (initial tasks have no interrupt_type).
           const text = getContentString(message).replace(/^The user added a new task:\s*/s, "");
           events.push({ type: "task", text: cleanTaskText(text) });
+        } else if (interruptType === "Compaction") {
+          events.push({ type: "notice", text: compactionNotice(extraOf(message).compaction), interruptType: "context" });
         } else if (interruptType) {
           events.push({ type: "notice", text: getContentString(message), interruptType });
         } else if (actions.length > 0) {
@@ -339,6 +371,7 @@ export function messagesToEvents(messages: TrajectoryMessage[], options: ParseOp
       events.push({ type: "notice", text: "[mini-tui] unparseable message" });
     }
   }
+  if (state) state.taskSeen = taskSeen;
   return events;
 }
 
