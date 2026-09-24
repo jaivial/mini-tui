@@ -2,6 +2,23 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.16.2 — 2026-09-24
+
+OpenCode Go runs can finish again, instead of looping until the gateway aborts them.
+
+### Fixed
+
+- **OpenCode Go chat models can give their final answer.** mini forced `tool_choice: "required"`
+  on every Go `/chat/completions` request, but a run only ends when the model replies in plain
+  text without a tool call. The model could never finish: one `deepseek-v4.1-flash` session
+  spent ~600 of its 1,204 steps on `echo "END"` / `echo "FINAL"` until the prompt reached ~370k
+  tokens and the gateway failed. `tool_choice` is now left at the default (`auto`);
+  `parallel_tool_calls: false` stays, and an explicit `tool_choice` in your config still wins.
+- **Opaque OpenCode Go 400s are retried.** A 400 whose body is only an echo of the request
+  (`{"model":"deepseek-v4.1-flash"}`, no error text) aborted the run with `ProviderAbortError`,
+  although the same request succeeds when sent again. Such replies now go through the normal
+  retry policy. Real 400s (invalid request, unknown model, bad key) still abort at once.
+
 ## 0.16.1 — 2026-09-24
 
 Long sessions stay under 200 MB: tool outputs are kept only as far as the UI can show them.
