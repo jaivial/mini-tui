@@ -10,7 +10,7 @@ const TICK_MS = 120;
  * Animated load state. It owns its own tick: the 8 frames/s re-render only these three text
  * nodes, never the App (before, every frame re-rendered the whole transcript tree).
  */
-function WorkingIndicator(props: { startedAt: number }) {
+function WorkingIndicator(props: { startedAt: number; label?: string }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => (t + 1) % 1000), TICK_MS);
@@ -23,7 +23,7 @@ function WorkingIndicator(props: { startedAt: number }) {
     <>
       <text fg={colors.accent}>{FRAMES[tick % FRAMES.length]}</text>
       <text fg={colors.faint}>{bar}</text>
-      <text fg={colors.dim}>working · {elapsedS}s</text>
+      <text fg={colors.dim}>{props.label ?? "working"} · {elapsedS}s</text>
       <text fg={colors.faint}>·</text>
     </>
   );
@@ -40,12 +40,16 @@ export const StatusLine = memo(function StatusLine(props: {
   status: string;
   /** When the current turn started (ms epoch; 0 = unknown). */
   startedAt: number;
+  /** A context compaction is running (the indicator reads "compacting"). */
+  compacting?: boolean;
 }) {
   const statusColor =
     props.status === "error" ? colors.err : props.status === "done" ? colors.ok : props.status === "interrupted" ? colors.warn : colors.dim;
   return (
     <box flexDirection="row" gap={2} paddingX={1} height={1}>
-      {props.status === "running" ? <WorkingIndicator key={props.startedAt} startedAt={props.startedAt} /> : null}
+      {props.status === "running" || props.compacting ? (
+        <WorkingIndicator key={props.startedAt} startedAt={props.startedAt} label={props.compacting ? "compacting" : undefined} />
+      ) : null}
       <text fg={colors.text}>{props.model}</text>
       <text fg={colors.faint}>·</text>
       <text fg={colors.dim}>{props.path}</text>

@@ -315,6 +315,8 @@ export function messagesToEvents(
           // A follow-up prompt (initial tasks have no interrupt_type).
           const text = getContentString(message).replace(/^The user added a new task:\s*/s, "");
           events.push({ type: "task", text: cleanTaskText(text) });
+        } else if (interruptType === "CompactionSkipped") {
+          events.push({ type: "notice", text: "nothing to compact yet: the conversation is too short", interruptType: "context" });
         } else if (interruptType === "Compaction") {
           events.push({ type: "notice", text: compactionNotice(extraOf(message).compaction), interruptType: "context" });
         } else if (interruptType) {

@@ -139,9 +139,15 @@ export const DEFAULT_THEME = "shadcn";
 /** Live palette — components read these properties at render time. */
 export const colors: ThemeColors = { ...THEMES[0].colors };
 
+/** Color of `$skill` references (the shadcn accent is a neutral, so skills get a violet). */
+export function skillColor(): string {
+  return colors.accent === "#d4d4d8" ? "#a78bfa" : colors.accent;
+}
+
 /** Live syntax styles, rebuilt when the theme changes. */
 export let bashSyntaxStyle = buildBashStyle();
 export let markdownSyntaxStyle = buildMarkdownStyle();
+export let promptSyntaxStyle = buildPromptStyle();
 
 export function themeById(id: string): ThemeDef {
   return THEMES.find((theme) => theme.id === id) ?? THEMES[0];
@@ -152,6 +158,11 @@ export function applyTheme(id: string): void {
   Object.assign(colors, themeById(id).colors);
   bashSyntaxStyle = buildBashStyle();
   markdownSyntaxStyle = buildMarkdownStyle();
+  promptSyntaxStyle = buildPromptStyle();
+}
+
+function buildPromptStyle(): SyntaxStyle {
+  return SyntaxStyle.fromStyles({ default: { fg: colors.text }, skill: { fg: skillColor(), bold: true } });
 }
 
 function buildBashStyle(): SyntaxStyle {

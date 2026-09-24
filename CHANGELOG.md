@@ -2,6 +2,37 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.15.0 — 2026-09-24
+
+`/compact`, inline skills and a mini-tui skills folder synced from Claude Code.
+
+### Added
+
+- **`/compact`** summarizes the conversation at any time. During a run it reaches the agent over
+  the control channel (`COMPACT`) and applies before the next model call. Between runs it
+  compacts the saved conversation with the integrated runner (`--compact-only`), and the next
+  prompt continues from the compacted view. The transcript shows `Compacting...` and the status
+  line reads `compacting · Ns`. The agent's journal reports `info.compacting`, so automatic
+  compactions show the same state.
+- **`$skills` anywhere in the prompt.** `$` opens the skills panel at the cursor, mid-phrase,
+  filtering as you type. `Enter`/`Tab` inserts `$name ` (punctuation typed right after replaces
+  the space). Known skills are painted in the skill color. Every referenced skill's SKILL.md is
+  sent in one `<skills>` block ahead of the prompt, which reaches mini verbatim. The transcript
+  shows the prompt as typed. Unknown names stay plain text, and a notice lists them.
+- **mini-tui skills folder** `~/.config/mini-tui/skills/`, synced from `~/.claude/skills` at
+  startup and at `bun install` (`bun run sync-skills`). It copies only missing skills, resolves
+  symlinks and flattens `synced/<bucket>/` layouts. It never overwrites a skill and never
+  re-imports one you deleted. New imports show once as a notice.
+
+### Fixed
+
+- Messages that arrive while the agent waits at exit (a follow-up after a `/compact`, or the
+  compaction itself) are journaled again: the journal index skipped the message after an exit.
+- **No more `HTTP 400` from Claude after a follow-up that lands mid-command.** A prompt sent
+  while a tool call had no result yet left `tool_use` without a `tool_result`, and Claude rejected
+  every later request. Unanswered calls now get a placeholder result (also when resuming older
+  trajectories, parallel calls included). Existing results are never duplicated.
+
 ## 0.14.0 — 2026-09-24
 
 Long sessions no longer die at the context limit, and prompt caching survives compactions.

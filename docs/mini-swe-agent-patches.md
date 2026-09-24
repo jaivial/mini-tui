@@ -325,3 +325,17 @@ read independent of Anthropic's 20-block lookback (turns with many tool results)
 is the default for Claude on cli-proxy (which forwards `cache_control`, verified live) and for
 Anthropic direct. Rosetta keeps no markers. `MSWEA_CACHE_TTL=1h` forwards a TTL.
 The TUI shows compactions as `→ context · compacted (auto): 812k tokens of 1000k window, ...`.
+
+## 9. `/compact`, control `COMPACT`, `--compact-only` (0.15.0)
+
+- Control file line `COMPACT`: `_drain_control` sets `_compact_requested`, and
+  `_apply_pending_compaction` runs `compact(reason="manual")` before the next model call (or
+  while waiting at exit). Manual compaction keeps at most 25 % of the context verbatim. A
+  conversation too short to summarize gets a `CompactionSkipped` marker, so the TUI never hangs
+  on "Compacting...".
+- `info.compacting` ("auto" | "overflow" | "manual" | "") is written to the journal before
+  the summary call and cleared after it.
+- `mini-swe-agent-tui --resume <file> --compact-only`: compact the saved conversation, then
+  hold at exit for the next control `MESSAGE` (`DefaultAgent.run(compact_only=True)`).
+- Journal fix: popping the exit message before the control wait rewinds `_journaled_messages`,
+  so the next message is appended (before, the index skipped it).

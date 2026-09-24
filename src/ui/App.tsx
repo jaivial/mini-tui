@@ -36,7 +36,7 @@ import {
 import { cleanTaskText, createParseState, messagesToEvents, parseInfo, type ParseState } from "../traj/parse";
 import { slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
-import { spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
+import { runnerSupportsCompactOnly, spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
 import { copyText, pasteText, pastedLine, pastedToken } from "../clipboard";
 import { gitBranch, shortPath } from "../git";
@@ -55,13 +55,15 @@ import {
 } from "../sessions";
 import { generateTitle } from "../title";
 import { PromptHistory } from "../history";
-import { SKILLS_DIR, expandSkillPrompt, listSkills, parseSkillPrompt } from "../skills";
+import { SKILLS_DIR, expandSkills, insertSkill, listSkills, skillQueryAt } from "../skills";
+import { SkillHighlighter } from "./skillHighlight";
 import { loadSettings, saveSettings, type Settings } from "../settings";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 
 const COMMAND_OPTIONS = buildOptions(MODELS);
-/** Prompts starting with these open the completion palette: `/` commands, `$` skills. */
-const isPaletteText = (text: string) => text.startsWith("/") || text.startsWith("$");
+/** Prompts that open the completion palette: a leading `/` command, or a `$skill` being typed
+ * at the cursor (anywhere in the prompt). */
+const isPaletteText = (text: string, cursor: number = text.length) => text.startsWith("/") || skillQueryAt(text, cursor) !== null;
 const ESC_DOUBLE_MS = 800;
 /** Window for the second ctrl+c that closes the TUI (the first one only clears the prompt). */
 const CTRL_C_DOUBLE_MS = 1500;
@@ -104,8 +106,10 @@ export interface AppProps {
   dbPath?: string;
   /** Override prompt submission (tests); otherwise runs a task or continues the run. */
   onSend?: (text: string) => void;
-  /** Skills folder for `$skill` prompts (tests); defaults to `~/.claude/skills`. */
+  /** Skills folder for `$skill` prompts (tests); defaults to `~/.config/mini-tui/skills`. */
   skillsDir?: string;
+  /** Skills the startup sync just imported from `~/.claude/skills` (shown once as a notice). */
+  importedSkills?: string[];
   /** Override clipboard writes (tests); defaults to OSC 52 + tmux buffer + native tools. */
   onCopy?: (text: string) => void;
   /** Override clipboard reads for ctrl+v/shift+insert (tests); defaults to `pasteText`. */
@@ -125,6 +129,18 @@ function sameMessage(a: TrajectoryMessage | undefined, b: TrajectoryMessage | un
     String(a?.content ?? "") === String(b?.content ?? "") &&
     a?.tool_call_id === b?.tool_call_id
   );
+}
+
+/** The agent answered and holds at exit: an `exit` message is followed only by notices
+ * (e.g. a `/compact` result), never by a new task. */
+function waitingAtExit(messages: TrajectoryMessage[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role === "exit") return true;
+    const itype = (message.extra as Record<string, unknown> | undefined)?.interrupt_type;
+    if (itype !== "Compaction" && itype !== "CompactionSkipped") return false;
+  }
+  return false;
 }
 
 function sameRunInfo(a: RunInfo, b: RunInfo): boolean {
@@ -156,7 +172,13 @@ export function deriveStatus(status: RunStatus, events: RunEvent[]): RunStatus {
 
 export function App(props: AppProps) {
   const staticMode = Boolean(props.events);
-  const [events, setEvents] = useState<RunEvent[]>(props.events ?? []);
+  const [events, setEvents] = useState<RunEvent[]>(() => {
+    const initial = props.events ?? [];
+    const imported = props.importedSkills ?? [];
+    if (!imported.length) return initial;
+    const names = imported.map((name) => `$${name}`).join(", ");
+    return [...initial, { type: "notice", text: `imported ${imported.length} skill${imported.length > 1 ? "s" : ""} from ~/.claude/skills: ${names}`, interruptType: "skills" }];
+  });
   const itemAppendHint = useRef(false);
   const [info, setInfo] = useState<RunInfo>(props.info ?? { cost: 0, apiCalls: 0 });
   const [status, setStatus] = useState<RunStatus>(
@@ -202,6 +224,9 @@ export function App(props: AppProps) {
   const followRef = useRef(true);
   /** Start of the current turn, as state so the status line restarts its timer. */
   const [turnStartedAt, setTurnStartedAt] = useState(0);
+  /** A compaction is in flight ("manual" = `/compact`, "auto"/"overflow" = the agent's own). */
+  const [compacting, setCompacting] = useState<string | null>(null);
+  const compactOnlyRef = useRef(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<TextareaRenderable | null>(null);
   const sessionIdRef = useRef<string | null>(null);
@@ -284,13 +309,30 @@ export function App(props: AppProps) {
   );
   const skillOptionsRef = useRef<CommandOption[]>([]);
   skillOptionsRef.current = skillOptions;
-  /** Palette rows for the prompt text: commands after `/`, skills after `$`. */
-  const paletteFor = (text: string): CommandOption[] =>
-    text.startsWith("/")
-      ? matchOptions(text, commandOptionsRef.current)
-      : text.startsWith("$")
-        ? matchOptions(text, skillOptionsRef.current)
-        : [];
+  const skillNames = useMemo(() => new Set(skillOptions.map((o) => o.label.slice(1))), [skillOptions]);
+  /** Cursor offset in the prompt buffer (the `$` panel completes the token under it). */
+  const cursorOf = (text: string): number => {
+    try {
+      const offset = textareaRef.current?.cursorOffset;
+      return typeof offset === "number" ? Math.min(offset, text.length) : text.length;
+    } catch {
+      return text.length;
+    }
+  };
+  /** Palette rows for the prompt text: commands after a leading `/`, skills for a `$name` being
+   * typed anywhere (matched on the name, so `$pr` lists `$pr-body`, `$pr-fix-loop`, …). */
+  const paletteFor = (text: string, cursor: number = cursorOf(text)): CommandOption[] => {
+    if (text.startsWith("/") && !text.includes(" ")) return matchOptions(text, commandOptionsRef.current);
+    if (text.startsWith("/model ")) return matchOptions(text, commandOptionsRef.current);
+    const at = skillQueryAt(text, cursor);
+    return at ? matchOptions(`$${at.query}`, skillOptionsRef.current) : [];
+  };
+
+  // `$skill` references in the prompt keep a color of their own (known skills only).
+  const highlighterRef = useRef(new SkillHighlighter());
+  useEffect(() => {
+    highlighterRef.current.apply(textareaRef.current, promptText, skillNames);
+  }, [promptText, skillNames, settings.theme]);
 
   const paletteOptions = !paletteDismissed ? paletteFor(promptText) : [];
   const paletteOpen = paletteOptions.length > 0 && inputFocused && overlayState === "none";
@@ -307,6 +349,32 @@ export function App(props: AppProps) {
     textareaRef.current?.gotoBufferEnd();
   };
 
+  /** The buffer changed under the textarea (typing, paste): re-derive the palette state. A
+   * freshly typed `/` or `$` (the token is just the sigil) reopens a dismissed panel. */
+  const syncPromptText = (text: string) => {
+    setPromptText(text);
+    const cursor = cursorOf(text);
+    const skill = skillQueryAt(text, cursor);
+    if (!isPaletteText(text, cursor)) setPaletteDismissed(false);
+    else if ((text.startsWith("/") && text.length <= 1) || (skill && skill.query === "")) {
+      setPaletteDismissed(false);
+      setPaletteIdx(0);
+    }
+  };
+
+  /** Replace the buffer and put the cursor at `cursor` (palette typing mid-phrase). */
+  const editPrompt = (text: string, cursor: number) => {
+    textareaRef.current?.setText(text);
+    try {
+      if (textareaRef.current) textareaRef.current.cursorOffset = cursor;
+    } catch {
+      textareaRef.current?.gotoBufferEnd();
+    }
+    setPromptText(text);
+    if (!isPaletteText(text, cursor)) setPaletteDismissed(false);
+    setPaletteIdx(0);
+  };
+
   const applyPromptText = (text: string) => {
     writePrompt(text);
     setPromptText(text);
@@ -314,10 +382,28 @@ export function App(props: AppProps) {
     setPaletteIdx(0);
   };
 
+  /** Cursor right after an auto-inserted `$skill ` space: punctuation typed next replaces it. */
+  const skillSpaceAt = useRef(-1);
+
   const completeOption = (option: CommandOption) => {
-    writePrompt(option.insert);
-    setPromptText(option.insert);
-    setPaletteDismissed(true);
+    const current = promptRef.current;
+    if (option.label.startsWith("$")) {
+      // replace just the `$query` under the cursor: the rest of the phrase stays as typed
+      const next = insertSkill(current, cursorOf(current), option.label.slice(1));
+      textareaRef.current?.setText(next.text);
+      try {
+        if (textareaRef.current) textareaRef.current.cursorOffset = next.cursor;
+      } catch {
+        textareaRef.current?.gotoBufferEnd();
+      }
+      setPromptText(next.text);
+      skillSpaceAt.current = next.text[next.cursor - 1] === " " ? next.cursor : -1;
+      setPaletteDismissed(false); // typing on continues; a new `$` reopens the panel
+    } else {
+      writePrompt(option.insert);
+      setPromptText(option.insert);
+      setPaletteDismissed(true);
+    }
     setPaletteIdx(0);
     setInputFocused(true);
   };
@@ -372,6 +458,16 @@ export function App(props: AppProps) {
     setEvents((prevEvents) => (startFrom === 0 ? fresh : incoming.length ? [...prevEvents, ...incoming] : prevEvents));
     const nextInfo = parseInfo(traj);
     setInfo((previous) => (sameRunInfo(previous, nextInfo) ? previous : nextInfo));
+    // The agent's journal says when a summary call is running; a compaction message (or a
+    // skipped marker) arriving ends a `/compact` we started.
+    const agentCompacting = typeof traj.info?.compacting === "string" && traj.info.compacting ? traj.info.compacting : null;
+    const finished = fresh.some((event) => event.type === "notice" && event.interruptType === "context");
+    setCompacting((current) => agentCompacting ?? (finished ? null : current === "manual" ? current : null));
+    // `/compact` has no model reply: once its result lands the agent is back waiting at exit
+    if (finished && (compactOnlyRef.current || waitingAtExit(messages))) {
+      compactOnlyRef.current = false;
+      setStatus("done");
+    }
   };
 
   useEffect(() => {
@@ -458,6 +554,7 @@ export function App(props: AppProps) {
     run.exited.then((code) => {
       if (live.current.run !== run) return; // superseded (e.g. `/new`): don't touch the new session
       exitedRef.current = true;
+      setCompacting(null);
       live.current.watch?.stop();
       const traj = readTrajectory(run.session.trajPath);
       if (traj) applySnapshot(traj);
@@ -578,6 +675,41 @@ export function App(props: AppProps) {
     setInputFocused(true);
   };
 
+  /** `/compact`: summarize the conversation now. A live run gets `COMPACT` on its control
+   * channel; otherwise a resumed run compacts the saved history and waits for the next prompt. */
+  const compactNow = () => {
+    const liveRun = live.current.run;
+    itemAppendHint.current = true;
+    if (liveRun && !exitedRef.current) {
+      liveRun.requestCompact();
+      setCompacting("manual");
+      return;
+    }
+    const history = messagesRef.current;
+    if (!sessionIdRef.current || history.length < 3) {
+      setEvents((prev) => [...prev, { type: "notice", text: "nothing to compact yet", interruptType: "context" }]);
+      return;
+    }
+    if (!props.onSend && !runnerSupportsCompactOnly()) {
+      setEvents((prev) => [...prev, { type: "notice", text: "/compact between runs needs the integrated runner (pip install -e ./agent); it still works while a run is live", interruptType: "context" }]);
+      return;
+    }
+    if (props.onSend) {
+      props.onSend("/compact"); // tests observe the command
+      return;
+    }
+    let resumePath: string | undefined;
+    try {
+      resumePath = writeResumeFile(sessionIdRef.current, history);
+    } catch {
+      resumePath = undefined;
+    }
+    if (!resumePath) return;
+    setCompacting("manual");
+    startRun({ task: "", compactOnly: true, model: modelOverride, cwd: props.cwd, resumePath });
+    compactOnlyRef.current = true;
+  };
+
   const send = (text: string) => {
     const trimmed = text.trim();
     setPromptText("");
@@ -604,15 +736,20 @@ export function App(props: AppProps) {
       if (model) return applyModel(model);
       return;
     }
-    // `$skill request`: mini gets the skill's SKILL.md instructions ahead of the request.
-    const skillCall = parseSkillPrompt(trimmed);
-    const task = skillCall ? expandSkillPrompt(trimmed, skillsDir) : trimmed;
-    if (task === null) {
+    if (command === "compact") return compactNow();
+    // `$skill` anywhere: mini gets each referenced skill's SKILL.md ahead of the prompt.
+    const expanded = expandSkills(trimmed, skillsDir);
+    if (expanded.missing.length && !expanded.used.length && /^\$/.test(trimmed)) {
       applyPromptText(trimmed); // keep the prompt so a typo is one edit away
       itemAppendHint.current = true;
-      setEvents((prev) => [...prev, { type: "notice", text: `no skill named $${skillCall?.name} in ${shortPath(skillsDir)}` }]);
+      setEvents((prev) => [...prev, { type: "notice", text: `no skill named $${expanded.missing[0]} in ${shortPath(skillsDir)}` }]);
       return;
     }
+    if (expanded.missing.length && expanded.used.length) {
+      itemAppendHint.current = true;
+      setEvents((prev) => [...prev, { type: "notice", text: `unknown skill${expanded.missing.length > 1 ? "s" : ""} sent as plain text: ${expanded.missing.map((n) => `$${n}`).join(", ")}` }]);
+    }
+    const task = expanded.task;
     echoTask(task);
     if (props.onSend) {
       props.onSend(task);
@@ -621,6 +758,8 @@ export function App(props: AppProps) {
     const liveRun = live.current.run;
     if (liveRun && !exitedRef.current) {
       liveRun.sendUserMessage(task);
+      compactOnlyRef.current = false;
+      setStatus("running"); // e.g. the first prompt after a `/compact` between runs
       setTurnStartedAt(Date.now()); // a new turn: the working timer starts over
       return;
     }
@@ -945,8 +1084,18 @@ export function App(props: AppProps) {
 
     if (inputRefocus.current) {
       if (key.ctrl && key.name === "c") return ctrlCPress();
+      // `$good-code` + `,` → `$good-code,` (the space the completion added is dropped)
+      const glued = skillSpaceAt.current;
+      skillSpaceAt.current = -1;
+      if (glued > 0 && key.sequence && /^[,.;:!?)\]}]$/.test(key.sequence) && !key.ctrl && !key.meta) {
+        const text = promptRef.current;
+        if (cursorOf(text) === glued && text[glued - 1] === " ") {
+          key.preventDefault();
+          return editPrompt(text.slice(0, glued - 1) + key.sequence + text.slice(glued), glued);
+        }
+      }
 
-      if (!dismissedRef.current && isPaletteText(promptRef.current)) {
+      if (!dismissedRef.current && isPaletteText(promptRef.current, cursorOf(promptRef.current))) {
         // `/` and `$` completion: App owns the keys while the popover is open
         const options = paletteFor(promptRef.current);
         if (options.length === 0) return;
@@ -958,9 +1107,16 @@ export function App(props: AppProps) {
           if (option) completeOption(option);
           return;
         }
-        if (key.name === "backspace") return applyPromptText(promptRef.current.slice(0, -1));
+        // The panel keeps the textarea unfocused: edit the buffer at the cursor ourselves
+        // (a `$skill` can sit in the middle of the phrase).
+        const text = promptRef.current;
+        const cursor = cursorOf(text);
+        if (key.name === "backspace") {
+          if (cursor === 0) return;
+          return editPrompt(text.slice(0, cursor - 1) + text.slice(cursor), cursor - 1);
+        }
         const ch = key.sequence;
-        if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ") return applyPromptText(promptRef.current + ch);
+        if (ch && ch.length === 1 && !key.ctrl && !key.meta && ch >= " ") return editPrompt(text.slice(0, cursor) + ch + text.slice(cursor), cursor + 1);
         return;
       }
 
@@ -996,12 +1152,7 @@ export function App(props: AppProps) {
         } catch {
           return; // renderer torn down between the key and the sync
         }
-        setPromptText(text);
-        if (!isPaletteText(text)) setPaletteDismissed(false);
-        else if (text.length <= 1) {
-          setPaletteDismissed(false);
-          setPaletteIdx(0);
-        }
+        syncPromptText(text);
       }, 0);
       return; // the prompt input owns the other keys
     }
@@ -1183,7 +1334,11 @@ export function App(props: AppProps) {
               />
             );
           })}
-          {displayStatus === "running" ? <ThinkingCard text="" seconds={0} mode={settings.outputMode} live /> : null}
+          {compacting ? (
+            <text fg={colors.accent}>Compacting... {compacting === "manual" ? "(summarizing the conversation)" : compacting === "overflow" ? "(the context overflowed)" : "(the context is almost full)"}</text>
+          ) : displayStatus === "running" ? (
+            <ThinkingCard text="" seconds={0} mode={settings.outputMode} live />
+          ) : null}
         </scrollbox>
       {paletteOpen ? (
         <CommandPalette
@@ -1199,14 +1354,7 @@ export function App(props: AppProps) {
         rows={promptRows}
         textareaRef={textareaRef}
         onSend={send}
-        onTextChange={(text) => {
-          setPromptText(text);
-          if (!isPaletteText(text)) setPaletteDismissed(false);
-          else if (text.length <= 1) {
-            setPaletteDismissed(false);
-            setPaletteIdx(0);
-          }
-        }}
+        onTextChange={syncPromptText}
       />
       <StatusLine
         model={(modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL) || "default model"}
@@ -1214,6 +1362,7 @@ export function App(props: AppProps) {
         branch={branch}
         status={displayStatus}
         startedAt={turnStartedAt}
+        compacting={Boolean(compacting)}
       />
       {overlayNode ? <Modal areaHeight={modalAreaHeight}>{overlayNode}</Modal> : null}
     </box>

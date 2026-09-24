@@ -204,7 +204,7 @@ describe("App rendering", () => {
     setup.renderer.destroy();
   });
 
-  test("$ palette lists ~/.claude/skills and sends the skill instructions with the request", async () => {
+  test("$ palette lists the skills folder and sends the skill instructions with the request", async () => {
     const skillsDir = mkdtempSync(join(tmpdir(), "mini-tui-skills-ui-"));
     mkdirSync(join(skillsDir, "good-code"));
     writeFileSync(join(skillsDir, "good-code", "SKILL.md"), "---\ndescription: minimum code needed\n---\nKEEP-IT-SMALL\n");
@@ -234,6 +234,94 @@ describe("App rendering", () => {
 
     setup.renderer.destroy();
     rmSync(skillsDir, { recursive: true, force: true });
+  });
+
+  test("$ anywhere in the phrase opens the skills panel, autocompletes, and sends every skill", async () => {
+    const skillsDir = mkdtempSync(join(tmpdir(), "mini-tui-skills-multi-"));
+    for (const [name, body] of [
+      ["good-code", "GOOD-CODE-RULES"],
+      ["better-ui", "BETTER-UI-RULES"],
+      ["pr-body", "PR-BODY-RULES"],
+      ["pr-fix-loop", "PR-FIX-LOOP-RULES"],
+    ]) {
+      mkdirSync(join(skillsDir, name!));
+      writeFileSync(join(skillsDir, name!, "SKILL.md"), `---\ndescription: ${name} skill\n---\n${body}\n`);
+    }
+    const sent: string[] = [];
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} skillsDir={skillsDir} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
+      { width: 110, height: 30 },
+    );
+    const type = async (text: string) => {
+      await setup.mockInput.typeText(text);
+      await Bun.sleep(20);
+      await setup.renderOnce();
+    };
+    const pick = async () => {
+      await act(async () => {
+        setup.mockInput.pressEnter();
+      });
+      await Bun.sleep(20);
+      await setup.renderOnce();
+    };
+    await setup.renderOnce();
+    await type("I want you to follow ");
+    expect(setup.captureCharFrame()).not.toContain("good-code skill"); // no panel without a $
+    await type("$");
+    const panel = setup.captureCharFrame();
+    for (const name of ["good-code", "better-ui", "pr-body", "pr-fix-loop"]) expect(panel).toContain(`$${name}`); // $ lists all
+    await type("go");
+    expect(setup.captureCharFrame()).toContain("good-code skill");
+    expect(setup.captureCharFrame()).not.toContain("better-ui skill"); // filtered while typing
+    await pick();
+    await type(", then use the $bet");
+    await pick();
+    await type(", $pr-b");
+    await pick();
+    await type(", and finish with $pr-f");
+    await pick();
+    expect(sent).toEqual([]); // Enter in the panel only completes
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("follow $good-code, then use the $better-ui, $pr-body, and finish");
+    // known skills are painted in the skill color (violet on the default theme)
+    const spans = setup.captureSpans().lines.flatMap((line) => line.spans);
+    const skillSpans = spans.filter((span) => /^\$[\w-]+$/.test(span.text));
+    expect(skillSpans.map((span) => span.text)).toEqual(["$good-code", "$better-ui", "$pr-body", "$pr-fix-loop"]);
+    for (const span of skillSpans) expect([...span.fg.buffer].slice(0, 3)).toEqual([167, 139, 250]);
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    expect(sent).toHaveLength(1);
+    const task = sent[0]!;
+    for (const body of ["GOOD-CODE-RULES", "BETTER-UI-RULES", "PR-BODY-RULES", "PR-FIX-LOOP-RULES"]) expect(task).toContain(body);
+    expect(task.trimEnd().endsWith("and finish with $pr-fix-loop")).toBe(true);
+
+    setup.renderer.destroy();
+    rmSync(skillsDir, { recursive: true, force: true });
+  });
+
+  test("/compact is a command (palette entry, never sent to the agent as a prompt)", async () => {
+    const sent: string[] = [];
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} onSend={(text) => sent.push(text)} onQuit={() => {}} />,
+      { width: 100, height: 24 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/comp");
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("summarize the conversation now");
+    await act(async () => {
+      setup.mockInput.pressEnter(); // fills /compact
+    });
+    await act(async () => {
+      setup.mockInput.pressEnter(); // runs it
+    });
+    await Bun.sleep(20);
+    await setup.renderOnce();
+    expect(sent).toEqual([]); // no session yet: nothing to compact
+    expect(setup.captureCharFrame()).toContain("nothing to compact yet");
+    setup.renderer.destroy();
   });
 
   test("settings: /settings opens the output display panel", async () => {

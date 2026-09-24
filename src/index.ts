@@ -5,6 +5,7 @@ import { App } from "./ui/App";
 import { DEFAULT_MODEL } from "./config";
 import { startProfiling } from "./profile";
 import type { TaskSpec } from "./mini/spawn";
+import { syncSkills } from "./skills";
 
 interface CliArgs {
   command: "run" | "view";
@@ -32,6 +33,8 @@ Commands:
 Prompt commands:
   /model              open the model picker (or /model <id>)
   /settings           output display: collapsed / trimmed (2 lines) / expanded
+  /compact            summarize the conversation now (frees context)
+  $skill              reference skills anywhere in a prompt ($ opens the list)
 
 Options:
   -m, --model <model>   Model for run (empty = mini's default)
@@ -75,6 +78,14 @@ const runSpec: TaskSpec | undefined =
     ? { task: args.task, model: args.model || DEFAULT_MODEL || undefined, specs: args.specs, cwd: process.cwd() }
     : undefined;
 
+// Skills new in ~/.claude/skills join mini-tui's own folder (fast: a directory scan).
+let importedSkills: string[] = [];
+try {
+  importedSkills = syncSkills().added;
+} catch {
+  importedSkills = []; // a broken skills folder must never block startup
+}
+
 // ctrl+c belongs to the App: once clears the prompt, twice closes.
 const renderer = await createCliRenderer({ exitOnCtrlC: false });
 
@@ -96,6 +107,7 @@ createRoot(renderer).render(
     viewPath: args.command === "view" ? args.viewPath : undefined,
     follow: args.follow,
     runSpec,
+    importedSkills,
     onQuit: quit,
   }),
 );

@@ -18,6 +18,8 @@ export interface TaskSpec {
   resumePath?: string;
   /** Extra environment for the run (e.g. BYOK provider keys). */
   env?: Record<string, string>;
+  /** `/compact` without a live run: compact `resumePath` and wait (integrated runner only). */
+  compactOnly?: boolean;
 }
 
 export type RunnerKind = "embedded" | "cli" | "argv";
@@ -39,8 +41,14 @@ function buildRunnerArgs(spec: TaskSpec, session: SessionPaths): string[] {
   if (spec.resumePath) args.push("--resume", spec.resumePath);
   if (spec.model) args.push("-m", spec.model);
   for (const configSpec of spec.specs ?? []) args.push("-c", configSpec);
-  args.push("-t", spec.task);
+  if (spec.compactOnly) args.push("--compact-only");
+  else args.push("-t", spec.task);
   return args;
+}
+
+/** Whether the selected runner can take `--compact-only` (the plain `mini` CLI cannot). */
+export function runnerSupportsCompactOnly(): boolean {
+  return selectRunner() !== "cli";
 }
 
 /** Resolve a console script beside a custom `mini` launcher, if one exists. */
@@ -118,6 +126,8 @@ export interface MiniRun {
   switchModel(model: string): void;
   /** Send a follow-up prompt that continues the same conversation (control file). */
   sendUserMessage(text: string): void;
+  /** Ask the running agent to compact its context before the next model call (`/compact`). */
+  requestCompact(): void;
 }
 
 /** Build the isolated environment shared by integrated and fallback runs. */
@@ -195,6 +205,9 @@ export function spawnMini(spec: TaskSpec): MiniRun {
     switchModel(model: string) {
       // The agent reads MSWEA_CONTROL_FILE before each model call (last `MODEL` line wins).
       appendFileSync(session.controlPath, `MODEL ${model}\n`);
+    },
+    requestCompact() {
+      appendFileSync(session.controlPath, "COMPACT\n");
     },
     sendUserMessage(text: string) {
       // JSON-quoted so multi-line prompts survive the line-based protocol.
