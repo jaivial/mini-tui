@@ -3,9 +3,11 @@
 A pretty terminal UI for [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent), built with
 [OpenTUI](https://opentui.com) (React + Bun).
 
-It only **parses and reformats** what `mini` already produces — tool calls (bash commands) and their
-outputs — into cards, badges and banners. The harness runs completely untouched: mini-tui spawns
-`mini` as a subprocess and reads the trajectory JSON it rewrites after every step.
+It **integrates the bundled mini-swe-agent directly** for normal yolo runs: the TUI launches the
+agent's lightweight `mini-swe-agent-tui` entry point, owns the terminal UI, and reads the same
+append-only trajectory journal/control file as before. The public `mini` CLI remains supported and
+is used automatically for older or custom agents. The harness still produces the same messages and
+artifacts, so the integration is observable and reversible.
 
 ![mini-tui running a task](docs/screenshots/run.png)
 
@@ -43,9 +45,10 @@ outputs — into cards, badges and banners. The harness runs completely untouche
   you send it. Pick one in the **settings panel** (`/settings`); it persists across runs. `e` still
   expands or collapses any block individually. Expanded output is capped at 500 lines with a
   `... N lines hidden ...` marker.
-- **Flat memory, always.** The transcript is mounted in a sliding window (120 blocks; `g` pages
-  older ones in, `G` returns to the live bottom) and every text block is clipped, so an all-day
-  run keeps a flat footprint instead of growing with the conversation.
+- **Flat memory, always.** The transcript is mounted in a viewport-sized sliding window
+  (two viewports, 24–120 items depending on terminal height; `g` pages older ones in, `G` returns
+  to the live bottom) and every text block is clipped, so an all-day run keeps a flat footprint
+  instead of growing with the conversation.
 - **Six themes** — `shadcn` (zinc, default) plus `nord`, `dracula`, `gruvbox`, `tokyo night` and
   `catppuccin`. Also in `/settings` (`Tab` switches group): moving the selection repaints the
   whole UI live and the choice persists.
@@ -127,7 +130,7 @@ the whole UI live and the choice persists.
 ```bash
 git clone https://github.com/jaivial/mini-tui && cd mini-tui
 bun install
-python3 -m pip install -e ./agent   # the bundled mini-swe-agent → `mini` on your PATH
+python3 -m pip install -e ./agent   # bundled mini-swe-agent → `mini` + `mini-swe-agent-tui`
 
 # optional: make `mini-tui` available everywhere
 cp bin/mini-tui ~/.local/bin/mini-tui && chmod +x ~/.local/bin/mini-tui
@@ -175,13 +178,13 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
 | `e` | expand / collapse the focused output block |
 | `PgUp` / `PgDn` | scroll half a screen · mouse wheel scrolls 3–5× (burst-accelerated) |
-| `g` / `G` | load older steps (pages of 120) / back to the live bottom |
+| `g` / `G` | load older steps (viewport-sized pages) / back to the live bottom |
 
 ## How it works
 
 ```
 mini-tui run
-  ├─ src/mini/spawn.ts   spawns: mini -y --exit-immediately -o <session>/traj.json -m <model> -t <task>
+  ├─ src/mini/spawn.ts   starts `mini-swe-agent-tui` (or falls back to `mini`)
   │                      raw stdout/stderr → <session>/mini.log
   ├─ src/traj/watch.ts   polls <session>/traj.json every 200 ms (rewritten by the harness per step)
   ├─ src/traj/parse.ts   pure parser: messages → RunEvent[] (tools, outputs, notices, exit)
@@ -206,6 +209,10 @@ mini-tui appends `MESSAGE <text>` / `MODEL <id>` lines to the run's control file
 `git subtree --squash`) together with everything mini-tui's nicest behaviors need, so
 `pip install -e ./agent` is one install that carries:
 
+0. **Integrated runner** — `mini-swe-agent-tui` shares the public CLI's config merge, model loop,
+   journal, resume format, and `MSWEA_CONTROL_FILE` protocol, but skips Typer, Rich, prompt
+   interaction, and the interactive-agent module on the normal yolo path. `mini-tui` probes for
+   it once; `MINITUI_EMBEDDED_AGENT=0` forces the compatible `mini` CLI fallback.
 1. **Plain-text final answer** — a response with text and no tool calls is the submission
    (no more `cat > /tmp/final_answer.md` round-trips).
 2. **Control file** — `MODEL <id>` switches the running agent's model from its next step;
@@ -218,6 +225,8 @@ mini-tui appends `MESSAGE <text>` / `MODEL <id>` lines to the run's control file
 5. **Append-only trajectory journal** — `<traj>.jsonl` gets one line per message (O(1) per
    step, never torn) and the full `traj.json` export is compact, atomic and throttled;
    mini-tui reads the journal and parses only the new bytes per tick.
+6. **Slim default install** — the direct HTTP clients do not need the `openai` SDK; benchmark
+   datasets live behind the `benchmarks` extra (`mini-swe-agent[full]` includes it).
 
 Upstream sync: `git subtree pull --prefix=agent --squash <upstream> <ref>`. The original patch
 descriptions (kept for upstreaming) live in
@@ -232,18 +241,30 @@ Trajectory persistence, measured on a synthetic 300-step run (the agent saves af
 | Bytes written | 235.4 MB | 4.3 MB (**55× less**) |
 | Persistence time | 0.99 s | 0.12 s (**8× faster**) |
 
-The TUI itself is bounded and lean: the transcript mounts in a sliding window of 120 blocks, so
-memory stays flat no matter how long a run gets (this fixed a 5+ GB growth on long runs in
-0.2.0). The 0.3.0 render pass then cut the measured footprint by ~30 % across the board — on the
-standard 400-step repro: 18.6 s → 13.1 s CPU and peak RSS 323 → 228 MB. In 0.5.0 blocks got
-3.6× leaner (plain text unless the text really has markdown — measured 0.33 → 0.09 MB per
-block): the same repro now settles at 205 MB, and a plain-prose run at 152 MB. Agent-side,
-`prompt_toolkit` loads lazily (35 → 20 MB import). In 0.7.0 the local/subscription gateways
-(`cliproxy/`, `rosetta/`, `xiaomi/`) talk to their OpenAI-compatible endpoint directly instead of
-through `litellm`: a real claude-opus-5-5 run peaks at **40 MB instead of 214 MB** and answers
-~2.3 s sooner. Since 0.9.0 **every** provider (DeepSeek, OpenAI, Anthropic, OpenCode Go
-included) talks to its base URL directly and litellm is an optional extra
-([docs/PLAN-litellm-detach.md](docs/PLAN-litellm-detach.md)).
+The TUI itself is bounded and lean: the transcript mounts a viewport-sized sliding window
+(two viewports, 24–120 items depending on terminal height), so memory stays flat no matter how long
+a run gets; `g` pages older items in and `G` returns to the live bottom. The 0.3.0 render pass then
+cut the measured footprint by ~30 % across the board — on the standard 400-step repro: 18.6 s →
+13.1 s CPU and peak RSS 323 → 228 MB. In 0.5.0 blocks got 3.6× leaner (plain text unless the
+text really has markdown — measured 0.33 → 0.09 MB per block): the same repro now settles at
+205 MB, and a plain-prose run at 152 MB. Agent-side, `prompt_toolkit` loads lazily (35 → 20 MB
+import). In 0.7.0 the local/subscription gateways (`cliproxy/`, `rosetta/`, `xiaomi/`) talk to
+their OpenAI-compatible endpoint directly instead of through `litellm`: a real claude-opus-5-5 run
+peaks at **40 MB instead of 214 MB** and answers ~2.3 s sooner. Since 0.9.0 every provider
+(DeepSeek, OpenAI, Anthropic, OpenCode Go included) talks to its base URL directly and litellm is
+an optional extra ([docs/PLAN-litellm-detach.md](docs/PLAN-litellm-detach.md)).
+
+**0.13.0 integrated-runner benchmark** (`scripts/benchmark-runtime.py`, seven fresh Python 3.10
+processes, deterministic one-step run, no network): public `mini` **~205–212 ms / ~39 MiB peak RSS**;
+bundled `mini-swe-agent-tui` **~160–170 ms / ~34 MiB** — about **20% faster and roughly 5 MiB less resident
+memory**. The measurement excludes the TUI process itself; it covers the agent startup/run path
+that the TUI launches. Run `python3 scripts/benchmark-runtime.py --runs 7` to reproduce.
+
+The TUI ingestion path has its own terminal-free benchmark: `bun run benchmark:tui -- 5000`
+appends 10,002 realistic trajectory messages and measures only the incremental parser (about
+**11–12 ms** on the current machine). The randomized item-index tests cover tool/observation pairing
+fallbacks and prefix replacement, so long-run CPU growth is measurable without opening a TTY.
+
 See [docs/PLAN-ram-reduction.md](docs/PLAN-ram-reduction.md) for the plan and numbers.
 
 ## Development
@@ -252,16 +273,17 @@ See [docs/PLAN-ram-reduction.md](docs/PLAN-ram-reduction.md) for the plan and nu
 bun test          # parser fixtures + in-memory OpenTUI render tests (no TTY, no network)
 bun run typecheck
 bun run screenshots   # regenerates docs/screenshots/*.png from scripted scenes
+bun run benchmark:tui -- 5000   # terminal-free long-run parser + item-index benchmark
 ```
 
 ## Notes and known limits
 
-- Yolo only: runs use `mini -y --exit-immediately` — the UI visualizes and forwards prompts, it
-  never confirms or rejects commands.
+- Yolo only: runs use the integrated agent entry (or the compatible `mini -y --exit-immediately`
+  fallback) — the UI visualizes and forwards prompts, it never confirms or rejects commands.
 - No token streaming: the trajectory updates once per step, so the spinner covers model calls and
   command execution. Follow-ups sent mid-step are picked up at the next step.
 - After a submission the run stays open ("type to continue") while the TUI is attached; quitting
   the TUI ends it.
 - The code highlighter degrades to plain text when a tree-sitter grammar is unavailable.
-- If the TUI is killed hard, the `mini` child may survive: check `<session>/pid` and
-  `pgrep -af "mini -y --exit-immediately"`.
+- If the TUI is killed hard, the agent child may survive: check `<session>/pid` and
+  `pgrep -af "minisweagent.run.tui|mini -y --exit-immediately"`.

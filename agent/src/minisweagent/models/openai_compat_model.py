@@ -81,7 +81,11 @@ class OpenaiCompatModelConfig(BaseModel):
     model_kwargs: dict[str, Any] = {}
     """Extra request body fields (e.g. `temperature`, `max_tokens`, `reasoning_effort`)."""
     request_timeout: float = float(os.getenv("MSWEA_MODEL_TIMEOUT", "600"))
-    set_cache_control: Literal["default_end"] | None = None
+    set_cache_control: Literal["default_end", "rolling"] | None = None
+    cache_ttl: str | None = os.getenv("MSWEA_CACHE_TTL") or None
+    """TTL forwarded in cache markers (e.g. "1h" for Anthropic's extended cache)."""
+    context_window: int = 0
+    """Context window in tokens for automatic compaction (0 = look it up by model id)."""
     cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
     """Gateways report no per-token prices: the cost of a call is always 0.0."""
     format_error_template: str = "{{ error }}"
@@ -192,7 +196,7 @@ class OpenaiCompatModel:
     def _prepare_messages_for_api(self, messages: list[dict]) -> list[dict]:
         prepared = [{k: msg[k] for k in _WIRE_KEYS if k in msg} for msg in messages]
         prepared = _reorder_anthropic_thinking_blocks(prepared)
-        return set_cache_control(prepared, mode=self.config.set_cache_control)
+        return set_cache_control(prepared, mode=self.config.set_cache_control, ttl=self.config.cache_ttl)
 
     def _wire_model_name(self) -> str:
         """The id sent upstream: `config.model_name` keeps its user-facing form (routing

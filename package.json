@@ -1,13 +1,14 @@
 {
   "name": "mini-tui",
-  "version": "0.12.6",
+  "version": "0.14.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "bun src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "screenshots": "MINITUI_CAPTURE=1 bun test scripts/capture-scenes.test.tsx && python3 scripts/render-screenshots.py"
+    "screenshots": "MINITUI_CAPTURE=1 bun test scripts/capture-scenes.test.tsx && python3 scripts/render-screenshots.py",
+    "benchmark:tui": "bun scripts/benchmark-tui-parser.ts"
   },
   "dependencies": {
     "@opentui/core": "^0.5.11",

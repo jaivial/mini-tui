@@ -16,6 +16,21 @@ from pydantic import BaseModel
 from minisweagent import Environment, Model, __version__
 from minisweagent.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded, Submitted, TimeExceeded
 from minisweagent.utils.serialize import recursive_merge
+from minisweagent.agents.utils import compaction as cmp
+
+
+class CompactionConfig(BaseModel):
+    """Automatic context compaction (see `agents/utils/compaction.py`)."""
+
+    enabled: bool = os.getenv("MSWEA_AUTO_COMPACT", "1") != "0"
+    threshold: float = float(os.getenv("MSWEA_COMPACT_THRESHOLD", "0.8"))
+    """Compact once the estimated prompt reaches this fraction of the context window."""
+    max_context_tokens: int = int(os.getenv("MSWEA_COMPACT_MAX_TOKENS", "0"))
+    """Compact at this many prompt tokens even if the window is larger (0 = window only)."""
+    reserve_tokens: int = 32000
+    """Headroom always kept below the window for the reply (and the summary)."""
+    keep_recent_tokens: int = 0
+    """Newest messages kept verbatim after a compaction (0 = 10 % of the trigger, max 60k)."""
 
 
 class AgentConfig(BaseModel):
@@ -35,6 +50,7 @@ class AgentConfig(BaseModel):
     """Exit after this many format errors in a row (0 = no limit)."""
     output_path: Path | None = None
     """Save the trajectory to this path."""
+    compaction: CompactionConfig = CompactionConfig()
 
 
 class DefaultAgent:
@@ -288,12 +304,155 @@ class DefaultAgent:
             )
         self.n_calls += 1
         started = time.time()
-        message = self.model.query(self.messages)
+        message = self._query_model()
         self.cost += message.get("extra", {}).get("cost", 0.0)
         # How long the model spent on this reply (chain-of-thought included): the TUI's
         # collapsed thinking block reads "Thought for {n} seconds" from it.
         message.setdefault("extra", {})["thinking_seconds"] = round(time.time() - started, 1)
         self.add_messages(message)
+        return message
+
+    # --- context compaction ---------------------------------------------------------------
+
+    def _context_indices(self) -> list[int]:
+        """Indices of `self.messages` the model sees: all of them until the first compaction,
+        then head + latest compaction summary + its verbatim tail + everything after."""
+        last = next((i for i in range(len(self.messages) - 1, -1, -1) if "compaction" in self.messages[i].get("extra", {})), None)
+        if last is None:
+            return list(range(len(self.messages)))
+        info = self.messages[last]["extra"]["compaction"]
+        head = info["head"]
+        start = max(last - info["tail_messages"], head)
+        tail = [i for i in range(start, len(self.messages)) if i != last and "compaction" not in self.messages[i].get("extra", {})]
+        return [*range(head), last, *tail]
+
+    def context_messages(self) -> list[dict]:
+        """The (possibly compacted) conversation sent to the model."""
+        return [self.messages[i] for i in self._context_indices() if self.messages[i].get("role") != "exit"]
+
+    def _tokens_per_char(self, view: list[dict]) -> float:
+        """Tokens per character of this conversation, from the provider's reported usage.
+
+        Each reply records the size of the prompt that produced it (`extra.context_chars`), so
+        the ratio stays exact after compactions and across `--resume`. Older replies without it
+        only count while no compaction happened (their prompt was exactly `view[:j]`)."""
+        if getattr(self, "_calibration", None):
+            return self._calibration
+        compacted = any("compaction" in m.get("extra", {}) for m in view)
+        for j in range(len(view) - 1, 0, -1):
+            extra = view[j].get("extra", {})
+            if view[j].get("role") != "assistant" or not (tokens := cmp.prompt_tokens(view[j])):
+                continue
+            if chars := extra.get("context_chars"):
+                return tokens / chars
+            if not compacted:
+                return tokens / max(cmp.messages_chars(view[:j]), 1)
+        return 1 / cmp.DEFAULT_CHARS_PER_TOKEN
+
+    def _compaction_trigger(self) -> int:
+        cfg, window = self.config.compaction, cmp.context_window_for(self.model)
+        trigger = min(int(window * cfg.threshold), window - cfg.reserve_tokens)
+        if cfg.max_context_tokens:
+            trigger = min(trigger, cfg.max_context_tokens)
+        return max(trigger, 4000)
+
+    def _maybe_compact(self) -> None:
+        if not self.config.compaction.enabled:
+            return
+        view = self.context_messages()
+        estimate = int(cmp.messages_chars(view) * self._tokens_per_char(view))
+        if estimate >= self._compaction_trigger():
+            self.compact(reason="auto", estimated_tokens=estimate)
+
+    def compact(self, *, reason: str = "manual", estimated_tokens: int = 0, overflow: bool = False) -> dict | None:
+        """Summarize the older part of the context into one appended `user` message.
+
+        The summarizer request is the current context plus one instruction, so it reuses the
+        prompt cache of the previous step; the head (system + task) stays byte-identical.
+        """
+        indices = self._context_indices()
+        view = [self.messages[i] for i in indices]
+        tpc = self._tokens_per_char(view)
+        trigger = self._compaction_trigger()
+        head = cmp.head_length(self.messages, max_chars=int(trigger * 0.1 / tpc))
+        lower = head + (1 if indices[head:head + 1] and "compaction" in self.messages[indices[head]].get("extra", {}) else 0)
+        keep = self.config.compaction.keep_recent_tokens or min(60000, int(trigger * 0.1))
+        tail_pos = cmp.tail_start(view, lower, int(keep / tpc))
+        if tail_pos <= lower and not overflow:
+            return None  # nothing old enough to summarize
+        request = view
+        if overflow or estimated_tokens > trigger + self.config.compaction.reserve_tokens // 2:
+            request = cmp.shrink(view, lower, int(trigger / tpc))
+        request = [*request, {"role": "user", "content": cmp.SUMMARY_PROMPT}]
+        summary_message, summary = None, ""
+        for attempt in range(2):
+            try:
+                summary_message = self.model.query(request)
+                summary = cmp.text_of(summary_message.get("content")).strip()
+                break
+            except Exception as e:
+                if getattr(e, "messages", None):  # FormatError: a tool call instead of text
+                    summary = cmp.text_of(e.messages[0].get("content")).strip()
+                    break
+                if attempt or not cmp.is_context_overflow(e):
+                    self.logger.warning("compaction summary failed: %s", e)
+                    break
+                cmp.learn_window(self.model, e)
+                request = [*cmp.shrink(request[:-1], lower, int(trigger / tpc / 2)), request[-1]]
+        if summary_message:
+            self.cost += summary_message.get("extra", {}).get("cost", 0.0)
+        if len(summary) < 200:
+            summary = cmp.fallback_summary(view[lower:tail_pos])
+        requests = cmp.cap_requests(cmp.user_requests(view[head:tail_pos]))
+        prompt, read, write = cmp.cache_usage(summary_message or {})
+        tail_start = indices[tail_pos] if tail_pos < len(indices) else len(self.messages)
+        # Relative to the summary's own index: `--resume` drops exit markers, which shifts
+        # absolute positions but never the messages between the tail and the summary.
+        tail_messages = len(self.messages) - tail_start
+        message = {
+            "role": "user",
+            "content": cmp.render_compaction(summary, requests),
+            "extra": {
+                "interrupt_type": "Compaction",
+                "compaction": {
+                    "head": head,
+                    "tail_messages": tail_messages,
+                    "reason": reason,
+                    "tokens_before": estimated_tokens or int(cmp.messages_chars(view) * tpc),
+                    "trigger_tokens": trigger,
+                    "context_window": cmp.context_window_for(self.model),
+                    "summarized_messages": max(tail_pos - lower, 0),
+                    "summary_usage": {"prompt": prompt, "cache_read": read, "cache_write": write},
+                    "user_messages": requests,
+                },
+                "timestamp": time.time(),
+            },
+        }
+        self.add_messages(message)
+        self.save(self.config.output_path, force=False)
+        return message
+
+    def _query_model(self) -> dict:
+        """Query with the compacted context; an overflow the estimate missed compacts and retries."""
+        self._maybe_compact()
+        view = self.context_messages()
+        try:
+            message = self.model.query(view)
+        except Exception as e:
+            if not self.config.compaction.enabled or not cmp.is_context_overflow(e):
+                raise
+            cmp.learn_window(self.model, e)
+            if self.compact(reason="overflow", overflow=True) is None:
+                raise
+            view = self.context_messages()
+            budget = int(self._compaction_trigger() / self._tokens_per_char(view))
+            if cmp.messages_chars(view) > budget:  # e.g. one tool output larger than the window
+                view = cmp.shrink(view, cmp.head_length(view, budget // 10) + 1, budget)
+            message = self.model.query(view)
+        chars = cmp.messages_chars(view)
+        message.setdefault("extra", {})["context_chars"] = chars
+        if tokens := cmp.prompt_tokens(message):
+            self._calibration = tokens / max(chars, 1)
         return message
 
     def execute_actions(self, message: dict) -> list[dict]:

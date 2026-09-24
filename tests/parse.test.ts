@@ -230,3 +230,27 @@ describe("chain-of-thought", () => {
     expect(events[0]).toEqual({ type: "thinking", text: "t", seconds: 0 });
   });
 });
+
+describe("context compaction", () => {
+  test("a compaction message renders as a one-line context notice", () => {
+    const events = messagesToEvents([
+      { role: "system", content: "sys" },
+      { role: "user", content: "Please solve this issue: hi" },
+      {
+        role: "user",
+        content: "[Context compacted: ...]\n<summary>long</summary>",
+        extra: {
+          interrupt_type: "Compaction",
+          compaction: { reason: "auto", tokens_before: 812000, context_window: 1000000, summarized_messages: 640 },
+        },
+      },
+    ]);
+    const notice = events.find((e) => e.type === "notice");
+    expect(notice).toEqual({
+      type: "notice",
+      interruptType: "context",
+      text: "compacted (auto): 812k tokens of 1000k window, 640 messages summarized",
+    });
+    expect(events.filter((e) => e.type === "task")).toHaveLength(1);
+  });
+});

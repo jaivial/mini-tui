@@ -271,3 +271,57 @@ providers:
 - The per-provider quirks carry over unchanged: DeepSeek's id aliases and error rewrites,
   OpenAI's temperature fallback and `gpt-6*` → Responses routing, OpenCode Go's per-id
   endpoint catalog and `x-opencode-session` header.
+
+
+## 7. Integrated mini-tui runner (0.13.0)
+
+Added `minisweagent.run.tui` and the `mini-swe-agent-tui` console entry point. It is deliberately
+narrow: it accepts the yolo flags emitted by mini-tui, shares `run/config.py` with the public
+Typer CLI, constructs the same agent/environment/model objects, and delegates trajectory writes
+and control-channel behavior to the existing agent loop. Unlike the public command, it does not
+import Typer, Rich, prompt-toolkit, or the interactive agent on its normal path. A missing entry
+point is a capability-probe failure in `src/mini/spawn.ts`, which falls back to `mini`; the
+protocol and artifacts do not change.
+
+The runner also moves the benchmark-only `datasets` dependency behind the `benchmarks` extra and
+removes the unused default `openai` SDK. The direct provider clients use standard-library HTTP
+clients instead. `agent/setup.py` is a legacy-pip compatibility shim; canonical metadata remains
+in `agent/pyproject.toml`.
+
+## 8. Automatic context compaction and prompt-cache breakpoints
+
+Long sessions used to die with `HTTP 400 ... prompt is too long: 1000243 tokens > 1000000
+maximum`: every message was sent on every call and nothing bounded it.
+
+**Compaction** (`agents/utils/compaction.py`, `DefaultAgent._query_model/compact`):
+
+- The trajectory stays append-only. A compaction *appends* a `user` message with
+  `extra.interrupt_type = "Compaction"` and `extra.compaction = {head, tail_messages, reason,
+  tokens_before, context_window, summarized_messages, user_messages, summary_usage}`.
+- The model is sent a view: head (system + first task message) + latest summary + the verbatim
+  tail it kept + everything after. `--resume` rebuilds the same view (positions are relative).
+- Trigger: `min(window * threshold, window - reserve_tokens)` estimated prompt tokens. The
+  estimate is chars × a tokens/char ratio calibrated from the provider's `usage` of the
+  previous call (`extra.context_chars` records the prompt size behind each reply).
+- The summarizer call is the current view + one instruction, so it hits the prompt cache of
+  the previous step. It keeps goals, every user request (also copied verbatim, capped),
+  facts, files, errors, progress, and the next step. It falls back to a deterministic summary
+  if the call fails.
+- Safety net: a context-overflow error compacts and retries once. The real limit parsed from
+  the error is saved in `<global config>/context_windows.json`, so later runs compact in time.
+  A single output bigger than the window is elided in the request only.
+- Windows: learned > `model.context_window` > OpenCode Go metadata > known ids (Claude 4.6+/5
+  = 1M, older Claude 200k, GPT-5 400k, ...).
+
+Knobs (`agent.compaction` in the config, or env): `enabled` (`MSWEA_AUTO_COMPACT=0` turns it
+off), `threshold` (`MSWEA_COMPACT_THRESHOLD`, 0.8), `max_context_tokens`
+(`MSWEA_COMPACT_MAX_TOKENS`, compact earlier than the window, which is cheaper and faster),
+`reserve_tokens` (32000), `keep_recent_tokens` (0 = 10 % of the trigger, max 60k).
+
+**Cache** (`models/utils/cache_control.py`, `set_cache_control: rolling`): at most 4
+breakpoints on the head end, the latest compaction summary, the end of the previous step,
+and the last message. The head survives compactions, and the previous-step mark makes the
+read independent of Anthropic's 20-block lookback (turns with many tool results). Rolling
+is the default for Claude on cli-proxy (which forwards `cache_control`, verified live) and for
+Anthropic direct. Rosetta keeps no markers. `MSWEA_CACHE_TTL=1h` forwards a TTL.
+The TUI shows compactions as `→ context · compacted (auto): 812k tokens of 1000k window, ...`.

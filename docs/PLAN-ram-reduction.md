@@ -1,6 +1,6 @@
 # Plan: bajar el uso de RAM por sesión (TUI + mini)
 
-Estado: **fases 0–2 ejecutadas el 2026-09-22** (resultados en §7); fase 3 pendiente de decisión.
+Estado: **fases 0–3 ejecutadas** (resultados en §7–§9; 0.13.1 añade la ingestión TUI O(delta)).
 Basado en medidas sobre sesiones reales y microbenchmarks reproducibles.
 
 ## 1. Punto de partida (medido)
@@ -49,7 +49,7 @@ Microbenchmarks de importación (procesos frescos, `resource.ru_maxrss`):
 
 | # | Dónde | Palanca | Ahorro estimado | Esfuerzo | Riesgo |
 | --- | --- | --- | --- | --- | --- |
-| B1 | `src/ui/App.tsx` (`MOUNTED_ITEMS`) | Bajar la ventana 120 → 80, o mejor: **presupuesto por filas en vez de por bloques** (se adapta al ancho del terminal) | −20 a −30 MB | 20 min (constante) / 1 h (presupuesto) | nulo (ya hay hint `g` para más historia) |
+| B1 | `src/ui/App.tsx` (`mountedItemLimit`) | Presupuesto por filas/viewport en vez de 120 bloques fijos (24–120 items) | −20 a −30 MB | implementado en 0.13.0 | nulo (se conserva `g` para historia) |
 | B2 | `src/ui/components/AssistantCard.tsx`, `StepCard.tsx` | **Markdown/`code` solo cuando aporta**: bloques colapsados y mensajes cortos en `<text>` plano; el renderable markdown + tree-sitter (coste fijo ~0.5 MB/bloque) solo al expandir o en pantalla | −30 a −80 MB | 2–3 h | medio (el look de los colapsados cambia; mantener la línea `1 tool call`) |
 | B3 | `src/ui/App.tsx` + ScrollBox | **Virtualización real por viewport** (~20–30 bloques montados según posición de scroll) | −50 a −80 MB | medio día | medio (opentui no expone posición de scroll de forma cómoda; requiere heurística con `scrollBy`) |
 | B4 | `src/ui/theme.ts` | Modo `low-memory` en `/settings`: desactiva resaltado tree-sitter (ni worker ni wasm) | −20 a −40 MB | 1–2 h | bajo |
@@ -71,7 +71,8 @@ Microbenchmarks de importación (procesos frescos, `resource.ru_maxrss`):
 3. **Fase 2 — los dos grandes** (3–4 h): A2 (imports perezosos por proveedor) y B2 (markdown
    selectivo). Validación: suite de agente (318 tests) + suite TUI (63 tests) + smoke de run real
    con cada proveedor configurado (xiaomi y litellm como mínimo).
-4. **Fase 3 — opcional/estructural** (según lo que midan las fases 1–2): B3, B4, A6, C2.
+4. **Fase 3 — estructural** (ejecutada en 0.13.0): A6, B3 y C2; el runner embebido y el
+   presupuesto por viewport evitan la carga del CLI y recortan la ventana de montaje.
 
 ## 5. Criterios de aceptación
 
@@ -133,3 +134,54 @@ Re-medición sobre 0.6.1 con sesiones reales (claude-opus-5-5 vía cliproxy):
   a B1 (presupuesto por filas) si no compensa.
 - **A4**: recortar extras podría romper consumidores que lean `raw_output` → el journal conserva
   los mensajes completos; recortar solo la copia en memoria.
+
+## 9. Integración estructural y TUI ligera (2026-09-23, 0.13.0)
+
+La fase 3 se cerró con dos cambios que no alteran el protocolo de trayectoria:
+
+- **Runner embebido**: `agent/src/minisweagent/run/tui.py` comparte `build_run_config()` con el
+  CLI público, pero evita Typer, Rich, `prompt_toolkit` y el agente interactivo en yolo. La TUI
+  usa el entry point `mini-swe-agent-tui` cuando existe y cae a `mini` para instalaciones antiguas
+  o launchers personalizados. Cada run recibe un `MSWEA_CONTROL_FILE` nuevo, por lo que nunca se
+  conecta al canal de una sesión anterior.
+- **Presupuesto de montaje adaptativo**: la TUI monta aproximadamente dos viewports (mínimo 24,
+  máximo 120 items) en vez de 120 items fijos. `g`/`G` conservan la paginación de historia.
+
+Benchmark reproducible, siete procesos Python 3.10 frescos, modelo determinista y sin red
+(`python3 scripts/benchmark-runtime.py --runs 7`):
+
+| Camino | Mediana de arranque/run (rango de 7 muestras) | RSS pico |
+| --- | ---: | ---: |
+| `mini` público | ~205–212 ms | ~39 MiB |
+| runner integrado | ~160–170 ms | ~34 MiB |
+
+Resultado: aproximadamente **20 % menos tiempo** y **~5 MiB menos RSS** en el proceso del agente.
+La cifra no incluye el proceso Bun/OpenTUI; separa el coste que puede atribuirse al boundary
+Python. El transcript sigue siendo plano porque el presupuesto está acotado por viewport.
+
+También se movieron `datasets` al extra `benchmarks` y se retiró el SDK `openai` de las
+dependencias por defecto; los clientes HTTP directos no lo necesitan. `mini-swe-agent[full]`
+conserva el conjunto completo.
+
+
+### 0.13.1: TUI incremental ingestion
+
+The second performance pass removed a hidden O(n) prefix scan from the live trajectory parser.
+`messagesToEvents` now accepts a small retained `ParseState`; `App` passes it across append-only
+journal snapshots and reuses its slim message array. The pure API keeps its old `startIndex`
+behavior when no state is supplied. Reproduce with:
+
+```bash
+bun run benchmark:tui -- 5000
+```
+
+On the release machine this takes ~11–12 ms for 10,002 messages. This is a CPU/GC improvement for
+long runs; it does not change journal bytes, rendered event shapes, or resume semantics.
+
+
+### 0.13.2: incremental transcript item index
+
+The renderer's tool-call/observation pairing index now has an explicit append-only cache. Live
+journal updates extend it in O(delta); resume, `/new`, static scenes, and unusual out-of-order
+arrivals use the original full rebuild. `tests/items.test.ts` fuzzes append/replacement sequences
+against that full builder before the cache is trusted.
