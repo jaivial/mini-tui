@@ -20,6 +20,8 @@ const EXPANDED = { outputMode: "expanded" as const };
 // Tests never read the user's saved BYOK connections (the palette/list contents would
 // depend on whatever is in ~/.config/mini-tui/providers.json).
 process.env.MINITUI_CONNECTIONS_PATH = "/dev/null/mini-tui-no-connections.json";
+// ...nor read/write the user's remembered last model (writes to /dev/null/... just fail quietly).
+process.env.MINITUI_LAST_MODEL_PATH = "/dev/null/mini-tui-no-last-model.json";
 
 function loadFixture(name: string): Trajectory {
   const path = fileURLToPath(new URL(`./fixtures/${name}.json`, import.meta.url));

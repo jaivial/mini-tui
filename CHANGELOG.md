@@ -2,6 +2,35 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.16.0 — 2026-09-24
+
+New terminals start on your last model, `/resume` previews sessions, and agent commits carry your identity.
+
+### Added
+
+- **New terminals start on the model you picked last.** Every `/model` pick (in any session) is
+  remembered in `~/.config/mini-tui/last-model.json`, and a freshly launched mini-tui uses it as
+  its default. It is read only at startup, so TUIs that are already open keep their own model.
+  Precedence: `-m` > `$MINITUI_MODEL` > last picked model > mini's default.
+  (`MINITUI_LAST_MODEL_PATH` overrides the file location.)
+
+- **Preview a session from `/resume`.** `→` (or clicking `[→ preview]` on the selected row) shows
+  that session's transcript read-only in the same panel — tasks, replies, tool calls with their
+  return codes and a peek at outputs — so you can tell what it was about before opening it.
+  Scroll with `↑`/`↓`, `PgUp`/`PgDn`, `g`/`G`; `←`/`Esc` back to the list; `Enter` opens it.
+
+### Fixed
+
+- **The error console can be closed.** When something threw mid-conversation, OpenTUI popped its
+  debug console over the transcript and offered no key to dismiss it. `esc` now closes it (the key
+  is consumed, so it does not also interrupt the run), `ctrl+\` toggles it, and its title says so.
+
+- **Agent commits are authored by you.** Runs export `GIT_AUTHOR_*` / `GIT_COMMITTER_*` from the
+  account logged into `gh` (name + GitHub noreply email), falling back to `git config --global
+  user.*`. These override any `git -c user.name=claude ...` the model improvises, so commits no
+  longer show up on GitHub as "claude" or an unknown user. Explicit `GIT_AUTHOR_*` /
+  `GIT_COMMITTER_*` are respected; `MINITUI_GIT_IDENTITY=0` disables it.
+
 ## 0.15.0 — 2026-09-24
 
 `/compact`, inline skills and a mini-tui skills folder synced from Claude Code.

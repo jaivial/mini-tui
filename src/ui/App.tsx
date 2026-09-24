@@ -58,6 +58,7 @@ import { PromptHistory } from "../history";
 import { SKILLS_DIR, expandSkills, insertSkill, listSkills, skillQueryAt } from "../skills";
 import { SkillHighlighter } from "./skillHighlight";
 import { loadSettings, saveSettings, type Settings } from "../settings";
+import { saveLastModel } from "../lastModel";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 
 const COMMAND_OPTIONS = buildOptions(MODELS);
@@ -108,6 +109,8 @@ export interface AppProps {
   onSend?: (text: string) => void;
   /** Skills folder for `$skill` prompts (tests); defaults to `~/.config/mini-tui/skills`. */
   skillsDir?: string;
+  /** Model this launch starts with (-m / $MINITUI_MODEL / the last model picked anywhere). */
+  initialModel?: string;
   /** Skills the startup sync just imported from `~/.claude/skills` (shown once as a notice). */
   importedSkills?: string[];
   /** Override clipboard writes (tests); defaults to OSC 52 + tmux buffer + native tools. */
@@ -188,7 +191,7 @@ export function App(props: AppProps) {
   const [flipped, setFlipped] = useState<Set<number>>(new Set());
   /** Top of the mounted transcript window when reading history (null = follow the live tail). */
   const [anchor, setAnchor] = useState<number | null>(null);
-  const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
+  const [modelOverride, setModelOverride] = useState<string | undefined>(() => props.initialModel || undefined);
   const [settings, setSettings] = useState<Settings>(() => {
     const loaded = props.initialSettings ?? loadSettings();
     applyTheme(loaded.theme ?? DEFAULT_THEME);
@@ -207,6 +210,8 @@ export function App(props: AppProps) {
   const [resumeIdx, setResumeIdxState] = useState(0);
   const [resumeRows, setResumeRows] = useState<SessionRecord[]>([]);
   const [resumePages, setResumePages] = useState(0);
+  /** The session previewed read-only inside the /resume panel (null = the list). */
+  const [resumePreview, setResumePreviewState] = useState<SessionRecord | null>(null);
   const [connectStep, setConnectStepState] = useState<ConnectStep | null>(null);
   const [connections, setConnections] = useState(() => loadConnections());
   // Key handlers can fire several times before React re-renders; mirror what they
@@ -238,6 +243,8 @@ export function App(props: AppProps) {
   const resumePageRef = useRef(0);
   const resumeIdxRef = useRef(0);
   const resumeRowsRef = useRef<SessionRecord[]>([]);
+  const resumePreviewRef = useRef<SessionRecord | null>(null);
+  const previewScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const connectRef = useRef<ConnectStep | null>(null);
   const commandOptionsRef = useRef<CommandOption[]>([]);
   const branch = useMemo(() => gitBranch(props.cwd), [props.cwd]);
@@ -249,6 +256,7 @@ export function App(props: AppProps) {
   const setOverlay = (value: "none" | "model" | "settings" | "help" | "resume" | "connect") => {
     overlayRef.current = value;
     setOverlayState(value);
+    if (value !== "resume") setResumePreview(null); // /resume always reopens on its list
   };
   const setPromptText = (value: string) => {
     promptRef.current = value;
@@ -279,6 +287,10 @@ export function App(props: AppProps) {
   const setResumeIdx = (value: number) => {
     resumeIdxRef.current = value;
     setResumeIdxState(value);
+  };
+  const setResumePreview = (value: SessionRecord | null) => {
+    resumePreviewRef.current = value;
+    setResumePreviewState(value);
   };
   const setConnectStep = (value: ConnectStep | null) => {
     connectRef.current = value;
@@ -643,6 +655,8 @@ export function App(props: AppProps) {
     setModelOverride(model);
     const liveRun = live.current.run;
     liveRun?.switchModel(model);
+    // Fresh launches start on this model; open TUIs read the file only at startup.
+    if (persist) saveLastModel(model);
     const id = sessionIdRef.current;
     if (persist && id) {
       try {
@@ -1034,6 +1048,22 @@ export function App(props: AppProps) {
     if (overlayRef.current === "resume") {
       // the session browser owns the keys: its search box is display-only
       const rows = resumeRowsRef.current;
+      const previewing = resumePreviewRef.current;
+      if (previewing) {
+        // read-only transcript: scroll it, go back to the list, or open the session
+        const scroll = previewScrollRef.current;
+        const page = Math.max(3, Math.floor(modalAreaHeight / 2));
+        if (key.name === "escape" || key.name === "left" || key.name === "backspace") return setResumePreview(null);
+        if (key.name === "return" || key.name === "enter" || key.name === "kpenter" || key.name === "tab")
+          return openSession(previewing);
+        if (key.name === "up" || key.name === "k") return scroll?.scrollBy(-1);
+        if (key.name === "down" || key.name === "j") return scroll?.scrollBy(1);
+        if (key.name === "pageup") return scroll?.scrollBy(-page);
+        if (key.name === "pagedown" || key.name === "space") return scroll?.scrollBy(page);
+        if (key.name === "home" || (key.name === "g" && !key.shift)) return scroll?.scrollTo(0);
+        if (key.name === "end" || key.name === "G" || (key.name === "g" && key.shift)) return scroll?.scrollBy(1_000_000);
+        return;
+      }
       if (key.name === "escape") {
         setOverlay("none");
         setInputFocused(true);
@@ -1043,6 +1073,11 @@ export function App(props: AppProps) {
       if (key.name === "down") return setResumeIdx(Math.min(Math.max(rows.length - 1, 0), resumeIdxRef.current + 1));
       if (key.name === "pageup") return setResumePage(Math.max(0, resumePageRef.current - 1));
       if (key.name === "pagedown") return setResumePage(resumePageRef.current + 1);
+      if (key.name === "right") {
+        const record = rows[Math.min(resumeIdxRef.current, Math.max(rows.length - 1, 0))];
+        if (record) setResumePreview(record);
+        return;
+      }
       if (key.name === "return" || key.name === "enter" || key.name === "tab" || key.name === "kpenter") {
         const record = rows[Math.min(resumeIdxRef.current, Math.max(rows.length - 1, 0))];
         if (record) openSession(record);
@@ -1267,6 +1302,10 @@ export function App(props: AppProps) {
         pages={resumePages}
         selectedIndex={Math.min(resumeIdx, Math.max(resumeRows.length - 1, 0))}
         onPick={openSession}
+        previewing={resumePreview}
+        onPreview={setResumePreview}
+        areaHeight={modalAreaHeight}
+        previewScrollRef={previewScrollRef}
       />
     ) : null;
 

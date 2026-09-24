@@ -7,6 +7,7 @@
 import { appendFileSync, closeSync, existsSync, openSync, readSync, statSync, writeFileSync } from "node:fs";
 
 import { MINI_BIN, createSessionDir, type SessionPaths } from "../config";
+import { gitIdentityEnv } from "../gitIdentity";
 import { resolveCommand, resolvePython } from "../helpers";
 
 export interface TaskSpec {
@@ -134,6 +135,8 @@ export interface MiniRun {
 export function buildRunEnv(session: SessionPaths, extra: Record<string, string> = {}): Record<string, string> {
   return {
     ...process.env,
+    // Commits made by the agent are authored by the user's gh/git identity, never "claude".
+    ...gitIdentityEnv({ ...process.env, ...extra }),
     ...extra,
     MSWEA_CONTROL_FILE: session.controlPath,
     MSWEA_SILENT_STARTUP: "1",

@@ -70,6 +70,9 @@ artifacts, so the integration is observable and reversible.
   trimmed). `/resume` opens a modal listing the sessions **started in the current folder**,
   paged and searchable by title — pick one to restore its transcript, and your next prompt
   continues the *same conversation with full context* (`mini --resume`, companion patch 3).
+  Not sure which one it was? `→` (or clicking `[→ preview]`) shows the selected session's
+  transcript **read-only inside the same panel** — scroll it with `↑`/`↓`, `PgUp`/`PgDn`,
+  `g`/`G`; `←`/`Esc` goes back to the list, `Enter` opens it.
 
   ![resume modal](docs/screenshots/resume.png)
 
@@ -103,9 +106,16 @@ artifacts, so the integration is observable and reversible.
   (`… 220 lines hidden · [e] expand`) so huge outputs never blow up the layout.- **Live header** with model, step count, running cost and a spinner while a step is in flight.
 - **`/model` — switch models mid-conversation.** Type `/model` in the prompt to open the model
   picker (or `/model <id>` to jump straight to one). During a live run the agent picks the new
-  model up from its next step — no restart, no lost context.
+  model up from its next step — no restart, no lost context. The last model you pick (in any
+  session) is remembered in `~/.config/mini-tui/last-model.json` and becomes the default of
+  **new** mini-tui terminals; windows that are already open keep their own model. `-m` and
+  `$MINITUI_MODEL` still take precedence.
 
   ![model picker](docs/screenshots/model-picker.png)
+
+- **Agent commits are authored by you.** Runs export `GIT_AUTHOR_*` / `GIT_COMMITTER_*` from
+  the account logged into `gh` (GitHub noreply email), falling back to `git config --global
+  user.*` — commits never show up as "claude". `MINITUI_GIT_IDENTITY=0` disables it.
 
 - **Plain-text final answers** (with the companion patch below): the agent finishes by simply
   answering instead of shuttling its answer through a temporary markdown file. The answer lands in
@@ -179,12 +189,13 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `↑` / `↓` (in the prompt) | browse the prompts sent in this session · `↓` past the newest restores your draft |
 | `Esc` | close the palette / leave the prompt · **double `Esc` interrupts the run** |
 | `ctrl+c` | clear the prompt · press it twice (within 1.5 s) to close |
+| `ctrl+\` | show / hide the error console (`Esc` closes it) |
 | `/quit` · `/exit` | close mini-tui |
 | `/help` | commands and keys |
 | `/model` | open the model picker (or `/model <id>` for a direct switch) |
 | `/settings` | output display (collapsed / trimmed / expanded) |
 | `/new` | start a fresh session in place (stops the current run; model and settings stay) |
-| `/resume` | browse sessions saved in this folder (search + pages) |
+| `/resume` | browse sessions saved in this folder (search + pages, `→` previews a transcript read-only) |
 | `/connect` | connect a BYOK provider (key → model → tested connection) |
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |
 | `e` | expand / collapse the focused output block |
