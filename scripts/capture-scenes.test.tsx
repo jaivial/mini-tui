@@ -20,6 +20,8 @@ import type { RunEvent } from "../src/traj/schema";
 
 const OUT_DIR = join(import.meta.dir, "..", "docs", "screenshots");
 const CAPTURE = Boolean(process.env.MINITUI_CAPTURE);
+// Captures never read/write the user's remembered last model.
+process.env.MINITUI_LAST_MODEL_PATH ??= "/dev/null/mini-tui-no-last-model.json";
 
 interface SpanDump {
   text: string;

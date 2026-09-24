@@ -3,9 +3,9 @@ import { colors } from "../theme";
 /** `/help` — commands and keys at a glance. */
 export function HelpPanel() {
   const rows: Array<[string, string]> = [
-    ["/model [id]", "switch model — picker, or straight to <id>"],
+    ["/model [id]", "switch model — picker, or straight to <id> (new terminals start on it)"],
     ["/new", "start a new session without restarting mini-tui"],
-    ["/resume", "browse sessions saved in this folder (search, pages)"],
+    ["/resume", "browse sessions saved in this folder (search, pages · → preview read-only)"],
     ["/connect", "connect a BYOK provider (key → model → connection test)"],
     ["/settings", "output display: collapsed / trimmed (2 lines) / expanded"],
     ["/compact", "summarize the conversation now (frees context; auto at 80 %)"],
@@ -17,6 +17,7 @@ export function HelpPanel() {
     ["↑ ↓  ·  click", "pick in the command palette (Enter/Tab fills, never sends)"],
     ["Esc", "leave the prompt · double Esc interrupts the run"],
     ["ctrl+c", "clear the prompt · press twice to close"],
+    ["ctrl+\\", "show / hide the error console (esc closes it)"],
     ["j k  ·  e", "move between steps · expand/collapse the focused output"],
     ["PgUp PgDn  ·  g G", "scroll · g loads older steps / G back to live bottom"],
   ];

@@ -2,7 +2,9 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot, createElement } from "@opentui/react";
 
 import { App } from "./ui/App";
+import { CONSOLE_TITLE, installConsoleClose } from "./consoleOverlay";
 import { DEFAULT_MODEL } from "./config";
+import { loadLastModel } from "./lastModel";
 import { startProfiling } from "./profile";
 import type { TaskSpec } from "./mini/spawn";
 import { syncSkills } from "./skills";
@@ -37,7 +39,8 @@ Prompt commands:
   $skill              reference skills anywhere in a prompt ($ opens the list)
 
 Options:
-  -m, --model <model>   Model for run (empty = mini's default)
+  -m, --model <model>   Model for run (default: $MINITUI_MODEL, else the model last picked
+                        with /model in any session, else mini's default)
   -c, --config <spec>   Extra mini config spec (repeatable)
   --follow              (view) keep watching the file for updates
   --show-system         Include the system prompt in the transcript
@@ -73,9 +76,13 @@ if (!args) {
   process.exit(1);
 }
 
+// Default model of this launch: -m, else $MINITUI_MODEL, else the model last picked with
+// /model in any session. Read once here, so TUIs already open keep their own model.
+const initialModel = args.model || DEFAULT_MODEL || (args.command === "run" ? loadLastModel() : "") || undefined;
+
 const runSpec: TaskSpec | undefined =
   args.command === "run" && args.task
-    ? { task: args.task, model: args.model || DEFAULT_MODEL || undefined, specs: args.specs, cwd: process.cwd() }
+    ? { task: args.task, model: initialModel, specs: args.specs, cwd: process.cwd() }
     : undefined;
 
 // Skills new in ~/.claude/skills join mini-tui's own folder (fast: a directory scan).
@@ -87,7 +94,9 @@ try {
 }
 
 // ctrl+c belongs to the App: once clears the prompt, twice closes.
-const renderer = await createCliRenderer({ exitOnCtrlC: false });
+// The error console OpenTUI opens on uncaught errors gets a title with its close keys.
+const renderer = await createCliRenderer({ exitOnCtrlC: false, consoleOptions: { title: CONSOLE_TITLE } });
+installConsoleClose(renderer);
 
 // Smooth open: the renderer has just entered the alternate screen (its buffer starts
 // empty — the terminal's blank). Fill it with the app background in ONE sync batch right
@@ -107,6 +116,7 @@ createRoot(renderer).render(
     viewPath: args.command === "view" ? args.viewPath : undefined,
     follow: args.follow,
     runSpec,
+    initialModel,
     importedSkills,
     onQuit: quit,
   }),
