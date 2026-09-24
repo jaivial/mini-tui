@@ -265,3 +265,39 @@ def test_ids_missing_from_the_docs_table_are_still_usable(clean_env):
     assert isinstance(model, OpencodeGoModel)
     assert model.config.model_name == "brand-new-model"
     assert model.config.api_base == DEFAULT_API_BASE
+
+
+def test_chat_ids_let_the_model_answer_in_plain_text():
+    """`tool_choice: required` left no way to submit the plain-text final answer, so
+    runs looped on filler `echo` calls until the gateway failed (issue: opaque 400)."""
+    from minisweagent.models.opencode_go_model import _normalize_model_kwargs
+
+    kwargs = _normalize_model_kwargs("deepseek-v4.1-flash", {})
+    assert "tool_choice" not in kwargs
+    assert kwargs["parallel_tool_calls"] is False
+    # An explicit user setting still wins.
+    assert _normalize_model_kwargs("deepseek-v4.1-flash", {"tool_choice": "required"})["tool_choice"] == "required"
+
+
+@pytest.mark.parametrize(
+    ("body", "opaque"),
+    [
+        ('{"model":"deepseek-v4.1-flash"}', True),
+        ('{"error":{"message":"invalid request"}}', False),
+        ("Upstream request failed: [invalid_request_error] invalid request", False),
+        ("{}", False),
+    ],
+)
+def test_opaque_gateway_400_is_retried_not_aborted(body, opaque):
+    from minisweagent.models.errors import ProviderAbortError, ProviderError
+    from minisweagent.models.opencode_go_model import OpencodeGoModel, _is_opaque_gateway_error
+
+    err = ProviderAbortError(f"HTTP 400 from https://opencode.ai/zen/go/v1: {body}", 400)
+    assert _is_opaque_gateway_error(err) is opaque
+    if not opaque:
+        return
+    model = OpencodeGoModel(model_name="deepseek-v4.1-flash", api_key="k")
+    with patch("minisweagent.models.openai_compat_model.OpenaiCompatModel._query", side_effect=err):
+        with pytest.raises(ProviderError) as info:
+            model._impl._query([{"role": "user", "content": "hi"}])
+    assert not isinstance(info.value, ProviderAbortError)

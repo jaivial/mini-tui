@@ -33,6 +33,7 @@ Run `mini-extra opencode-go-models` to list the ids your key can use together wi
 the endpoint and the documented prices.
 """
 
+import json
 import logging
 import os
 import re
@@ -876,6 +877,21 @@ _AUTH_ERROR_RE = re.compile(
 )
 
 
+def _is_opaque_gateway_error(exception: Exception) -> bool:
+    """A 400 whose body is a bare JSON object without any error text, e.g.
+    `{"model":"deepseek-v4.1-flash"}` — the gateway failing upstream, not a bad request."""
+    _, sep, body = str(exception).partition(": ")
+    if not sep:
+        return False
+    try:
+        data = json.loads(body.strip())
+    except ValueError:
+        return False
+    if not isinstance(data, dict) or not data:
+        return False
+    return not any(k in data for k in ("error", "message", "detail", "type", "code"))
+
+
 def _strip_rejected_sampling_param(model_kwargs: dict[str, Any], exception: Exception) -> str | None:
     """Pop the sampling param the backend rejected. Returns its name, else `None`."""
     if not _SAMPLING_ERROR_RE.search(str(exception)):
@@ -908,8 +924,9 @@ def _normalize_model_kwargs(model_id: str, model_kwargs: dict[str, Any]) -> dict
     if strip_opencode_go_prefix(model_id).lower() in NO_REASONING_EFFORT_MODELS:
         model_kwargs.pop("reasoning_effort", None)
     if not needs_responses_api(model_id):
-        # The agent loop only progresses on tool calls; require one every turn.
-        model_kwargs.setdefault("tool_choice", "required")
+        # `tool_choice` stays `auto`: a reply without tool calls is the run's plain-text
+        # final answer (see `DefaultAgent.step`). Forcing `required` left the model no way
+        # to finish, so it looped on filler `echo` calls until the gateway gave up.
         model_kwargs.setdefault("parallel_tool_calls", False)
     return model_kwargs
 
@@ -972,6 +989,12 @@ class _GoQueryGuardMixin:
             if e.status != 400:
                 raise
             if not _is_missing_session_error(e):
+                if _is_opaque_gateway_error(e):
+                    # No error message, just an echo of the request's model: a transient
+                    # upstream hiccup (the same request succeeds on replay) -> retryable.
+                    raise ProviderError(
+                        f"{e} (OpenCode Go returned no error detail; retrying)", e.status
+                    ) from e
                 if _strip_rejected_sampling_param(self.config.model_kwargs, e):
                     return super()._query(messages, **kwargs)
                 if _UNKNOWN_MODEL_RE.search(str(e)):
