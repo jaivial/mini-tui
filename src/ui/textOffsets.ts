@@ -7,8 +7,9 @@
  * or coming out of the textarea is converted here. Mixing the two was why a `$skill` after a
  * newline, a tab or a wide character painted the next word's letters instead.
  *
- * Known limit: ZWJ emoji sequences (`👨‍👩‍👧`) are laid out per member by OpenTUI's highlighter
- * but as one grapheme by its cursor; a `$skill` after one can still be off by a column or two.
+ * Test note: `captureSpans()` labels cells by code point, so after a multi-code-point grapheme
+ * (`👨‍👩‍👧`, `👍🏽`, `e\u0301`) its span *text* is shifted even though the colors are right —
+ * assert on the frame buffer's cells instead (see tests/skillPrompt.test.tsx).
  */
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -29,16 +30,16 @@ export function toCursorOffset(text: string, index: number, tabWidth = 2): numbe
 }
 
 /**
- * JS string index → `addHighlightByCharRange` offset. Measured against OpenTUI 0.5: each
- * grapheme takes its display width plus one per extra code point (`é` as e + U+0301 = 2,
- * `👍🏽` = 3, a tab = the tab width), newlines take none.
+ * JS string index → `addHighlightByCharRange` offset: the display columns before `index`
+ * (each grapheme its width, a tab the tab width), newlines not counted. Verified on the frame
+ * buffer's cells for CJK, flags, skin tones, ZWJ sequences and decomposed accents alike.
  */
 export function toHighlightOffset(text: string, index: number, tabWidth = 2): number {
   let offset = 0;
   for (const { segment, index: at } of segmenter.segment(text)) {
     if (at + segment.length > index) break;
     if (segment === "\n" || segment === "\r\n") continue;
-    offset += graphemeWidth(segment, tabWidth) + [...segment].length - 1;
+    offset += graphemeWidth(segment, tabWidth);
   }
   return offset;
 }
