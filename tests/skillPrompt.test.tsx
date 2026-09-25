@@ -1,7 +1,8 @@
 /**
  * The `$` panel matches skill words in any order, and the skill color covers exactly the
  * `$name` characters wherever the reference sits in the prompt (after newlines, tabs, accents,
- * wide characters and emoji — the textarea does not count offsets like JS strings).
+ * wide characters and emoji, ZWJ sequences included — the textarea does not count offsets like
+ * JS strings). Colors are checked on the frame buffer's cells, not on span text.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,7 +60,9 @@ describe("textarea offsets", () => {
     expect(toCursorOffset("a\t$x", 2)).toBe(3);
     expect(toHighlightOffset("中 $x", 2)).toBe(3);
     expect(toHighlightOffset("🚀 $x", 3)).toBe(3);
-    expect(toHighlightOffset("e\u0301 $x", 3)).toBe(3);
+    expect(toHighlightOffset("e\u0301 $x", 3)).toBe(2); // one column, whatever the code points
+    expect(toHighlightOffset("👨‍👩‍👧 $x", "👨‍👩‍👧 ".length)).toBe(3);
+    expect(toHighlightOffset("👍🏽🇪🇸 $x", "👍🏽🇪🇸 ".length)).toBe(5);
     expect(toCursorOffset("e\u0301 $x", 3)).toBe(2);
   });
   test("cursor offsets round-trip on every grapheme boundary", () => {
@@ -92,13 +95,25 @@ describe("App prompt", () => {
     };
     return { setup, sent, settle };
   };
-  const violet = (setup: Awaited<ReturnType<typeof testRender>>) =>
-    setup
-      .captureSpans()
-      .lines.flatMap((line) => line.spans)
-      .filter((span) => [...span.fg.buffer].slice(0, 3).join() === "167,139,250")
-      .map((span) => span.text)
-      .join("|");
+  /**
+   * The characters painted in the skill color, read from the frame buffer's cells (gaps become
+   * `|`). `captureSpans()` labels cells by code point, which shifts its text after `👨‍👩‍👧`,
+   * `👍🏽` or `e\u0301` — the cells are the ground truth of what the terminal shows.
+   */
+  const violet = (setup: Awaited<ReturnType<typeof testRender>>) => {
+    const buffer = (setup.renderer as unknown as { currentRenderBuffer: { width: number; height: number; buffers: { char: Uint32Array; fg: Uint16Array } } }).currentRenderBuffer;
+    const { char, fg } = buffer.buffers;
+    let out = "";
+    let last = -2;
+    for (let i = 0; i < buffer.width * buffer.height; i++) {
+      if (!(fg[i * 4] === 167 && fg[i * 4 + 1] === 139 && fg[i * 4 + 2] === 250)) continue;
+      const cp = char[i]! >>> 0;
+      if (out && i !== last + 1) out += "|";
+      last = i;
+      out += cp & 0xc0000000 ? "?" : String.fromCodePoint(cp); // a grapheme cell is never part of $name
+    }
+    return out;
+  };
 
   test("typing $body lists and completes $pr-body", async () => {
     const { setup, settle } = await mount();
@@ -131,6 +146,10 @@ describe("App prompt", () => {
     ["after accents", "añade acción y después $pr-body más texto"],
     ["after wide characters", "中文 text $pr-body then more"],
     ["after an emoji", "ship it 🚀 with $pr-body please"],
+    ["after a ZWJ family emoji", "for the 👨‍👩‍👧 app use $pr-body please"],
+    ["after ZWJ emoji on several lines", "👩‍💻 dev 🏳️‍🌈\n🧑🏽‍🚀 then $pr-body and\t👨‍👩‍👧👨‍👩‍👧 $good-code end"],
+    ["after skin tones and flags", "👍🏽 🇪🇸 ok $pr-body done"],
+    ["after decomposed accents", "cafe\u0301 y acentu\u0301a $pr-body ma\u0301s"],
     ["two skills and text", "use $good-code\nand then $pr-body at the end"],
   ] as const) {
     test(`the skill color covers exactly $name (${label})`, async () => {
@@ -142,6 +161,25 @@ describe("App prompt", () => {
       setup.renderer.destroy();
     });
   }
+
+  test("completing a $skill after ZWJ emoji edits the right spot and colors it", async () => {
+    const { setup, sent, settle } = await mount();
+    await setup.mockInput.pasteBracketedText("team 👨‍👩‍👧 and 👩‍💻 ");
+    await settle();
+    await setup.mockInput.typeText("$bo");
+    await settle();
+    expect(setup.captureCharFrame()).toContain("pr-body skill");
+    await act(async () => setup.mockInput.pressEnter());
+    await settle();
+    await setup.mockInput.typeText("now");
+    await settle();
+    expect(setup.captureCharFrame()).toContain("team 👨‍👩‍👧 and 👩‍💻 $pr-body now");
+    expect(violet(setup)).toBe("$pr-body");
+    await act(async () => setup.mockInput.pressEnter());
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.trimEnd().endsWith("team 👨‍👩‍👧 and 👩‍💻 $pr-body now")).toBe(true);
+    setup.renderer.destroy();
+  });
 
   test("editing before and after a $skill keeps the color on it (cursor moved mid-phrase)", async () => {
     const { setup, settle } = await mount();

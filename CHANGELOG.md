@@ -2,6 +2,20 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.17.2 — 2026-09-25
+
+The skill color also lines up after emoji sequences.
+
+### Fixed
+
+- **`$skill` color after ZWJ emoji, skin tones, flags and decomposed accents.** 0.17.1 still
+  shifted the violet after a multi-code-point character (`👨‍👩‍👧`, `👩‍💻`, `🏳️‍🌈`, `👍🏽`, `e` +
+  U+0301): the highlight offsets added one column per extra code point. The offsets were
+  measured with a test helper that labels cells by code point, which is wrong for these
+  characters. Highlight offsets are now pure display columns per grapheme. The prompt render
+  tests read the colors from the frame buffer's cells, so they check what the terminal
+  actually shows.
+
 ## 0.17.1 — 2026-09-25
 
 `$skill` search finds skills by any word, and the skill color stays on the `$name`.
