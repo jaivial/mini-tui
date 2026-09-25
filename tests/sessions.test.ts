@@ -8,6 +8,10 @@ import { describe, expect, test } from "bun:test";
 import {
   PAGE_SIZE,
   countSessions,
+  deleteSession,
+  findSession,
+  latestSession,
+  listAllSessions,
   createSession,
   fallbackTitle,
   getSession,
@@ -103,5 +107,36 @@ describe("resume context", () => {
     expect(getSession(db, "old")?.messages_json).toBe("[]");
     db.close();
     rmSync(DB, { force: true });
+  });
+});
+
+describe("headless session helpers", () => {
+  const PATH = join(import.meta.dir, ".tmp-sessions-headless.sqlite");
+  test("latest, prefix lookup (ambiguity guarded), cross-folder list, delete", async () => {
+    rmSync(PATH, { force: true });
+    const db = openDb(PATH);
+    try {
+      createSession(db, { id: "s-aaa-1", cwd: "/a", model: "m", task: "one" });
+      await Bun.sleep(5);
+      createSession(db, { id: "s-aab-2", cwd: "/b", model: "m", task: "two" });
+      await Bun.sleep(5);
+      createSession(db, { id: "s-x%_y", cwd: "/a", model: "m", task: "three" });
+      expect(latestSession(db, "/a")?.id).toBe("s-x%_y");
+      expect(latestSession(db, "/nowhere")).toBeNull();
+      expect(findSession(db, "s-aaa-1")?.task).toBe("one");
+      expect(findSession(db, "s-aab")?.id).toBe("s-aab-2");
+      expect(() => findSession(db, "s-aa")).toThrow(/ambiguous/);
+      expect(findSession(db, "s-x%")?.id).toBe("s-x%_y"); // LIKE wildcards are literal
+      expect(findSession(db, "s-%")).toBeNull();
+      expect(listAllSessions(db).map((row) => row.id)).toEqual(["s-x%_y", "s-aab-2", "s-aaa-1"]);
+      expect(listAllSessions(db, { cwd: "/a", limit: 1 }).map((row) => row.id)).toEqual(["s-x%_y"]);
+      expect(listAllSessions(db, { query: "two" }).map((row) => row.id)).toEqual(["s-aab-2"]);
+      expect(deleteSession(db, "s-aab-2")).toBe(true);
+      expect(deleteSession(db, "s-aab-2")).toBe(false);
+      expect(getSession(db, "s-aab-2")).toBeNull();
+    } finally {
+      db.close();
+      rmSync(PATH, { force: true });
+    }
   });
 });

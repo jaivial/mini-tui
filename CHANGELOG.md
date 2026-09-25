@@ -2,6 +2,42 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.17.0 — 2026-09-25
+
+mini-tui runs headless: `mini-tui -p "<prompt>"` runs a session with no TUI and prints the
+answer, like `claude -p` / `opencode run` / `pi -p`. The TUI's other controls now have CLI
+subcommands too.
+
+### Added
+
+- **`mini-tui -p` / `--print`.** Runs one turn of the integrated agent without the UI and exits
+  with the run's status (`0` submitted, `1` failed or hit a limit, `2` usage error, `130`
+  interrupted). Quiet by default: only the final answer goes to stdout. `-v/--verbose` streams
+  every step (commands, outputs, notices) to stderr, and `-q/--quiet` also drops the error tail.
+  - `-o text|json|stream-json` (`--json`): one result object (`result`, `session_id`,
+    `cost_usd`, `num_steps`, `trajectory_path`, …), or JSON lines as the run happens
+    (`init`, one line per event, then `result`).
+  - Headless runs are saved sessions: `--continue` follows up on the latest session of the
+    folder, `--resume <id|prefix>` follows up on any session, `--compact` compacts one, and
+    `--no-session` saves nothing. Sessions started with `-p` show up in the TUI's `/resume`, and
+    TUI sessions can be continued with `-p`.
+  - Piped stdin is appended to the prompt (`git diff | mini-tui -p "review this"`). `$skills`,
+    `/connect` providers and the last `/model` pick work as they do in the TUI.
+  - Guard rails for unattended runs: `--max-steps`, `--cost-limit`, `--timeout`, `--cwd`.
+- **Scripting subcommands** (all with `--json`): `sessions [list|show|rm]`, `models`,
+  `model [<id>]` (sets the default model, like `/model`), `skills`,
+  `settings [output-mode|theme <v>]`, plus `--version`.
+
+### Changed
+
+- The CLI parser rejects unknown commands and options (exit `2`), where it used to show the help
+  or ignore them. `mini-tui --help` exits `0`.
+- `-c key=value` specs now merge into the default config instead of replacing it: a lone
+  `-c agent.step_limit=5` used to drop the whole `mini.yaml` prompt config.
+- Headless paths and subcommands start without loading OpenTUI/React.
+- `MINITUI_DB_PATH`, `MINITUI_RESUME_DIR` and `MINITUI_SETTINGS_PATH` override where sessions,
+  resume files and settings are stored (hermetic tests, per-project stores).
+
 ## 0.16.2 — 2026-09-24
 
 OpenCode Go runs can finish again, instead of looping until the gateway aborts them.

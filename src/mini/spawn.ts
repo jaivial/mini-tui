@@ -21,6 +21,11 @@ export interface TaskSpec {
   env?: Record<string, string>;
   /** `/compact` without a live run: compact `resumePath` and wait (integrated runner only). */
   compactOnly?: boolean;
+  /**
+   * Keep the control channel (default). With it, the agent holds at exit waiting for a
+   * follow-up; headless runs (`mini-tui -p`) turn it off so the process ends with the turn.
+   */
+  control?: boolean;
 }
 
 export type RunnerKind = "embedded" | "cli" | "argv";
@@ -132,13 +137,18 @@ export interface MiniRun {
 }
 
 /** Build the isolated environment shared by integrated and fallback runs. */
-export function buildRunEnv(session: SessionPaths, extra: Record<string, string> = {}): Record<string, string> {
+export function buildRunEnv(
+  session: SessionPaths,
+  extra: Record<string, string> = {},
+  control = true,
+): Record<string, string> {
   return {
     ...process.env,
     // Commits made by the agent are authored by the user's gh/git identity, never "claude".
     ...gitIdentityEnv({ ...process.env, ...extra }),
     ...extra,
-    MSWEA_CONTROL_FILE: session.controlPath,
+    // Empty = no control channel: the agent finishes its turn and exits (headless runs).
+    MSWEA_CONTROL_FILE: control ? session.controlPath : "",
     MSWEA_SILENT_STARTUP: "1",
   } as Record<string, string>;
 }
@@ -149,7 +159,7 @@ export function spawnMini(spec: TaskSpec): MiniRun {
   const cmd = buildRunnerCommand(spec, session, runner);
   // A run must never inherit the control file of a previous/parallel TUI
   // process; each session owns one line protocol and one agent.
-  const env = buildRunEnv(session, spec.env);
+  const env = buildRunEnv(session, spec.env, spec.control !== false);
   const logFd = openSync(session.logPath, "a");
   const proc = Bun.spawn({ cmd, cwd: spec.cwd ?? process.cwd(), stdin: "ignore", stdout: logFd, stderr: logFd, env });
   closeSync(logFd);

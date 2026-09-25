@@ -19,7 +19,7 @@ export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description:
 
 export const DEFAULT_SETTINGS: Settings = { outputMode: "collapsed", theme: "shadcn" };
 
-const SETTINGS_PATH = join(homedir(), ".config", "mini-tui", "settings.json");
+const SETTINGS_PATH = process.env.MINITUI_SETTINGS_PATH ?? join(homedir(), ".config", "mini-tui", "settings.json");
 
 export function loadSettings(): Settings {
   try {

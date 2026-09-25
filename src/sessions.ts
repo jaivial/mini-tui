@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -21,7 +21,7 @@ export interface SessionRecord {
   messages_json: string;
 }
 
-export const DEFAULT_DB_PATH = join(homedir(), ".config", "mini-tui", "sessions.db");
+export const DEFAULT_DB_PATH = process.env.MINITUI_DB_PATH ?? join(homedir(), ".config", "mini-tui", "sessions.db");
 export const PAGE_SIZE = 8;
 /** Fallback title: the first prompt, trimmed to this many characters. */
 export const TITLE_MAX_CHARS = 48;
@@ -113,7 +113,7 @@ export function saveTranscript(
  * Returns the file path (stable per session, rewritten on every save).
  */
 export function writeResumeFile(id: string, messages: TrajectoryMessage[]): string {
-  const dir = join(homedir(), ".config", "mini-tui", "resume");
+  const dir = process.env.MINITUI_RESUME_DIR ?? join(homedir(), ".config", "mini-tui", "resume");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${id}.json`);
   writeFileSync(path, `${JSON.stringify({ messages })}\n`);
@@ -157,4 +157,51 @@ export function listSessions(db: Database, cwd: string, query: string, page: num
     )
     .all(cwd, query, `%${query}%`, PAGE_SIZE, page * PAGE_SIZE) as Array<Omit<SessionRecord, "events_json" | "info_json" | "messages_json">>;
   return rows.map((row) => ({ ...row, events_json: "[]", info_json: "{}", messages_json: "[]" }));
+}
+
+/** Newest session started in `cwd` (metadata only), for `mini-tui -p --continue`. */
+export function latestSession(db: Database, cwd: string): SessionRecord | null {
+  return listSessions(db, cwd, "", 0)[0] ?? null;
+}
+
+/**
+ * Session by full id or unique id prefix (any folder). `null` when nothing matches;
+ * throws when a prefix is ambiguous, so a script never continues the wrong conversation.
+ */
+export function findSession(db: Database, idOrPrefix: string): SessionRecord | null {
+  const exact = getSession(db, idOrPrefix);
+  if (exact) return exact;
+  const rows = db
+    .query("SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 2")
+    .all(`${idOrPrefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`) as Array<{ id: string }>;
+  if (rows.length > 1) throw new Error(`session id prefix "${idOrPrefix}" is ambiguous`);
+  return rows[0] ? getSession(db, rows[0].id) : null;
+}
+
+/** Sessions of every folder (or one), newest first, metadata only (`mini-tui sessions --all`). */
+export function listAllSessions(db: Database, options: { cwd?: string; query?: string; limit?: number } = {}): SessionRecord[] {
+  const query = options.query ?? "";
+  const rows = db
+    .query(
+      `SELECT ${META_COLUMNS} FROM sessions
+       WHERE (? IS NULL OR cwd = ?) AND (? = '' OR title LIKE ?)
+       ORDER BY updated_at DESC
+       LIMIT ?`,
+    )
+    .all(options.cwd ?? null, options.cwd ?? null, query, `%${query}%`, options.limit && options.limit > 0 ? options.limit : -1) as Array<
+    Omit<SessionRecord, "events_json" | "info_json" | "messages_json">
+  >;
+  return rows.map((row) => ({ ...row, events_json: "[]", info_json: "{}", messages_json: "[]" }));
+}
+
+/** Delete one session (and its resume file). Returns whether a row was removed. */
+export function deleteSession(db: Database, id: string): boolean {
+  const result = db.query("DELETE FROM sessions WHERE id = ?").run(id);
+  try {
+    const dir = process.env.MINITUI_RESUME_DIR ?? join(homedir(), ".config", "mini-tui", "resume");
+    rmSync(join(dir, `${id}.json`), { force: true });
+  } catch {
+    // the resume file is a cache
+  }
+  return result.changes > 0;
 }

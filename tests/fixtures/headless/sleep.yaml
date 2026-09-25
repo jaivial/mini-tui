@@ -1,0 +1,12 @@
+model:
+  model_class: minisweagent.models.test_models.DeterministicToolcallModel
+  model_name: deterministic
+  outputs:
+    - role: assistant
+      content: "sleeping"
+      extra:
+        actions:
+          - command: "/sleep 30"
+    - role: assistant
+      content: "done"
+      extra: {submission: "done"}
