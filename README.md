@@ -27,7 +27,8 @@ artifacts, so the integration is observable and reversible.
   ![command palette](docs/screenshots/command-palette.png)
 
 - **`$skill` — skills anywhere in the prompt.** Type `$` at any point of the phrase and a
-  panel lists the skills, filtering as you type; `Enter`/`Tab` inserts `$name`, painted in the
+  panel lists the skills, filtering as you type on any word of the name, in any order (`$body` and
+  `$body-pr` find `pr-body`); `Enter`/`Tab` inserts `$name`, painted in the
   skill color. A prompt like `follow $good-code, then use $better-ui, $pr-body, and finish with
   $pr-fix-loop` hands mini every referenced skill's instructions, then your prompt verbatim;
   the transcript shows just what you typed. Unknown `$names` stay plain text.

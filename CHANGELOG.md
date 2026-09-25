@@ -2,6 +2,23 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.17.1 — 2026-09-25
+
+`$skill` search finds skills by any word, and the skill color stays on the `$name`.
+
+### Fixed
+
+- **`$` search matches any word of the skill name, in any order.** The panel only matched
+  names that started with or contained the query exactly, so `$body` found nothing. It now
+  ranks prefix matches first, then word starts (`$body` → `pr-body`, camelCase too), plain
+  substrings, words in any order (`$body-pr`, `$loop.fix` → `pr-fix-loop`), and in-order
+  letters (`$bdy`).
+- **The skill color covers exactly `$skill_name`.** Highlights used JS string indices, but the
+  prompt textarea counts display columns and skips newlines. After a line break, a tab, a wide
+  character (CJK, emoji) or a decomposed accent, the violet moved onto the next word
+  (`r-body t`). Highlight ranges and cursor offsets are now converted for each grapheme, so
+  completion and editing around a `$skill` mid-phrase also use the right position.
+
 ## 0.17.0 — 2026-09-25
 
 mini-tui runs headless: `mini-tui -p "<prompt>"` runs a session with no TUI and prints the
