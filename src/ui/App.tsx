@@ -57,8 +57,9 @@ import {
 } from "../sessions";
 import { generateTitle } from "../title";
 import { PromptHistory } from "../history";
-import { SKILLS_DIR, expandSkills, insertSkill, listSkills, skillQueryAt } from "../skills";
+import { SKILLS_DIR, expandSkills, filterSkills, insertSkill, listSkills, skillQueryAt } from "../skills";
 import { SkillHighlighter } from "./skillHighlight";
+import { fromCursorOffset, tabWidthOf, toCursorOffset } from "./textOffsets";
 import { loadSettings, saveSettings, type Settings } from "../settings";
 import { saveLastModel } from "../lastModel";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
@@ -336,19 +337,26 @@ export function App(props: AppProps) {
   /** Cursor offset in the prompt buffer (the `$` panel completes the token under it). */
   const cursorOf = (text: string): number => {
     try {
+      // the textarea counts display columns (wide chars, tabs): convert to a string index
       const offset = textareaRef.current?.cursorOffset;
-      return typeof offset === "number" ? Math.min(offset, text.length) : text.length;
+      return typeof offset === "number" ? fromCursorOffset(text, offset, tabWidthOf(textareaRef.current)) : text.length;
     } catch {
       return text.length;
     }
   };
+  /** Put the textarea cursor at string index `index` of `text`. */
+  const setCursorAt = (text: string, index: number) => {
+    const area = textareaRef.current;
+    if (area) area.cursorOffset = toCursorOffset(text, index, tabWidthOf(area));
+  };
   /** Palette rows for the prompt text: commands after a leading `/`, skills for a `$name` being
-   * typed anywhere (matched on the name, so `$pr` lists `$pr-body`, `$pr-fix-loop`, …). */
+   * typed anywhere — matched on any word of the name in any order, so `$pr` lists `$pr-body`,
+   * `$pr-fix-loop`, … and `$body` or `$body-pr` finds `$pr-body` too. */
   const paletteFor = (text: string, cursor: number = cursorOf(text)): CommandOption[] => {
     if (text.startsWith("/") && !text.includes(" ")) return matchOptions(text, commandOptionsRef.current);
     if (text.startsWith("/model ")) return matchOptions(text, commandOptionsRef.current);
     const at = skillQueryAt(text, cursor);
-    return at ? matchOptions(`$${at.query}`, skillOptionsRef.current) : [];
+    return at ? filterSkills(at.query, skillOptionsRef.current, (option) => option.label.slice(1)) : [];
   };
 
   // `$skill` references in the prompt keep a color of their own (known skills only).
@@ -389,7 +397,7 @@ export function App(props: AppProps) {
   const editPrompt = (text: string, cursor: number) => {
     textareaRef.current?.setText(text);
     try {
-      if (textareaRef.current) textareaRef.current.cursorOffset = cursor;
+      setCursorAt(text, cursor);
     } catch {
       textareaRef.current?.gotoBufferEnd();
     }
@@ -415,7 +423,7 @@ export function App(props: AppProps) {
       const next = insertSkill(current, cursorOf(current), option.label.slice(1));
       textareaRef.current?.setText(next.text);
       try {
-        if (textareaRef.current) textareaRef.current.cursorOffset = next.cursor;
+        setCursorAt(next.text, next.cursor);
       } catch {
         textareaRef.current?.gotoBufferEnd();
       }
