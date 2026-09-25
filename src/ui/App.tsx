@@ -75,6 +75,13 @@ const CTRL_C_DOUBLE_MS = 1500;
 const SAVE_EVERY_MS = 30_000;
 /** Quiet time before a save (batches the burst of snapshots a single step produces). */
 const SAVE_SETTLE_MS = 1000;
+
+/** First-frame guess at the prompt's wrapped rows, before the textarea has laid its text out
+ * (character wrap; the textarea's own count replaces it right after). */
+export function estimatePromptRows(text: string, width: number): number {
+  return text.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil((line.length + 1) / width)), 0);
+}
+
 /**
  * Transcript mounts are bounded by the visible viewport, not by conversation
  * length. Two viewports keep scrolling responsive while avoiding native text
@@ -206,6 +213,8 @@ export function App(props: AppProps) {
   /** ctrl+c was pressed once: the prompt placeholder says a second press closes. */
   const [closeArmed, setCloseArmed] = useState(false);
   const [promptText, setPromptTextState] = useState("");
+  /** Rows the prompt textarea wraps its text into (read from its layout). */
+  const [promptWrapRows, setPromptWrapRows] = useState<number | null>(null);
   const [paletteDismissed, setPaletteDismissedState] = useState(false);
   const [paletteIdx, setPaletteIdxState] = useState(0);
   const [resumeQuery, setResumeQueryState] = useState("");
@@ -367,12 +376,12 @@ export function App(props: AppProps) {
 
   const paletteOptions = !paletteDismissed ? paletteFor(promptText) : [];
   const paletteOpen = paletteOptions.length > 0 && inputFocused && overlayState === "none";
-  // Soft-wrapped rows: long lines continue on the next row and grow the box (up to 8).
+  // Soft-wrapped rows: long lines continue on the next row and grow the box (up to 8). The
+  // textarea word-wraps, so only its own layout knows the real row count: a character-count
+  // estimate came up short when a long word jumped to the next row, which scrolled that row
+  // out of sight until a later edit. The estimate only covers the first frame.
   const promptContentWidth = Math.max(12, dims.width - 4);
-  const promptRows = Math.min(
-    8,
-    promptText.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil((line.length + 1) / promptContentWidth)), 0),
-  );
+  const promptRows = Math.min(8, Math.max(1, promptWrapRows ?? estimatePromptRows(promptText, promptContentWidth)));
 
   /** Replace the prompt buffer and park the cursor at its end (typing continues after it). */
   const writePrompt = (text: string) => {
@@ -1421,6 +1430,7 @@ export function App(props: AppProps) {
         textareaRef={textareaRef}
         onSend={send}
         onTextChange={syncPromptText}
+        onWrapRows={setPromptWrapRows}
       />
       <StatusLine
         model={(modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL) || "default model"}

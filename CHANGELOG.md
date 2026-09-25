@@ -2,6 +2,20 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.17.3 — 2026-09-25
+
+The prompt box grows as soon as the text wraps onto a new row.
+
+### Fixed
+
+- **A wrapped prompt row no longer hides below the box.** The box height came from a
+  character count (`length / width`), but the prompt word-wraps: when a long word jumped to
+  the next row, the textarea needed one more row than the box had, scrolled the first row out
+  of view and left the new row hidden until a deleted character shrank the text back. The box
+  now takes its height from the rows the textarea actually wraps into (word wrap, CJK and emoji
+  widths included), up to 8, and it re-measures when the terminal is resized. When everything
+  fits, the text is shown from the top.
+
 ## 0.17.2 — 2026-09-25
 
 The skill color also lines up after emoji sequences.
