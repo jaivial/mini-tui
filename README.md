@@ -173,6 +173,74 @@ mini-tui view ~/.config/mini-swe-agent/last_mini_run.traj.json
 mini-tui run ... --show-system
 ```
 
+### Headless: `mini-tui -p` (no TUI)
+
+`-p` / `--print` runs a session with no UI, like `claude -p`, `opencode run` or `pi -p`: the
+same integrated agent (tools, `$skills`, `/connect` providers, follow-up context) runs one turn,
+the answer goes to stdout, and the process exits with the run's status. Scripts, CI jobs, cron
+and other agents can drive mini-tui this way.
+
+```bash
+# Only the final answer on stdout (quiet by default)
+mini-tui -p "Fix the failing test in test_utils.py" -m xiaomi/mimo-v2.6-flash
+
+# Verbose: every step (commands, outputs, notices) streams to stderr, the answer to stdout
+mini-tui -p "why is the build red?" -v
+
+# Machine-readable: one JSON result, or JSON lines as the run happens
+mini-tui -p "list the TODOs" --json | jq -r .result
+mini-tui -p "refactor utils.py" -o stream-json | jq -c 'select(.type=="tool_call")'
+
+# Pipe context in (stdin is appended to the prompt, or is the prompt)
+git diff | mini-tui -p "review this diff"
+
+# Sessions continue exactly like /resume in the TUI
+mini-tui -p "now add tests" --continue          # latest session of this folder
+mini-tui -p "and the docs" --resume s-mugx      # any session, id or unique prefix
+mini-tui -p --compact --continue                # /compact from the shell
+
+# Guard rails for unattended runs
+mini-tui -p "..." --max-steps 30 --cost-limit 1 --timeout 900 --cwd ~/repo --no-session
+```
+
+| Option | Meaning |
+|---|---|
+| `-m, --model <id>` | model of this run (default: `$MINITUI_MODEL`, the resumed session's model, else the last `/model` pick) |
+| `-o, --output-format` | `text` (default) · `json` · `stream-json` (`--json` = `-o json`) |
+| `-v, --verbose` | stream every step: text → stderr; json → adds `events`; stream-json → thinking and full outputs |
+| `-q, --quiet` | the answer only: no error tail on stderr |
+| `-C, --continue` / `-r, --resume <id>` | follow up in the latest / a given saved session |
+| `--compact` | compact a `--continue`/`--resume` session instead of sending a prompt |
+| `--no-session` | don't save the run to the `/resume` history |
+| `--cwd <dir>` | working directory of the run |
+| `--max-steps`, `--cost-limit`, `--timeout` | `agent.step_limit`, `agent.cost_limit`, `agent.wall_time_limit_seconds` |
+| `-c, --config <spec>` | extra mini config (`key=value` specs merge into the default config) |
+
+Exit codes: `0` submitted, `1` the run failed or hit a limit, `2` usage error, `130`
+interrupted (Ctrl+C / SIGINT once interrupts the agent, twice kills it).
+
+The `json` result (also the last `stream-json` line) carries `result`, `subtype`
+(`success`/`error`/`interrupted`), `is_error`, `exit_status`, `session_id`, `model`, `cwd`,
+`num_steps`, `api_calls`, `cost_usd`, `duration_ms`, `trajectory_path`, `log_path` and, on
+failure, `error`. `stream-json` starts with an `init` line (session id, model, runner, paths),
+then one line per transcript event (`task`, `assistant`, `tool_call`, `observation`, `notice`,
+`exit`, and `thinking` with `-v`).
+
+### Scripting commands
+
+Everything the TUI's slash commands do also works from a shell (add `--json` to any of them):
+
+```bash
+mini-tui sessions [--all] [-n 20] [-s text]   # /resume history (this folder, or all)
+mini-tui sessions show <id>                   # print a transcript
+mini-tui sessions rm <id>                     # delete a session
+mini-tui models                               # /model catalog + /connect providers (* = default)
+mini-tui model [<id>]                         # print / set the default model (what /model saves)
+mini-tui skills                               # $skills
+mini-tui settings [output-mode|theme <value>] # /settings
+mini-tui --version
+```
+
 Run artifacts live under `~/.config/mini-tui/runs/<timestamp>-<slug>/`
 (`traj.json` + its append-only `traj.jsonl` journal, `mini.log`, `pid`, `control`). mini-tui never
 touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes its own `-o`.

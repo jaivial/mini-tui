@@ -1,0 +1,19 @@
+model:
+  model_class: minisweagent.models.test_models.DeterministicToolcallModel
+  model_name: deterministic
+  cost_per_call: 0.01
+  outputs:
+    - role: assistant
+      content: "Let me check."
+      tool_calls:
+        - id: call_1
+          type: function
+          function: {name: bash, arguments: '{"command": "echo hello-from-tool"}'}
+      extra:
+        actions:
+          - command: "echo hello-from-tool"
+            tool_call_id: call_1
+    - role: assistant
+      content: "The answer is 42."
+      extra:
+        submission: "The answer is 42."
