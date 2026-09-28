@@ -2,6 +2,17 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.18.0 — 2026-09-28
+
+Claude Sonnet 5.5 is in the curated model picker.
+
+### Added
+
+- **`cliproxy/claude-sonnet-5-5`.** The cli-proxy gateway advertises Anthropic's new
+  Claude Sonnet 5.5, and mini-tui lists it in the `/model` catalog next to
+  `cliproxy/claude-opus-5-5`. It runs over the same Claude subscription credential and
+  gets the 1M-token context window (automatic compaction) the other Claude 5 models use.
+
 ## 0.17.3 — 2026-09-25
 
 The prompt box grows as soon as the text wraps onto a new row.
