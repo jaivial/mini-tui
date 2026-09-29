@@ -41,7 +41,7 @@
 
 <dialog
   bind:this={dialog}
-  class="m-auto w-[calc(100vw-2rem)] bg-transparent p-0 text-ink backdrop:bg-black/40 max-sm:mb-0 max-sm:w-screen max-sm:max-w-none"
+  class="m-auto w-[calc(100*var(--vw)-2rem)] bg-transparent p-0 text-ink backdrop:bg-black/40 max-sm:mb-0 max-sm:w-[calc(100*var(--vw))] max-sm:max-w-none"
   aria-label={title}
   onclose={oncloseevent}
   onclick={(e) => {
@@ -50,7 +50,7 @@
   }}
 >
   <div
-    class="enter-pop sheet elev-pop flex max-h-[85dvh] w-full {width} flex-col overflow-hidden rounded-2xl max-sm:max-h-[min(92dvh,calc(100dvh-env(safe-area-inset-top)-0.75rem))] max-sm:max-w-none max-sm:rounded-b-none"
+    class="enter-pop sheet elev-pop flex max-h-[calc(85*var(--vh))] w-full {width} flex-col overflow-hidden rounded-2xl max-sm:max-h-[min(calc(92*var(--vh)),calc(100*var(--vh)-env(safe-area-inset-top)-0.75rem))] max-sm:max-w-none max-sm:rounded-b-none"
     role="document"
   >
     <div aria-hidden="true" class="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-line-strong sm:hidden"></div>
@@ -72,7 +72,7 @@
 <style>
   /* The element is centred by `m-auto`; the box is only the scroll container. */
   dialog {
-    max-height: 100dvh;
+    max-height: calc(100 * var(--vh));
     /*
      * The UA gives a modal <dialog> `overflow: auto`, which crops everything painted outside the
      * panel's box: the 1px hairline and the drop shadow of the panel are box-shadows, so on the

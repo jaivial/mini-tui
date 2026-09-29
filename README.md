@@ -141,7 +141,11 @@ bun run web:dev      # Vite dev server, hot reload
 ```
 
 Sessions started in the browser land in the same `~/.config/mini-tui/sessions.db` the terminal UI's
-`/resume` reads, so both front ends see each other. Remote runs need `mini-tui` on the server; the hosts
+`/resume` reads, so both front ends see each other. `/resume` works in the browser too, even from a new
+chat with nothing running: it lists every saved session, searchable, and sending a message continues the
+one you pick. Split the window into **panes** like tmux (`Ctrl+\`), each running its own session at the
+same time. Every pane has a **notes** sidebar that saves as you type. Settings has an **interface size**
+and a separate **text size**. Remote runs need `mini-tui` on the server; the hosts
 panel has a **Test** button that checks reachability and agent presence.
 
 <table>

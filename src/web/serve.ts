@@ -13,6 +13,9 @@ import { extname, join, normalize, resolve } from "node:path";
 
 import { SessionManager, loadHosts, saveHosts, probeHost, type RemoteHostRecord } from "./sessions";
 import { SessionFeed, sameOrigin, summarize, toWire } from "./feed";
+import { NOTE_MAX, getNote, saveNote } from "../sessions";
+import { FolderError, listLocal, listRemote } from "./folders";
+import { Hub, type HubClient } from "./hub";
 import {
   COMMANDS,
   connectProvider,
@@ -39,10 +42,10 @@ type Listener = (event: { type: string; [key: string]: unknown }) => void;
 /** Providers with a connection test in flight (a test is a real model call: one at a time). */
 const connecting = new Set<string>();
 
-interface SocketData {
-  id: string;
-  sub?: { unsubscribe: () => void; resync: () => void; ping: () => void };
-}
+/** A per-session transcript socket, or the one hub socket of a tab. */
+type SocketData =
+  | { kind: "session"; id: string; sub?: { unsubscribe: () => void; resync: () => void; ping: () => void } }
+  | { kind: "hub"; client?: HubClient };
 const listeners = new Set<Listener>();
 
 function broadcast(event: { type: string; [key: string]: unknown }): void {
@@ -59,12 +62,16 @@ function broadcast(event: { type: string; [key: string]: unknown }): void {
 // session never spends another session's bandwidth. The shared SSE stream below only
 // carries the light metadata (title, status, cost) the sidebar needs.
 const feed = new SessionFeed();
+// The right sidebar's socket hub (one socket per tab). Notes are read and written only through it.
+let hub: Hub;
 const sessions = new SessionManager((session) => {
   broadcast({ type: "session", session: summarize(session) });
   feed.publish(session);
 });
 
-/** Drop a session everywhere: its socket subscribers and the shared stream. */
+hub = new Hub({ get: (id) => getNote(sessions.db(), id), save: (id, body, base) => saveNote(sessions.db(), id, body, base) }, NOTE_MAX);
+
+/** Put a session away everywhere (its socket subscribers and the shared stream). It stays in the history. */
 function dropSession(id: string): void {
   sessions.close(id);
   feed.gone(id);
@@ -125,11 +132,20 @@ const server = Bun.serve({
   hostname: HOST,
   idleTimeout: 255,
   websocket: {
-    // Frames are small JSON; the ceiling only stops a client from pinning memory.
-    maxPayloadLength: 64 * 1024,
+    // The ceiling only stops a client from pinning memory. The largest legal frame is a note save:
+    // NOTE_MAX characters, up to 4 UTF-8 bytes each once JSON-escaped (an emoji is 4; a quote or a
+    // newline escapes to 2), plus the envelope. Anything bigger is not a message this app sends, and
+    // Bun closes the socket on it. (It was 64 KB, which dropped the hub on any note past ~16 000 emoji.)
+    maxPayloadLength: NOTE_MAX * 6 + 4096,
     idleTimeout: 120,
     sendPings: true,
     open(ws: import("bun").ServerWebSocket<SocketData>) {
+      if (ws.data.kind === "hub") {
+        const client: HubClient = { send: (msg) => ws.send(JSON.stringify(msg)) !== 0 };
+        ws.data.client = client;
+        hub.join(client);
+        return;
+      }
       const session = sessions.get(ws.data.id);
       if (!session) {
         ws.close(4404, "unknown session");
@@ -142,6 +158,10 @@ const server = Bun.serve({
     },
     message(ws: import("bun").ServerWebSocket<SocketData>, raw) {
       if (typeof raw !== "string") return;
+      if (ws.data.kind === "hub") {
+        if (ws.data.client) hub.handle(ws.data.client, raw);
+        return;
+      }
       let msg: { t?: string };
       try {
         msg = JSON.parse(raw);
@@ -152,6 +172,10 @@ const server = Bun.serve({
       else if (msg.t === "ping") ws.data.sub?.ping();
     },
     close(ws: import("bun").ServerWebSocket<SocketData>) {
+      if (ws.data.kind === "hub") {
+        if (ws.data.client) hub.leave(ws.data.client);
+        return;
+      }
       ws.data.sub?.unsubscribe();
     },
   },
@@ -213,6 +237,15 @@ const server = Bun.serve({
         });
       }
 
+      // ------------------------------------------------------------- hub
+      // The one socket a tab keeps for the right sidebar (notes): watch, live pushes, saves. See hub.ts.
+      if (path === "/hub" && request.method === "GET") {
+        if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "expected a websocket upgrade" }, 426);
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin websocket refused" }, 403);
+        if (srv.upgrade(request, { data: { kind: "hub" } satisfies SocketData })) return undefined as unknown as Response;
+        return json({ error: "websocket upgrade failed" }, 400);
+      }
+
       // -------------------------------------------------------- sessions
       // One socket per session: /api/sessions/:id/socket streams that session's transcript.
       const socketMatch = path.match(/^\/sessions\/([^/]+)\/socket$/);
@@ -221,20 +254,26 @@ const server = Bun.serve({
         if (!sameOrigin(request.headers)) return json({ error: "cross-origin websocket refused" }, 403);
         const id = decodeURIComponent(socketMatch[1] as string);
         if (!sessions.get(id)) return json({ error: "unknown session" }, 404);
-        if (srv.upgrade(request, { data: { id } satisfies SocketData })) return undefined as unknown as Response;
+        if (srv.upgrade(request, { data: { kind: "session", id } satisfies SocketData })) return undefined as unknown as Response;
         return json({ error: "websocket upgrade failed" }, 400);
       }
 
       if (path === "/sessions" && request.method === "GET") return json(sessions.list().map(summarize));
       if (path === "/sessions" && request.method === "POST") {
         const body = await readJson(request);
-        const session = await sessions.create({
+        let session;
+        try {
+          session = await sessions.create({
           prompt: String(body.prompt ?? "").trim(),
           cwd: body.cwd ? String(body.cwd) : undefined,
           model: body.model ? String(body.model) : undefined,
           target: body.target === "remote" ? "remote" : "local",
           hostId: body.hostId ? String(body.hostId) : undefined,
-        });
+          });
+        } catch (error) {
+          // A bad folder or an unknown host is the request's fault: say which, and keep the prompt client-side.
+          return json({ error: (error as Error).message }, 400);
+        }
         return json(toWire(session), 201);
       }
       const sessionMatch = path.match(/^\/sessions\/([^/]+)(\/prompt|\/model|\/interrupt|\/compact)?$/);
@@ -243,7 +282,12 @@ const server = Bun.serve({
         const action = sessionMatch[2];
         if (action === "/prompt" && request.method === "POST") {
           const body = await readJson(request);
-          sessions.send(id, String(body.prompt ?? ""));
+          try {
+            sessions.send(id, String(body.prompt ?? ""));
+          } catch (error) {
+            // e.g. a saved session with no conversation to continue from: the reason is the answer.
+            return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 409);
+          }
           return json({ ok: true });
         }
         if (action === "/model" && request.method === "POST") {
@@ -277,14 +321,54 @@ const server = Bun.serve({
       }
 
       // --------------------------------------------------------- history
-      if (path === "/history" && request.method === "GET") return json(sessions.history());
+      if (path === "/history" && request.method === "GET") {
+        // ?q= searches title, task and folder; ?limit= caps the page. Metadata only: no transcript is read.
+        const limit = Number(url.searchParams.get("limit") ?? "");
+        const cwd = url.searchParams.get("cwd");
+        return json(sessions.history({ query: url.searchParams.get("q") ?? "", limit: Number.isFinite(limit) && limit > 0 ? limit : undefined, cwd: cwd ?? undefined }));
+      }
+      if (path === "/history/folders" && request.method === "GET") {
+        // Every folder with saved sessions and its count, newest first: the sidebar's per-folder view.
+        return json(sessions.folders());
+      }
       const historyMatch = path.match(/^\/history\/([^/]+)$/);
       if (historyMatch) {
         const id = decodeURIComponent(historyMatch[1] as string);
-        if (request.method === "POST") return json(toWire(sessions.openHistory(id)));
+        if (request.method === "POST") {
+          try {
+            return json(toWire(sessions.openHistory(id)));
+          } catch (error) {
+            return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 500);
+          }
+        }
         if (request.method === "DELETE") {
-          dropSession(id);
-          return json({ ok: true });
+          // Deleting is permanent and separate from closing: it removes the saved conversation.
+          const existed = sessions.deleteHistory(id);
+          feed.gone(id);
+          // Its note went with it: anyone watching it sees it empty, instead of keeping stale text.
+          hub.noteChanged({ id, body: "", updatedAt: 0 });
+          broadcast({ type: "session-gone", id });
+          return existed ? json({ ok: true }) : json({ error: "unknown session" }, 404);
+        }
+      }
+
+      // Notes have no REST endpoint: reading, live updates and saves all go through the hub socket.
+
+      // ----------------------------------------------------------- folders
+      // `GET /folders?path=` (this machine) or `?hostId=&path=` (a saved remote host, over ssh): the
+      // subfolders of a folder, for the "where should this chat run" picker. Names only, never contents.
+      if (path === "/folders" && request.method === "GET") {
+        const hostId = url.searchParams.get("hostId") ?? "";
+        const asked = url.searchParams.get("path") ?? "";
+        if (asked.length > 4096 || asked.includes("\0")) return json({ error: "invalid path" }, 400);
+        try {
+          if (!hostId || hostId === "local") return json(listLocal(asked));
+          const host = loadHosts().find((h) => h.id === hostId);
+          if (!host) return json({ error: "unknown remote host" }, 404);
+          return json(await listRemote({ host: host.host, port: host.port, user: host.user, identity: host.identity }, asked || host.workdir || "~"));
+        } catch (error) {
+          if (error instanceof FolderError) return json({ error: error.message }, error.status);
+          throw error;
         }
       }
 
@@ -358,7 +442,7 @@ const server = Bun.serve({
       if (providerMatch && request.method === "DELETE") {
         return disconnectProvider(providerMatch[1] as string) ? json({ ok: true }) : json({ error: "not connected" }, 404);
       }
-      if (path === "/health") return json({ ok: true, sessions: sessions.list().length });
+      if (path === "/health") return json({ ok: true, sessions: sessions.list().length, hubClients: hub.clients });
 
       // ------------------------------------------------- static (built UI)
       // Serve web/dist when it exists, so one process runs the whole app.

@@ -177,10 +177,21 @@ export type RunStatus = "running" | "done" | "error" | "idle" | "interrupted";
  */
 export function deriveStatus(status: RunStatus, events: RunEvent[]): RunStatus {
   if (status === "interrupted") return status;
-  const last = events[events.length - 1];
+  // Only the agent's own events can say it is working again. A notice the UI writes itself (a
+  // `/model` switch, a missing-skill warning, "nothing to compact") is not work: skipping it keeps a
+  // finished turn finished, instead of a model change reading as "running" with nothing running.
+  let end = events.length;
+  while (end > 0 && isUiNote(events[end - 1]!)) end--;
+  const last = events[end - 1];
   if (last?.type === "exit") return !last.exitStatus || last.exitStatus === "Submitted" ? "done" : "error";
   if (last?.type === "error") return "error";
   return status;
+}
+
+/** Notices mini-tui adds to the transcript itself, as opposed to ones parsed from the agent's journal. */
+const UI_NOTES = new Set(["model", "skills"]);
+function isUiNote(event: RunEvent): boolean {
+  return event.type === "notice" && (!event.interruptType || UI_NOTES.has(event.interruptType));
 }
 
 export function App(props: AppProps) {
@@ -232,6 +243,8 @@ export function App(props: AppProps) {
   const overlayRef = useRef<"none" | "model" | "settings" | "help" | "resume" | "connect">("none");
   const exitedRef = useRef(false);
   const interruptedRef = useRef(false);
+  /** Prompt focus before the first Esc of a pair, restored by the second (see `escapePress`). */
+  const focusBeforeEsc = useRef(true);
   const promptRef = useRef("");
   const dismissedRef = useRef(false);
   const paletteIdxRef = useRef(0);
@@ -895,11 +908,22 @@ export function App(props: AppProps) {
     else process.exit(0);
   };
 
-  /** Esc: double press interrupts the run in flight; single press toggles prompt/navigation. */
+  /**
+   * Esc: double press interrupts the run in flight; single press toggles prompt/navigation.
+   *
+   * The first press of a double already toggled focus (it cannot know a second is coming), so the
+   * second puts focus back where it was before the pair. Without that, every interrupt from the prompt
+   * left the TUI in navigation mode, where ↑/↓ scroll the transcript instead of recalling prompts.
+   */
   const escapePress = () => {
     const now = Date.now();
-    if (now - lastEscAt.current < ESC_DOUBLE_MS) return interruptRun();
+    if (now - lastEscAt.current < ESC_DOUBLE_MS) {
+      lastEscAt.current = 0; // a third press starts a new pair instead of interrupting again
+      setInputFocused(focusBeforeEsc.current);
+      return interruptRun();
+    }
     lastEscAt.current = now;
+    focusBeforeEsc.current = inputRefocus.current;
     return setInputFocused(!inputRefocus.current);
   };
 

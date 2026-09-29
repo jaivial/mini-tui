@@ -74,7 +74,7 @@
   .prose-mini :global(pre code) {
     background: none;
     padding: 0;
-    font-size: 12px;
+    font-size: 0.9em; /* follows the reading size (--text-scale) */
     line-height: 1.5;
   }
   .prose-mini :global(blockquote) {

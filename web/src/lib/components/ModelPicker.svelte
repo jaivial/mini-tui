@@ -148,11 +148,11 @@
   const indexOf = (id: string) => flat.findIndex((o) => o.id === id);
 </script>
 
-<div class="relative min-w-0">
+<div class="relative min-w-0 pointer-coarse:min-w-11">
   <button
     bind:this={trigger}
     type="button"
-    class="interactive flex h-8 max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12.5px] font-medium text-ink-muted hover:bg-raised hover:text-ink pointer-coarse:h-11 pointer-coarse:px-3"
+    class="interactive flex h-8 max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12.5px] font-medium text-ink-muted hover:bg-raised hover:text-ink pointer-coarse:h-11 pointer-coarse:min-w-11 pointer-coarse:px-3"
     aria-haspopup="dialog"
     aria-expanded={open}
     aria-controls={open ? `${uid}-panel` : undefined}
@@ -176,7 +176,7 @@
       aria-label="Choose a model"
       tabindex="-1"
       {onkeydown}
-      class="elev-pop enter-pop absolute bottom-full left-0 z-40 mb-2 flex max-h-[min(26rem,65dvh)] w-[min(22rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-lg outline-none
+      class="elev-pop enter-pop absolute bottom-full left-0 z-40 mb-2 flex max-h-[min(26rem,calc(65*var(--vh)))] w-[min(22rem,calc(100*var(--vw)-1.5rem))] flex-col overflow-hidden rounded-lg outline-none
         max-sm:fixed max-sm:inset-x-3 max-sm:bottom-[max(0.75rem,env(safe-area-inset-bottom))] max-sm:mb-0 max-sm:w-auto"
     >
       <div class="flex items-center gap-2 border-b border-line px-3">

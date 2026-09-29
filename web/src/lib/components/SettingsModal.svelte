@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { Eye, EyeOff, KeyRound, Plug, Trash2 } from "@lucide/svelte";
+  import { untrack } from "svelte";
+  import { Eye, EyeOff, KeyRound, Plug, Trash2, Minus, Plus, RotateCcw } from "@lucide/svelte";
+  import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "../scale";
   import Modal from "./Modal.svelte";
   import Tabs from "./Tabs.svelte";
   import Button from "./Button.svelte";
@@ -28,9 +30,13 @@
   // Load what a tab needs when it is first shown, not when the app boots.
   $effect(() => {
     if (!open) return;
-    void catalog.loadSettings();
-    if (tab === "providers") void catalog.loadProviders();
-    if (tab === "skills") void catalog.loadSkills();
+    const t = tab;
+    // Only `open` and `tab` decide when to load; what the loaders read must not re-trigger this.
+    untrack(() => {
+      void catalog.loadSettings();
+      if (t === "providers") void catalog.loadProviders();
+      if (t === "skills") void catalog.loadSkills();
+    });
   });
 
   // ---- providers: one connect form at a time
@@ -139,6 +145,46 @@
                 {p.name}
               </button>
             {/each}
+          </div>
+        </fieldset>
+
+        <fieldset class="flex flex-col gap-3">
+          <legend class="mb-1 text-[13px] font-medium text-ink">Size</legend>
+          <p class="-mt-1 text-[12.5px] text-ink-muted">Saved in this browser. Shortcuts: Ctrl/⌘ + and − for the interface, with Shift for text; Ctrl/⌘ 0 resets.</p>
+          {#each [
+            { id: "ui", label: "Interface size", help: "Everything: panels, buttons, icons and text, like zooming the page.", value: ui.uiScale, steps: UI_SCALES, set: (v: number) => ui.setUiScale(v) },
+            { id: "text", label: "Text size", help: "Only what you read and write: the conversation, command output, the prompt and notes.", value: ui.textScale, steps: TEXT_SCALES, set: (v: number) => ui.setTextScale(v) },
+          ] as row (row.id)}
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-line p-3">
+              <div class="min-w-0 flex-1 basis-56">
+                <div id="{uid}-{row.id}-label" class="text-[13px] font-medium text-ink">{row.label}</div>
+                <div id="{uid}-{row.id}-help" class="text-[12.5px] text-ink-muted">{row.help}</div>
+              </div>
+              <div class="flex items-center gap-1" role="group" aria-labelledby="{uid}-{row.id}-label" aria-describedby="{uid}-{row.id}-help">
+                <Button variant="outline" size="icon-sm" icon={Minus} aria-label="Smaller" title="Smaller" disabled={row.value === row.steps[0]} onclick={() => row.set(stepScale(row.value, -1, row.steps))} />
+                <select
+                  class="h-8 cursor-pointer rounded-md border border-line bg-canvas px-2 text-ink tnum pointer-coarse:h-11"
+                  aria-label={row.label}
+                  value={String(row.value)}
+                  onchange={(e) => row.set(Number((e.currentTarget as HTMLSelectElement).value))}
+                >
+                  {#each row.steps as step (step)}
+                    <option value={String(step)}>{percent(step)}{step === 1 ? " (default)" : ""}</option>
+                  {/each}
+                </select>
+                <Button variant="outline" size="icon-sm" icon={Plus} aria-label="Larger" title="Larger" disabled={row.value === row.steps[row.steps.length - 1]} onclick={() => row.set(stepScale(row.value, 1, row.steps))} />
+                <Button variant="ghost" size="icon-sm" icon={RotateCcw} aria-label="Reset {row.label.toLowerCase()} to 100%" title="Reset to 100%" disabled={row.value === 1} onclick={() => row.set(1)} />
+              </div>
+            </div>
+          {/each}
+          {#if ui.coarse && ui.uiScale < 1}
+            <p class="text-[12.5px] text-ink-muted" role="note">On a touch screen the interface stays at 100% or larger, so every button stays big enough to tap. {percent(ui.uiScale)} applies with a mouse.</p>
+          {/if}
+          <!-- A live preview at the chosen sizes, so the change is seen before closing. -->
+          <div class="rounded-lg bg-surface px-3.5 py-3" aria-hidden="true">
+            <div class="mb-1 text-[10px] font-semibold tracking-wider text-ink-faint uppercase">Preview</div>
+            <p class="read-[13.5px] text-ink">The retry now waits 200 ms, then 400 ms, then gives up.</p>
+            <p class="mt-1 font-mono read-[11.5px] text-ink-muted">$ bun test tests/upload.test.ts</p>
           </div>
         </fieldset>
 

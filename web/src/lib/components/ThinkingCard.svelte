@@ -23,6 +23,6 @@
     {/if}
   </button>
   {#if open && !running}
-    <pre class="border-t border-line/70 px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-ink-faint">{event.text}</pre>
+    <pre class="border-t border-line/70 px-3 py-2 font-mono read-[11px] leading-relaxed whitespace-pre-wrap text-ink-faint">{event.text}</pre>
   {/if}
 </div>

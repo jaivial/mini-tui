@@ -3,12 +3,14 @@ import type {
   CommandInfo,
   ConnectResult,
   CreateSessionBody,
+  HistoryItem,
+  FolderListing,
+  FolderSummary,
   ModelInfo,
   ProviderCatalogEntry,
   ProviderView,
   RemoteHost,
   SessionMeta,
-  SessionSummary,
   SettingsView,
   SkillInfo,
   WireSession,
@@ -34,6 +36,9 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  /** Subfolders of `path` on this machine (`hostId` empty or "local") or on a saved remote host. */
+  folders: (path: string, hostId = "local") =>
+    call<FolderListing>(`/folders?${new URLSearchParams({ path, ...(hostId && hostId !== "local" ? { hostId } : {}) })}`),
   sessions: () => call<SessionMeta[]>("/sessions"),
   session: (id: string) => call<WireSession>(`/sessions/${id}`),
   create: (body: CreateSessionBody) =>
@@ -44,7 +49,9 @@ export const api = {
     call<{ ok: true }>(`/sessions/${id}/model`, { method: "POST", body: JSON.stringify({ model }) }),
   interrupt: (id: string) => call<{ ok: true }>(`/sessions/${id}/interrupt`, { method: "POST" }),
   close: (id: string) => call<{ ok: true }>(`/sessions/${id}`, { method: "DELETE" }),
-  history: () => call<SessionSummary[]>("/history"),
+  history: (query = "", limit = 50, cwd?: string) =>
+    call<HistoryItem[]>(`/history?${new URLSearchParams({ ...(query.trim() ? { q: query.trim() } : {}), limit: String(limit), ...(cwd !== undefined ? { cwd } : {}) })}`),
+  historyFolders: () => call<FolderSummary[]>("/history/folders"),
   openHistory: (id: string) => call<WireSession>(`/history/${id}`, { method: "POST" }),
   deleteHistory: (id: string) => call<{ ok: true }>(`/history/${id}`, { method: "DELETE" }),
   hosts: () => call<RemoteHost[]>("/hosts"),

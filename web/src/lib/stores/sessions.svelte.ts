@@ -6,8 +6,9 @@
  *    (title, status, cost), so a busy transcript never costs the idle ones anything;
  *  - one WebSocket per session carries that session's transcript (snapshot, then deltas).
  *
- * A socket is held for the active session and for every running one, so switching to a session
- * that has been working in the background shows a transcript that is already current.
+ * A socket is held for every session shown in a pane (each pane streams its own, independently), for
+ * the active one and for every running one, so switching to a session that has been working in the
+ * background shows a transcript that is already current.
  */
 import { api } from "../api";
 import { SessionSocket, type SocketState } from "../session-socket";
@@ -57,8 +58,8 @@ class SessionStore {
     for (const meta of sessions) map[meta.id] = this.#merge(this.sessions[meta.id], meta);
     this.sessions = map;
     this.hosts = hosts;
+    // Which session is on screen is the pane layer's decision (App.svelte), not the list's.
     if (this.activeId && !map[this.activeId]) this.activeId = null;
-    if (!this.activeId) this.activeId = sessions[0]?.id ?? null;
     this.#reconcile();
   }
 
@@ -123,9 +124,19 @@ class SessionStore {
 
   // ------------------------------------------------------------ per-session sockets
 
+  /** Sessions on screen in some pane; set by the pane layer (`App.svelte`), which owns the panes. */
+  #visible: string[] = [];
+  setVisible(ids: string[]) {
+    const next = [...new Set(ids)];
+    if (next.length === this.#visible.length && next.every((id, i) => id === this.#visible[i])) return;
+    this.#visible = next;
+    this.#reconcile();
+  }
+
   #wanted(): Set<string> {
     const ids = new Set<string>();
     if (this.activeId && this.sessions[this.activeId]) ids.add(this.activeId);
+    for (const id of this.#visible) if (this.sessions[id]) ids.add(id);
     for (const s of Object.values(this.sessions)) if (s.status === "running") ids.add(s.id);
     return ids;
   }
@@ -202,7 +213,9 @@ class SessionStore {
     delete this.sessions[id];
     delete this.links[id];
     delete this.hydrated[id];
-    if (this.activeId === id) this.activeId = this.list[0]?.id ?? null;
+    // The pane showing it becomes a new chat (App reacts to the session disappearing); it does not
+    // jump to some other session, which in a split layout would be one another pane already shows.
+    if (this.activeId === id) this.activeId = null;
     this.#reconcile();
   }
 

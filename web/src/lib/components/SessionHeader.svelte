@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Server, Folder, Trash2, PanelLeftOpen, GitBranch, Plus } from "@lucide/svelte";
+  import type { Snippet } from "svelte";
   import Button from "./Button.svelte";
   import Badge from "./Badge.svelte";
   import { store } from "../stores/sessions.svelte";
@@ -13,7 +14,13 @@
     ontoggleSidebar,
     onopenhosts,
     onclosesession,
+    paneTools,
+    showSidebarToggle = true,
   }: {
+    /** The pane's own controls (split, notes, close pane), drawn at the end of the action row. */
+    paneTools?: Snippet;
+    /** Only the first pane shows the sidebar toggle; the others do not repeat it. */
+    showSidebarToggle?: boolean;
     session: SessionState;
     onnew: () => void;
     ontoggleSidebar: () => void;
@@ -53,17 +60,21 @@
 <header
   class="relative z-30 grid min-h-13 shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 border-b border-line/80 bg-canvas px-3.5 py-1.5"
 >
-  <Button
-    variant="ghost"
-    size="icon-sm"
-    icon={PanelLeftOpen}
-    title="Toggle sidebar"
-    class="row-span-2 max-sm:row-span-1"
-    onclick={ontoggleSidebar}
-  />
+  {#if showSidebarToggle}
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      icon={PanelLeftOpen}
+      title="Toggle sidebar"
+      class="row-span-2 pane-sm:row-span-1"
+      onclick={ontoggleSidebar}
+    />
+  {:else}
+    <span class="w-0"></span>
+  {/if}
 
   <div class="contents">
-    <div class="col-start-2 flex min-w-0 items-center gap-2 self-end max-sm:self-center">
+    <div class="col-start-2 flex min-w-0 items-center gap-2 self-end pane-sm:self-center">
       <h1 class="truncate text-[13.5px] leading-4 font-semibold">{session.title || "Untitled"}</h1>
       <!--
         One status dot, not a badge: the shape and the colour both carry the
@@ -91,8 +102,8 @@
         </Badge>
       {/if}
     </div>
-    <div class="col-start-2 row-start-2 mt-px flex min-w-0 items-center gap-2 self-start text-[11px] text-ink-faint max-sm:col-span-2 max-sm:mt-0.5 max-sm:pb-0.5">
-      <span class="flex min-w-0 items-center gap-1 max-sm:hidden">
+    <div class="col-start-2 row-start-2 mt-px flex min-w-0 items-center gap-2 self-start text-[11px] text-ink-faint pane-sm:col-span-2 pane-sm:mt-0.5 pane-sm:pb-0.5">
+      <span class="flex min-w-0 items-center gap-1 pane-sm:hidden">
         <Folder size={11} strokeWidth={1.75} class="shrink-0" />
         <span class="truncate font-mono">{session.cwd}</span>
       </span>
@@ -109,9 +120,10 @@
   </div>
 
   <!-- Actions: one cell so the grid can keep them on the title row. -->
-  <div class="col-start-3 row-span-2 flex items-center gap-1 max-sm:row-span-1">
-  <!-- Theme palette switcher: a swatch popover, live-repainting. -->
-  <div class="relative">
+  <div class="col-start-3 row-span-2 flex items-center gap-1 pane-sm:row-span-1">
+  <!-- Theme palette switcher: a swatch popover, live-repainting. Settings has the same choice, so a
+       very narrow pane drops this shortcut rather than push the pane's own controls off-screen. -->
+  <div class="relative pane-xs:hidden">
     <button
       class="interactive flex size-7 cursor-pointer items-center justify-center rounded-md hover:bg-raised pointer-coarse:size-11"
       title="Color palette"
@@ -123,7 +135,7 @@
     </button>
     {#if showPalette}
       <div
-        class="elev-pop enter-pop absolute right-0 z-40 mt-1.5 w-44 rounded-lg p-1 max-sm:fixed max-sm:top-auto max-sm:right-3 max-sm:mt-1"
+        class="elev-pop enter-pop absolute right-0 z-40 mt-1.5 w-44 rounded-lg p-1 pane-sm:fixed pane-sm:top-auto pane-sm:right-3 pane-sm:mt-1"
         role="menu"
       >
         {#each PALETTES as p (p.id)}
@@ -155,9 +167,10 @@
     {/if}
   </div>
 
-  <Button variant="ghost" size="icon-sm" icon={Trash2} title="Close session" onclick={onclosesession} />
-  <Button variant="secondary" size="sm" icon={Plus} class="max-sm:min-w-11" onclick={onnew}>
-    <span class="max-sm:sr-only">New</span>
+  <Button variant="ghost" size="icon-sm" icon={Trash2} title="Close session" class="pane-xs:hidden" onclick={onclosesession} />
+  <Button variant="secondary" size="sm" icon={Plus} class="pane-sm:min-w-11" onclick={onnew} aria-label="New chat here" title="New chat in this pane">
+    <span class="pane-sm:sr-only">New</span>
   </Button>
+  {#if paneTools}{@render paneTools()}{/if}
   </div>
 </header>

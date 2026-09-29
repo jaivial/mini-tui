@@ -9,7 +9,8 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { expandLocal } from "./folders";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +22,9 @@ import { expandSkills } from "../skills";
 import {
   defaultDbPath,
   createSession,
+  listHistory,
+  listFolders,
+  type FolderSummary,
   deleteSession,
   getSession,
   openDb,
@@ -33,6 +37,24 @@ import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 import { probeHost, startRemoteRun, type RemoteRun, type SshTarget } from "./ssh";
+
+/** One saved session in the history list: metadata only, no transcript. */
+export interface HistoryItem {
+  id: string;
+  title: string;
+  cwd: string;
+  model: string;
+  task: string;
+  createdAt: number;
+  updatedAt: number;
+  apiCalls: number;
+  cost: number;
+  exitStatus: string;
+  /** A saved conversation exists to continue from. */
+  resumable: boolean;
+  /** This server already holds it open. */
+  open: boolean;
+}
 
 export type SessionStatus = "idle" | "running" | "done" | "error" | "interrupted";
 
@@ -110,6 +132,13 @@ interface Internal {
   run?: MiniRun;
   remote?: RemoteRun;
   watch?: WatchHandle;
+  /**
+   * Prompts echoed into the transcript at send time, awaiting the journal's own copy of them. The agent
+   * records each follow-up as a `UserNewTask` message; without this the same prompt would show twice.
+   */
+  pendingTasks?: string[];
+  /** The local agent process has exited (a resumed session has none until a follow-up starts one). */
+  exited?: boolean;
   /** Trajectory path on the local box (local runs only). */
   trajPath?: string;
   consumed: number;
@@ -153,6 +182,7 @@ export class SessionManager {
       entry.consumed = 0;
       entry.parseState = createParseState();
       entry.session.events = [];
+      entry.pendingTasks = [];
     }
     // The in-flight message: streamed fragments arrive here long before the message that
     // carries them, so they are the only thing the UI can show while the model is writing.
@@ -168,8 +198,20 @@ export class SessionManager {
       this.#emit(entry);
       return;
     }
-    const fresh = messagesToEvents(messages, { showSystem }, entry.consumed, entry.parseState);
+    let fresh = messagesToEvents(messages, { showSystem }, entry.consumed, entry.parseState);
     entry.consumed = messages.length;
+    if (entry.pendingTasks?.length) {
+      // The prompt was echoed when it was sent; drop the journal's copy so it shows exactly once.
+      const pending = [...entry.pendingTasks];
+      fresh = fresh.filter((event) => {
+        if (event.type !== "task") return true;
+        const at = pending.indexOf(event.text);
+        if (at === -1) return true;
+        pending.splice(at, 1);
+        return false;
+      });
+      entry.pendingTasks = pending;
+    }
     if (fresh.length) entry.session.events.push(...fresh.map(boundEvent));
 
     const info = parseInfo(traj);
@@ -179,7 +221,9 @@ export class SessionManager {
     if (info.exitStatus) entry.session.exitStatus = info.exitStatus;
 
     const exit = [...fresh].reverse().find((event) => event.type === "exit");
-    if (exit && exit.type === "exit") {
+    // A stop the user asked for stays a stop: the exit the agent journals as it winds down must not
+    // turn "interrupted" back into "done" (or "error").
+    if (exit && exit.type === "exit" && entry.session.status !== "interrupted") {
       entry.session.exitStatus = exit.exitStatus;
       entry.session.status = exit.exitStatus === "Submitted" ? "done" : "error";
     }
@@ -199,15 +243,18 @@ export class SessionManager {
     const id = newId();
     const title = titleFor(options.prompt);
     if (options.model?.trim()) saveLastModel(options.model.trim());
-    const cwd = options.cwd || process.cwd();
     const model = options.model || "";
 
     if (options.target === "remote") {
       if (!options.hostId) throw new Error("a remote session needs a host");
       const host = loadHosts().find((h) => h.id === options.hostId);
       if (!host) throw new Error("unknown remote host");
-      return this.#createRemote(id, title, cwd, model, options.prompt, host);
+      // A remote folder is the host's path, never resolved against this machine.
+      return this.#createRemote(id, title, options.cwd?.trim() || "", model, options.prompt, host);
     }
+    // A local folder must exist here, or the agent would silently start somewhere else.
+    const cwd = options.cwd?.trim() ? expandLocal(options.cwd) : process.cwd();
+    if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`${cwd} is not a folder on this machine`);
     return this.#createLocal(id, title, cwd, model, options.prompt);
   }
 
@@ -267,6 +314,8 @@ export class SessionManager {
     entry.watch = watchTrajectory(run.session.trajPath, (traj) => this.#ingest(entry, traj));
 
     void run.exited.then(async (code) => {
+      if (entry.run !== run) return;
+      entry.exited = true;
       entry.watch?.stop();
       const final = readTrajectory(run.session.trajPath);
       if (final) this.#ingest(entry, final);
@@ -294,19 +343,21 @@ export class SessionManager {
     prompt: string,
     host: RemoteHostRecord,
   ): Promise<LiveSession> {
+    // The folder picked for this chat, else the host's default folder.
+    const workdir = cwd || host.workdir;
     const target: SshTarget = {
       host: host.host,
       port: host.port,
       user: host.user,
       identity: host.identity,
-      workdir: host.workdir,
+      workdir,
       model: model || undefined,
     };
 
     const session: LiveSession = {
       id,
       title,
-      cwd: host.workdir,
+      cwd: workdir,
       model,
       task: prompt,
       target: "remote",
@@ -324,6 +375,13 @@ export class SessionManager {
     };
     const entry: Internal = { session, consumed: 0, parseState: createParseState() };
     this.#live.set(id, entry);
+    // A remote chat is saved like a local one. Every later save is an UPDATE of this row; without it they
+    // all updated nothing, so remote chats never reached the history (nor the sidebar's folders).
+    try {
+      createSession(this.db(), { id, title, cwd: workdir, model, task: prompt });
+    } catch {
+      // persistence is best-effort
+    }
 
     // Echo the prompt immediately, exactly like the TUI does on submit.
     session.events.push({ type: "task", text: prompt });
@@ -422,6 +480,9 @@ export class SessionManager {
           exit_status: session.exitStatus,
           api_calls: session.apiCalls,
           cost: session.cost,
+          // Events are kept even with no messages: a transcript worth reading is not thrown away
+          // because the agent never journalled a message.
+          events_json: JSON.stringify(session.events),
         });
       }
     } catch {
@@ -435,10 +496,17 @@ export class SessionManager {
     if (!entry) throw new Error("unknown session");
     const text = prompt.trim();
     if (!text) return;
+    const running = !!entry.run && !entry.exited;
+    if (!running && entry.session.target === "local" && entry.session.messages.length === 0) {
+      // Nothing was saved to continue from (the session never made a model call). Say so instead of
+      // starting an agent with no context that would answer as if the conversation had never happened.
+      throw new Error("this session has no saved conversation and cannot be continued: start a new chat");
+    }
     // The agent gets each referenced skill's instructions ahead of the prompt; the transcript
     // shows the prompt as typed (the parser collapses the block again on replay).
     const expanded = expandSkills(text);
     entry.session.events.push({ type: "task", text });
+    (entry.pendingTasks ??= []).push(text);
     if (expanded.missing.length) {
       entry.session.events.push({
         type: "notice",
@@ -450,16 +518,80 @@ export class SessionManager {
     entry.session.startedAt = Date.now();
     this.#emit(entry);
 
-    if (entry.run) {
+    if (entry.run && !entry.exited) {
       // The agent is holding at its control file: it picks the message up
       // before the next model call.
       entry.run.sendUserMessage(expanded.task);
       entry.watch ??= watchTrajectory(entry.run.session.trajPath, (traj) => this.#ingest(entry, traj));
-    } else {
+    } else if (entry.session.target === "remote") {
       // A remote headless run already exited: start a fresh turn that resumes
       // the same conversation from the saved messages.
       void this.#continueRemote(entry, expanded.task);
+    } else {
+      // A local session nothing is running for: one restored from history, or one whose agent has
+      // exited. Start an agent on the saved conversation, exactly as the terminal's /resume does.
+      this.#resumeLocal(entry, expanded.task);
     }
+  }
+
+  /**
+   * Continue a local session from its saved messages: a new agent process with `--resume <file>`, in the
+   * session's own folder and on its own model, journalling into a fresh trajectory that this session then
+   * follows. The old turns are already in `session.events`; only the new ones are appended.
+   */
+  #resumeLocal(entry: Internal, task: string): void {
+    const session = entry.session;
+    const history = entry.session.messages;
+    let resumePath: string;
+    try {
+      resumePath = writeResumeFile(session.id, history);
+    } catch (error) {
+      this.#fail(entry, `could not prepare the saved conversation: ${(error as Error).message}`);
+      return;
+    }
+    // The saved folder may not exist on this machine (a session from another checkout): running in the
+    // server's own folder beats failing to start, and the notice says so.
+    const cwd = existsSync(session.cwd) ? session.cwd : process.cwd();
+    if (cwd !== session.cwd) {
+      session.events.push({ type: "notice", text: `${session.cwd} is not on this machine: continuing in ${cwd}` });
+    }
+    const model = session.model || DEFAULT_MODEL || loadLastModel();
+    const run = spawnMini({
+      task,
+      model: model || undefined,
+      env: modelEnv(model),
+      cwd,
+      resumePath,
+      control: true,
+    });
+    entry.run = run;
+    entry.exited = false;
+    entry.trajPath = run.session.trajPath;
+    // The new trajectory replays the saved messages first, so `consumed` starts at their count and only
+    // what the agent adds is parsed. The parse state is rebuilt from the same prefix.
+    entry.consumed = history.length;
+    entry.parseState = createParseState(history, history.length);
+    entry.watch?.stop();
+    entry.watch = watchTrajectory(run.session.trajPath, (traj) => this.#ingest(entry, traj));
+
+    void run.exited.then((code) => {
+      // A newer run may have replaced this one (the user sent again): only the current run may settle.
+      if (entry.run !== run) return;
+      entry.exited = true;
+      entry.watch?.stop();
+      const final = readTrajectory(run.session.trajPath);
+      if (final) this.#ingest(entry, final);
+      const interrupted = session.status === "interrupted";
+      session.partial = undefined;
+      this.#finish(entry, interrupted ? "interrupted" : code === 0 ? "done" : "error", code);
+    });
+    this.#emit(entry);
+  }
+
+  #fail(entry: Internal, message: string): void {
+    entry.session.status = "error";
+    entry.session.events.push({ type: "error", text: message });
+    this.#emit(entry);
   }
 
   /**
@@ -480,8 +612,13 @@ export class SessionManager {
     entry.session.model = name;
     saveLastModel(name);
 
-    if (entry.run) {
-      entry.run.switchModel(name);
+    // A model change is only a model change: it never starts, resumes or wakes a run, and it never
+    // changes the session's status. A run in progress takes it from its next step; otherwise the next
+    // message you send runs on it. (A finished agent may still hold its control channel open, so
+    // "has a run" is not "is running".)
+    const working = !!entry.run && !entry.exited && entry.session.status === "running";
+    if (entry.run && !entry.exited) entry.run.switchModel(name);
+    if (working) {
       entry.session.events.push({
         type: "notice",
         text: `model \u2192 ${name} (from next step)`,
@@ -490,7 +627,7 @@ export class SessionManager {
     } else {
       entry.session.events.push({
         type: "notice",
-        text: `model \u2192 ${name} (next run)`,
+        text: `model \u2192 ${name} (from your next message)`,
         interruptType: "model",
       });
     }
@@ -540,7 +677,7 @@ export class SessionManager {
         port: host.port,
         user: host.user,
         identity: host.identity,
-        workdir: host.workdir,
+        workdir: entry.session.cwd || host.workdir,
         model: entry.session.model || undefined,
       },
       prompt,
@@ -604,22 +741,52 @@ export class SessionManager {
     this.#emit(entry);
   }
 
+  /**
+   * Stop a session and drop it from the open list. It stays in the history: closing is "put it away",
+   * and "Resume" is how it comes back. (This used to delete the row, so every closed session was gone
+   * for good and there was nothing left to resume.) Anything the session has not saved yet is saved now.
+   */
   close(id: string): void {
     const entry = this.#live.get(id);
     if (!entry) return;
     entry.watch?.stop();
     entry.run?.kill();
     entry.remote?.stop();
-    try {
-      deleteSession(this.db(), id);
-    } catch {
-      // the history row may already be gone
-    }
+    if (entry.session.status === "running") entry.session.status = "interrupted";
+    this.#persist(entry);
     this.#live.delete(id);
   }
 
-  /** Restore a finished session from the shared /resume history. */
+  /**
+   * Remove a session from the history for good. Works on an open session (stopped first) and on one that
+   * was never opened in this server; `false` when there was no such session. Deleting is a separate,
+   * deliberate action from closing.
+   */
+  deleteHistory(id: string): boolean {
+    const entry = this.#live.get(id);
+    if (entry) {
+      entry.watch?.stop();
+      entry.run?.kill();
+      entry.remote?.stop();
+      this.#live.delete(id);
+    }
+    try {
+      return deleteSession(this.db(), id);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Restore a finished session from the shared /resume history.
+   *
+   * Idempotent: a session this server already holds is returned as it is. Building a second copy from
+   * the database would replace a live one (possibly mid-run, with events the database has not seen yet)
+   * and leave two owners of one id.
+   */
   openHistory(id: string): LiveSession {
+    const held = this.#live.get(id);
+    if (held) return held.session;
     const row = getSession(this.db(), id);
     if (!row) throw new Error("unknown session");
     const events = row.events_json ? (JSON.parse(row.events_json) as RunEvent[]) : [];
@@ -647,14 +814,31 @@ export class SessionManager {
     return session;
   }
 
-  history(limit = 50) {
-    const rows = this.db()
-      .query(
-        `SELECT id, title, cwd, model, task, created_at, updated_at, api_calls, cost, exit_status
-         FROM sessions ORDER BY updated_at DESC LIMIT ?`,
-      )
-      .all(limit);
-    return rows;
+  /**
+   * The saved sessions for "Resume": newest first, searchable, metadata only (a listing must never read
+   * a transcript). `open` marks the ones this server already holds, so the UI offers each once.
+   */
+  /** Folders with saved sessions, for the sidebar's per-folder view. Instant (index only). */
+  folders(limit?: number): FolderSummary[] {
+    return listFolders(this.db(), limit);
+  }
+
+  history(options: { query?: string; limit?: number; cwd?: string } = {}): HistoryItem[] {
+    return listHistory(this.db(), options).map((row) => ({
+      id: row.id,
+      title: row.title,
+      cwd: row.cwd,
+      model: row.model,
+      task: row.task,
+      // camelCase like every other payload this server sends, not the database's column names
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      apiCalls: row.api_calls,
+      cost: row.cost,
+      exitStatus: row.exit_status,
+      resumable: row.resumable,
+      open: this.#live.has(row.id),
+    }));
   }
 }
 

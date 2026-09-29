@@ -298,3 +298,20 @@ describe("setModel", () => {
     });
   });
 });
+
+describe("a remote chat is saved from the start", () => {
+  test("creating one writes its history row at once, in the folder it runs in", async () => {
+    const { saveHosts, SessionManager: SM } = await import("../src/web/sessions");
+    const { openDb: open, getSession: get } = await import("../src/sessions");
+    saveHosts([{ id: "h-t", label: "box", host: "192.0.2.1", port: 22, user: "u", workdir: "/srv/default" }]);
+    const m = new SM(() => {});
+    const s = await m.create({ prompt: "remote job", target: "remote", hostId: "h-t", cwd: "/srv/picked" });
+    m.close(s.id); // no ssh needed: 192.0.2.1 is unroutable, the run just fails; the row is what matters
+    const db = open(process.env.MINITUI_DB_PATH!);
+    const row = get(db, s.id);
+    db.close();
+    expect(row?.cwd).toBe("/srv/picked");
+    expect(row?.task).toBe("remote job");
+    saveHosts([]);
+  });
+});

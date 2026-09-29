@@ -186,6 +186,9 @@ export interface CommandInfo {
 export const COMMANDS: CommandInfo[] = [
   { name: "new", insert: "/new", detail: "Start a new chat", kind: "client" },
   { name: "model", insert: "/model", detail: "Switch the model for this chat", args: "[id]", kind: "client" },
+  { name: "resume", insert: "/resume", detail: "Reopen a saved session and continue it", kind: "client" },
+  { name: "split", insert: "/split", detail: "Open a new pane beside this one (down: below it)", args: "[right|down]", kind: "client" },
+  { name: "notes", insert: "/notes", detail: "Open this session's notes", kind: "client" },
   { name: "compact", insert: "/compact", detail: "Summarize the conversation to free context", kind: "client" },
   { name: "connect", insert: "/connect", detail: "Connect a provider with your API key", kind: "client" },
   { name: "settings", insert: "/settings", detail: "Open settings", kind: "client" },
