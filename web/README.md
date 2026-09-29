@@ -116,6 +116,18 @@ closes, on blur, on `Ctrl/⌘+S`, and when the page hides. Notes are stored in t
 table, so a history listing never reads them) and deleted with their session. In a narrow pane the notes cover
 the chat instead of squeezing both.
 
+**Terminal** (the terminal button in a pane's header, the **Terminal** tab beside Notes, `/terminal`, or
+`Ctrl+\``): an interactive shell for that session. It is a real PTY on the server (`src/web/terminals.ts`),
+started in the session's folder, or an `ssh -tt` login shell on the session's remote host, in its folder.
+xterm.js draws it, loaded only when the first terminal opens. It streams over the hub socket like notes:
+keys go up as `term.input`, output comes down as `term.data` (coalesced, and a flood is cut to its tail).
+Hiding the panel, switching to Notes or reloading the page keeps the shell running, and coming back replays
+its recent output. **Restart** ends it and starts a fresh one; a shell nobody watches ends after 10 minutes,
+and all of them end with the server. Inside the terminal the shell owns Ctrl+letters (Ctrl+C, Ctrl+K,
+Ctrl+B...); only pane shortcuts (Ctrl+\`, Alt+1…6, Ctrl/⌘+Alt+arrows) reach the app. **It is a shell as the
+user the server runs as**, so the server must stay behind authentication (the nginx login here), and
+`MINITUI_WEB_TERMINAL=0` turns it off.
+
 **The right sidebar goes through one socket, never REST and never polling.** A tab opens a single hub socket,
 `/api/hub`, the first time a notes panel appears, and every pane shares it. A note is *watched*: the hub answers
 with its current value at once, then pushes every change made anywhere. An edit on another device shows up live.
@@ -131,6 +143,7 @@ connections), and re-watches everything, so what changed while it was down arriv
 | --- | --- |
 | `{t:"note.watch", id}` / `{t:"note.unwatch", id}` | `{t:"hello", limits:{noteMax}}` on connect |
 | `{t:"note.save", id, body, base, req}` | `{t:"note", note}` on watch and on every change elsewhere |
+| `{t:"term.open", id, session?, cols, rows}` · `{t:"term.input", id, data}` · `{t:"term.resize", id, cols, rows}` · `{t:"term.detach", id}` · `{t:"term.close", id}` | `{t:"term.opened", id, cwd, title, replay, alive}` · `{t:"term.data", id, data}` · `{t:"term.exit", id, code}` |
 | `{t:"ping"}` | `{t:"note.saved", req, note}` / `{t:"note.conflict", req, current}` / `{t:"error", req?, error}` / `{t:"pong"}` |
 
 **Size** (Settings › General › Size): **Interface size** (85-140%) zooms everything, like page zoom kept to

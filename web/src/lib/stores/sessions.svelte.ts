@@ -105,6 +105,23 @@ class SessionStore {
     };
   }
 
+  /**
+   * Bring back sessions the panes still show but the server no longer holds (it restarted, and open
+   * sessions live in its memory): reopen each from the saved history. Ids that are nowhere stay missing,
+   * and their panes become new chats as before.
+   */
+  async restore(ids: string[]) {
+    const missing = [...new Set(ids)].filter((id) => !this.sessions[id]);
+    await Promise.all(
+      missing.map((id) =>
+        api.openHistory(id).then(
+          (session) => this.adopt(session),
+          () => {},
+        ),
+      ),
+    );
+  }
+
   /** Adopt a session the UI just created or opened (its transcript is included). */
   adopt(session: WireSession) {
     this.sessions[session.id] = { messages: [], ...session };

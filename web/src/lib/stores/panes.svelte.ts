@@ -20,6 +20,8 @@ export interface Pane {
   prompt: string;
   chips: Chip[];
   notesOpen: boolean;
+  /** Which tab the right sidebar shows while it is open. */
+  sideTab: "notes" | "terminal";
   /** ↑/↓ prompt recall. Not reactive state: it is read on a key press, never rendered. */
   memory: PromptMemory;
   /** The session the memory was seeded from, so it is reseeded when the pane shows another one. */
@@ -28,7 +30,7 @@ export interface Pane {
 
 const KEY = "minitui.panes";
 const uid = (p: string) => `${p}${Math.random().toString(36).slice(2, 9)}`;
-const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, memory: new PromptMemory(), memoryOf: null });
+const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, sideTab: "notes", memory: new PromptMemory(), memoryOf: null });
 
 class PaneStore {
   tree = $state<Node>({ kind: "pane", id: "p1" });
@@ -144,9 +146,19 @@ class PaneStore {
   }
 
   toggleNotes(paneId: string, open?: boolean) {
+    this.toggleSide(paneId, "notes", open);
+  }
+
+  /**
+   * The right sidebar, opened on `tab`. Pressing the button of the tab already showing closes it; the
+   * other tab's button switches to that tab instead of closing (one button per tab, one panel).
+   */
+  toggleSide(paneId: string, tab: "notes" | "terminal", open?: boolean) {
     const pane = this.panes[paneId];
     if (!pane) return;
-    pane.notesOpen = open ?? !pane.notesOpen;
+    if (open === undefined) open = !(pane.notesOpen && pane.sideTab === tab);
+    pane.notesOpen = open;
+    if (open) pane.sideTab = tab;
     this.#save();
   }
 
@@ -159,7 +171,7 @@ class PaneStore {
   }
   #save() {
     try {
-      const panes = Object.fromEntries(this.order.map((id) => [id, { sessionId: this.panes[id]?.sessionId ?? null, notesOpen: !!this.panes[id]?.notesOpen }]));
+      const panes = Object.fromEntries(this.order.map((id) => [id, { sessionId: this.panes[id]?.sessionId ?? null, notesOpen: !!this.panes[id]?.notesOpen, sideTab: this.panes[id]?.sideTab ?? "notes" }]));
       localStorage.setItem(KEY, JSON.stringify({ v: 1, tree: $state.snapshot(this.tree), panes, focused: this.focusedId }));
     } catch {
       /* private mode, or storage full: panes still work, they just are not remembered */
@@ -167,14 +179,14 @@ class PaneStore {
   }
   #load() {
     try {
-      const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as { v?: number; tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown }>; focused?: unknown } | null;
+      const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as { v?: number; tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown; sideTab?: unknown }>; focused?: unknown } | null;
       if (!raw || raw.v !== 1) return;
       const tree = restore(raw.tree);
       if (!tree) return;
       const panes: Record<string, Pane> = {};
       for (const id of leaves(tree)) {
         const saved = raw.panes?.[id];
-        panes[id] = { ...blank(id), sessionId: typeof saved?.sessionId === "string" ? saved.sessionId : null, notesOpen: saved?.notesOpen === true };
+        panes[id] = { ...blank(id), sessionId: typeof saved?.sessionId === "string" ? saved.sessionId : null, notesOpen: saved?.notesOpen === true, sideTab: saved?.sideTab === "terminal" ? "terminal" : "notes" };
       }
       this.tree = tree;
       this.panes = panes;

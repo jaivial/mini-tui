@@ -378,3 +378,68 @@ describe("notes: the hub socket only", () => {
     a.ws.close();
   });
 });
+
+describe("terminals: over the same hub socket", () => {
+  const wsBase = base.replace(/^http/, "ws");
+  async function client() {
+    const ws = new WebSocket(`${wsBase}/api/hub`);
+    const got: any[] = [];
+    ws.onmessage = (ev) => got.push(JSON.parse(String(ev.data)));
+    await new Promise((r) => (ws.onopen = r));
+    const text = (id: string) => got.filter((m) => m.t === "term.data" && m.id === id).map((m) => m.data).join("");
+    const until = async (ok: () => boolean, ms = 5000) => { for (let i = 0; i < ms / 25 && !ok(); i++) await Bun.sleep(25); return ok(); };
+    return { ws, got, text, until, send: (m: unknown) => ws.send(JSON.stringify(m)) };
+  }
+  test("open, type a command, see its output; the shell starts in the session's folder", async () => {
+    // Its own session (earlier tests in this file delete the seeded ones), in a folder of its own.
+    const { openDb: open, createSession: create } = await import("../src/sessions");
+    const { mkdirSync: mk, realpathSync: real } = await import("node:fs");
+    const folder = join(dir, "term-folder");
+    mk(folder, { recursive: true });
+    const db = open(dbPath);
+    create(db, { id: "s-term", cwd: folder, model: "m", task: "terminal here" });
+    db.close();
+    expect((await fetch(`${base}/api/history/s-term`, { method: "POST" })).status).toBe(200);
+    const c = await client();
+    c.send({ t: "term.open", id: "tt-1", session: "s-term", cols: 100, rows: 30 });
+    expect(await c.until(() => c.got.some((m) => m.t === "term.opened"))).toBe(true);
+    expect(real(c.got.find((m) => m.t === "term.opened").cwd)).toBe(real(folder));
+    c.send({ t: "term.input", id: "tt-1", data: "echo HUB-$((20+22)); stty size\r" });
+    expect(await c.until(() => c.text("tt-1").includes("HUB-42") && c.text("tt-1").includes("30 100"))).toBe(true);
+    c.send({ t: "term.close", id: "tt-1" });
+    c.ws.close();
+  });
+  test("a reload reattaches to the same shell and replays it", async () => {
+    const a = await client();
+    a.send({ t: "term.open", id: "tt-2", cols: 80, rows: 24 });
+    a.send({ t: "term.input", id: "tt-2", data: "export X=same-shell; echo BEFORE-RELOAD\r" });
+    expect(await a.until(() => a.text("tt-2").includes("BEFORE-RELOAD"))).toBe(true);
+    a.ws.close();
+    await Bun.sleep(200);
+    const b = await client();
+    b.send({ t: "term.open", id: "tt-2", cols: 80, rows: 24 });
+    expect(await b.until(() => b.got.some((m) => m.t === "term.opened"))).toBe(true);
+    expect(b.got.find((m) => m.t === "term.opened").replay).toContain("BEFORE-RELOAD");
+    b.send({ t: "term.input", id: "tt-2", data: "echo X=$X\r" });
+    expect(await b.until(() => b.text("tt-2").includes("X=same-shell"))).toBe(true);
+    b.send({ t: "term.close", id: "tt-2" });
+    b.ws.close();
+  });
+  test("a terminal's output never reaches a client that does not watch it", async () => {
+    const a = await client(), b = await client();
+    a.send({ t: "term.open", id: "tt-3", cols: 80, rows: 24 });
+    a.send({ t: "term.input", id: "tt-3", data: "echo PRIVATE-TO-A\r" });
+    expect(await a.until(() => a.text("tt-3").includes("PRIVATE-TO-A"))).toBe(true);
+    await Bun.sleep(150);
+    expect(b.got.some((m) => m.t?.startsWith("term."))).toBe(false);
+    a.send({ t: "term.close", id: "tt-3" });
+    a.ws.close();
+    b.ws.close();
+  });
+  test("bad terminal messages are answered with a reason", async () => {
+    const c = await client();
+    c.send({ t: "term.open", id: "../../x", cols: 80, rows: 24 });
+    expect(await c.until(() => c.got.some((m) => m.t === "error" && /invalid terminal id/.test(m.error)))).toBe(true);
+    c.ws.close();
+  });
+});

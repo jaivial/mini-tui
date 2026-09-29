@@ -1,11 +1,13 @@
 <script lang="ts">
   import { ArrowUp, Square, Terminal as TerminalIcon, Globe, SquareSlash, Sparkles } from "@lucide/svelte";
+  import { untrack } from "svelte";
   import Chip from "./Chip.svelte";
   import Button from "./Button.svelte";
   import ModelPicker from "./ModelPicker.svelte";
   import CompletionMenu from "./CompletionMenu.svelte";
   import { catalog } from "../stores/catalog.svelte";
   import { completionAt, pickCompletion } from "../completion";
+  import { skillQueryAt } from "../../../../src/skillMatch";
   import { addChip, announce, composePrompt, hasMessage, removeChip, type Chip as ChipT } from "../chips";
   import { step } from "../models";
   import { fitHeight } from "../grow";
@@ -203,6 +205,11 @@
   let active = $state(0);
   let dismissed = $state("");
   const completion = $derived(completionAt(value, caret, catalog.commands, catalog.skills));
+  // A skill added on disk since the page loaded must show up: refresh the list when a `$` starts.
+  const skillQuery = $derived(skillQueryAt(value, caret));
+  $effect(() => {
+    if (skillQuery?.query === "") untrack(() => catalog.refreshSkills());
+  });
   // Escape hides the menu for the text it was open on; typing again brings it back.
   // A recalled message never opens the menu: ↑ would then move in the menu instead of the memory.
   const menu = $derived(completion && dismissed !== `${completion.kind}:${value}` && dismissed !== `recall:${value}` ? completion : null);

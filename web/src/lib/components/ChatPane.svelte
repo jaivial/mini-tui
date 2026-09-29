@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, Settings as SettingsIcon } from "@lucide/svelte";
+  import { PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Settings as SettingsIcon } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import Transcript from "./Transcript.svelte";
@@ -9,6 +9,8 @@
   import PixelLoader from "./PixelLoader.svelte";
   import Spinner from "./Spinner.svelte";
   import NotesPanel from "./NotesPanel.svelte";
+  // The terminal (xterm.js, ~290 KB) is loaded the first time a terminal is opened, not with the app.
+  const TerminalPanel = () => import("./TerminalPanel.svelte");
   import PaneMenu from "./PaneMenu.svelte";
   import FolderPicker from "./FolderPicker.svelte";
   import { rememberRecent } from "../folderPath";
@@ -62,6 +64,7 @@
 
   let composer = $state<{ focus: () => void } | null>(null);
   let notes = $state<{ focus: () => void } | null>(null);
+  let terminal = $state<{ focus: () => void } | null>(null);
   let scroller = $state<HTMLElement | null>(null);
   let modelOpen = $state(false);
   let sending = $state(false);
@@ -130,6 +133,10 @@
         break;
       case "split":
         onsplit(cmd.arg === "down" || cmd.arg === "v" ? "col" : "row");
+        break;
+      case "terminal":
+        panes.toggleSide(pane.id, "terminal", true);
+        void tick().then(() => terminal?.focus());
         break;
       case "notes":
         panes.toggleNotes(pane.id, true);
@@ -226,13 +233,18 @@
     panes.show(pane.id, null);
   }
 
-  /** Opening moves focus into the notes (after the panel has rendered); closing leaves it on the button. */
-  async function toggleNotes() {
-    panes.toggleNotes(pane.id);
+  /** Opening moves focus into the panel (after it has rendered); closing leaves it on the button. */
+  async function toggleSide(tab: "notes" | "terminal") {
+    panes.toggleSide(pane.id, tab);
     if (!pane.notesOpen) return;
     await tick();
-    notes?.focus();
+    (tab === "notes" ? notes : terminal)?.focus();
   }
+  const toggleNotes = () => toggleSide("notes");
+  export function focusTerminal() {
+    void toggleSide("terminal");
+  }
+  const sideOpen = (tab: "notes" | "terminal") => pane.notesOpen && pane.sideTab === tab;
 </script>
 
 {#snippet folder()}
@@ -251,11 +263,21 @@
     variant="ghost"
     size="icon-sm"
     icon={NotebookPen}
-    title={pane.notesOpen ? "Hide notes" : "Notes"}
-    aria-label={pane.notesOpen ? "Hide notes" : "Show notes"}
-    aria-pressed={pane.notesOpen}
-    active={pane.notesOpen}
+    title={sideOpen("notes") ? "Hide notes" : "Notes"}
+    aria-label={sideOpen("notes") ? "Hide notes" : "Show notes"}
+    aria-pressed={sideOpen("notes")}
+    active={sideOpen("notes")}
     onclick={toggleNotes}
+  />
+  <Button
+    variant="ghost"
+    size="icon-sm"
+    icon={SquareTerminal}
+    title={sideOpen("terminal") ? "Hide terminal" : "Terminal"}
+    aria-label={sideOpen("terminal") ? "Hide terminal" : "Show terminal"}
+    aria-pressed={sideOpen("terminal")}
+    active={sideOpen("terminal")}
+    onclick={() => toggleSide("terminal")}
   />
   <PaneMenu {tabs} {canRight} {canDown} limitReached={!panes.canSplit} canClose={total > 1} {onsplit} onclose={onclosepane} oncloseSession={session ? closeSession : undefined} />
 {/snippet}
@@ -398,8 +420,44 @@
       narrow one it covers the chat (the chat is still one tap away), since two squeezed columns are
       worse than one full one.
     -->
-    <div class="notes-slot flex min-h-0 shrink-0 border-l border-line/80">
-      <NotesPanel bind:this={notes} noteId={session?.id ?? null} title={session?.title ?? ""} onclose={() => panes.toggleNotes(pane.id, false)} />
+    <div class="notes-slot flex min-h-0 shrink-0 flex-col border-l border-line/80 bg-surface" class:is-terminal={pane.sideTab === "terminal"}>
+      <!-- Two tabs, one panel: Notes and Terminal. Arrow keys move between them (roving tabindex). -->
+      <div class="flex shrink-0 items-center gap-0.5 border-b border-line/80 px-1.5 pt-1" role="tablist" aria-label="Side panel">
+        {#each [{ id: "notes", label: "Notes", icon: NotebookPen }, { id: "terminal", label: "Terminal", icon: SquareTerminal }] as tab (tab.id)}
+          {@const Icon = tab.icon}
+          <button
+            type="button"
+            role="tab"
+            id="{pane.id}-side-{tab.id}"
+            aria-selected={pane.sideTab === tab.id}
+            aria-controls="{pane.id}-side-panel"
+            tabindex={pane.sideTab === tab.id ? 0 : -1}
+            class="interactive -mb-px flex min-h-9 cursor-pointer items-center gap-1.5 border-b-2 px-2.5 text-[12.5px] font-medium pointer-coarse:min-h-11
+              {pane.sideTab === tab.id ? 'border-brand text-ink' : 'border-transparent text-ink-muted hover:text-ink'}"
+            onclick={() => panes.toggleSide(pane.id, tab.id as "notes" | "terminal", true)}
+            onkeydown={(e) => {
+              if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+              e.preventDefault();
+              const next = pane.sideTab === "notes" ? "terminal" : "notes";
+              panes.toggleSide(pane.id, next, true);
+              void tick().then(() => document.getElementById(`${pane.id}-side-${next}`)?.focus());
+            }}
+          ><Icon size={13} strokeWidth={1.75} aria-hidden="true" />{tab.label}</button>
+        {/each}
+      </div>
+      <div id="{pane.id}-side-panel" role="tabpanel" aria-labelledby="{pane.id}-side-{pane.sideTab}" class="flex min-h-0 flex-1 flex-col">
+        {#if pane.sideTab === "terminal"}
+          {#await TerminalPanel()}
+            <div class="flex flex-1 items-center justify-center gap-2 text-[12px] text-ink-muted" role="status"><Spinner size={12} label="" />Loading the terminal</div>
+          {:then mod}
+            <mod.default bind:this={terminal} paneId={pane.id} sessionId={session?.id ?? null} title={session?.cwd ?? ""} onclose={() => panes.toggleSide(pane.id, "terminal", false)} />
+          {:catch}
+            <div class="m-3 rounded-md bg-err/10 px-3 py-2 text-[12px] text-err" role="alert">Could not load the terminal. Reload the page and try again.</div>
+          {/await}
+        {:else}
+          <NotesPanel bind:this={notes} noteId={session?.id ?? null} title={session?.title ?? ""} onclose={() => panes.toggleNotes(pane.id, false)} />
+        {/if}
+      </div>
     </div>
   {/if}
 </section>
@@ -421,17 +479,28 @@
   .notes-slot {
     width: clamp(16rem, 32%, 24rem);
   }
+  /* A terminal needs columns: the sidebar is wider while it shows one. */
+  .notes-slot.is-terminal {
+    width: clamp(20rem, 44%, 40rem);
+  }
   @container pane (width < 44rem) {
-    .notes-slot {
+    .notes-slot,
+    .notes-slot.is-terminal {
       position: absolute;
       inset: 0 0 0 auto;
       width: min(100%, 24rem);
       z-index: 36;
       box-shadow: -12px 0 32px -12px oklch(0 0 0 / 0.35);
     }
+    /* A terminal wants every column it can get: in a narrow pane it takes the whole pane. */
+    .notes-slot.is-terminal {
+      width: 100%;
+      border-left: 0;
+    }
   }
   @container pane (width < 26rem) {
-    .notes-slot {
+    .notes-slot,
+    .notes-slot.is-terminal {
       width: 100%;
       border-left: 0;
     }
