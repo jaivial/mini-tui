@@ -29,15 +29,30 @@ class Catalog {
     }
   }
 
+  /** When the skill list was last fetched (ms since epoch; 0 = never). */
+  #skillsAt = 0;
+
   async loadSkills(force = false) {
     if (this.skillsStatus === "loading" || (this.skillsStatus === "ready" && !force)) return;
-    this.skillsStatus = "loading";
+    // Keep showing the list we have while a refresh is in flight (no skeleton flash).
+    if (!this.skills.length) this.skillsStatus = "loading";
+    this.#skillsAt = Date.now();
     try {
       this.skills = await api.skills();
       this.skillsStatus = "ready";
     } catch {
-      this.skillsStatus = "error";
+      if (!this.skills.length) this.skillsStatus = "error";
     }
+  }
+
+  /**
+   * Skills are folders on disk (`~/.config/mini-tui/skills`) that can be added while the page is
+   * open, so a list fetched at boot goes stale. Re-fetch when it is older than `maxAgeMs`: called
+   * when a `$` is typed and when the tab becomes visible again.
+   */
+  refreshSkills(maxAgeMs = 3000) {
+    if (Date.now() - this.#skillsAt < maxAgeMs) return;
+    void this.loadSkills(true);
   }
 
   async loadSettings() {

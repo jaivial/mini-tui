@@ -2,6 +2,34 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.21.0 — 2026-09-29
+
+An interactive terminal beside the notes, and panes that survive a server restart.
+
+### Added
+
+- **An interactive terminal in the side panel.** Next to Notes, each pane has a **Terminal** tab: a real
+  shell in a PTY (Bun's built-in `terminal` spawn), started in the session's folder, or an `ssh -tt` shell on
+  its remote host, in its folder. xterm.js draws it: colours, full-screen programs, Ctrl+C, readline keys,
+  copy and paste, and resizing follow the panel. It runs over the same hub socket as notes (`term.open`,
+  `term.input`, `term.resize`, `term.detach`, `term.close`), with no REST and no polling. Hiding the panel or
+  reloading keeps the shell and replays its recent output; **Restart** gives a fresh one, and a shell nobody
+  watches is ended after 10 minutes. Output floods are cut to their tail. At most 12 terminals run at once,
+  and all of them end with the server. `Ctrl+\`` or `/terminal` opens it. xterm.js loads only when the first
+  terminal opens (the main bundle stays at 332 KB). `MINITUI_WEB_TERMINAL=0` turns the terminal off on a
+  server.
+- **New skills show up without a reload.** The skill list is fetched again when you type `$` or come back to
+  the tab (if it is more than a few seconds old), so a skill added on disk while the page is open appears.
+
+### Fixed
+
+- **A server restart no longer turns your panes into new chats.** Open sessions live in the server's
+  memory, so a restart (a deploy) forgot them all: every pane's socket got a 404, the page decided the
+  session was gone and replaced it with a new chat, and the console filled with "WebSocket connection …
+  failed". Now a socket or `GET /api/sessions/:id` for a session the server no longer holds, but that is
+  saved in the history, restores it and carries on, and a page loading with panes the server forgot
+  reopens them from the history. Only an id that is nowhere, not even saved, is a 404.
+
 ## 0.20.0 — 2026-09-29
 
 The web app becomes a workspace: panes, notes, per-folder history, resume from anywhere, and a folder

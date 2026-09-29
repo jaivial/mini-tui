@@ -198,7 +198,7 @@
   const tone = $derived(save.kind === "error" || save.kind === "conflict" ? "text-err" : save.kind === "dirty" || save.kind === "saving" ? "text-ink-muted" : "text-ink-faint");
 </script>
 
-<aside class="notes flex h-full min-h-0 w-full flex-col bg-surface" aria-labelledby="{uid}-title">
+<aside class="notes flex min-h-0 w-full flex-1 flex-col bg-surface" aria-labelledby="{uid}-title">
   <header class="flex min-h-11 shrink-0 items-center gap-1 border-b border-line/80 py-1 pr-1.5 pl-3.5">
     <div class="min-w-0 flex-1">
       <h2 id="{uid}-title" class="text-[13px] leading-4 font-medium text-ink">Notes</h2>

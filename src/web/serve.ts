@@ -16,6 +16,8 @@ import { SessionFeed, sameOrigin, summarize, toWire } from "./feed";
 import { NOTE_MAX, getNote, saveNote } from "../sessions";
 import { FolderError, listLocal, listRemote } from "./folders";
 import { Hub, type HubClient } from "./hub";
+import { Terminals } from "./terminals";
+import { sshArgs } from "./ssh";
 import {
   COMMANDS,
   connectProvider,
@@ -69,9 +71,46 @@ const sessions = new SessionManager((session) => {
   feed.publish(session);
 });
 
-hub = new Hub({ get: (id) => getNote(sessions.db(), id), save: (id, body, base) => saveNote(sessions.db(), id, body, base) }, NOTE_MAX);
+// Terminals start where the session works: its folder on this machine, or an ssh shell on its host.
+const terminals = new Terminals();
+hub = new Hub({ get: (id) => getNote(sessions.db(), id), save: (id, body, base) => saveNote(sessions.db(), id, body, base) }, NOTE_MAX, {
+  manager: terminals,
+  spec: (sessionId) => {
+    const s = sessionId ? sessions.get(sessionId) : undefined;
+    if (s?.target === "remote") {
+      const host = loadHosts().find((h) => h.id === s.hostId);
+      if (!host) throw new Error("this session's remote host is no longer configured");
+      return { remote: { args: sshArgs({ host: host.host, port: host.port, user: host.user, identity: host.identity, workdir: "" }), workdir: s.cwd || host.workdir, label: host.label } };
+    }
+    return { cwd: s?.cwd };
+  },
+});
+// No shell outlives the server (a restart, a deploy, Ctrl+C in a dev shell).
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
+  process.once(sig, () => {
+    terminals.killAll();
+    process.exit(0);
+  });
 
 /** Put a session away everywhere (its socket subscribers and the shared stream). It stays in the history. */
+/**
+ * The session with this id, restoring it from the saved history when the server no longer holds it.
+ * Sessions live in memory, so a restart (a deploy) forgets every open one; a browser that still shows
+ * them must get them back on its next socket or fetch, not a 404 that turns its panes into new chats.
+ * Undefined only when the id is nowhere, not even in the database.
+ */
+function held(id: string) {
+  const live = sessions.get(id);
+  if (live) return live;
+  try {
+    const restored = sessions.openHistory(id);
+    broadcast({ type: "session", session: summarize(restored) });
+    return restored;
+  } catch {
+    return undefined;
+  }
+}
+
 function dropSession(id: string): void {
   sessions.close(id);
   feed.gone(id);
@@ -146,7 +185,7 @@ const server = Bun.serve({
         hub.join(client);
         return;
       }
-      const session = sessions.get(ws.data.id);
+      const session = held(ws.data.id);
       if (!session) {
         ws.close(4404, "unknown session");
         return;
@@ -253,7 +292,7 @@ const server = Bun.serve({
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "expected a websocket upgrade" }, 426);
         if (!sameOrigin(request.headers)) return json({ error: "cross-origin websocket refused" }, 403);
         const id = decodeURIComponent(socketMatch[1] as string);
-        if (!sessions.get(id)) return json({ error: "unknown session" }, 404);
+        if (!held(id)) return json({ error: "unknown session" }, 404);
         if (srv.upgrade(request, { data: { kind: "session", id } satisfies SocketData })) return undefined as unknown as Response;
         return json({ error: "websocket upgrade failed" }, 400);
       }
@@ -315,7 +354,7 @@ const server = Bun.serve({
           return json({ ok: true });
         }
         if (!action && request.method === "GET") {
-          const session = sessions.get(id);
+          const session = held(id);
           return session ? json(toWire(session)) : json({ error: "unknown session" }, 404);
         }
       }

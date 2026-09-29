@@ -11,12 +11,21 @@
  * a network (see tests/web-hub.test.ts).
  */
 import type { Note, SaveNoteResult } from "../sessions";
+import type { OpenSpec, TermOut, Terminals } from "./terminals";
 
 export type HubIn =
   | { t: "ping" }
   | { t: "note.watch"; id: string }
   | { t: "note.unwatch"; id: string }
-  | { t: "note.save"; id: string; body: string; base?: number; req: number };
+  | { t: "note.save"; id: string; body: string; base?: number; req: number }
+  /** Attach to (or start) terminal `id` for `session`, at the viewer's size. */
+  | { t: "term.open"; id: string; session?: string; cols: number; rows: number }
+  | { t: "term.input"; id: string; data: string }
+  | { t: "term.resize"; id: string; cols: number; rows: number }
+  /** Stop watching (the shell keeps running for a while, so a reload finds it). */
+  | { t: "term.detach"; id: string }
+  /** End the shell now. */
+  | { t: "term.close"; id: string };
 
 export type HubOut =
   | { t: "pong" }
@@ -25,7 +34,8 @@ export type HubOut =
   | { t: "note"; note: Note }
   | { t: "note.saved"; req: number; note: Note }
   | { t: "note.conflict"; req: number; current: Note }
-  | { t: "error"; req?: number; id?: string; error: string };
+  | { t: "error"; req?: number; id?: string; error: string }
+  | TermOut;
 
 export interface HubClient {
   /** False when the message could not be delivered. */
@@ -46,6 +56,8 @@ export class Hub {
   constructor(
     private readonly notes: NoteStore,
     private readonly noteMax: number,
+    /** Where a session's terminal starts: its folder here, or an ssh session to its host. */
+    private readonly terminals?: { manager: Terminals; spec: (session: string | undefined) => Omit<OpenSpec, "cols" | "rows"> },
   ) {}
 
   /** A client connected: tell it the limits it must respect. */
@@ -56,6 +68,7 @@ export class Hub {
 
   /** A client went away: forget every watch it held. */
   leave(client: HubClient): void {
+    this.terminals?.manager.detach(client as never);
     for (const id of this.#of.get(client) ?? []) this.#unwatch(client, id);
     this.#of.delete(client);
   }
@@ -83,6 +96,7 @@ export class Hub {
       client.send({ t: "pong" });
       return;
     }
+    if (typeof msg.t === "string" && msg.t.startsWith("term.")) return this.#term(client, msg);
     if (msg.t === "note.watch" || msg.t === "note.unwatch" || msg.t === "note.save") {
       const req = msg.t === "note.save" && Number.isInteger(msg.req) ? msg.req : undefined;
       if (typeof msg.id !== "string" || !NOTE_ID.test(msg.id)) {
@@ -102,6 +116,28 @@ export class Hub {
    */
   noteChanged(note: Note, except?: HubClient): void {
     for (const c of this.#watch.get(note.id) ?? []) if (c !== except) c.send({ t: "note", note });
+  }
+
+  #term(client: HubClient, msg: HubIn): void {
+    const tm = this.terminals;
+    const id = (msg as { id?: unknown }).id;
+    if (!tm) return void client.send({ t: "error", error: "terminals are not available on this server" });
+    if (typeof id !== "string" || !/^[\w.-]{1,128}$/.test(id)) return void client.send({ t: "error", error: "invalid terminal id" });
+    const viewer = client as never;
+    if (msg.t === "term.open") {
+      const session = typeof msg.session === "string" ? msg.session : undefined;
+      let spec: Omit<OpenSpec, "cols" | "rows">;
+      try {
+        spec = tm.spec(session);
+      } catch (error) {
+        return void client.send({ t: "error", id, error: (error as Error).message });
+      }
+      tm.manager.open(viewer, id, { ...spec, cols: Number(msg.cols), rows: Number(msg.rows) });
+    } else if (msg.t === "term.input") tm.manager.input(id, msg.data);
+    else if (msg.t === "term.resize") tm.manager.resize(id, Number(msg.cols), Number(msg.rows));
+    else if (msg.t === "term.detach") tm.manager.detach(viewer, id);
+    else if (msg.t === "term.close") tm.manager.kill(id);
+    else client.send({ t: "error", id, error: `unknown message ${String(msg.t)}` });
   }
 
   #watchNote(client: HubClient, id: string): void {

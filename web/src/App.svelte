@@ -75,10 +75,16 @@
   let resumeOpen = $state(false);
   let openingId = $state("");
   let loading = $state(true);
-  const refs: Record<string, { focusComposer: () => void; focusNotes: () => void } | undefined> = $state({});
+  const refs: Record<string, { focusComposer: () => void; focusNotes: () => void; focusTerminal: () => void } | undefined> = $state({});
 
   $effect(() => {
     untrack(() => void catalog.warm());
+    // Skills added on disk while the page was in the background show up when you come back.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") catalog.refreshSkills();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   });
 
   // Once per page: connect and load. `untrack` keeps anything the store reads from becoming a
@@ -88,6 +94,7 @@
     store.connect();
     store
       .load()
+      .then(() => store.restore(panes.shown))
       .then(() => {
         panes.forgetMissing((id) => !!store.sessions[id]);
         // First visit (no saved layout): open the latest session, as the app always has.
@@ -264,6 +271,13 @@
    */
   function onkey(event: KeyboardEvent) {
     const mod = event.metaKey || event.ctrlKey;
+    // Inside the terminal, the shell owns Ctrl+letters (Ctrl+K kills a line, Ctrl+B moves back...):
+    // only the pane shortcuts that cannot mean anything to a shell (Ctrl+`, Alt+digit, Ctrl+Alt+arrows,
+    // Ctrl+\ is SIGQUIT so it is left alone too) reach the app from there.
+    if ((event.target as HTMLElement | null)?.closest?.(".xterm")) {
+      const paneKey = (event.ctrlKey && event.code === "Backquote") || (event.altKey && !mod && /^Digit[1-6]$/.test(event.code)) || (mod && event.altKey && event.key.startsWith("Arrow"));
+      if (!paneKey) return;
+    }
     const key = event.key;
     const code = event.code;
     if (mod && !event.altKey && key.toLowerCase() === "k") {
@@ -292,6 +306,10 @@
       event.preventDefault();
       panes.cycle(key === "ArrowRight" || key === "ArrowDown" ? 1 : -1);
       refs[panes.focusedId]?.focusComposer();
+    } else if (event.ctrlKey && !event.metaKey && code === "Backquote") {
+      // Ctrl+` (as in VS Code): the pane's terminal. Handled here, before xterm, so it also closes it.
+      event.preventDefault();
+      refs[panes.focusedId]?.focusTerminal();
     } else if (mod && event.shiftKey && code === "Period") {
       event.preventDefault();
       const p = panes.focused;
@@ -309,7 +327,8 @@
   }
 </script>
 
-<svelte:window onkeydown={onkey} />
+<!-- Capture phase: app shortcuts win over a focused terminal, which would otherwise take every key. -->
+<svelte:window onkeydowncapture={onkey} />
 
 <div class="relative flex h-full w-full overflow-hidden bg-canvas text-ink">
   {#if sidebarOpen && narrow}

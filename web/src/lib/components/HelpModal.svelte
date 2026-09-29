@@ -22,6 +22,7 @@
     ["Alt + X", "Close the pane (the session keeps running)"],
     ["Ctrl/⌘ + Shift + .", "Open or close notes"],
     ["Ctrl/⌘ + S", "Save notes now (they also save as you type)"],
+    ["Ctrl + `", "Open or close the terminal"],
     ["Ctrl/⌘ + and −", "Interface size (Shift: text size), 0 resets"],
   ];
 </script>
