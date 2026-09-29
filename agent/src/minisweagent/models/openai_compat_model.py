@@ -101,6 +101,7 @@ class OpenaiCompatModel:
 
     def __init__(self, *, config_class=OpenaiCompatModelConfig, **kwargs):
         self.config = config_class(**kwargs)
+        self._delta_sink: Any = None  # set per-run to stream partial output to a live view
         if not self.config.api_base:
             # Direct base URL per provider: registry row first (moonshot/, zai/, ...),
             # else the generic OpenAI-compatible slot (any endpoint via OPENAI_API_BASE).
@@ -183,6 +184,145 @@ class OpenaiCompatModel:
         except ValueError as e:
             raise OpenaiCompatError(f"invalid JSON from {self.config.api_base}: {text[:300]}") from e
 
+    # --- Streaming ---------------------------------------------------------------------------
+    # Without this the model call is one blocking `response.read()`: the trajectory only gains
+    # the assistant message once the provider has finished generating it, so a live view shows
+    # nothing for the whole (often multi-second) generation. Asking for `stream: true` and
+    # re-assembling the SSE chunks lets the caller surface partial output as it arrives.
+
+    def _on_delta(self, kind: str, text: str) -> None:
+        """Publish each streamed fragment so a live view can render the reply as it arrives.
+
+        Set by the agent (`set_delta_sink`) before a run; a no-op otherwise, which keeps the
+        model usable headless and in tests.
+        """
+        sink = self._delta_sink
+        if sink is None:
+            return
+        try:
+            sink(kind, text)
+        except Exception:  # a broken sink must never fail the model call
+            self._delta_sink = None
+
+    def set_delta_sink(self, sink: Any = None) -> None:
+        self._delta_sink = sink
+
+    def _post_stream(
+        self,
+        path: str,
+        body: dict,
+        headers: dict | None = None,
+        on_delta: Any = None,
+    ) -> dict:
+        """POST with `stream: true` and rebuild the final JSON body from the SSE chunks.
+
+        `on_delta(kind, text)` is called for each newly received text fragment where `kind` is
+        "thinking" or "text". Falls back to a normal request when the provider ignores the flag.
+        """
+        url = urlsplit(self.config.api_base.rstrip("/") + path)
+        target = url.path + (f"?{url.query}" if url.query else "")
+        request_headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            **self._auth_headers(),
+            **(headers or {}),
+        }
+        payload = json.dumps({**body, "stream": True}).encode()
+
+        response = None
+        try:
+            conn = self._connection(url)
+            conn.request("POST", target, body=payload, headers=request_headers)
+            response = conn.getresponse()
+            if response.status >= 400:
+                text = response.read().decode("utf-8", "replace")
+                raise self._http_error(response.status, text)
+            content_type = (response.getheader("Content-Type") or "").lower()
+            if "text/event-stream" not in content_type:
+                # Provider ignored the flag and replied with one JSON body: parse it as usual.
+                return json.loads(response.read().decode("utf-8", "replace"))
+            return self._read_sse(response, on_delta)
+        except (OSError, http.client.HTTPException) as e:
+            self._drop_connection()
+            raise OpenaiCompatError(f"{type(e).__name__}: {e} ({self.config.api_base})") from e
+        finally:
+            if response is not None and response.will_close:
+                self._drop_connection()
+
+    def _read_sse(self, response: http.client.HTTPResponse, on_delta: Any = None) -> dict:
+        """Reassemble an OpenAI-compatible SSE body into the final response object.
+
+        Only the fields the trajectory cares about are kept: the choice's message content, the
+        tool calls and the usage block. Unknown fields are dropped rather than merged, because a
+        streamed response never repeats the non-streamed top-level shape faithfully.
+        """
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_calls: dict[int, dict] = {}
+        role = ""
+        finish_reason = None
+        usage: dict | None = None
+
+        for raw in response:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line or line.startswith(":"):
+                continue  # keep-alive / comment
+            if not line.startswith("data:"):
+                continue
+            chunk_text = line[5:].strip()
+            if not chunk_text or chunk_text == "[DONE]":
+                continue
+            try:
+                chunk = json.loads(chunk_text)
+            except ValueError:
+                continue  # a malformed chunk must not lose the whole response
+            if isinstance(chunk.get("usage"), dict):
+                usage = chunk["usage"]
+            for choice in chunk.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+                if delta.get("role"):
+                    role = delta["role"]
+                piece = delta.get("content")
+                if isinstance(piece, str) and piece:
+                    content_parts.append(piece)
+                    if on_delta is not None:
+                        on_delta("text", piece)
+                piece = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(piece, str) and piece:
+                    reasoning_parts.append(piece)
+                    if on_delta is not None:
+                        on_delta("thinking", piece)
+                for call in delta.get("tool_calls") or []:
+                    if not isinstance(call, dict):
+                        continue
+                    slot = tool_calls.setdefault(call.get("index", 0), {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    if call.get("id"):
+                        slot["id"] = call["id"]
+                    function = call.get("function") or {}
+                    if isinstance(function, dict):
+                        if function.get("name"):
+                            slot["function"]["name"] = function["name"]
+                        if isinstance(function.get("arguments"), str):
+                            slot["function"]["arguments"] += function["arguments"]
+
+        message: dict = {"role": role or "assistant", "content": "".join(content_parts)}
+        if reasoning_parts:
+            # Merged into the same shape the non-streamed path produces, so the trajectory
+            # parser treats a streamed run exactly like an ordinary one.
+            message["reasoning_content"] = "".join(reasoning_parts)
+        if tool_calls:
+            message["tool_calls"] = [tool_calls[k] for k in sorted(tool_calls)]
+        result: dict = {"choices": [{"index": 0, "message": message, "finish_reason": finish_reason or "stop"}]}
+        if usage:
+            result["usage"] = usage
+        return result
+
     def _http_error(self, status: int, text: str) -> ProviderError:
         try:
             detail = json.loads(text).get("error") or text
@@ -210,7 +350,7 @@ class OpenaiCompatModel:
         params = {k: v for k, v in (self.config.model_kwargs | kwargs).items() if k not in _LITELLM_ONLY_KWARGS}
         headers = params.pop("extra_headers", None) or {}
         body = {"model": self._wire_model_name(), "messages": messages, "tools": [BASH_TOOL], **params}
-        data = self._post("/chat/completions", body, headers=headers)
+        data = self._post_stream("/chat/completions", body, headers=headers, on_delta=self._on_delta)
         if not data.get("choices"):
             raise OpenaiCompatError(f"response without choices from {self.config.api_base}: {str(data)[:300]}")
         return _wrap(data)

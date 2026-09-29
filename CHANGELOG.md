@@ -2,6 +2,42 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.19.0 — 2026-09-29
+
+The web app grows up: a proper chat, live multi-session streaming, and a settings panel.
+
+### Added
+
+- **Web app** (`bun run web`). A Svelte 5 + Tailwind 4 front end for the same agent, with a sidebar of
+  sessions running side by side and a remote mode that keeps the agent headless on a server over SSH.
+  Sessions land in the same `~/.config/mini-tui/sessions.db` the terminal UI's `/resume` reads.
+- **One WebSocket per session.** `GET /api/sessions/:id/socket` streams that session's transcript as a
+  snapshot followed by deltas; the shared SSE stream carries only sidebar metadata. A busy session never
+  spends another session's bandwidth, the client reconnects with jittered backoff and a heartbeat, and a
+  frame that does not line up triggers a resync instead of a guess. Cross-site handshakes are refused.
+- **New chat is a draft.** `/new` shows an empty chat and creates nothing on the server; the first message
+  creates the session on the model and host chosen in the draft.
+- **Prompt bar.** One line when empty, growing a line at a time up to five and then scrolling. `/` opens
+  commands and `$` opens skills (matched by the terminal UI's own code); a pick becomes a chip and is joined
+  to the text only when the message is sent. A searchable, provider-grouped model switcher opens from the bar.
+- **Settings panel.** Appearance, command-output mode (shared with the terminal), skills, and a providers
+  tab that tests a key with a real request before saving it. Keys are never returned: reads carry a masked hint.
+- **Loading states and mobile polish.** Skeletons, a pixel-grid loader, 44px touch targets, bottom-sheet
+  modals, safe-area insets and `dvh` layout.
+- **Streaming replies in the trajectory journal.** The agent journals the in-flight assistant message so a
+  live view updates while the model writes (`partial`), and the OpenAI-compatible model streams over SSE.
+- **`MiniMax CN`** provider and `MiniMax-M3.1-Flash-Preview` in the MiniMax catalog.
+
+### Changed
+
+- The pure half of `$skill` matching moved to `src/skillMatch.ts` so the browser and the terminal share it.
+- `settings.ts` and `sessions.ts` resolve their file paths when called, not at import.
+
+### Security
+
+- State-changing requests must come from the app's own origin (403 otherwise), so another site cannot start
+  agents or write provider keys through your browser.
+
 ## 0.18.0 — 2026-09-28
 
 Claude Sonnet 5.5 is in the curated model picker.

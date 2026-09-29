@@ -1,0 +1,433 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* ------------------------------------------------------------------ *
+ * Design tokens: shadcn structure (semantic tokens, 6/8/12/16 radii) in
+ * Cursor's voice (warm cream / warm charcoal, one orange accent,
+ * hairline-only depth). Geist for UI, JetBrains Mono for every code surface.
+ *
+ * The six mini-tui themes (src/ui/theme.ts) map onto --theme-accent here so
+ * the web app keeps the terminal's identity.
+ * ------------------------------------------------------------------ */
+@theme {
+  /* ---- Cursor x shadcn: warm neutrals, one orange accent, hairline depth.
+     Every text/surface pair below was measured: body text >= 6:1, the faintest
+     text >= 4.5:1, so "quiet" never turns into "unreadable". */
+  --color-canvas: #161612;
+  --color-surface: #1c1c17;
+  --color-raised: #26251f;
+  --color-overlay: #2c2b24;
+
+  /* Hairlines carry the structure; there are no elevation tiers. */
+  --color-line: #2f2e27;
+  --color-line-strong: #46443b;
+
+  --color-ink: #f2f1ec;
+  --color-ink-muted: #a8a59a;
+  --color-ink-faint: #96927f;
+
+  --color-brand: #ff7a3d;
+  --color-brand-ink: #1a0f08;
+  --color-brand-soft: rgb(255 122 61 / 0.14);
+
+  --color-ok: #3fbf8f;
+  --color-err: #ff6b8a;
+  --color-warn: #e0a03c;
+
+  --color-accent: var(--theme-accent, var(--color-brand));
+
+  /* Concentric radius scale. Outer = inner + padding everywhere. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
+
+  /* ---- Motion (control-ui tokens). The reduce-motion switch flattens the
+     durations to 0ms so `animationend` cleanup still fires. */
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 260ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Type scale: fewer, quieter steps. */
+  --text-micro: 10.5px;
+  --text-caption: 11.5px;
+  --text-label: 12.5px;
+  --text-body: 13.5px;
+
+  --font-sans:
+    "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+/* Six themes, mirroring src/ui/theme.ts of the TUI. */
+:root[data-theme="nord"]      { --theme-accent: oklch(0.72 0.12 233); }
+:root[data-theme="dracula"]   { --theme-accent: oklch(0.72 0.14 328); }
+:root[data-theme="gruvbox"]   { --theme-accent: oklch(0.76 0.13 78); }
+:root[data-theme="tokyo"]     { --theme-accent: oklch(0.72 0.13 258); }
+:root[data-theme="catppuccin"]{ --theme-accent: oklch(0.72 0.12 265); }
+/* "shadcn" is the default palette: it keeps the Cursor orange (no override). */
+
+/* Light mode: the same roles, inverted lightness. */
+:root.light {
+  --color-canvas: #f7f7f4;
+  --color-surface: #ffffff;
+  --color-raised: #efeee8;
+  --color-overlay: #ffffff;
+
+  --color-line: #e6e5e0;
+  --color-line-strong: #cfcdc4;
+
+  --color-ink: #26251e;
+  --color-ink-muted: #5a5852;
+  --color-ink-faint: #66645a;
+
+  --color-brand: #c93d00;
+  --color-brand-ink: #ffffff;
+  --color-brand-soft: rgb(201 61 0 / 0.09);
+
+  --color-ok: #16724f;
+  --color-err: #b8244c;
+  --color-warn: #8a5508;
+}
+
+/* ---- Elevation: shadows for depth, borders for structure.
+   Flat and quiet by default: these only lift on a real surface edge. */
+@utility elev-1 {
+  box-shadow: 0 0 0 1px var(--color-line);
+}
+@utility elev-2 {
+  box-shadow: 0 0 0 1px var(--color-line-strong);
+}
+@utility elev-3 {
+  box-shadow: 0 0 0 1px var(--color-line-strong);
+}
+/* Popover / dialog: the only surfaces that float, so the only ones with a shadow. */
+@utility elev-pop {
+  background: var(--color-overlay);
+  box-shadow:
+    0 0 0 1px var(--color-line-strong),
+    0 12px 32px -8px oklch(0 0 0 / 0.28);
+}
+
+/* ---- Interactive state: transition only the properties that change, so a
+   press is interruptible. Durations ride the motion tokens. */
+@utility interactive {
+  transition-property: background-color, border-color, color, opacity, box-shadow, transform, scale;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-standard);
+}
+
+/* ---- Entrances. Staggered ~100ms per chunk so a staged arrival reads as
+   hierarchy rather than one container fading in. Exits stay subtler. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes rise-sm {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
+@utility enter-1 {
+  animation: drawer-in var(--duration-base) var(--ease-emphasized) both;
+}
+@utility enter-2 {
+  animation: fade var(--duration-base) var(--ease-standard) both;
+}
+@utility enter-3 {
+  animation: rise var(--duration-slow) var(--ease-emphasized) both;
+}
+@utility enter-4 {
+  animation: rise-sm var(--duration-base) var(--ease-standard) both;
+}
+@utility enter-pop {
+  animation: pop-in var(--duration-base) var(--ease-emphasized) both;
+}
+@utility enter-scrim {
+  animation: scrim-in var(--duration-base) var(--ease-standard) both;
+}
+
+/* A running session breathes instead of spinning: motion restraint, and a
+   static cue (the dot) still reads when animation is unavailable. */
+@utility pulse-live {
+  animation: pulse-dot 1.6s var(--ease-standard) infinite;
+}
+@utility spin-slow {
+  animation: spin 1s linear infinite;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+  html {
+    /* No grey flash on tap (every tappable has its own :active state), and no
+       font inflation when the phone rotates. */
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  html,
+  body,
+  #app {
+    /* dvh tracks the visible area as the URL bar collapses; the % line is the
+       fallback for browsers without dynamic viewport units. */
+    height: 100%;
+    height: 100dvh;
+  }
+  /* Controls, not content: no double-tap zoom delay, no long-press text
+     selection or callout. Body text stays selectable. */
+  button,
+  a,
+  summary,
+  [role="button"],
+  [role="menuitem"] {
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  body {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "ss01", "cv11";
+    letter-spacing: -0.006em;
+    overscroll-behavior: none;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+  ::selection {
+    background: var(--color-brand-soft);
+  }
+  /* Tabular numbers wherever a figure can change under the reader. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-faint);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Image outlines: pure black in light, pure white in dark. */
+  .outline-img {
+    outline: 1px solid oklch(1 0 0 / 0.1);
+    outline-offset: -1px;
+  }
+  :root.light .outline-img {
+    outline-color: oklch(0 0 0 / 0.1);
+  }
+}
+
+/*
+ * Form fields never render below 16px.
+ *
+ * Two reasons, one legibility and one functional: text under 16px is hard to
+ * read, and iOS Safari auto-zooms any focused field under 16px, which then
+ * leaves the page scrolled sideways and the keyboard covering the composer.
+ * This is the floor for every control; components set their own size above it.
+ */
+input,
+textarea,
+select {
+  font-size: max(16px, 1em);
+}
+
+/* The kill-switch flattens the motion tokens rather than each animation, so
+   `animationend` cleanup still fires and nothing is left stuck mid-flight. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* A loader that stops turning reads as a hang. Spinners are functional motion, so
+     they are exempt (the same call Control UI makes for its Spinner). */
+  .keep-motion,
+  .keep-motion * {
+    animation-duration: 1s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+/* Streaming caret: the one cue that in-flight text is still arriving.
+   Opacity-only so it never reflows the line as it blinks. */
+.caret {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background-color: currentColor;
+  animation: caret-blink 1s steps(1, end) infinite;
+}
+
+@keyframes caret-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret {
+    animation: none;
+  }
+}
+
+/* Native disclosure, marker removed: the caret is ours or it is nothing. */
+@layer components {
+  .group\/think > summary::-webkit-details-marker {
+    display: none;
+  }
+  .group\/think > summary {
+    list-style: none;
+  }
+  /* The reasoning body is revealed by the browser, so its entrance rides the
+     same motion token as everything else. */
+  .group\/think[open] > p {
+    animation: rise-sm var(--duration-base) var(--ease-standard) both;
+  }
+}
+
+/* Bottom-sheet entrance for modals on phones (Modal.svelte picks it below 640px). */
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- Loading states (ported from beautifului.dev / control-ui.dev) ---- */
+@keyframes pixel-on {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  35% {
+    opacity: 1;
+  }
+}
+@keyframes shimmer-text {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+@keyframes shimmer-bar {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}

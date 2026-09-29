@@ -551,6 +551,14 @@ class DefaultAgent:
         """Query with the compacted context; an overflow the estimate missed compacts and retries."""
         self._maybe_compact()
         view = self.context_messages()
+        # Stream partial output into the journal so a live view updates while the model writes,
+        # instead of staying blank until the whole message is done.
+        set_sink = getattr(self.model, "set_delta_sink", None)
+        if set_sink is not None and self.config.output_path is not None:
+            sink = self._stream_delta(self.config.output_path)
+            set_sink(sink)
+        else:
+            sink = None
         try:
             message = self.model.query(view)
         except Exception as e:
@@ -564,6 +572,9 @@ class DefaultAgent:
             if cmp.messages_chars(view) > budget:  # e.g. one tool output larger than the window
                 view = cmp.shrink(view, cmp.head_length(view, budget // 10) + 1, budget)
             message = self.model.query(view)
+        finally:
+            if sink is not None:
+                set_sink(None)  # the real message lands next; the partial view must not linger
         chars = cmp.messages_chars(view)
         message.setdefault("extra", {})["context_chars"] = chars
         if tokens := cmp.prompt_tokens(message):
@@ -604,6 +615,7 @@ class DefaultAgent:
     # default force=True still writes it immediately, keeping callers' semantics unchanged).
     EXPORT_EVERY_MESSAGES = 20
     EXPORT_EVERY_SECONDS = 60.0
+    PARTIAL_EVERY_SECONDS = float(os.getenv("MSWEA_PARTIAL_INTERVAL", "0.2"))
 
     def _export_every_messages(self) -> int:
         """The full export is O(n) (~33 ms at 900 messages), so its cadence grows with the run:
@@ -639,6 +651,39 @@ class DefaultAgent:
                 self._export_messages = len(self.messages)
                 self._export_at = now
         return data
+
+    def _write_partial(self, path: Path, kind: str, text: str) -> None:
+        """Append the in-flight assistant message so live viewers can follow the run.
+
+        Written as its own `delta` record rather than a `msg` one: the model has not produced a
+        real message yet, so the trajectory parser must not treat it as one. Appended (never
+        rewriting) to keep this O(1) per fragment and safe for a reader that is tailing.
+        """
+        journal = path.with_suffix(".jsonl")
+        try:
+            with journal.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"t": "delta", "k": kind, "x": text}, separators=(",", ":")) + "\n")
+        except OSError:
+            pass  # a missing journal is not a reason to fail the run
+
+    def _stream_delta(self, path: Path):
+        """Build the sink handed to the model: throttled to one record per interval.
+
+        Reasoning streams are token-dense, so writing every fragment would turn a single step
+        into thousands of journal lines for no visible gain.
+        """
+        state = {"last": 0.0, "buf": ""}
+
+        def sink(kind: str, text: str) -> None:
+            state["buf"] += text
+            now = time.time()
+            if now - state["last"] < self.PARTIAL_EVERY_SECONDS:
+                return
+            state["last"] = now
+            chunk, state["buf"] = state["buf"], ""
+            self._write_partial(path, kind, chunk)
+
+        return sink
 
     def _append_journal(self, path: Path, data: dict) -> None:
         """Keep ``<path>.jsonl`` (meta + one line per message + fresh info) up to date."""
