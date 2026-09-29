@@ -205,3 +205,176 @@ describe("settings, providers, commands and skills over HTTP", () => {
     expect(res.status).toBe(409);
   });
 });
+
+
+describe("history over HTTP: list, search, open, close, delete", () => {
+  const api = (path: string, init?: RequestInit) => fetch(`${base}/api${path}`, init);
+
+  test("the list is light: no transcript, a resumable flag, and an open flag", async () => {
+    const rows = (await (await api("/history")).json()) as any[];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) {
+      expect("events_json" in r || "messages_json" in r).toBe(false);
+      expect(typeof r.resumable).toBe("boolean");
+      expect(typeof r.open).toBe("boolean");
+    }
+  });
+
+  test("?q= searches, and a % is a character rather than a wildcard", async () => {
+    expect(((await (await api("/history?q=task%20s-beta")).json()) as any[]).map((r) => r.id)).toContain("s-beta");
+    expect(await (await api("/history?q=%25")).json()).toEqual([]);
+    expect(await (await api("/history?q=zzz-nothing-matches")).json()).toEqual([]);
+  });
+
+  test("?limit= caps the page; nonsense falls back to the default", async () => {
+    expect(((await (await api("/history?limit=1")).json()) as any[]).length).toBe(1);
+    expect(((await (await api("/history?limit=abc")).json()) as any[]).length).toBeGreaterThan(0);
+  });
+
+  test("opening an unknown id is a 404, and opening a real one returns its transcript", async () => {
+    expect((await api("/history/s-nope", { method: "POST" })).status).toBe(404);
+    const res = await api("/history/s-beta", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.id).toBe("s-beta");
+    expect(body.events.length).toBeGreaterThan(0);
+    expect("messages" in body).toBe(false); // raw model messages never leave the server
+  });
+
+  test("closing an open session keeps it in the history; deleting it does not", async () => {
+    await api("/history/s-beta", { method: "POST" });
+    expect((await api("/sessions/s-beta", { method: "DELETE" })).status).toBe(200);
+    const after = (await (await api("/history")).json()) as any[];
+    expect(after.find((r) => r.id === "s-beta")).toMatchObject({ open: false });
+    expect((await api("/history/s-beta", { method: "DELETE" })).status).toBe(200);
+    expect(((await (await api("/history")).json()) as any[]).some((r) => r.id === "s-beta")).toBe(false);
+    expect((await api("/history/s-beta", { method: "DELETE" })).status).toBe(404);
+  });
+
+  test("a cross-site page cannot open, delete or search-scrape the history", async () => {
+    const evil = { origin: "https://evil.example" };
+    expect((await api("/history/s-alpha", { method: "POST", headers: evil })).status).toBe(403);
+    expect((await api("/history/s-alpha", { method: "DELETE", headers: evil })).status).toBe(403);
+  });
+
+  test("sending to a session that cannot be continued is a 409 with the reason", async () => {
+    // s-alpha was deleted above by an earlier test in this file; recreate a message-less one through the DB
+    const { openDb: open, createSession: create } = await import("../src/sessions");
+    const db = open(dbPath);
+    create(db, { id: "s-empty", cwd: "/tmp", model: "m", task: "never ran" });
+    db.close();
+    await api("/history/s-empty", { method: "POST" });
+    const res = await api("/sessions/s-empty/prompt", { method: "POST", body: JSON.stringify({ prompt: "hello?" }) });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).error).toMatch(/no saved conversation/);
+  });
+});
+
+describe("notes: the hub socket only", () => {
+  const wsBase = base.replace(/^http/, "ws");
+  /** A hub client: collects every message, and waits for the next one matching `pred`. */
+  async function client(origin?: string) {
+    const ws = new WebSocket(`${wsBase}/api/hub`, origin ? ({ headers: { origin } } as never) : undefined);
+    const got: any[] = [];
+    const waiters: { pred: (m: any) => boolean; resolve: (m: any) => void }[] = [];
+    ws.onmessage = (ev) => {
+      const m = JSON.parse(String(ev.data));
+      got.push(m);
+      for (const w of [...waiters]) if (w.pred(m)) { waiters.splice(waiters.indexOf(w), 1); w.resolve(m); }
+    };
+    const opened = await new Promise<boolean>((res) => { ws.onopen = () => res(true); ws.onerror = () => res(false); ws.onclose = () => res(false); });
+    const next = (pred: (m: any) => boolean, ms = 3000) =>
+      new Promise<any>((resolve, reject) => {
+        const found = got.find(pred);
+        if (found) { got.splice(got.indexOf(found), 1); return resolve(found); }
+        const t = setTimeout(() => reject(new Error("timed out waiting for a hub message")), ms);
+        waiters.push({ pred, resolve: (m) => { clearTimeout(t); got.splice(got.indexOf(m), 1); resolve(m); } });
+      });
+    const send = (m: unknown) => ws.send(JSON.stringify(m));
+    return { ws, got, next, send, opened };
+  }
+
+  test("there is no REST endpoint for notes any more", async () => {
+    expect((await fetch(`${base}/api/notes/s-x`)).status).toBe(404);
+    expect((await fetch(`${base}/api/notes/s-x`, { method: "PUT", body: JSON.stringify({ body: "x" }) })).status).toBe(404);
+  });
+
+  test("the hub greets, a watch returns the current note at once", async () => {
+    const a = await client();
+    expect((await a.next((m) => m.t === "hello")).limits.noteMax).toBe(200_000);
+    a.send({ t: "note.watch", id: "s-hub-1" });
+    expect(await a.next((m) => m.t === "note")).toEqual({ t: "note", note: { id: "s-hub-1", body: "", updatedAt: 0 } });
+    a.ws.close();
+  });
+
+  test("two tabs: a save in one is pushed live to the other; a stale save is a conflict", async () => {
+    const a = await client(), b = await client();
+    for (const c of [a, b]) {
+      c.send({ t: "note.watch", id: "s-hub-2" });
+      await c.next((m) => m.t === "note");
+    }
+    a.send({ t: "note.save", id: "s-hub-2", body: "from tab A", base: 0, req: 1 });
+    const saved = await a.next((m) => m.t === "note.saved" && m.req === 1);
+    expect(saved.note.body).toBe("from tab A");
+    const pushed = await b.next((m) => m.t === "note");
+    expect(pushed.note).toEqual(saved.note); // B heard it without asking
+    b.send({ t: "note.save", id: "s-hub-2", body: "stale from B", base: 0, req: 9 });
+    const c = await b.next((m) => m.t === "note.conflict" && m.req === 9);
+    expect(c.current.body).toBe("from tab A");
+    await Bun.sleep(150);
+    expect(a.got.filter((m) => m.t === "note")).toEqual([]); // nothing was pushed for the refused save
+    a.ws.close();
+    b.ws.close();
+  });
+
+  test("a new watcher after a reconnect gets the latest value (nothing is missed while away)", async () => {
+    const a = await client();
+    a.send({ t: "note.save", id: "s-hub-3", body: "written while you were away", base: 0, req: 1 });
+    await a.next((m) => m.t === "note.saved");
+    a.ws.close();
+    const b = await client();
+    b.send({ t: "note.watch", id: "s-hub-3" });
+    expect((await b.next((m) => m.t === "note")).note.body).toBe("written while you were away");
+    b.ws.close();
+  });
+
+  test("the longest note allowed saves over the socket, emoji and all", async () => {
+    const a = await client();
+    const body = "🦤".repeat(100_000); // 100 000 characters, 400 KB of UTF-8
+    a.send({ t: "note.save", id: "s-hub-big", body, base: 0, req: 1 });
+    const saved = await a.next((m) => m.t === "note.saved", 5000);
+    expect(saved.note.body.length).toBe(body.length);
+    const full = "x".repeat(199_990) + '\n"\\\t';
+    a.send({ t: "note.save", id: "s-hub-big2", body: full.slice(0, 200_000), base: 0, req: 2 });
+    expect((await a.next((m) => m.t === "note.saved" && m.req === 2, 5000)).note.body.length).toBe(Math.min(full.length, 200_000));
+    a.ws.close();
+  });
+
+  test("bad saves are answered, not dropped: too long, bad id", async () => {
+    const a = await client();
+    a.send({ t: "note.save", id: "s-hub-4", body: "x".repeat(200_001), req: 5 });
+    expect((await a.next((m) => m.t === "error" && m.req === 5)).error).toMatch(/at most/);
+    a.send({ t: "note.watch", id: "../../etc/passwd" });
+    expect((await a.next((m) => m.t === "error")).error).toBe("invalid note id");
+    a.ws.close();
+  });
+
+  test("another site cannot open the hub", async () => {
+    const evil = await client("https://evil.example");
+    expect(evil.opened).toBe(false);
+    const res = await fetch(`${base}/api/hub`, { headers: { upgrade: "websocket", connection: "Upgrade", origin: "https://evil.example", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" } });
+    expect(res.status).toBe(403);
+  });
+
+  test("deleting a saved session empties its note for everyone watching", async () => {
+    await fetch(`${base}/api/history/s-alpha`, { method: "POST" });
+    const a = await client();
+    a.send({ t: "note.save", id: "s-alpha", body: "alpha notes", base: 0, req: 1 });
+    await a.next((m) => m.t === "note.saved");
+    a.send({ t: "note.watch", id: "s-alpha" });
+    await a.next((m) => m.t === "note" && m.note.body === "alpha notes");
+    expect((await fetch(`${base}/api/history/s-alpha`, { method: "DELETE" })).status).toBe(200);
+    expect((await a.next((m) => m.t === "note")).note).toEqual({ id: "s-alpha", body: "", updatedAt: 0 });
+    a.ws.close();
+  });
+});

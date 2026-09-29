@@ -13,6 +13,23 @@ const dbPath = join(dir, "sessions.db");
 const PORT = 4700 + Math.floor(Math.random() * 200);
 const { createSession, openDb, saveTranscript } = await import(join(root, "src/sessions.ts"));
 const db = openDb(dbPath);
+// Saved sessions nobody has opened in this server: what "Resume" is for.
+{
+  const sdb = openDb(dbPath);
+  const day = 86_400_000;
+  const seed = (id, title, cwd, task, ageMs, calls = 2) => {
+    createSession(sdb, { id, cwd, model: "deepseek/deepseek-chat", task, title });
+    // A session that never reached a model call saved nothing: no events, no messages, no cost.
+    saveTranscript(sdb, id, calls ? [{ type: "task", text: task }, { type: "assistant", text: `answer for ${title}` }] : [], { cost: calls ? 0.02 : 0, apiCalls: calls, exitStatus: calls ? "Submitted" : "" },
+      calls ? [{ role: "system", content: "system" }, { role: "user", content: task }, { role: "assistant", content: `answer for ${title}` }] : []);
+    sdb.query("UPDATE sessions SET updated_at = ? WHERE id = ?").run(Date.now() - ageMs, id);
+  };
+  seed("s-old-a", "Migrate settings page", "/work/web/app", "migrate the settings page", 2 * 3600e3);
+  seed("s-old-b", "Fix flaky reconnect test", "/work/api", "fix the flaky reconnect test", 30 * 3600e3);
+  seed("s-old-c", "Write the upload retry", "/work/api", "add a retry to upload", 20 * day);
+  seed("s-old-d", "Ancient scratch session", "/work/old", "scratch", 40 * day, 0);
+  sdb.close();
+}
 for (const [id, title] of [["s-alpha", "Alpha task"], ["s-beta", "Beta task"]]) {
   createSession(db, { id, cwd: "/tmp", model: "deepseek/deepseek-chat", task: title, title });
   saveTranscript(db, id, [{ type: "task", text: title }, { type: "assistant", text: `hello from ${id}` }], { cost: 0.01, apiCalls: 1 }, []);
@@ -25,11 +42,11 @@ writeFileSync(join(dir, "skills", "pr-body", "SKILL.md"), "---\nname: pr-body\nd
 mkdirSync(join(dir, "skills", "better-ui"), { recursive: true });
 writeFileSync(join(dir, "skills", "better-ui", "SKILL.md"), "---\nname: better-ui\ndescription: Polish the UI\n---\nPolish.\n");
 
-// The last step sends a real message: the agent must be a stub that exits at once, never a real run.
-import { chmodSync } from "node:fs";
-const stub = join(dir, "mini-stub");
-writeFileSync(stub, "#!/bin/sh\nexit 0\n");
-chmodSync(stub, 0o755);
+// Steps send real messages: the agent must be a stub, never a real run. This one records what it was asked
+// and journals a reply, so a resumed session can be seen continuing from its saved messages.
+const { makeFakeAgent } = await import(join(root, "tests/helpers/fake-agent.ts"));
+const fake = makeFakeAgent(join(dir, "bin"), { holdMs: 300 });
+const stub = fake.script;
 
 const server = spawn("bun", ["src/web/serve.ts", "--port", String(PORT)], {
   cwd: root, stdio: "ignore",
@@ -142,16 +159,20 @@ try {
   check("...and the change made while it was down still arrives (snapshot on reconnect)", (await page.locator("main").innerText()).includes("gpt-6-astra"));
   check("...and the 'reconnecting' banner clears", (await page.locator("[role=status]", { hasText: /Connection lost/ }).count()) === 0);
 
-  // --- closing the open session tells the browser
+  // --- closing the open session tells the browser. Closing keeps a session in the saved history, so
+  // it leaves the open sessions and shows up under History instead (a delete removes it everywhere).
   await fetch(`${base}/api/sessions/${other}`, { method: "DELETE" });
-  await page.waitForTimeout(800);
-  check("deleting a session server-side removes it from the sidebar", (await page.getByRole("button", { name: new RegExp(other === "s-alpha" ? "Alpha task" : "Beta task") }).count()) === 0);
-  const remaining = await page.evaluate(() => document.querySelectorAll('[role="listitem"]').length);
-  check("the other session is untouched", remaining === 1, `${remaining} left`);
+  await page.waitForTimeout(1200);
+  const openRows = () => page.locator('aside [role="listitem"]:not([data-history])');
+  const otherTitle = other === "s-alpha" ? "Alpha task" : "Beta task";
+  check("closing a session server-side removes it from the open sessions in the sidebar", (await openRows().filter({ hasText: otherTitle }).count()) === 0);
+  check("...and it is still there under History, since closing keeps it", (await page.locator(`aside [data-history="${other}"]`).count()) === 1);
+  const remaining = await openRows().count();
+  check("the other open session is untouched", remaining === 1, `${remaining} left`);
 
   // === New chat: a draft, nothing on the server until the first message
   const sessionsBefore = (await (await fetch(`${base}/api/sessions`)).json()).length;
-  await page.getByRole("button", { name: "New chat" }).click();
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
   await page.waitForTimeout(300);
   check("New chat shows an empty chat, not a modal", (await page.getByRole("heading", { name: "New chat" }).count()) === 1 && (await page.locator("dialog[open]").count()) === 0);
   check("...with no session selected and its transcript gone", (await page.getByText("What should we work on?").count()) === 1);
@@ -257,7 +278,7 @@ try {
   await bar2.fill("");
 
   // === Settings panel
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
   const dlg = page.getByRole("dialog", { name: "Settings" });
   await dlg.waitFor();
   check("Settings opens as a dialog with three tabs", (await dlg.getByRole("tab").count()) === 3);
@@ -286,7 +307,8 @@ try {
   check("cancelling discards the form", (await dlg.getByLabel("API key").count()) === 0);
   // output mode persists through the API
   await dlg.getByRole("tab", { name: "General" }).click();
-  await dlg.getByRole("radio", { name: /expanded/ }).check({ force: true });
+  // Click the option's visible card, as a person does (the radio itself is visually hidden).
+  await dlg.locator("label", { has: page.getByRole("radio", { name: /expanded/ }) }).click();
   await page.waitForTimeout(500);
   check("changing an option saves it on the server", (await (await fetch(`${base}/api/settings`)).json()).outputMode === "expanded");
   await dlg.getByRole("tab", { name: "Skills" }).click();
@@ -321,6 +343,104 @@ try {
   check("...on this machine", body.target === "local" && !body.hostId);
   check("...with the skill chip joined ahead of the typed text", body.prompt === "$pr-body write the description", JSON.stringify(body.prompt));
   check("...and the chips are cleared once it is sent", (await page.getByRole("list", { name: "Added to this message" }).count()) === 0);
+
+  // === Resume: from the empty chat page, with nothing open
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await page.waitForTimeout(400);
+  check("Resume is offered on the empty chat page", (await page.getByRole("button", { name: "Resume a session" }).count()) === 1);
+  const barR = page.getByLabel("Prompt");
+  await barR.fill("/res");
+  const cmdMenu = page.getByRole("listbox", { name: "Commands" });
+  await cmdMenu.waitFor();
+  check("/resume is in the command list, described", /Reopen a saved session/.test(await cmdMenu.innerText()));
+  await page.keyboard.press("Tab");
+  check("Tab turns /resume into a chip, it does not run yet", (await page.getByRole("list", { name: "Added to this message" }).getByRole("group", { name: "Command resume" }).count()) === 1 && (await page.locator("dialog[open]").count()) === 0);
+  await page.keyboard.press("Enter");
+  const panel = page.getByRole("dialog", { name: "Resume a session" });
+  await panel.waitFor();
+  check("Enter runs /resume and opens the panel", (await panel.count()) === 1);
+  check("focus is in the search field", await panel.getByRole("combobox").evaluate((el) => el === document.activeElement));
+  await panel.getByRole("option").first().waitFor();
+  const rows = await panel.getByRole("option").allInnerTexts();
+  check("it lists sessions nobody opened in this server, straight from the database", rows.some((r) => /Migrate settings page/.test(r)) && rows.some((r) => /Fix flaky reconnect test/.test(r)), `${rows.length} rows`);
+  check("rows are grouped by recency", (await panel.getByRole("group").allInnerTexts()).length >= 2 && /today/i.test(await panel.innerText()) && /earlier/i.test(await panel.innerText())); // the headings are uppercased by CSS
+  check("a session that cannot be continued says so", /read only/i.test(await panel.getByRole("option", { name: /Ancient scratch session/ }).innerText()));
+  // search
+  await panel.getByRole("combobox").fill("reconnect");
+  await page.waitForTimeout(500);
+  check("typing searches the database (title, task, folder)", (await panel.getByRole("option").count()) === 1 && /flaky reconnect/i.test(await panel.getByRole("option").first().innerText()));
+  await panel.getByRole("combobox").fill("/work/api");
+  await page.waitForTimeout(500);
+  check("...and matches the folder too", (await panel.getByRole("option").count()) === 2);
+  await panel.getByRole("combobox").fill("zzz-nothing");
+  await page.waitForTimeout(500);
+  check("an empty search says so, and explains what is searched", /No session matches/.test(await panel.innerText()) && /title, the first message and the folder/.test(await panel.innerText()));
+  await panel.getByRole("combobox").fill("");
+  await page.waitForTimeout(500);
+  // keyboard open
+  await panel.getByRole("combobox").press("ArrowDown");
+  const desc = await panel.getByRole("combobox").getAttribute("aria-activedescendant");
+  check("aria-activedescendant follows the arrow keys", !!desc && (await page.locator("#" + desc).getAttribute("aria-selected")) === "true", desc);
+  await panel.getByRole("combobox").fill("upload retry");
+  await page.waitForTimeout(500);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(900);
+  check("Enter opens it: the panel closes and the old transcript is on screen", (await page.locator("dialog[open]").count()) === 0 && (await page.locator("main").innerText()).includes("answer for Write the upload retry"));
+  check("its title is the active chat's title", (await page.getByRole("heading", { level: 1 }).first().innerText()).includes("Write the upload retry"));
+  check("the model picker shows the session's own model", /deepseek-chat/.test((await page.getByRole("button", { name: /^Model:/ }).getAttribute("aria-label")) ?? ""));
+  // continue it
+  const before = fake.calls().length;
+  await page.getByLabel("Prompt").fill("now add a test for it");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await page.waitForFunction(() => document.querySelector("main")?.innerText.includes("fake reply to: now add a test"), null, { timeout: 8000 }).catch(() => {});
+  const call = fake.calls().slice(before)[0];
+  check("sending continues it: the agent was resumed with the saved conversation", !!call && !!call.resume && call.resumedMessages.length === 3 && call.task === "now add a test for it", call ? `resumed ${call.resumedMessages.length} msgs` : "no call");
+  const resumedText = await page.locator("main").innerText();
+  check("the transcript keeps the old turn and adds the new one", resumedText.includes("answer for Write the upload retry") && resumedText.includes("fake reply to: now add a test"));
+  // Count the prompt itself, not the words: the stub's reply quotes the start of it. The server's transcript
+  // and the page must each hold the prompt as exactly one turn (old turn + new turn = two "YOU" blocks).
+  const serverTasks = (await (await fetch(`${base}/api/sessions/s-old-c`)).json()).events.filter((e) => e.type === "task").map((e) => e.text);
+  // Each user turn renders as a "You" label above its text; count those rendered turns (the label's text is
+  // "You", CSS uppercases it for display).
+  const shownTasks = await page.locator("main").evaluate((m) => [...m.querySelectorAll("div")].filter((d) => d.children.length === 2 && d.firstElementChild?.textContent?.trim() === "You").map((d) => d.lastElementChild.textContent.trim()));
+  check("the new prompt shows exactly once", serverTasks.filter((t) => t === "now add a test for it").length === 1 && shownTasks.filter((t) => t === "now add a test for it").length === 1 && shownTasks.length === 2, `server ${JSON.stringify(serverTasks)} | shown ${JSON.stringify(shownTasks)}`);
+  check("no error card", (await page.locator("main").innerText()).indexOf("remote host") === -1);
+  // open the same one again from the panel: it just switches, and there is one row for it in the sidebar
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("button", { name: "Resume a session" }).click();
+  const panel2 = page.getByRole("dialog", { name: "Resume a session" });
+  await panel2.getByRole("option").first().waitFor();
+  check("a session already open is marked open", /open/.test(await panel2.getByRole("option", { name: /Write the upload retry/ }).innerText()));
+  await panel2.getByRole("option", { name: /Write the upload retry/ }).click();
+  await page.waitForTimeout(500);
+  check("reopening an open session switches to it, without a second sidebar entry", (await page.locator('aside [role="listitem"]', { hasText: "Write the upload retry" }).count()) === 1);
+  // a read-only session opens for reading and refuses to continue, with the reason
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("button", { name: "Resume a session" }).click();
+  await panel2.getByRole("option", { name: /Ancient scratch/ }).waitFor();
+  await panel2.getByRole("option", { name: /Ancient scratch/ }).click();
+  await page.waitForTimeout(700);
+  await page.getByLabel("Prompt").fill("can you continue?");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await page.waitForFunction(() => document.body.innerText.includes("no saved conversation"), null, { timeout: 4000 }).catch(() => {});
+  check("continuing a session with nothing saved is refused with the reason", /no saved conversation/.test(await page.locator("body").innerText()));
+  check("...and the typed message is kept, not lost", (await page.getByLabel("Prompt").inputValue()) === "can you continue?");
+  // delete needs a confirmation, and Keep it changes nothing
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("button", { name: "Resume a session" }).click();
+  await panel2.getByRole("option", { name: /Fix flaky reconnect/ }).waitFor();
+  const countBefore = await panel2.getByRole("option").count();
+  await panel2.getByRole("button", { name: /^Delete Fix flaky reconnect/ }).click();
+  check("delete asks first, in words", /Delete .Fix flaky reconnect test. for good/.test(await panel2.getByRole("alertdialog").innerText()));
+  await panel2.getByRole("button", { name: "Keep it" }).click();
+  check("Keep it removes nothing", (await panel2.getByRole("option").count()) === countBefore && (await (await fetch(`${base}/api/history`)).json()).some((r) => r.id === "s-old-b"));
+  await panel2.getByRole("button", { name: /^Delete Fix flaky reconnect/ }).click();
+  await panel2.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.waitForTimeout(700);
+  check("confirming deletes it from the database", !(await (await fetch(`${base}/api/history`)).json()).some((r) => r.id === "s-old-b") && (await panel2.getByRole("option", { name: /Fix flaky reconnect/ }).count()) === 0);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  check("Escape closes the panel", (await page.locator("dialog[open]").count()) === 0);
   await ctx.close();
 } finally {
   await browser.close();

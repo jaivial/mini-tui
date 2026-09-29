@@ -2,8 +2,16 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-/** `mini` executable (on PATH, overridable). */
-export const MINI_BIN = process.env.MINITUI_MINI_BIN ?? process.env.MINI_BIN ?? "mini";
+/**
+ * The `mini` executable (on PATH, overridable), read when it is needed rather than once at import: a
+ * constant would freeze whatever the environment held the first time any module loaded this file.
+ */
+export function miniBin(): string {
+  return process.env.MINITUI_MINI_BIN ?? process.env.MINI_BIN ?? "mini";
+}
+
+/** @deprecated the value at import time; use `miniBin()`. */
+export const MINI_BIN = miniBin();
 
 /** Where run artifacts go: `~/.config/mini-tui/runs/<timestamp>-<slug>/`. */
 export const RUNS_DIR = process.env.MINITUI_RUNS_DIR ?? join(homedir(), ".config", "mini-tui", "runs");

@@ -226,6 +226,47 @@
   animation: spin 1s linear infinite;
 }
 
+/*
+ * Size controls (Settings > General > Size, `lib/scale.ts`).
+ *
+ * --ui-scale zooms the whole app, like browser zoom but kept to this page: chrome, spacing, icons and
+ * text all grow together, and the layout reflows because `zoom` changes layout size, unlike `transform`.
+ * Anything sized in viewport units must divide by it, or 100dvh inside a 125% zoom would be 125% of
+ * the screen: use `--vw` / `--vh` (one viewport unit, zoom-corrected) for those.
+ *
+ * --text-scale grows only reading text: the transcript, command output, thinking and notes. Those
+ * surfaces size their text with the `read-*` utilities below, which multiply by it; the chrome around
+ * them keeps its density. Both default to 1, so nothing changes until someone picks a size.
+ */
+:root {
+  --ui-scale: 1;
+  --text-scale: 1;
+  --vw: calc(1vw / var(--ui-scale));
+  --vh: calc(1dvh / var(--ui-scale));
+}
+#app {
+  zoom: var(--ui-scale);
+}
+/*
+ * Inside a pane, "small" is the pane's width, not the window's: a pane is a query container
+ * (`@container pane`), and `pane-sm:` applies below 40rem of it, the width `max-sm:` means for the window.
+ * On a phone there is one pane as wide as the screen, so both agree there.
+ */
+@custom-variant pane-sm {
+  @container pane (width < 40rem) {
+    @slot;
+  }
+}
+@custom-variant pane-xs {
+  @container pane (width < 26rem) {
+    @slot;
+  }
+}
+
+@utility read-* {
+  font-size: calc(--value([length]) * var(--text-scale));
+}
+
 @layer base {
   * {
     border-color: var(--color-line);
@@ -238,12 +279,16 @@
     text-size-adjust: 100%;
   }
   html,
-  body,
-  #app {
+  body {
     /* dvh tracks the visible area as the URL bar collapses; the % line is the
        fallback for browsers without dynamic viewport units. */
     height: 100%;
     height: 100dvh;
+  }
+  #app {
+    /* #app is zoomed (see --ui-scale), so its own height is the screen divided by the zoom. */
+    height: 100%;
+    height: calc(100 * var(--vh));
   }
   /* Controls, not content: no double-tap zoom delay, no long-press text
      selection or callout. Body text stays selectable. */

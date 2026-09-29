@@ -66,14 +66,14 @@
         <CornerDownLeft size={14} class="mt-1 shrink-0 text-ink-faint" strokeWidth={1.75} />
         <div class="min-w-0 flex-1">
           <div class="mb-0.5 text-[10px] font-semibold tracking-wider text-ink-faint uppercase">You</div>
-          <Markdown text={row.event.text} class="text-[13.5px] text-ink" />
+          <Markdown text={row.event.text} class="read-[13.5px] text-ink" />
         </div>
       </div>
     {:else if row.kind === "assistant"}
       <div class="flex items-start gap-2.5">
         <Sparkles size={14} class="mt-1 shrink-0 text-brand" strokeWidth={1.75} />
         <div class="min-w-0 flex-1">
-          <Markdown text={row.event.text} class="text-[13.5px] text-ink" />
+          <Markdown text={row.event.text} class="read-[13.5px] text-ink" />
         </div>
       </div>
     {:else if row.kind === "step"}
@@ -91,7 +91,7 @@
             <CheckCircle2 size={11} strokeWidth={2} class="shrink-0" />
             <span class="tnum">Thought for {row.event.seconds}s</span>
           </summary>
-          <p class="mt-1 border-l border-line/70 py-0.5 pl-3 text-[12.5px] whitespace-pre-wrap text-ink-muted">
+          <p class="mt-1 border-l border-line/70 py-0.5 pl-3 read-[12.5px] whitespace-pre-wrap text-ink-muted">
             {row.event.text}
           </p>
         </details>
@@ -102,18 +102,18 @@
         </div>
       {/if}
     {:else if row.kind === "notice"}
-      <div class="px-2.5 text-[11.5px] text-ink-faint">{row.event.text}</div>
+      <div class="px-2.5 read-[11.5px] text-ink-faint">{row.event.text}</div>
     {:else if row.kind === "exit"}
       {@const okExit = row.event.exitStatus === "Submitted"}
       <div
-        class="rounded-lg px-3 py-2 text-[12.5px] {okExit ? 'bg-ok/10 text-ok' : 'bg-warn/10 text-warn'}"
+        class="rounded-lg px-3 py-2 read-[12.5px] {okExit ? 'bg-ok/10 text-ok' : 'bg-warn/10 text-warn'}"
       >
         <div class="mb-0.5 flex items-center gap-1.5 font-medium">
           <CheckCircle2 size={12} strokeWidth={2} /> {row.event.exitStatus}
         </div>
       </div>
     {:else if row.kind === "error"}
-      <div class="flex items-start gap-2 rounded-lg bg-err/10 px-3 py-2 text-[12.5px] text-err">
+      <div class="flex items-start gap-2 rounded-lg bg-err/10 px-3 py-2 read-[12.5px] text-err">
         <AlertTriangle size={14} class="mt-px shrink-0" strokeWidth={2} />
         <pre class="font-mono break-words whitespace-pre-wrap">{row.event.text}</pre>
       </div>
@@ -132,14 +132,14 @@
           <Spinner size={11} label="Thinking" />
           <span aria-hidden="true">Thinking</span><span class="caret" aria-hidden="true"></span>
         </div>
-        <div class="mt-1 text-[12.5px] whitespace-pre-wrap text-ink-muted">{partial.thinking}</div>
+        <div class="mt-1 read-[12.5px] whitespace-pre-wrap text-ink-muted">{partial.thinking}</div>
       </div>
     {/if}
     {#if partial.text}
       <div class="flex items-start gap-2.5">
         <Sparkles size={14} class="mt-1 shrink-0 text-brand" strokeWidth={1.75} />
         <div class="min-w-0 flex-1">
-          <Markdown text={partial.text} class="text-[13px] text-ink" />
+          <Markdown text={partial.text} class="read-[13px] text-ink" />
           <span class="caret" aria-hidden="true"></span>
         </div>
       </div>

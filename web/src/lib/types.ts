@@ -8,6 +8,53 @@ export type { RunEvent, RunInfo, TrajectoryMessage };
 
 export type SessionStatus = "idle" | "running" | "done" | "error" | "interrupted";
 
+/** One saved session in the history list (`GET /api/history`): metadata only, no transcript. */
+export interface HistoryItem {
+  id: string;
+  title: string;
+  cwd: string;
+  model: string;
+  task: string;
+  createdAt: number;
+  updatedAt: number;
+  apiCalls: number;
+  cost: number;
+  exitStatus: string;
+  /** A saved conversation exists to continue from. */
+  resumable: boolean;
+  /** The server already holds this session open. */
+  open: boolean;
+}
+
+/** A session's notes, as the hub socket sends them (`/api/hub`). `updatedAt` is the version: 0 = nothing saved yet. */
+export interface Note {
+  id: string;
+  body: string;
+  updatedAt: number;
+}
+
+/** `GET /api/folders`: the subfolders of one folder, on this machine or a remote host. */
+export interface FolderEntry {
+  name: string;
+  path: string;
+  hidden: boolean;
+  git: boolean;
+}
+export interface FolderListing {
+  path: string;
+  parent: string | null;
+  home: string;
+  entries: FolderEntry[];
+  truncated: boolean;
+}
+
+/** `GET /api/history/folders`: a folder with saved sessions. */
+export interface FolderSummary {
+  cwd: string;
+  count: number;
+  updatedAt: number;
+}
+
 export interface SessionSummary {
   id: string;
   title: string;

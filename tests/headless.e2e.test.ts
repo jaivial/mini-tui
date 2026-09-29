@@ -11,8 +11,11 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const FIXTURES = join(import.meta.dir, "fixtures", "headless");
 const SANDBOX = mkdtempSync(join(tmpdir(), "mini-tui-headless-"));
+// The real agent is what this file tests: never inherit a stub agent another test file pointed the shared
+// process environment at (those stubs live in directories that are deleted when their file finishes).
+const { MINITUI_MINI_BIN: _bin, MINITUI_EMBEDDED_AGENT: _embedded, ...INHERITED } = process.env;
 const ENV = {
-  ...process.env,
+  ...INHERITED,
   MINITUI_DB_PATH: join(SANDBOX, "sessions.db"),
   MINITUI_RESUME_DIR: join(SANDBOX, "resume"),
   MINITUI_RUNS_DIR: join(SANDBOX, "runs"),

@@ -1,4 +1,5 @@
 /** Small UI preferences, persisted to localStorage. */
+import { TEXT_SCALES, UI_SCALES, effectiveUiScale, snap } from "../scale";
 
 const THEME_KEY = "minitui.theme";
 const DENSITY_KEY = "minitui.density";
@@ -36,8 +37,44 @@ class UiStore {
     })(),
   );
 
+  /** Whole-app zoom (`--ui-scale`) and reading-text size (`--text-scale`): see app.css and lib/scale.ts. */
+  uiScale = $state<number>(
+    (() => {
+      try {
+        return snap(localStorage.getItem("minitui.uiScale"), UI_SCALES);
+      } catch {
+        return 1;
+      }
+    })(),
+  );
+  textScale = $state<number>(
+    (() => {
+      try {
+        return snap(localStorage.getItem("minitui.textScale"), TEXT_SCALES);
+      } catch {
+        return 1;
+      }
+    })(),
+  );
+
+  /** Touch input (a finger, not a mouse): the interface never zooms below 100% there. */
+  coarse = $state(typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches);
+  /** The interface size in effect (what `--ui-scale` holds), which can differ from `uiScale` on touch. */
+  get appliedUiScale(): number {
+    return effectiveUiScale(this.uiScale, this.coarse);
+  }
+
   constructor() {
     this.apply();
+    try {
+      const mq = matchMedia("(pointer: coarse)");
+      mq.addEventListener("change", () => {
+        this.coarse = mq.matches;
+        this.apply();
+      });
+    } catch {
+      /* no matchMedia (tests): keep the initial value */
+    }
   }
 
   apply() {
@@ -46,7 +83,11 @@ class UiStore {
     root.classList.toggle("dark", this.theme === "dark");
     root.dataset.theme = this.palette;
     root.dataset.density = this.density;
+    root.style.setProperty("--ui-scale", String(this.appliedUiScale));
+    root.style.setProperty("--text-scale", String(this.textScale));
     try {
+      localStorage.setItem("minitui.uiScale", String(this.uiScale));
+      localStorage.setItem("minitui.textScale", String(this.textScale));
       localStorage.setItem(THEME_KEY, this.theme);
       localStorage.setItem("minitui.palette", this.palette);
       localStorage.setItem(DENSITY_KEY, this.density);
@@ -77,6 +118,16 @@ class UiStore {
 
   setPalette(id: string) {
     this.palette = id;
+    this.apply();
+  }
+
+  setUiScale(value: number) {
+    this.uiScale = snap(value, UI_SCALES);
+    this.apply();
+  }
+
+  setTextScale(value: number) {
+    this.textScale = snap(value, TEXT_SCALES);
     this.apply();
   }
 

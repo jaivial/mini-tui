@@ -6,7 +6,7 @@
 
 import { appendFileSync, closeSync, existsSync, openSync, readSync, statSync, writeFileSync } from "node:fs";
 
-import { MINI_BIN, createSessionDir, type SessionPaths } from "../config";
+import { miniBin, createSessionDir, type SessionPaths } from "../config";
 import { gitIdentityEnv } from "../gitIdentity";
 import { resolveCommand, resolvePython } from "../helpers";
 
@@ -34,7 +34,7 @@ let runnerSupport: RunnerKind | undefined;
 
 /** Build the public CLI argv for a run (exported for tests and fallback). */
 export function buildMiniArgs(spec: TaskSpec, session: SessionPaths): string[] {
-  const args = [MINI_BIN, "-y", "--exit-immediately", "-o", session.trajPath];
+  const args = [miniBin(), "-y", "--exit-immediately", "-o", session.trajPath];
   if (spec.resumePath) args.push("--resume", spec.resumePath);
   if (spec.model) args.push("-m", spec.model);
   for (const configSpec of spec.specs ?? []) args.push("-c", configSpec);
@@ -59,7 +59,7 @@ export function runnerSupportsCompactOnly(): boolean {
 
 /** Resolve a console script beside a custom `mini` launcher, if one exists. */
 function resolveTuiRunner(env: NodeJS.ProcessEnv = process.env): string {
-  const launcher = resolveCommand(MINI_BIN, env);
+  const launcher = resolveCommand(miniBin(), env);
   if (!launcher.includes("/")) return "";
   const dir = launcher.slice(0, launcher.lastIndexOf("/"));
   return `${dir}/mini-swe-agent-tui`;
@@ -112,7 +112,7 @@ export function buildRunnerCommand(spec: TaskSpec, session: SessionPaths, kind: 
   if (kind === "embedded") return [resolvePython(), "-m", TUI_RUNNER_MODULE, ...buildRunnerArgs(spec, session)];
   if (kind === "argv") {
     const launcher = resolveTuiRunner();
-    return launcher ? [resolvePython(), launcher, ...buildRunnerArgs(spec, session)] : [MINI_BIN, ...buildRunnerArgs(spec, session)];
+    return launcher ? [resolvePython(), launcher, ...buildRunnerArgs(spec, session)] : [miniBin(), ...buildRunnerArgs(spec, session)];
   }
   return buildMiniArgs(spec, session);
 }

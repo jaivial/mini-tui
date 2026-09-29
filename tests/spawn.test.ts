@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { MINI_BIN, type SessionPaths } from "../src/config";
+import { miniBin, type SessionPaths } from "../src/config";
 import { buildMiniArgs, buildRunEnv, buildRunnerCommand, detectRunner, setRunnerSupport } from "../src/mini/spawn";
 
 const SESSION: SessionPaths = {
@@ -14,7 +14,7 @@ const SESSION: SessionPaths = {
 describe("mini argument builders", () => {
   test("plain public run: yolo, output and task", () => {
     expect(buildMiniArgs({ task: "fix it", model: "xiaomi/mimo-v2.6-pro" }, SESSION)).toEqual([
-      MINI_BIN,
+      miniBin(),
       "-y",
       "--exit-immediately",
       "-o",

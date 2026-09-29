@@ -9,6 +9,7 @@
   import { addChip, announce, composePrompt, hasMessage, removeChip, type Chip as ChipT } from "../chips";
   import { step } from "../models";
   import { fitHeight } from "../grow";
+  import type { PromptMemory } from "../promptMemory";
 
   /**
    * The prompt bar. One surface, one row of controls: where the run executes, which model, and
@@ -31,7 +32,13 @@
     onsend,
     oninterrupt,
     onmodel,
+    memory,
+    place,
   }: {
+    /** A control drawn after the target switch: the folder picker, for a new chat. */
+    place?: import("svelte").Snippet;
+    /** ↑/↓ recall of the prompts sent in this chat (see lib/promptMemory.ts). */
+    memory?: PromptMemory;
     value?: string;
     /** Commands and skills picked from the menus; joined to `value` only when the message is sent. */
     chips?: ChipT[];
@@ -63,7 +70,7 @@
    * Box of the field and of its mirror: they must match exactly or the measured height is wrong.
    * One line = 26px of text + 18px of padding = 44px, which is also the touch target.
    */
-  const FIELD = "block w-full bg-transparent px-3.5 py-[9px] text-base leading-relaxed text-ink placeholder:text-ink-faint";
+  const FIELD = "block w-full bg-transparent px-3.5 py-[9px] read-[16px] leading-relaxed text-ink placeholder:text-ink-faint";
   let area = $state<HTMLTextAreaElement | null>(null);
   /** Focus the prompt (after `/new`, after closing a panel). */
   export function focus() {
@@ -100,7 +107,34 @@
 
   function send() {
     if (!canSend) return;
+    memory?.push({ chips: [...chips], text: value });
     onsend(composePrompt(chips, value));
+  }
+
+  /**
+   * ↑ on the first line recalls the previous prompt, ↓ on the last line the next one (then the draft).
+   * Inside a multi-line message the arrows keep moving the caret, as in any text field and as in the
+   * terminal UI. A recalled message is put back with its chips, and the menu stays shut on it.
+   */
+  function recall(dir: "prev" | "next"): boolean {
+    if (!memory || !area) return false;
+    const at = area.selectionStart ?? 0;
+    if (area.selectionEnd !== at) return false; // a selection: the arrows collapse it
+    const onFirst = !value.slice(0, at).includes("\n");
+    const onLast = !value.slice(at).includes("\n");
+    if (dir === "prev" ? !onFirst : !onLast) return false;
+    const got = dir === "prev" ? memory.prev({ chips: [...chips], text: value }) : memory.next();
+    if (!got) return false;
+    chips = got.chips;
+    value = got.text;
+    dismissed = `recall:${got.text}`;
+    queueMicrotask(() => {
+      if (!area) return;
+      const end = dir === "prev" ? got.text.length : got.text.length;
+      area.setSelectionRange(end, end);
+      caret = end;
+    });
+    return true;
   }
 
   function remove(index: number) {
@@ -170,7 +204,8 @@
   let dismissed = $state("");
   const completion = $derived(completionAt(value, caret, catalog.commands, catalog.skills));
   // Escape hides the menu for the text it was open on; typing again brings it back.
-  const menu = $derived(completion && dismissed !== `${completion.kind}:${value}` ? completion : null);
+  // A recalled message never opens the menu: ↑ would then move in the menu instead of the memory.
+  const menu = $derived(completion && dismissed !== `${completion.kind}:${value}` && dismissed !== `recall:${value}` ? completion : null);
   const menuId = `${uid}-menu`;
 
   $effect(() => {
@@ -235,6 +270,10 @@
       send();
       return;
     }
+    if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && !event.isComposing) {
+      if (recall(event.key === "ArrowUp" ? "prev" : "next")) event.preventDefault();
+      return;
+    }
     // Backspace at the very start of an empty caret removes the last chip, like a token field.
     if (event.key === "Backspace" && chips.length && (area?.selectionStart ?? 0) === 0 && (area?.selectionEnd ?? 0) === 0) {
       event.preventDefault();
@@ -243,7 +282,7 @@
   }
 </script>
 
-<div class="shrink-0 bg-canvas px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-sm:px-3">
+<div class="shrink-0 bg-canvas px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pane-sm:px-3">
   <div
     class="relative mx-auto max-w-3xl rounded-lg border border-line-strong/70 bg-surface transition-[border-color,box-shadow] duration-[--duration-fast] ease-[--ease-standard] focus-within:border-brand focus-within:shadow-[0_0_0_3px_var(--color-brand-soft)]"
   >
@@ -292,7 +331,9 @@
     <p id="{uid}-hint" class="sr-only">Enter sends. Shift and Enter add a new line. Type slash for commands or dollar for skills. Backspace at the start removes the last chip.</p>
     <p class="sr-only" role="status" aria-live="polite">{liveMessage}</p>
 
-    <div class="flex items-center gap-1 px-1.5 pb-1.5">
+    <!-- The controls wrap onto a second row when a narrow bar cannot fit them (a small phone at a large
+         interface size), rather than pushing Send off the edge. Send stays last, on the right. -->
+    <div class="flex flex-wrap items-center gap-1 px-1.5 pb-1.5">
       {#if targets.length}
         <!-- Where a new chat runs. Explicit, never implicit; gone once the chat exists. -->
         <div class="flex min-w-0 shrink items-center rounded-md" role="group" aria-label="Run on">
@@ -310,11 +351,13 @@
               {:else}
                 <Globe size={13} strokeWidth={2} class="shrink-0" aria-hidden="true" />
               {/if}
-              <span class="max-w-24 truncate {targetId === t.id ? 'max-sm:max-w-20' : 'max-sm:sr-only'}">{t.label}</span>
+              <span class="max-w-24 truncate {targetId === t.id ? 'pane-sm:max-w-20' : 'pane-sm:sr-only'}">{t.label}</span>
             </button>
           {/each}
         </div>
       {/if}
+
+      {#if place}{@render place()}{/if}
 
       <ModelPicker value={model} bind:open={modelOpen} busy={switchingModel} {disabled} note={modelNote} onpick={onmodel} />
 

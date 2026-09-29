@@ -56,16 +56,16 @@
     <div class="overflow-hidden">
     <div class="border-t border-line px-3 py-2">
       {#if hasCommand}
-        <pre class="overflow-x-auto font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink">{command}</pre>
+        <pre class="overflow-x-auto font-mono read-[11.5px] leading-relaxed whitespace-pre-wrap text-ink">{command}</pre>
       {/if}
       {#if output || exceptionInfo}
         {#if exceptionInfo}
-          <div class="mb-2 flex items-start gap-1.5 rounded-md bg-err/10 p-2 text-[11.5px] text-err">
+          <div class="mb-2 flex items-start gap-1.5 rounded-md bg-err/10 p-2 read-[11.5px] text-err">
             <TriangleAlert size={13} class="mt-px shrink-0" strokeWidth={2} />
             <span class="font-mono break-words">{exceptionInfo}</span>
           </div>
         {/if}
-        <pre class="max-h-96 overflow-auto font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-muted">{collapsedBody}</pre>
+        <pre class="max-h-96 overflow-auto font-mono read-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-muted">{collapsedBody}</pre>
       {/if}
     </div>
     </div>

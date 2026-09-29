@@ -38,6 +38,8 @@
     class?: string;
     onclick?: (event: MouseEvent) => void;
     children?: Snippet;
+    /** Anything else (aria-*, data-*, id...) goes onto the <button>. */
+    [attr: string]: unknown;
   } = $props();
 
   // Hit areas: dense with a mouse (32px), 44px under a finger. `pointer-coarse`

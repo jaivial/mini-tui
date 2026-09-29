@@ -8,12 +8,21 @@
     ["Enter", "Send the message"],
     ["Shift + Enter", "New line"],
     ["/", "Commands, at the start of a message"],
+    ["/resume", "Reopen any saved session and keep going"],
     ["$", "Skills, anywhere in a message"],
     ["↑ ↓ then Enter or Tab", "Pick a command, skill or model"],
     ["Esc", "Close a menu or panel"],
     ["Ctrl/⌘ + K", "New chat"],
     ["Ctrl/⌘ + ,", "Settings"],
     ["Ctrl/⌘ + B", "Show or hide the sessions list"],
+    ["Ctrl + \\", "Split the pane right (a new chat)"],
+    ["Ctrl + Shift + \\", "Split the pane down"],
+    ["Alt + 1…6", "Go to pane 1 to 6"],
+    ["Ctrl/⌘ + Alt + arrows", "Next or previous pane"],
+    ["Alt + X", "Close the pane (the session keeps running)"],
+    ["Ctrl/⌘ + Shift + .", "Open or close notes"],
+    ["Ctrl/⌘ + S", "Save notes now (they also save as you type)"],
+    ["Ctrl/⌘ + and −", "Interface size (Shift: text size), 0 resets"],
   ];
 </script>
 

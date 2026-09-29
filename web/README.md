@@ -100,6 +100,88 @@ model chosen in the draft (`web/src/lib/stores/chat.svelte.ts`). Abandoning a dr
 starts with a slash goes to the agent unchanged; a bare unknown word (`/modle`) is reported and kept.
 On touch there are `/` and `$` buttons, since a phone keyboard buries both characters.
 
+**Panes** (tmux style). Split the focused pane right with `Ctrl+\` (or `/split`) or down with `Ctrl+Shift+\`
+(`/split down`), or use the pane menu in the header. Each new pane is a new chat, so its first message starts
+its own session, and every pane streams its session over its own socket while the others run. Drag a divider
+to resize it, or focus it and use the arrow keys (Home/End go to the limits, Enter evens it out). `Alt+1…6`
+jumps to a pane, `Ctrl/⌘+Alt+arrows` cycles, and `Alt+X` closes one (its session keeps running). A session is
+shown in one pane at a time: picking one that another pane shows focuses that pane. The layout is limited to
+6 panes, and a split that would leave a pane too small to use is refused with the reason. The layout and each
+pane's session are remembered in the browser. Below 760px (a phone, or a small tablet) the same panes show
+as tabs, one on screen at a time. The layout logic is `lib/panes.ts`, pure and tested.
+
+**Notes** (the notebook button in a pane's header, `/notes`, or `Ctrl/⌘+Shift+.`): a sidebar on the pane's
+right with a plain text area for that session. It saves 600 ms after you stop typing, and also when the panel
+closes, on blur, on `Ctrl/⌘+S`, and when the page hides. Notes are stored in the shared database (a `notes`
+table, so a history listing never reads them) and deleted with their session. In a narrow pane the notes cover
+the chat instead of squeezing both.
+
+**The right sidebar goes through one socket, never REST and never polling.** A tab opens a single hub socket,
+`/api/hub`, the first time a notes panel appears, and every pane shares it. A note is *watched*: the hub answers
+with its current value at once, then pushes every change made anywhere. An edit on another device shows up live.
+If you are typing, the edit is held back and you get **Keep mine** / **Use theirs** (which copies your text to the
+clipboard first). A save is a message on the same socket naming the version it started from. The sender gets
+`note.saved` or `note.conflict`, and the other watchers get the new value. The socket reconnects like the
+session sockets (backoff, immediately on "online" or when the tab is shown, a heartbeat for half-open
+connections), and re-watches everything, so what changed while it was down arrives on reconnect. There is no
+`/api/notes` endpoint. The protocol lives in `src/web/hub.ts` (tested without a network) and
+`web/src/lib/hub.ts` + `notesClient.ts` (tested against a fake socket).
+
+| Client → hub | Hub → client |
+| --- | --- |
+| `{t:"note.watch", id}` / `{t:"note.unwatch", id}` | `{t:"hello", limits:{noteMax}}` on connect |
+| `{t:"note.save", id, body, base, req}` | `{t:"note", note}` on watch and on every change elsewhere |
+| `{t:"ping"}` | `{t:"note.saved", req, note}` / `{t:"note.conflict", req, current}` / `{t:"error", req?, error}` / `{t:"pong"}` |
+
+**Size** (Settings › General › Size): **Interface size** (85-140%) zooms everything, like page zoom kept to
+this app. **Text size** (90-150%) grows only what you read and write: the transcript, command output, the
+prompt and notes. Shortcuts: `Ctrl/⌘ +`/`−` for the interface, the same with Shift for text, and `0` to
+reset. On a touch screen the interface never goes below 100%, so taps stay 44px. Both are remembered in
+the browser.
+
+**By folder.** The sidebar's **Recent / By folder** switch groups every session by the folder it ran in. Each
+folder shows its name, where it lives, its count, a dot while something in it runs, and its open and saved
+sessions, 20 at a time. A folder with open sessions (or pinned) starts expanded; what you open or close,
+what you pin and which view you use are remembered in the browser. The **+** on a folder starts a new chat
+there (on the same host, for a remote folder). `lib/sessionFolders.ts` holds the grouping rules (tested).
+The folder list is `GET /api/history/folders` (index only, instant), and a folder's sessions are
+`GET /api/history?cwd=`, loaded when the folder is opened and re-read only when a session in it changes.
+
+**Sidebar history.** Below the open sessions, **History** lists every session saved in the shared database
+(terminal ones too), grouped by day, 50 at a time with **Show more**. The search box searches the whole
+database on the server. Opening one shows its transcript in the focused pane. **All** opens the Resume panel,
+where saved sessions can also be deleted.
+
+**Folder picker.** A new chat's prompt bar has a **Folder** button: a browser for the folders of the machine the
+chat will run on. That is this server for **Local**, or the selected host for a remote target, where it lists
+over the same ssh the run will use. Type or paste a path and press Enter to go there. Click a folder to open it,
+Backspace in an empty field goes up, and **Use this folder** picks it. It lists names only, directories only,
+at most 500 per folder. The folder is checked when the session is created: a local one must exist on this
+machine. A remote chat, and every follow-up turn, starts in the folder (the host's default workdir if none was
+picked). `lib/folderPath.ts` and `src/web/folders.ts` hold the pure parts, both tested. The remote listing script
+is tested by running it through `bash -s`, as ssh does.
+
+**Prompt memory.** Press `↑` on the first line of the prompt bar to recall this chat's earlier prompts, and `↓`
+on the last line to go forward and back to the draft you were writing. Inside a multi-line message the arrows
+move the cursor. Commands and skills come back as chips. The memory is seeded from the transcript, so a reload
+or `/resume` keeps it (`lib/promptMemory.ts`, the same rules as the TUI's `src/history.ts`).
+
+**Finish toasts.** When a session you are not looking at finishes or fails, a toast says so, with **View**
+to open it (in the pane already showing it, else the focused one) and focus its prompt bar. It is announced
+once per turn (`lib/finish.ts`). A session you are watching, or one you stopped yourself, is not announced.
+
+**Changing the model never starts work.** During a run it applies from the agent's next step. After a finished
+or interrupted turn it only changes the model: the status stays, and your next message runs on it.
+
+**Resume** (`/resume`, or "Resume a session" on the empty chat page): opens every session saved in the shared
+database, including ones started in the terminal and ones this browser never opened, so it works from a new
+chat with nothing running. Type to search the title, the first message and the folder; arrows and Enter open
+one. Opening shows the old transcript at once and sending continues it: the agent is started with the saved
+conversation (`--resume`), in the session's own folder and on its own model. A session that never reached a
+model call has nothing to continue from: it can be read, it says so, and sending to it is refused with the
+reason instead of starting an agent with no context. **Closing a session keeps it in the history**; deleting is
+a separate, confirmed action in this panel.
+
 **Settings** (Ctrl/Cmd+comma, `/settings`, `/connect`, `/skills`): General (colour mode, accent, command output
 mode, shared with the terminal), Providers (connect / disconnect a BYOK key), Skills (what `$name` can find).
 
@@ -119,12 +201,17 @@ site cannot start agents or write keys through your browser.
 | `GET` | `/api/sessions` | live sessions (metadata, no transcript) |
 | `GET` | `/api/sessions/:id/socket` | WebSocket: that session's transcript |
 | `POST` | `/api/sessions` | start one (`target: local \| remote`, `hostId`) |
-| `POST` | `/api/sessions/:id/prompt` | follow-up in the same conversation |
+| `POST` | `/api/sessions/:id/prompt` | follow-up in the same conversation (409 with the reason if there is nothing to continue from) |
 | `POST` | `/api/sessions/:id/interrupt` | stop the run |
-| `DELETE` | `/api/sessions/:id` | close and drop it |
+| `DELETE` | `/api/sessions/:id` | close it (stops it, keeps it in the history) |
 | `GET` | `/api/hosts` · `PUT` · `DELETE` | remote host settings |
 | `POST` | `/api/hosts/probe` | test a host (`{ok, agent, version}`) |
-| `GET` | `/api/history` | the shared `/resume` history |
+| `GET` | `/api/history?q=&limit=&cwd=` | the shared `/resume` history, newest first, metadata only. `q` searches title, task and folder (`%` and `_` are literal); `cwd` keeps one exact folder; `limit` is 1-500, default 50. Each row has `resumable` and `open` |
+| `POST` | `/api/history/:id` | open a saved session (404 if unknown; returns the copy already held if open) |
+| `DELETE` | `/api/history/:id` | delete a saved session for good, notes included (404 if unknown) |
+| `GET` | `/api/history/folders` | every folder with saved sessions: `[{cwd, count, updatedAt}]`, most recent first |
+| `GET` | `/api/folders?path=&hostId=` | subfolders of `path` on this machine, or on a saved remote host over ssh: `{path, parent, home, entries: [{name, path, hidden, git}], truncated}`. 404 missing, 400 not a folder, 403 no permission, 502 host unreachable, 504 timeout |
+| `GET` | `/api/hub` | WebSocket: the tab's one hub socket for the right sidebar (notes). See below |
 | `GET` | `/api/commands` · `/api/skills` | prompt-bar completion data |
 | `GET` `PATCH` | `/api/settings` | display settings (shared with the TUI) |
 | `GET` | `/api/providers` | connected (masked) + the catalogue |

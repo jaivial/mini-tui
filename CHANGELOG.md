@@ -2,6 +2,87 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.20.0 — 2026-09-29
+
+The web app becomes a workspace: panes, notes, per-folder history, resume from anywhere, and a folder
+picker that reaches remote hosts.
+
+### Added
+
+- **`/resume` in the web app**, also from the empty new-chat page. It lists every session saved in the
+  database (terminal ones included), grouped by recency and searchable by title, first message and folder.
+  Opening one shows its transcript, and sending continues it with the saved conversation.
+- `GET /api/history?q=&limit=`, `POST /api/history/:id` and `DELETE /api/history/:id`.
+- **Panes**, tmux style. You can split right or down (`Ctrl+\`, `Ctrl+Shift+\`, `/split`, or the pane menu), and
+  each pane is its own chat. A pane's first message starts a new session, and all panes stream at once, each
+  over its own socket. You can resize with a drag or the keyboard, move between panes with `Alt+1…6`, and close
+  a pane with `Alt+X` (its session keeps running). The layout is remembered. On a phone the panes become tabs.
+- **Notes** beside every session. A right sidebar in each pane saves as you type, stays in the database and is
+  deleted with its session. A save never overwrites a newer one written from another tab. Use `/notes` or
+  `Ctrl/⌘+Shift+.` to open it. Notes travel over the hub socket only (see below).
+- **Sessions organized by folder.** The sidebar has a **Recent / By folder** switch. By folder lists every
+  project folder with saved sessions, most recently active first, each with its count, a running dot and a
+  collapsible list of its open and saved sessions (20 at a time, **Show more** for older ones). **Pin** a folder
+  to keep it on top, and **New chat here** (the + on a folder) starts a chat already set to that folder. The
+  view, pins and expanded folders are remembered in the browser. Search works inside the view and opens only
+  the folders with a match. The folder list is one request read from an index. A folder's sessions load
+  when you open it, and when a session changes only its own folder is re-read. New endpoints:
+  `GET /api/history/folders` and `GET /api/history?cwd=`.
+- **Chat history in the web sidebar.** Every session saved in the database appears under **History**, grouped by
+  day: terminal sessions, closed ones, and ones this browser never opened. Load more with **Show more**, and
+  **All** opens the full Resume panel. The sidebar search box searches the whole database (title, first message,
+  folder). Clicking a row opens that chat in the focused pane.
+- **Choose the folder a new chat runs in.** The new-chat prompt bar has a **Folder** button that browses the
+  machine the chat will run on: this one, or the selected remote host over ssh. You get breadcrumbs, up and home,
+  a filter that also takes a typed path (`~/projects`, `/srv/app`), hidden folders on request, git repositories
+  marked, and recently used folders. Switching between Local and a host resets the folder. The server refuses a
+  local folder that does not exist (400) instead of starting somewhere else. A remote chat and its follow-ups
+  run in the chosen folder. New endpoint: `GET /api/folders?path=&hostId=`.
+- **The right sidebar goes through one socket hub, never REST or polling.** Notes are watched and saved over a
+  single WebSocket per tab (`/api/hub`), shared by every pane. An edit made on another tab or device shows up
+  live, and while you are typing it is held back for you to choose. It reconnects by itself and catches up
+  after a drop or a server restart. The `/api/notes` REST endpoint is gone.
+- **"Session finished" toasts** in the web app, with a **View** button that opens the session in its pane
+  (or the focused one) and puts the cursor in its prompt bar. They show for a finish or an error in a
+  session you are not looking at. A stop you asked for is not announced. Hovering or focusing a toast pauses it.
+- **Prompt memory in the web prompt bar.** Press `↑` on the first line for earlier prompts and `↓` on the last line
+  to go forward, then back to your half-typed draft. Recalled commands and skills come back as chips. The memory
+  is per session and survives a reload or `/resume`.
+- **Interface size** and **text size** in Settings, with `Ctrl/⌘ +`/`−` (Shift for text) and `0` to reset.
+
+### Changed
+
+- **Closing a session in the web app no longer deletes it.** It stays in the history and can be resumed;
+  deleting is a separate, confirmed action.
+- Sending to a session with nothing saved to continue from answers 409 with the reason.
+
+### Fixed
+
+- Remote web chats were never saved to the history: the database row was only created for local chats, so
+  every later save updated nothing. They are saved from the start now, in the folder they run in.
+
+- **The web app asked for `/api/history` about five times a second, forever.** The sidebar's history search
+  effect read the list's own loading status to pick its delay, so every answer triggered the next request. It
+  now depends only on what you type: one request on load, one per pause while searching, and one when a
+  session starts, finishes or closes. The same latent loop was closed in the Settings panel and the app's
+  startup. The history store also never sends the same question twice at once.
+
+- WebSocket frames were capped at 64 KB, which would have closed the socket on any long note (for example
+  16 000 emoji). The cap now fits the longest allowed note.
+
+- **TUI: after a double-Esc interrupt, `↑`/`↓` scrolled the transcript instead of recalling prompts.** The
+  first Esc of the pair had left the prompt, and nothing brought it back. Now focus returns to the prompt.
+- **TUI and web: changing the model after a finished or interrupted turn looked like it started work.** In
+  the TUI, the "model →" note counted as fresh activity, so the status turned to "working" with nothing
+  running. In the web app, a finished agent that was still holding its process open got "from next step", and
+  a stop could flip back to "done". A model change now only changes the model. The status stays, nothing is
+  sent to the agent, and the note says it applies from your next message.
+
+- Sending a message to a session restored from history failed with "the remote host is no longer
+  configured". It now resumes the saved conversation locally.
+- The `mini` executable path is read when used, not frozen at import, so tests that point it at a stub no
+  longer leak into other test files.
+
 ## 0.19.0 — 2026-09-29
 
 The web app grows up: a proper chat, live multi-session streaming, and a settings panel.

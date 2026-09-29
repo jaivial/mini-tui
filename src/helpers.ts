@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { MINI_BIN } from "./config";
+import { miniBin } from "./config";
 
 /**
  * Interpreter that can `import minisweagent` — the one behind the `mini` launcher.
@@ -16,10 +16,10 @@ import { MINI_BIN } from "./config";
 export const PYTHON_BIN: string = resolvePython();
 
 /** The interpreter to run helper scripts with. Pure enough to test. */
-export function resolvePython(miniBin: string = MINI_BIN, env: NodeJS.ProcessEnv = process.env): string {
+export function resolvePython(bin: string = miniBin(), env: NodeJS.ProcessEnv = process.env): string {
   if (env.MINITUI_PYTHON) return env.MINITUI_PYTHON;
   try {
-    const shebang = readFileSync(resolveCommand(miniBin, env), "utf8").split("\n")[0];
+    const shebang = readFileSync(resolveCommand(bin, env), "utf8").split("\n")[0];
     if (shebang.startsWith("#!")) {
       const parts = shebang.slice(2).trim().split(/\s+/);
       // `#!/usr/bin/python3.10` → itself; `#!/usr/bin/env python3.10` → python3.10
