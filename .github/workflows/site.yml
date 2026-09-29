@@ -1,0 +1,64 @@
+name: site
+
+# Builds the landing page and docs (site/) and publishes them to GitHub Pages. The audits run first, so
+# a broken canonical, a missing alt text or a dead link fails the workflow instead of shipping.
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", "docs/screenshots/web-*.webp", "CHANGELOG.md", ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", "CHANGELOG.md", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # The canonical origin. The base path is derived from it, so links, canonicals and the sitemap agree.
+  VITE_SITE_URL: https://jaivial.github.io/mini-tui
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.x # the lockfiles are version 2, which Bun 1.3 cannot read
+      - name: Install (root, for the tests that import the site's pure modules)
+        run: bun install --frozen-lockfile
+      - name: Install (site)
+        working-directory: site
+        run: bun install --frozen-lockfile
+      - name: Unit tests for the SEO and docs layers
+        run: bun test tests/site-seo.test.ts tests/site-docs.test.ts
+      - name: Type check
+        working-directory: site
+        run: bun run check
+      - name: Build (prerenders every route; fails on a broken link)
+        working-directory: site
+        run: bun run build
+      - name: SEO audit of the built pages
+        working-directory: site
+        run: bun run seo
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/build
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
