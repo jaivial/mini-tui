@@ -22,6 +22,10 @@ export interface SessionRecord {
 }
 
 export const DEFAULT_DB_PATH = process.env.MINITUI_DB_PATH ?? join(homedir(), ".config", "mini-tui", "sessions.db");
+/** Same path, resolved at call time (see `settingsPath`): a manager built after the env changed must follow it. */
+export function defaultDbPath(): string {
+  return process.env.MINITUI_DB_PATH ?? join(homedir(), ".config", "mini-tui", "sessions.db");
+}
 export const PAGE_SIZE = 8;
 /** Fallback title: the first prompt, trimmed to this many characters. */
 export const TITLE_MAX_CHARS = 48;

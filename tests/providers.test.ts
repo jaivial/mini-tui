@@ -25,6 +25,7 @@ describe("provider registry", () => {
     );
     expect(byId.get("zai")!.staticModels).toContain("glm-5.3-flash");
     expect(byId.get("minimax")!.staticModels).toEqual([
+      "MiniMax-M3.1-Flash-Preview",
       "MiniMax-M3.1",
       "MiniMax-M3",
       "MiniMax-M2.7-highspeed",

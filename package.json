@@ -1,6 +1,6 @@
 {
   "name": "mini-tui",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,12 @@
     "screenshots": "MINITUI_CAPTURE=1 bun test scripts/capture-scenes.test.tsx && python3 scripts/render-screenshots.py",
     "benchmark:tui": "bun scripts/benchmark-tui-parser.ts",
     "sync-skills": "bun scripts/sync-skills.ts",
-    "postinstall": "bun scripts/sync-skills.ts || true"
+    "postinstall": "bun scripts/sync-skills.ts || true",
+    "web": "bun run web:build && bun src/web/serve.ts",
+    "web:serve": "bun src/web/serve.ts",
+    "web:build": "cd web && bun run build",
+    "web:dev": "cd web && bun run dev",
+    "web:check": "cd web && bun run check"
   },
   "dependencies": {
     "@opentui/core": "^0.5.11",

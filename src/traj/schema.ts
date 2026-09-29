@@ -38,6 +38,8 @@ export interface Trajectory {
   info?: TrajectoryInfo;
   messages?: TrajectoryMessage[];
   trajectory_format?: string;
+  /** The assistant message still being generated, per channel (live streaming only). */
+  partial?: { thinking: string; text: string };
 }
 
 /** One UI-level event derived from trajectory messages (the parser output contract). */

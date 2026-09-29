@@ -28,10 +28,19 @@ interface JournalState {
   format: string | undefined;
   offset: number;
   tail: Buffer;
+  /** Text of the assistant message still being generated, per channel. */
+  partial: { thinking: string; text: string };
 }
 
 function newJournalState(): JournalState {
-  return { messages: [], info: undefined, format: undefined, offset: 0, tail: Buffer.alloc(0) };
+  return {
+    messages: [],
+    info: undefined,
+    format: undefined,
+    offset: 0,
+    tail: Buffer.alloc(0),
+    partial: { thinking: "", text: "" },
+  };
 }
 
 /** Consume new journal bytes into `state`. Returns true when messages/info changed. */
@@ -77,7 +86,14 @@ function consumeJournal(state: JournalState, journalPath: string): boolean {
     const line = data.toString("utf8", start, nl);
     start = nl + 1;
     if (!line) continue;
-    let entry: { t?: string; m?: TrajectoryMessage; i?: TrajectoryInfo; trajectory_format?: string };
+    let entry: {
+      t?: string;
+      m?: TrajectoryMessage;
+      i?: TrajectoryInfo;
+      k?: string;
+      x?: string;
+      trajectory_format?: string;
+    };
     try {
       entry = JSON.parse(line);
     } catch {
@@ -85,6 +101,15 @@ function consumeJournal(state: JournalState, journalPath: string): boolean {
     }
     if (entry.t === "msg" && entry.m) {
       state.messages.push(entry.m);
+      // The real message supersedes whatever was streamed for it.
+      if (state.partial.thinking || state.partial.text) {
+        state.partial.thinking = "";
+        state.partial.text = "";
+      }
+      changed = true;
+    } else if (entry.t === "delta" && typeof entry.x === "string") {
+      if (entry.k === "thinking") state.partial.thinking += entry.x;
+      else if (entry.k === "text") state.partial.text += entry.x;
       changed = true;
     } else if (entry.t === "info" && entry.i) {
       state.info = entry.i;
@@ -97,7 +122,14 @@ function consumeJournal(state: JournalState, journalPath: string): boolean {
 }
 
 function journalTrajectory(state: JournalState): Trajectory {
-  return { messages: state.messages, info: state.info, trajectory_format: state.format };
+  const partial = state.partial;
+  return {
+    messages: state.messages,
+    info: state.info,
+    trajectory_format: state.format,
+    // Omit the key entirely when idle so consumers can tell "no partial" from "empty partial".
+    partial: partial.thinking || partial.text ? partial : undefined,
+  };
 }
 
 export function readTrajectory(path: string): Trajectory | null {

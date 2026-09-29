@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#161612" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
+    <title>mini-tui</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // Apply the saved theme before first paint so there is no light flash.
+      try {
+        const t = localStorage.getItem("minitui.theme");
+        if (t) document.documentElement.classList.toggle("dark", t !== "light");
+        if (t === "light") document.documentElement.classList.remove("dark");
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

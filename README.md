@@ -127,6 +127,75 @@ artifacts, so the integration is observable and reversible.
 - **`view` mode** renders any existing trajectory (including
   `~/.config/mini-swe-agent/last_mini_run.traj.json`) with the same renderer.
 
+## Web app
+
+The same agent, in a browser: a sidebar for running **several sessions at once**, live streaming over
+**one WebSocket per session**, and a remote mode that keeps the agent **headless on a server over SSH**
+while the UI stays on your machine.
+
+![mini-tui web app: a running session with a thinking receipt, a command and its result, and the answer](docs/screenshots/web-chat.webp)
+
+```bash
+bun run web          # build the UI and serve everything on http://127.0.0.1:4317
+bun run web:dev      # Vite dev server, hot reload
+```
+
+Sessions started in the browser land in the same `~/.config/mini-tui/sessions.db` the terminal UI's
+`/resume` reads, so both front ends see each other. Remote runs need `mini-tui` on the server; the hosts
+panel has a **Test** button that checks reachability and agent presence.
+
+<table>
+<tr>
+<td width="50%">
+
+**A new chat is a draft.** `/new` shows an empty chat and creates nothing; the first message creates the
+session on the model and host you picked.
+
+![new chat](docs/screenshots/web-new-chat.webp)
+
+</td>
+<td width="50%">
+
+**Commands and skills.** `/` opens commands, `$` opens skills (the terminal's own matching). A pick becomes
+a chip and is joined to your text only when you send.
+
+![slash commands](docs/screenshots/web-commands.webp)
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Model switcher.** Searchable and grouped by provider, fully keyboard-driven, and it opens from the prompt
+bar. A model missing from the list can be typed.
+
+![model picker](docs/screenshots/web-model-picker.webp)
+
+</td>
+<td width="50%">
+
+**Settings and providers.** Test a key with a real request before it is saved. Keys never come back out of
+the server: reads carry a masked hint.
+
+![providers](docs/screenshots/web-settings-providers.webp)
+
+</td>
+</tr>
+</table>
+
+The prompt bar is one line when empty and grows a line at a time up to five, then scrolls. Chips keep the
+field a plain textarea, so IME, autocorrect and paste all keep working.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/web-phone-chat.webp" alt="mini-tui web app on a phone: the session transcript and the prompt bar"></td>
+<td width="50%"><img src="docs/screenshots/web-chat-light.webp" alt="mini-tui web app in light mode"></td>
+</tr>
+</table>
+
+Built for touch as well as a keyboard: 44px targets on a finger, bottom-sheet dialogs, safe-area insets and
+`dvh` layout. Light and dark, six accent palettes. Full details: [web/README.md](web/README.md).
+
 ## Themes
 
 Six palettes — pick one in `/settings` (`Tab` to the theme group): moving the selection repaints

@@ -19,11 +19,14 @@ export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description:
 
 export const DEFAULT_SETTINGS: Settings = { outputMode: "collapsed", theme: "shadcn" };
 
-const SETTINGS_PATH = process.env.MINITUI_SETTINGS_PATH ?? join(homedir(), ".config", "mini-tui", "settings.json");
+/** Read on every call, not once at import: tests (and embedders) set the env var after modules load. */
+function settingsPath(): string {
+  return process.env.MINITUI_SETTINGS_PATH ?? join(homedir(), ".config", "mini-tui", "settings.json");
+}
 
 export function loadSettings(): Settings {
   try {
-    const data = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
+    const data = JSON.parse(readFileSync(settingsPath(), "utf8"));
     const mode = data?.outputMode;
     const theme = data?.theme;
     if (mode === "collapsed" || mode === "trim" || mode === "expanded") {
@@ -37,8 +40,8 @@ export function loadSettings(): Settings {
 
 export function saveSettings(settings: Settings): void {
   try {
-    mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
-    writeFileSync(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`);
+    mkdirSync(dirname(settingsPath()), { recursive: true });
+    writeFileSync(settingsPath(), `${JSON.stringify(settings, null, 2)}\n`);
   } catch {
     // settings persistence is best-effort
   }
