@@ -1,0 +1,32 @@
+# systemd unit for the mini-tui web app. Install:
+#   sudo cp deploy/mini-tui-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now mini-tui-web.service
+# Edit User=, WorkingDirectory= and the bun path for your machine. Keep the server behind
+# authentication (nginx Basic Auth, a VPN...): it runs agents and a terminal as this user.
+[Unit]
+Description=mini-tui web app (Svelte UI + session API)
+Documentation=https://github.com/jaivial/mini-tui/blob/main/web/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jaime
+WorkingDirectory=/home/jaime/mini-tui
+Environment=MINITUI_WEB_HOST=127.0.0.1
+Environment=MINITUI_WEB_PORT=4317
+# bun is not on the systemd PATH, so use the absolute path.
+ExecStart=/home/jaime/.bun/bin/bun run src/web/serve.ts
+Restart=always
+RestartSec=3
+# The agents and the web terminal run commands as this user, `sudo` included, exactly as in the
+# terminal UI. NoNewPrivileges=true would make every `sudo` fail with "the no new privileges flag
+# is set", so it stays off: the account's own sudoers rules decide what is allowed.
+NoNewPrivileges=false
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mini-tui-web
+
+[Install]
+WantedBy=multi-user.target

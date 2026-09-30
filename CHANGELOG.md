@@ -2,6 +2,15 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.23.1 — 2026-09-30
+
+### Fixed
+
+- **`sudo` works in the web app.** The service unit had `NoNewPrivileges=true`, so the kernel ignored
+  the setuid bit: every `sudo` an agent ran, or typed in the web terminal, failed with *the "no new
+  privileges" flag is set*. The unit now ships in the repo (`deploy/mini-tui-web.service`) with it off,
+  and a test keeps it off. `sudo` follows the account's own sudoers rules, as in the terminal UI.
+
 ## 0.23.0 — 2026-09-30
 
 The Rust agent is now the default, and the web app groups panes into windows.
