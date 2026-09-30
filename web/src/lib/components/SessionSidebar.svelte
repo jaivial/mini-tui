@@ -1,11 +1,11 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { Plus, Server, Terminal, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw } from "@lucide/svelte";
+  import { Plus, Server, Terminal, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers } from "@lucide/svelte";
   import Spinner from "./Spinner.svelte";
   import { sidebarHistory } from "../stores/history.svelte";
   import { folderStore } from "../stores/folders.svelte";
   import { folderTitle, groupByFolder, isExpanded, loadPrefs, normalizeCwd, savePrefs, toggleIn, type FolderGroup } from "../sessionFolders";
-  import { ChevronDown, Pin, PinOff, Folder, FolderPlus, Clock3, FolderTree } from "@lucide/svelte";
+  import { ChevronDown, Pin, PinOff, Folder, FolderPlus, Clock3, FolderTree, Pencil, X } from "@lucide/svelte";
   import { groupByRecency, unresumableReason } from "../resume";
   import type { HistoryItem } from "../types";
   import Button from "./Button.svelte";
@@ -25,7 +25,13 @@
     onopenhistory,
     onresume,
     onnewin,
+    inOtherWindow,
     openingId = "",
+    windows = [],
+    onwindow,
+    onnewwindow,
+    onrename,
+    onclosewindow,
     paneOf = () => 0,
     focusedSession = null,
     loading = false,
@@ -48,6 +54,19 @@
     onresume: () => void;
     /** A saved session being opened right now. */
     openingId?: string;
+    /** Every window, in order, with its pane count and which is on screen. */
+    windows?: { id: string; label: string; name: string | null; panes: number; active: boolean }[];
+    /** Show a window. */
+    onwindow?: (id: string) => void;
+    /** Start a new, empty window. */
+    onnewwindow?: () => void;
+    /** Rename a window (an empty name goes back to "Window 3"). */
+    onrename?: (id: string, name: string) => void;
+    /** Close a window. Only one with no panes can go; the button says so otherwise. */
+    onclosewindow?: (id: string) => void;
+
+    /** The window holding a session that no pane on screen shows, or "" when one does. */
+    inOtherWindow?: (id: string) => string;
     /** Number of the pane showing a session, 0 when none: shown on the row when there are panes. */
     paneOf?: (id: string) => number;
     /** The session in the focused pane: that row is the highlighted one. */
@@ -142,6 +161,18 @@
     });
   });
 
+  // Renaming a window: the row's pencil turns the label into a one-line input.
+  let editing = $state("");
+  let draft = $state("");
+  const startRename = (w: { id: string; name: string | null }) => {
+    editing = w.id;
+    draft = w.name ?? "";
+  };
+  const commitRename = () => {
+    if (editing) onrename?.(editing, draft);
+    editing = "";
+  };
+
   const statusTone = (s: SessionState) =>
     s.status === "running" ? "brand" : s.status === "error" ? "err" : s.status === "done" ? "ok" : "neutral";
 </script>
@@ -171,6 +202,9 @@
                   <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(session.id)}">
                     <span aria-hidden="true">{paneOf(session.id)}</span><span class="sr-only">in pane {paneOf(session.id)}</span>
                   </span>
+                {:else if inOtherWindow?.(session.id)}
+                  <!-- Open, but on another window's screen: where to find it. -->
+                  <span class="shrink-0 text-ink-faint" title="On {inOtherWindow(session.id)}"><AppWindow size={12} strokeWidth={1.75} aria-label="On {inOtherWindow(session.id)}" /></span>
                 {/if}
                 {#if session.status === "running"}
                   <span class="pulse-live size-1.5 shrink-0 rounded-full bg-brand"></span>
@@ -242,11 +276,73 @@
     <Button variant="ghost" size="icon-sm" icon={PanelLeftClose} title="Hide sidebar" onclick={onhidesidebar} />
   </div>
 
-  <div class="px-2.5 pb-2">
-    <Button variant="subtle" size="sm" icon={Plus} class="w-full justify-start" onclick={onnew}>
+  <div class="flex gap-1 px-2.5 pb-2">
+    <Button variant="subtle" size="sm" icon={Plus} class="min-w-0 flex-1 justify-start" onclick={onnew}>
       New chat
     </Button>
+    <Button variant="subtle" size="sm" icon={AppWindowMac} class="pointer-coarse:px-3 shrink-0" title="New window" aria-label="New window" onclick={onnewwindow} />
   </div>
+
+  {#if windows.length}
+    <!-- The windows, tmux style: one on screen, the others kept with their panes. -->
+    <div class="px-2.5 pb-2" role="group" aria-label="Windows">
+      <div class="mb-0.5 flex items-center gap-1.5 px-1">
+        <span class="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-ink-faint uppercase"><Layers size={10} strokeWidth={2} aria-hidden="true" />Windows</span>
+        <span class="tnum ml-auto text-[10px] text-ink-faint">{windows.length}</span>
+      </div>
+      <div class="flex flex-col gap-0.5" role="radiogroup" aria-label="Window to show">
+        {#each windows as w (w.id)}
+          {#if editing === w.id}
+            <div class="flex min-h-7 items-center gap-1.5 px-1.5 py-1">
+              <AppWindow size={12} strokeWidth={1.75} class="shrink-0 text-brand" aria-hidden="true" />
+              <input
+                bind:value={draft}
+                aria-label="Window name"
+                class="h-6 min-w-0 flex-1 rounded-sm border border-brand bg-canvas px-1 text-[12px] text-ink focus:outline-none"
+                onkeydown={(e) => {
+                  if (e.key === "Enter") commitRename();
+                  else if (e.key === "Escape") editing = "";
+                }}
+                onblur={commitRename}
+              />
+            </div>
+          {:else}
+            <div class="group/win flex items-center rounded-md {w.active ? 'bg-raised' : 'hover:bg-raised/70'}">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={w.active}
+                class="interactive flex min-h-7 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left pointer-coarse:min-h-11
+                  {w.active ? 'text-ink' : 'text-ink-muted hover:text-ink'}"
+                onclick={() => onwindow?.(w.id)}
+              >
+                <AppWindow size={12} strokeWidth={1.75} class="shrink-0 {w.active ? 'text-brand' : 'text-ink-faint'}" aria-hidden="true" />
+                <span class="min-w-0 flex-1 truncate text-[12px] leading-4">{w.label}</span>
+                {#if w.active}<span class="pulse-live size-1.5 shrink-0 rounded-full bg-brand" aria-label="on screen"></span>{/if}
+                <span class="tnum shrink-0 rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="{w.panes} {w.panes === 1 ? 'pane' : 'panes'}">{w.panes}</span>
+              </button>
+              <button
+                type="button"
+                class="interactive mr-0.5 grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint opacity-0 hover:text-ink group-hover/win:opacity-100 group-focus-within/win:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
+                aria-label="Rename {w.label}"
+                title="Rename"
+                onclick={() => startRename(w)}
+              ><Pencil size={11} strokeWidth={2} aria-hidden="true" /></button>
+                <button
+                  type="button"
+                  class="interactive grid size-6 cursor-pointer place-items-center rounded-sm text-ink-faint pointer-coarse:size-11
+                    {w.panes ? 'cursor-not-allowed opacity-40 hover:text-ink-faint' : 'hover:text-ink'}"
+                  aria-label="Close {w.label}"
+                  aria-disabled={w.panes ? "true" : undefined}
+                  title={w.panes ? "Move its panes out first" : "Close this empty window"}
+                  onclick={() => !w.panes && onclosewindow?.(w.id)}
+                ><X size={12} strokeWidth={2} aria-hidden="true" /></button>
+            </div>
+          {/if}
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   <!-- Filter -->
   <div class="px-2.5 pb-2">

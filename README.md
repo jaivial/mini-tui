@@ -158,7 +158,9 @@ What the web app does:
 - **A folder picker** for new chats that also browses remote hosts.
 - **Prompt memory** with `↑`/`↓`.
 - **A toast when a session finishes**, with a **View** button that jumps to it.
-- **Panes** like tmux (`Ctrl+\`), each running its own session at the same time.
+- **Panes** like tmux (`Ctrl+\`), up to 12 in a **window**, and as many windows as you like: the sidebar
+  lists them with a pane count and a **New window** button, and any pane can move to another window or to
+  a new one from its pane menu.
 - **A side panel in every pane**, with two tabs:
   - **Notes**, saved as you type.
   - **Terminal**, a real shell in the session's folder (over SSH for a remote session) that survives

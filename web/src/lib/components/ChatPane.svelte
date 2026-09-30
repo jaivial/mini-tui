@@ -17,6 +17,7 @@
   import { catalog } from "../stores/catalog.svelte";
   import { store } from "../stores/sessions.svelte";
   import { panes, type Pane } from "../stores/panes.svelte";
+import { windows as windowStore } from "../stores/windows.svelte";
   import { toasts } from "../stores/toast.svelte";
   import { api } from "../api";
   import { parseCommand } from "../completion";
@@ -41,6 +42,8 @@
     onapp,
     onsplit,
     onclosepane,
+    windows = [],
+    onmove,
   }: {
     pane: Pane;
     number: number;
@@ -56,9 +59,14 @@
     onapp: (action: "settings" | "providers" | "skills" | "resume" | "help" | "hosts") => void;
     onsplit: (dir: "row" | "col") => void;
     onclosepane: () => void;
+    /** The other windows, for "Move to window…". */
+    windows?: { id: string; label: string }[];
+    onmove?: (to: string | "new", name?: string) => void;
   } = $props();
 
   const session = $derived(pane.sessionId ? (store.sessions[pane.sessionId] ?? null) : null);
+  /** The pane menu's move items: the other windows, then a new one. */
+  const windowsList = $derived((windows ?? []).map((w) => ({ ...w })));
   const focused = $derived(panes.focusedId === pane.id);
   const link = $derived(session ? (store.links[session.id] ?? "idle") : "idle");
 
@@ -279,7 +287,18 @@
     active={sideOpen("terminal")}
     onclick={() => toggleSide("terminal")}
   />
-  <PaneMenu {tabs} {canRight} {canDown} limitReached={!panes.canSplit} canClose={total > 1} {onsplit} onclose={onclosepane} oncloseSession={session ? closeSession : undefined} />
+  <PaneMenu
+    {tabs}
+    {canRight}
+    {canDown}
+    limitReached={!panes.canSplit}
+    canClose={total > 1}
+    {onsplit}
+    onclose={onclosepane}
+    oncloseSession={session ? closeSession : undefined}
+    windows={windowsList}
+    onmove={onmove}
+  />
 {/snippet}
 
 <!--

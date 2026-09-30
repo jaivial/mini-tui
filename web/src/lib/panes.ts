@@ -9,8 +9,8 @@ export type Leaf = { kind: "pane"; id: string };
 export type Split = { kind: "split"; id: string; dir: Dir; ratio: number; a: Node; b: Node };
 export type Node = Leaf | Split;
 
-/** More panes than this stop being useful on any screen and only cost sockets. */
-export const MAX_PANES = 6;
+/** More panes in one window than this stop being useful, and only cost sockets. */
+export const MAX_PANES = 12;
 /** A side of a split never gets less than this share, however far the divider is dragged. */
 export const MIN_RATIO = 0.15;
 
@@ -91,7 +91,9 @@ export function restore(raw: unknown): Node | null {
   const seen = new Set<string>();
   const id = (v: unknown) => (typeof v === "string" && /^[\w-]{1,64}$/.test(v) ? v : null);
   const walk = (n: unknown, depth: number): Node | null => {
-    if (!n || typeof n !== "object" || depth > 8) return null;
+    // Deepest possible tree at the pane limit is a chain of MAX_PANES leaves: the depth a chain may
+    // reach before it is refused as absurd, rather than trusted.
+    if (!n || typeof n !== "object" || depth > MAX_PANES + 4) return null;
     const o = n as Record<string, unknown>;
     const nid = id(o.id);
     if (!nid || seen.has(nid)) return null;

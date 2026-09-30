@@ -46,7 +46,7 @@
   // is a capability query, not a device sniff, so a touch laptop gets it too.
   const SIZES: Record<Size, string> = {
     xs: "h-6 px-2 text-[11.5px] gap-1 rounded-sm pointer-coarse:h-9 pointer-coarse:px-3",
-    sm: "h-8 px-2.5 text-[12.5px] gap-1.5 rounded-md pointer-coarse:h-11 pointer-coarse:px-3.5",
+    sm: "h-8 min-w-8 px-2.5 text-[12.5px] gap-1.5 rounded-md pointer-coarse:h-11 pointer-coarse:px-3.5 pointer-coarse:min-w-11",
     md: "h-9 px-3 text-[13.5px] gap-2 rounded-md pointer-coarse:h-11 pointer-coarse:px-4",
     icon: "h-9 w-9 rounded-md pointer-coarse:size-11",
     "icon-sm": "h-8 w-8 rounded-sm pointer-coarse:size-11 pointer-coarse:rounded-md",

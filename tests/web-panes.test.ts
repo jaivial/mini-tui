@@ -100,3 +100,16 @@ describe("restore", () => {
     expect(restore(deep)).toBeNull();
   });
 });
+
+describe("windows", () => {
+  test("twelve panes are allowed, thirteen are not", () => {
+    expect(MAX_PANES).toBe(12);
+    let t: Node = one;
+    for (let i = 2; i <= MAX_PANES; i++) t = split(t, `p${i - 1}`, "row", `p${i}`, `s${i}`);
+    expect(count(t)).toBe(MAX_PANES);
+    expect(restore(t)).toEqual(t);
+    const over = split(t, "p12", "row", "p13", "s13");
+    expect(count(over)).toBe(MAX_PANES + 1);
+    expect(restore(over)).toBeNull();
+  });
+});

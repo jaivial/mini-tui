@@ -14,6 +14,7 @@ bun run web:check    # svelte-check
 cd web && bun run build && bun run shots   # desktop/tablet/phone screenshots (mocked API) -> /tmp/minitui-shots
 cd web && bun scripts/audit.mjs            # touch-target + overflow audit at the three sizes
 cd web && bun run e2e                      # real browser + real server: sockets, model picker, reconnect
+cd web && bun scripts/e2e-windows.mjs      # windows: move a pane, switch, reload, rename, close
 ```
 
 Open <http://127.0.0.1:4317>.
@@ -100,15 +101,23 @@ model chosen in the draft (`web/src/lib/stores/chat.svelte.ts`). Abandoning a dr
 starts with a slash goes to the agent unchanged; a bare unknown word (`/modle`) is reported and kept.
 On touch there are `/` and `$` buttons, since a phone keyboard buries both characters.
 
-**Panes** (tmux style). Split the focused pane right with `Ctrl+\` (or `/split`) or down with `Ctrl+Shift+\`
-(`/split down`), or use the pane menu in the header. Each new pane is a new chat, so its first message starts
-its own session, and every pane streams its session over its own socket while the others run. Drag a divider
-to resize it, or focus it and use the arrow keys (Home/End go to the limits, Enter evens it out). `Alt+1…6`
-jumps to a pane, `Ctrl/⌘+Alt+arrows` cycles, and `Alt+X` closes one (its session keeps running). A session is
-shown in one pane at a time: picking one that another pane shows focuses that pane. The layout is limited to
-6 panes, and a split that would leave a pane too small to use is refused with the reason. The layout and each
-pane's session are remembered in the browser. Below 760px (a phone, or a small tablet) the same panes show
-as tabs, one on screen at a time. The layout logic is `lib/panes.ts`, pure and tested.
+**Windows** (tmux style). The screen shows one window at a time; each holds its own panes. The sidebar lists
+them with a pane count and has a **New window** button, a pencil renames one (nothing goes back to "Window 3"),
+and any pane can move to another window or to a new one from its pane menu — its session, its tab and its
+notes go with it, the window it leaves folds if that was its last pane, and the app follows the pane. A new
+window starts empty. Switching window swaps the panes over, a half-typed prompt included, and the sessions of
+every window keep streaming while another is on screen.
+
+**Panes.** Up to **12** in a window. Split the focused pane right with `Ctrl+\` (or `/split`) or down with
+`Ctrl+Shift+\` (`/split down`), or use the pane menu in the header. Each new pane is a new chat, so its first
+message starts its own session, and every pane streams its session over its own socket while the others run.
+Drag a divider to resize it, or focus it and use the arrow keys (Home/End go to the limits, Enter evens it
+out). `Alt+1`…`Alt+9` and `Alt+0` jump to a pane, `Ctrl/⌘+Alt+arrows` cycle, and `Alt+X` closes one (its
+session keeps running). A session is shown in one pane at a time: picking one that another pane shows goes to
+that pane, or to the window holding it. A split that would leave a pane too small to use is refused with the
+reason. The layout, each pane's session and the windows are remembered in the browser. Below 760px (a phone,
+or a small tablet) the same panes show as tabs, one on screen at a time. The layout logic is `lib/panes.ts`,
+pure and tested; the windows are `lib/stores/windows.svelte.ts`.
 
 **Notes** (the notebook button in a pane's header, `/notes`, or `Ctrl/⌘+Shift+.`): a sidebar on the pane's
 right with a plain text area for that session. It saves 600 ms after you stop typing, and also when the panel

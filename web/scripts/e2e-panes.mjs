@@ -170,7 +170,9 @@ try {
   check("an action that cannot run stays in the menu and says why", /Too narrow to split/.test(await menu.getByRole("menuitem", { name: /Split right/ }).innerText()) && (await menu.getByRole("menuitem", { name: /Split right/ }).getAttribute("aria-disabled")) === "true");
   check("the menu opens with focus on the first item that can run", await menu.getByRole("menuitem", { name: /Split down/ }).evaluate((el) => el === document.activeElement));
   await page.keyboard.press("ArrowDown");
-  check("arrow keys move through the menu", await menu.getByRole("menuitem", { name: /Close pane/ }).evaluate((el) => el === document.activeElement));
+  // The menu now also moves the pane to another window; from one window only, "New window" is next.
+  check("arrow keys move through the menu, past the move items", await menu.getByRole("menuitem", { name: /New window/ }).evaluate((el) => el === document.activeElement));
+  check("the move group is labelled", /move to/i.test(await menu.innerText()));
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("Enter");
   await page.waitForTimeout(500);
@@ -192,7 +194,7 @@ try {
     await page.waitForTimeout(250);
     if ((await paneBoxes(page)).length === n) { refusals++; break; }
   }
-  const tooSmall = /Not enough room|At most 6 panes/.test(await page.locator("body").innerText());
+  const tooSmall = /Not enough room|At most 12 panes/.test(await page.locator("body").innerText());
   boxes = await paneBoxes(page);
   check("splitting stops before a pane gets too small to use, and says why", refusals === 1 && tooSmall && boxes.every((b) => b.w >= 340), JSON.stringify(boxes.map((b) => b.w)));
 

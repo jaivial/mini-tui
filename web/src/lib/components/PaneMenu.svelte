@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Columns2, Rows2, SquareSplitHorizontal, Trash2, X } from "@lucide/svelte";
+  import { AppWindow, AppWindowMac, Columns2, Rows2, SquareSplitHorizontal, Trash2, X } from "@lucide/svelte";
   import Button from "./Button.svelte";
 
   /**
@@ -13,6 +13,8 @@
     canDown = true,
     limitReached = false,
     canClose = false,
+    windows = [],
+    onmove,
     onsplit,
     onclose,
     oncloseSession,
@@ -25,6 +27,9 @@
     canDown?: boolean;
     limitReached?: boolean;
     canClose?: boolean;
+    /** Other windows, for "Move to window…". Empty when this is the only one. */
+    windows?: { id: string; label: string }[];
+    onmove?: (to: string | "new", name?: string) => void;
     onsplit: (dir: "row" | "col") => void;
     onclose: () => void;
   } = $props();
@@ -34,15 +39,18 @@
   let button = $state<HTMLElement | null>(null);
   let menu = $state<HTMLElement | null>(null);
 
-  type Item = { id: string; label: string; hint: string; icon: typeof Columns2; disabled: string; run: () => void };
+  type Item = { id: string; label: string; hint: string; icon: typeof Columns2; disabled: string; group?: string; run: () => void };
   const items = $derived<Item[]>(
     [
       ...(tabs
-        ? [{ id: "tab", label: "New pane", hint: "Ctrl \\", icon: SquareSplitHorizontal, disabled: limitReached ? "At most 6 panes" : "", run: () => onsplit("row") }]
+        ? [{ id: "tab", label: "New pane", hint: "Ctrl \\", icon: SquareSplitHorizontal, disabled: limitReached ? "At most 12 panes" : "", run: () => onsplit("row") }]
         : [
-            { id: "right", label: "Split right", hint: "Ctrl \\", icon: Columns2, disabled: limitReached ? "At most 6 panes" : canRight ? "" : "Too narrow to split", run: () => onsplit("row") },
-            { id: "down", label: "Split down", hint: "Ctrl Shift \\", icon: Rows2, disabled: limitReached ? "At most 6 panes" : canDown ? "" : "Too short to split", run: () => onsplit("col") },
+            { id: "right", label: "Split right", hint: "Ctrl \\", icon: Columns2, disabled: limitReached ? "At most 12 panes" : canRight ? "" : "Too narrow to split", run: () => onsplit("row") },
+            { id: "down", label: "Split down", hint: "Ctrl Shift \\", icon: Rows2, disabled: limitReached ? "At most 12 panes" : canDown ? "" : "Too short to split", run: () => onsplit("col") },
           ]),
+      // Moving a pane: to any other window, or to a new one. Both keep its session running.
+      ...windows.map((w) => ({ id: `move-${w.id}`, label: w.label, hint: "", icon: AppWindow, disabled: "", group: "Move to window", run: () => onmove?.(w.id) })),
+      ...(onmove ? [{ id: "move-new", label: "New window", hint: "", icon: AppWindowMac, disabled: "", group: windows.length ? "Move to window" : "Move to a new window", run: () => onmove("new") }] : []),
       { id: "close", label: "Close pane", hint: "Alt X", icon: X, disabled: canClose ? "" : "The last pane stays", run: onclose },
       ...(oncloseSession ? [{ id: "close-session", label: "Close session", hint: "", icon: Trash2, disabled: "", run: oncloseSession }] : []),
     ],
@@ -98,8 +106,11 @@
       class="elev-pop enter-pop absolute top-full right-0 z-40 mt-1.5 flex w-56 flex-col rounded-lg p-1"
       {onkeydown}
     >
-      {#each items as item (item.id)}
+      {#each items as item, i (item.id)}
         {@const Icon = item.icon}
+        {#if item.group && items[i - 1]?.group !== item.group}
+          <div class="mt-1 mb-0.5 px-2 pt-1 text-[10px] font-semibold tracking-wider text-ink-faint uppercase">{item.group}</div>
+        {/if}
         <button
           type="button"
           role="menuitem"
