@@ -85,6 +85,13 @@ model I/O) never leaves the server.
 nginx must forward the upgrade on `/api/sessions/<id>/socket` (`Upgrade` + `Connection` headers,
 `proxy_buffering off`, a long `proxy_read_timeout`); the plain proxy block does not.
 
+**As a systemd service**: `deploy/mini-tui-web.service` (edit `User=`, `WorkingDirectory=` and the bun
+path, then `sudo cp` it to `/etc/systemd/system/` and `systemctl enable --now` it). It leaves
+`NoNewPrivileges` off on purpose. With it on, the kernel ignores the setuid bit, so every `sudo` run by
+an agent or typed in the terminal fails with *the "no new privileges" flag is set*. What `sudo` may do
+is then up to the account's sudoers rules, as in the terminal UI. `tests/deploy-unit.test.ts` keeps it
+that way.
+
 ## New chat, commands, skills and settings
 
 **A new chat is a draft.** `/new`, the sidebar's *New chat* and Ctrl/Cmd+K clear the active session and show

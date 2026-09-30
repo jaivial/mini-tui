@@ -175,6 +175,10 @@ The terminal is a shell as the user the server runs as, so keep the server behin
 or turn the terminal off with `MINITUI_WEB_TERMINAL=0`. Remote runs need `mini-tui` on the server;
 the hosts panel has a **Test** button that checks reachability and agent presence.
 
+To run it as a service, [`deploy/mini-tui-web.service`](deploy/mini-tui-web.service) is a systemd
+unit. Agents and the terminal can use `sudo` there just as in the terminal UI, limited by the account's
+own sudoers rules. Do not add `NoNewPrivileges=true`: it makes every `sudo` fail.
+
 <table>
 <tr>
 <td width="50%">
