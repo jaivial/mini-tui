@@ -56,6 +56,27 @@ pub trait Model {
     }
 }
 
+/// `GLOBAL_MODEL_STATS` (`MSWEA_GLOBAL_COST_LIMIT` / `MSWEA_GLOBAL_CALL_LIMIT`): every model call
+/// of the process counts, whatever the model; past a limit the call is an error, as in Python.
+pub fn global_stats_add(cost: f64) -> Result<(), ModelError> {
+    use std::sync::Mutex;
+    static STATS: Mutex<(f64, i64)> = Mutex::new((0.0, 0));
+    let cost_limit: f64 = std::env::var("MSWEA_GLOBAL_COST_LIMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let call_limit: i64 = std::env::var("MSWEA_GLOBAL_CALL_LIMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let mut st = STATS.lock().unwrap();
+    st.0 += cost;
+    st.1 += 1;
+    if (cost_limit > 0.0 && cost_limit < st.0) || (call_limit > 0 && call_limit < st.1 + 1) {
+        return Err(ModelError {
+            message: format!("Global cost/call limit exceeded: ${:.4} / {}", st.0, st.1),
+            status: None,
+            abort: true,
+            kind: "RuntimeError".into(),
+        });
+    }
+    Ok(())
+}
+
 /// `get_model(name, config)`: the same class choice and defaults as the Python agent.
 pub fn get_model(name: Option<&str>, config: &Obj) -> Result<Box<dyn Model>, String> {
     let mut config = config.clone();

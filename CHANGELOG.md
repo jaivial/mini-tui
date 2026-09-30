@@ -2,6 +2,24 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.22.1 — 2026-09-30
+
+With `MINITUI_AGENT=rust`, mini-tui now needs no Python at all.
+
+### Added
+
+- `mini-agent-rs title` and `mini-agent-rs test-model`: the session-title generator and the
+  providers panel's connection test, which were the last things mini-tui ran through Python.
+  With `MINITUI_AGENT=rust` mini-tui uses them; otherwise the Python scripts run as before.
+  Both give the same output, exit codes and error text as the scripts (8 parity cases).
+
+### Fixed
+
+- The Rust agent now honors `MSWEA_GLOBAL_COST_LIMIT` and `MSWEA_GLOBAL_CALL_LIMIT` (the whole
+  process stops past them, as in Python). Before this, it ignored them.
+- The Rust agent's retry waits now match the Python agent's exactly (4, 4, 4, 8, 16, 32, 60
+  seconds). They were one step ahead: 4, 4, 8, 16….
+
 ## 0.22.0 — 2026-09-29
 
 The agent, rewritten in Rust: same behavior, one self-contained binary.

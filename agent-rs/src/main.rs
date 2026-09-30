@@ -246,8 +246,77 @@ fn run(o: Options) -> Result<(), String> {
     }
 }
 
+/// Python's `" ".join(text.splitlines()[0].split())`, cut to 60 code points.
+fn first_line_title(text: &str) -> String {
+    let text = text.trim();
+    let first = text.lines().next().unwrap_or("");
+    let joined = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    joined.chars().take(60).collect()
+}
+
+fn reply_text(m: &Value, submission_first: bool) -> String {
+    let content = m.get("content").and_then(Value::as_str).unwrap_or("");
+    let sub = m.pointer("/extra/submission").and_then(Value::as_str).unwrap_or("");
+    let text = if submission_first { if sub.is_empty() { content } else { sub } } else if content.is_empty() { sub } else { content };
+    text.trim().to_string()
+}
+
+/// `mini-agent-rs title <task> <model>`: `scripts/gen_title.py`, printing a JSON string
+/// (empty on any failure).
+fn cmd_title(args: &[String]) -> i32 {
+    let task = args.first().cloned().unwrap_or_default();
+    let model = args.get(1).cloned().unwrap_or_default();
+    let prompt = format!("Write a short title (max 8 words, no quotes, no trailing punctuation) for this coding task. Reply with ONLY the title.\n\nTASK:\n{task}");
+    let title = models::get_model(Some(&model), &serde_json::Map::new())
+        .ok()
+        .and_then(|mut m| m.query(&[serde_json::json!({"role": "user", "content": prompt})], None).ok())
+        .and_then(|r| match r {
+            models::Reply::Message(m) => Some(first_line_title(&reply_text(&m, true))),
+            models::Reply::FormatError(_) => None,
+        })
+        .unwrap_or_default();
+    println!("{}", util::py_json(&Value::String(title), false));
+    0
+}
+
+/// `mini-agent-rs test-model <model>`: `scripts/test_model.py` — exit 0 when a one-word
+/// completion (or a tool call) comes back.
+fn cmd_test_model(args: &[String]) -> i32 {
+    let model = args.first().cloned().unwrap_or_default();
+    let result = models::get_model(Some(&model), &serde_json::Map::new()).map_err(|e| format!("ValueError: {e}")).and_then(|mut m| {
+        m.query(&[serde_json::json!({"role": "user", "content": "Reply with the single word: ok"})], None).map_err(|e| format!("{}: {}", e.kind, e.message))
+    });
+    match result {
+        Ok(models::Reply::Message(m)) => {
+            let has_actions = m.pointer("/extra/actions").and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+            if !reply_text(&m, false).is_empty() || has_actions {
+                println!("ok");
+                return 0;
+            }
+            eprintln!("error: the model answered with an empty message");
+            1
+        }
+        // A reply the model layer could not parse still proves the endpoint answers... but Python
+        // raises FormatError here, which the script reports as a failure: keep that.
+        Ok(models::Reply::FormatError(_)) => {
+            eprintln!("error: FormatError: FormatError()");
+            1
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // One-shot helpers mini-tui runs besides the agent itself.
+    if let Some(cmd) = argv.first().map(String::as_str).filter(|c| *c == "title" || *c == "test-model") {
+        config::load_dotenv();
+        let code = if cmd == "title" { cmd_title(&argv[1..]) } else { cmd_test_model(&argv[1..]) };
+        std::process::exit(code);
+    }
     let parsed = match parse_args(&argv) {
         Ok(ParseResult::Help) => {
             println!("{USAGE}");

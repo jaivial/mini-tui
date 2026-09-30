@@ -265,8 +265,7 @@ pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<
             Ok(v) => return Ok(v),
             Err(e) if e.abort || attempt >= attempts => return Err(e),
             Err(e) => {
-                // tenacity wait_exponential(multiplier=1, min=4, max=60): 2**attempt clamped.
-                let wait = (2f64.powi(attempt as i32)).clamp(min_wait, 60.0);
+                let wait = retry_wait(attempt, min_wait);
                 eprintln!("WARNING: Retrying in {wait:.1} seconds as it raised {}: {}.", e.kind, e.message);
                 if !crate::agent::interruptible_sleep(Duration::from_secs_f64(wait)) {
                     return Err(ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into() });
@@ -274,6 +273,12 @@ pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<
             }
         }
     }
+}
+
+/// tenacity's `wait_exponential(multiplier=1, min=4, max=60)`: 2**(attempt-1) clamped,
+/// so 4, 4, 4, 8, 16, 32, 60 seconds.
+fn retry_wait(attempt: u32, min_wait: f64) -> f64 {
+    (2f64.powi(attempt as i32 - 1)).clamp(min_wait.min(60.0), 60.0)
 }
 
 pub fn usage_of(response: &Value) -> Value {
@@ -306,6 +311,12 @@ mod tests {
         assert_eq!(v["usage"]["prompt_tokens"], 10);
         drop(sink);
         assert_eq!(seen, vec!["text:Hel", "text:lo", "thinking:hmm"]);
+    }
+
+    #[test]
+    fn retry_waits_like_tenacity() {
+        let waits: Vec<f64> = (1..=7).map(|a| retry_wait(a, 4.0)).collect();
+        assert_eq!(waits, vec![4.0, 4.0, 4.0, 8.0, 16.0, 32.0, 60.0]);
     }
 
     #[test]

@@ -410,6 +410,7 @@ impl Model for WireModel {
         let mut sink = sink;
         let response = with_retry(|| self.raw_query(messages, &mut sink))?;
         let cost = self.cost(&response)?;
+        super::global_stats_add(cost)?;
         Ok(match self.protocol {
             Protocol::Responses => self.responses_reply(response, cost),
             _ => self.chat_reply(response, cost),

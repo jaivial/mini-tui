@@ -76,6 +76,7 @@ impl Model for DeterministicModel {
             if retry {
                 continue;
             }
+            super::global_stats_add(self.config["cost_per_call"].as_f64().unwrap_or(1.0))?;
             return Ok(Reply::Message(output));
         }
     }

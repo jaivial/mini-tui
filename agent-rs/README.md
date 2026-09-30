@@ -14,6 +14,13 @@ cargo build --release --target x86_64-unknown-linux-musl   # a static binary for
 
 `MINITUI_AGENT=rust` picks the binary from `MINITUI_AGENT_BIN`, else this directory's release
 build, else `mini-agent-rs` on `PATH`. If none is found, mini-tui says so and uses Python.
+
+The binary also does the two one-shot jobs mini-tui used to run through Python, so with
+`MINITUI_AGENT=rust` no Python is needed at all:
+- `mini-agent-rs title "<task>" <model>` prints the session title as a JSON string
+  (`scripts/gen_title.py`).
+- `mini-agent-rs test-model <model>` is the providers panel's connection test
+  (`scripts/test_model.py`): it prints `ok` and exits 0, or `error: …` and exits 1.
 On a remote host, set `MINITUI_AGENT=rust` in the environment its `mini-tui -p` runs with.
 
 ## What it does
@@ -46,14 +53,21 @@ Models, routed by name exactly like `get_model`:
 | anything else | generic OpenAI-compatible (`OPENAI_API_BASE`) |
 | `model_class: deterministic…` | the scripted test models |
 
-It also ports prices and cost tracking, the retry policy (`MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT`),
+It also ports prices and cost tracking, the process-wide limits (`MSWEA_GLOBAL_COST_LIMIT`,
+`MSWEA_GLOBAL_CALL_LIMIT`), the retry policy (`MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT`, with
+tenacity's 4, 4, 4, 8, 16, 32, 60 second waits),
 the abort-versus-retry classification of HTTP errors, and every `MSWEA_*` variable the Python
 agent reads.
 
-Not ported: the litellm, portkey, requesty and openrouter-SDK model classes; the singularity,
-bubblewrap, contree and swerex environments; the interactive (confirm-mode) agent. mini-tui
-never uses these (it always runs yolo on the direct clients). Asking for one is an error that
-names what is supported.
+Not ported, because mini-tui never uses them:
+- the litellm, portkey, requesty and openrouter-SDK model classes, and the regex text-based
+  models;
+- the singularity, bubblewrap, contree and swerex environments;
+- the interactive (confirm-mode) agent (mini-tui always runs yolo on the direct clients);
+- `mini-extra` (config, inspector, benchmarks, model listings) and the public Rich/Typer `mini`
+  CLI.
+
+Asking for one of these is an error that names what is supported.
 
 ## Parity with the Python agent
 
@@ -63,7 +77,7 @@ HTTP clients it also diffs every request body sent to a scripted server. Timesta
 durations are the only values normalized.
 
 ```sh
-sh tests/parity/run_all.sh     # 24 scenarios; "ALL IDENTICAL" or the differences
+sh tests/parity/run_all.sh     # 26 scenarios + 8 helper cases; "ALL IDENTICAL" or the differences
 cargo test --release           # unit tests
 ```
 
@@ -71,7 +85,10 @@ Scenarios:
 - **Agent loop:** tools, stderr, Unicode, long output; step and cost limits; command timeout;
   missing files; the submit marker; the text model; resume; compact-only; follow-ups; `/compact`
   on a live run; `MODEL` switches; SIGINT and SIGTERM during a command and during a model call;
-  the shipped `mini.yaml`.
+  the global cost and call limits; the shipped `mini.yaml`.
+- **Helpers:** `title` and `test-model` against the Python scripts. Cases: clean text, whitespace,
+  over-long titles, tool-call replies, empty replies, 401s. Stdout, exit code, stderr and the
+  request must all match.
 - **Wire protocols:** cli-proxy SSE with a 503 retry and a format error; Rosetta; DeepSeek aliases;
   the z.ai registry; OpenAI's temperature fallback; Anthropic Messages with the `tool_choice`
   retry; the Responses API; a 401 abort; OpenCode Go on all three endpoints.
