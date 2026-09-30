@@ -1,0 +1,6 @@
+{"messages": [
+ {"role": "system", "content": "s"},
+ {"role": "user", "content": "first task"},
+ {"role": "assistant", "content": "calling", "tool_calls": [{"id": "old1", "type": "function", "function": {"name": "bash", "arguments": "{\"command\": \"ls\"}"}}], "extra": {"actions": [{"command": "ls", "tool_call_id": "old1"}]}},
+ {"role": "exit", "content": "", "extra": {"exit_status": "Interrupted", "submission": ""}}
+]}

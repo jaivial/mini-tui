@@ -1,0 +1,125 @@
+[
+ {
+  "status": 400,
+  "json": {
+   "error": {
+    "message": "Unsupported parameter: 'temperature' is not supported with this model."
+   }
+  }
+ },
+ {
+  "sse": [
+   {
+    "choices": [
+     {
+      "delta": {
+       "role": "assistant",
+       "content": "Let me "
+      }
+     }
+    ]
+   },
+   {
+    "choices": [
+     {
+      "delta": {
+       "content": "look.",
+       "reasoning_content": "thinking about it"
+      }
+     }
+    ]
+   },
+   {
+    "choices": [
+     {
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "call_a",
+         "type": "function",
+         "function": {
+          "name": "bash",
+          "arguments": "{\"command\": "
+         }
+        }
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "choices": [
+     {
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "function": {
+          "arguments": "\"echo wire-ok\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   },
+   {
+    "choices": [],
+    "usage": {
+     "prompt_tokens": 120,
+     "completion_tokens": 9,
+     "prompt_tokens_details": {
+      "cached_tokens": 40
+     }
+    }
+   }
+  ]
+ },
+ {
+  "sse": [
+   {
+    "choices": [
+     {
+      "delta": {
+       "role": "assistant",
+       "content": "calling python",
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "call_b",
+         "type": "function",
+         "function": {
+          "name": "python",
+          "arguments": "{\"code\": 1}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "json": {
+   "id": "x",
+   "choices": [
+    {
+     "index": 0,
+     "message": {
+      "role": "assistant",
+      "content": "The wire answer."
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "usage": {
+    "prompt_tokens": 200,
+    "completion_tokens": 5
+   }
+  }
+ }
+]

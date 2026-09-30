@@ -1,0 +1,6 @@
+agent:
+  system_template: "Go messages system."
+  instance_template: "{{task}}"
+model:
+  model_name: opencode-go/minimax-m3
+  observation_template: "{{output.returncode}}|{{output.output}}"

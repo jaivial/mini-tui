@@ -1,0 +1,6 @@
+# A model switch while holding at exit only changes the model (no new turn starts).
+WAIT_JOURNAL 3
+SLEEP 0.4
+MODEL cliproxy/claude-sonnet-4-5
+SLEEP 0.8
+KILL

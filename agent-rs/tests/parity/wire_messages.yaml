@@ -1,0 +1,9 @@
+agent:
+  system_template: "System for Claude."
+  instance_template: "{{task}}"
+model:
+  model_name: anthropic/claude-sonnet-4-5
+  observation_template: "{{output.returncode}}|{{output.output}}"
+  model_kwargs:
+    tool_choice: required
+    parallel_tool_calls: false

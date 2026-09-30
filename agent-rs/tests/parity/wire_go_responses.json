@@ -1,0 +1,4 @@
+[
+ {"json": {"id": "r1", "object": "response", "status": "completed", "output": [{"type": "reasoning", "id": "rs1", "summary": []}, {"type": "function_call", "id": "fc1", "call_id": "call_r1", "name": "bash", "arguments": "{\"command\": \"echo responses-ok\"}"}], "usage": {"input_tokens": 30, "output_tokens": 6}}},
+ {"json": {"id": "r2", "object": "response", "status": "completed", "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Responses done."}]}], "usage": {"input_tokens": 60, "output_tokens": 3}}}
+]

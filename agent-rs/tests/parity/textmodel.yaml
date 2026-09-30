@@ -1,0 +1,16 @@
+# The plain (non-tool-call) deterministic model: observations are user messages.
+agent:
+  system_template: "s"
+  instance_template: "{{task}}"
+model:
+  model_class: deterministic
+  outputs:
+    - role: assistant
+      content: "run it"
+      extra: {actions: [{command: "echo text-model"}], cost: 0.1}
+    - role: assistant
+      content: "/sleep"
+      extra: {actions: [{command: "/sleep 0.2"}]}
+    - role: assistant
+      content: "done"
+      extra: {submission: "done", cost: 0.1}
