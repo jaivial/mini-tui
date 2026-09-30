@@ -14,10 +14,11 @@
   import { catalog } from "./lib/stores/catalog.svelte";
   import { store } from "./lib/stores/sessions.svelte";
   import { panes } from "./lib/stores/panes.svelte";
+import { windows } from "./lib/stores/windows.svelte";
   import { ui } from "./lib/stores/ui.svelte";
   import { toasts } from "./lib/stores/toast.svelte";
   import { api } from "./lib/api";
-  import { roomToSplit, type Dir } from "./lib/panes";
+  import { MAX_PANES, roomToSplit, type Dir } from "./lib/panes";
   import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "./lib/scale";
   import type { HistoryItem } from "./lib/types";
   import { FinishWatcher, finishMessage } from "./lib/finish";
@@ -87,8 +88,9 @@
     return () => document.removeEventListener("visibilitychange", onVisible);
   });
 
-  // Once per page: connect and load. `untrack` keeps anything the store reads from becoming a
-  // dependency, which would re-run this (closing every socket and reloading) on each change.
+  // Once per page: connect and load. Reading `windows.activeId` here makes this effect re-run on a
+  // window switch — it would drop every session socket and reload the list. Only the `createdId`
+  // hand-off below wants to be reactive, and it is read under `untrack` with the rest.
   $effect(() => {
     untrack(() => {
     store.connect();
@@ -98,7 +100,11 @@
       .then(() => {
         panes.forgetMissing((id) => !!store.sessions[id]);
         // First visit (no saved layout): open the latest session, as the app always has.
-        if (!panes.restored && !panes.focused.sessionId && store.list[0]) panes.show(panes.focusedId, store.list[0].id);
+        if (windows.createdId) {
+          // A window that has just been asked for: it starts empty, with one new chat.
+          windows.takeCreated();
+          panes.openBlank();
+        } else if (!panes.restored && !panes.focused.sessionId && store.list[0]) panes.show(panes.focusedId, store.list[0].id);
       })
       .catch((error) => toasts.push("Could not reach the mini-tui server", { detail: (error as Error).message, tone: "err" }))
       .finally(() => (loading = false));
@@ -153,10 +159,17 @@
   }
 
   const canSplit = (paneId: string, dir: Dir) => panes.canSplit && (tabbed || roomToSplit(panes.tree, paneId, dir, layoutW, layoutH, MIN_PANE));
+  /** A window is born with one pane, so a move into a fresh one is never at the pane limit. */
+  const movePane = (paneId: string, to: string | "new", name?: string) => {
+    const went = panes.sendTo(paneId, to, name);
+    if (!went) toasts.push("That window is full", { detail: `At most ${MAX_PANES} panes in a window.`, tone: "info" });
+    else void tick().then(() => refs[panes.focusedId]?.focusComposer());
+    return went;
+  };
 
   function split(paneId: string, dir: Dir) {
     if (!panes.canSplit) {
-      toasts.push("At most 6 panes", { detail: "Close one to open another.", tone: "info" });
+      toasts.push(`At most ${MAX_PANES} panes`, { detail: "Close one to open another.", tone: "info" });
       return;
     }
     if (!canSplit(paneId, dir)) {
@@ -256,6 +269,23 @@
     const s = panes.panes[id]?.sessionId;
     return `pane ${panes.numberOf(id)}${s && store.sessions[s] ? ` (${store.sessions[s]!.title || "Untitled"})` : ""}`;
   };
+  /** Where a pane can go: the other windows, and a new one. */
+  const moveTargets = $derived(windows.list.filter((w) => w.id !== windows.activeId).map((w) => ({ id: w.id, label: windows.label(w.id, (wid) => panes.paneCount(wid)) })));
+  /** The sidebar's window list: name or number, pane count, and which is on screen. */
+  const windowRows = $derived(windows.list.map((w) => ({ id: w.id, label: windows.label(w.id, (wid) => panes.paneCount(wid)), name: w.name, panes: panes.paneCount(w.id), active: w.id === windows.activeId })));
+  /** Another window on screen: these panes are shelved with their prompts, that window's come back. */
+  function switchWindow(id: string) {
+    if (id === windows.activeId) return;
+    panes.switchTo(id);
+    queueMicrotask(() => refs[panes.focusedId]?.focusComposer());
+  }
+  /** A new window: it opens empty (one new chat) and takes the focus. */
+  function newWindow() {
+    windows.create();
+    if (narrow) sidebarOpen = false;
+    panes.openBlank();
+    queueMicrotask(() => refs[panes.focusedId]?.focusComposer());
+  }
 
   function scaleBy(dir: 1 | -1, text: boolean) {
     if (text) ui.setTextScale(stepScale(ui.textScale, dir, TEXT_SCALES));
@@ -265,7 +295,7 @@
 
   /**
    * Shortcuts. Ctrl/Cmd+K new chat (in the focused pane), Ctrl/Cmd+, settings, Ctrl/Cmd+B sidebar,
-   * Ctrl+\ split right, Ctrl+Shift+\ split down, Alt+X close pane, Alt+1..6 or Ctrl/Cmd+Alt+arrows to
+   * Ctrl+\ split right, Ctrl+Shift+\ split down, Alt+X close pane, Alt+1..9 and 0, or Ctrl/Cmd+Alt+arrows,
    * move between panes, Ctrl/Cmd+Shift+. notes, Ctrl/Cmd+= / - / 0 interface size (with Shift: text).
    * None of them collide with typing: every one needs Ctrl, Cmd or Alt.
    */
@@ -275,7 +305,7 @@
     // only the pane shortcuts that cannot mean anything to a shell (Ctrl+`, Alt+digit, Ctrl+Alt+arrows,
     // Ctrl+\ is SIGQUIT so it is left alone too) reach the app from there.
     if ((event.target as HTMLElement | null)?.closest?.(".xterm")) {
-      const paneKey = (event.ctrlKey && event.code === "Backquote") || (event.altKey && !mod && /^Digit[1-6]$/.test(event.code)) || (mod && event.altKey && event.key.startsWith("Arrow"));
+      const paneKey = (event.ctrlKey && event.code === "Backquote") || (event.altKey && !mod && /^Digit([1-9]|0)$/.test(event.code)) || (mod && event.altKey && event.key.startsWith("Arrow"));
       if (!paneKey) return;
     }
     const key = event.key;
@@ -295,8 +325,9 @@
     } else if (event.altKey && !mod && code === "KeyX") {
       event.preventDefault();
       closePane(panes.focusedId);
-    } else if (event.altKey && !mod && /^Digit[1-6]$/.test(code)) {
-      const id = panes.order[Number(code.slice(5)) - 1];
+    } else if (event.altKey && !mod && /^Digit([1-9]|0)$/.test(code)) {
+      const n = code === "Digit0" ? 10 : Number(code.slice(5));
+      const id = panes.order[n - 1];
       if (id) {
         event.preventDefault();
         panes.focus(id);
@@ -347,7 +378,22 @@
         onresume={() => (resumeOpen = true)}
         onnewin={newChatIn}
         openingId={openingId}
-        paneOf={(id) => (panes.count > 1 ? (panes.paneOf(id) ? panes.numberOf(panes.paneOf(id)!.id) : 0) : 0)}
+        windows={windowRows}
+        onwindow={(id) => switchWindow(id)}
+        onnewwindow={() => newWindow()}
+        onrename={(id, name) => windows.rename(id, name)}
+        onclosewindow={(id) => {
+          panes.dropWindow(id);
+          windows.remove(id);
+        }}
+        inOtherWindow={(id) => {
+          const w = panes.windowOf(id);
+          return w && w !== windows.activeId ? windows.label(w, (wid) => panes.paneCount(wid)) : "";
+        }}
+        paneOf={(id) => {
+          const p = panes.paneOf(id);
+          return p ? panes.numberOf(p.id) : 0;
+        }}
         focusedSession={panes.focused.sessionId}
         {loading}
       />
@@ -391,7 +437,7 @@
           type="button"
           class="interactive grid size-9 shrink-0 cursor-pointer place-items-center rounded-md text-ink-muted hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11"
           aria-label="New pane"
-          title={panes.canSplit ? "New pane" : "At most 6 panes"}
+          title={panes.canSplit ? "New pane" : `At most ${MAX_PANES} panes`}
           disabled={!panes.canSplit}
           onclick={() => split(panes.focusedId, "row")}
         ><Plus size={15} strokeWidth={2} aria-hidden="true" /></button>
@@ -422,6 +468,8 @@
               onapp={app}
               onsplit={(dir) => split(id, dir)}
               onclosepane={() => closePane(id)}
+              windows={moveTargets}
+              onmove={(to, name) => movePane(id, to, name)}
             />
           </div>
         {/if}
