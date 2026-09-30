@@ -101,6 +101,36 @@ describe("mini argument builders", () => {
     }
   });
 
+  test("the Rust agent also runs the helpers: `title` answers with a JSON string, no Python", async () => {
+    const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const dir = mkdtempSync(join(tmpdir(), "rs-helper-"));
+    // A stand-in binary that records its argv and prints a title.
+    const bin = join(dir, "mini-agent-rs");
+    writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$@" > ${join(dir, "argv")}\necho '"From Rust"'\n`);
+    chmodSync(bin, 0o755);
+    const old = { agent: process.env.MINITUI_AGENT, bin: process.env.MINITUI_AGENT_BIN };
+    process.env.MINITUI_AGENT = "rust";
+    process.env.MINITUI_AGENT_BIN = bin;
+    try {
+      const { generateTitle } = await import("../src/title");
+      const title = await new Promise<string>((resolve) => {
+        let got = "";
+        generateTitle("the task", "cliproxy/m", (t) => (got = t), () => resolve(got));
+      });
+      expect(title).toBe("From Rust");
+      const { readFileSync } = await import("node:fs");
+      expect(readFileSync(join(dir, "argv"), "utf8").trim().split("\n")).toEqual(["title", "the task", "cliproxy/m"]);
+    } finally {
+      for (const [k, v] of [["MINITUI_AGENT", old.agent], ["MINITUI_AGENT_BIN", old.bin]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("run environment owns the control channel and is silent", () => {
     const old = process.env.MSWEA_CONTROL_FILE;
     process.env.MSWEA_CONTROL_FILE = "/stale/control";

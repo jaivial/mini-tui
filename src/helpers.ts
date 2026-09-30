@@ -42,9 +42,10 @@ export function resolveCommand(cmd: string, env: NodeJS.ProcessEnv = process.env
 }
 
 /** Run one of the helper scripts with mini's interpreter. */
-export function runHelperScript(script: string, args: string[], env: Record<string, string>): Promise<number> {
+export function runHelperScript(script: string, args: string[], env: Record<string, string>, command?: string[]): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn(PYTHON_BIN, [script, ...args], {
+    const [bin, ...rest] = command ?? [PYTHON_BIN, script];
+    const child = spawn(bin as string, [...rest, ...args], {
       stdio: ["ignore", "ignore", "ignore"],
       env: { ...process.env, ...env },
     });

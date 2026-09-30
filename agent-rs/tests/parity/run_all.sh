@@ -23,6 +23,8 @@ printf 'WAIT_JOURNAL 2\nSLEEP 1.0\nKILL\n' > /tmp/parity-term.control
 run sigterm        parity/sigint.yaml --control-script /tmp/parity-term.control
 run model-switch   parity/model_switch.yaml --control-script parity/model_switch.control
 run sleep-sigint   parity/sleepmodel.yaml --control-script parity/sleepmodel.control
+run global-calls   parity/format_errors.yaml --env MSWEA_GLOBAL_CALL_LIMIT=1
+run global-cost    parity/cost_limit.yaml --env MSWEA_GLOBAL_COST_LIMIT=0.5
 run compact-only   parity/resume.yaml --resume "$PWD/parity/resume_long.json" --task "" --compact-only
 # The shipped configs, with a scripted model swapped in (the templates are what matters).
 run mini.yaml      ../../agent/src/minisweagent/config/mini.yaml --extra-config parity/script_answer.yaml
@@ -45,5 +47,8 @@ wire abort-401       parity/wire_abort.yaml parity/wire_abort.json --base-env DE
 wire go-chat         parity/wire_go_chat.yaml parity/wire_go_chat.json --base-env OPENCODE_GO_API_BASE --key-env OPENCODE_GO_API_KEY
 wire go-messages     parity/wire_go_messages.yaml parity/wire_go_messages.json --base-env OPENCODE_GO_API_BASE --key-env OPENCODE_GO_API_KEY
 wire go-responses    parity/wire_go_responses.yaml parity/wire_go_responses.json --base-env OPENCODE_GO_API_BASE --key-env OPENCODE_GO_API_KEY
+# The one-shot helpers (session titles, provider connection tests).
+printf '%-16s ' helpers
+if out=$(timeout 60 $PY parity/helpers.py 2>&1) && echo "$out" | grep -q '^ALL SAME'; then echo "8 cases identical"; else fail=1; echo "$out"; fi
 for p in $(ps -eo pid,ppid,args | awk '$2==1 && $3=="/bin/sh" && $5=="sleep" && $6=="20" {print $1}'); do kill "$p"; done
 [ $fail = 0 ] && echo "ALL IDENTICAL" || { echo "SOME DIFFER"; exit 1; }
