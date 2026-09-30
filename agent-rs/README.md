@@ -8,20 +8,23 @@ TUI, web app and headless mode read its output without knowing which agent produ
 
 ```sh
 cd agent-rs && cargo build --release                 # target/release/mini-agent-rs
-MINITUI_AGENT=rust mini-tui                          # use it (the Python agent stays the default)
+mini-tui                                             # uses it: the default once it is built
 cargo build --release --target x86_64-unknown-linux-musl   # a static binary for any Linux box
 ```
 
-`MINITUI_AGENT=rust` picks the binary from `MINITUI_AGENT_BIN`, else this directory's release
-build, else `mini-agent-rs` on `PATH`. If none is found, mini-tui says so and uses Python.
+mini-tui (the TUI, `-p` and the web app) runs this binary whenever it finds one: `MINITUI_AGENT_BIN`,
+else this directory's release build, else `~/.local/lib/mini-tui/mini-agent-rs`, else `mini-agent-rs`
+on `PATH`. With none, it uses Python. `MINITUI_AGENT=python` keeps Python; `MINITUI_AGENT=rust`
+also warns when no binary is found. mini-tui sets `MINI_AGENT_CONFIG_DIR` to the bundled configs, so
+an installed copy outside the checkout finds `mini.yaml`.
 
-The binary also does the two one-shot jobs mini-tui used to run through Python, so with
-`MINITUI_AGENT=rust` no Python is needed at all:
+The binary also does the two one-shot jobs mini-tui used to run through Python, so with it no
+Python is needed at all:
 - `mini-agent-rs title "<task>" <model>` prints the session title as a JSON string
   (`scripts/gen_title.py`).
 - `mini-agent-rs test-model <model>` is the providers panel's connection test
   (`scripts/test_model.py`): it prints `ok` and exits 0, or `error: …` and exits 1.
-On a remote host, set `MINITUI_AGENT=rust` in the environment its `mini-tui -p` runs with.
+On a remote host, install the binary the same way; its `mini-tui -p` picks it up.
 
 ## What it does
 

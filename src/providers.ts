@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import type { SelectOption } from "@opentui/core";
 
 import { runHelperScript } from "./helpers";
-import { rustAgentBin } from "./mini/spawn";
+import { rustAgent } from "./mini/spawn";
 
 /**
  * How the provider reaches the model layer (direct base URLs, no litellm since 0.9):
@@ -370,7 +370,7 @@ export async function fetchProviderModels(def: ProviderDef, key: string): Promis
 export function testProviderModel(def: ProviderDef, modelName: string, key: string): Promise<boolean> {
   const script = join(import.meta.dir, "..", "scripts", "test_model.py");
   const env = connectionEnv({ route: def.route, keyEnv: def.keyEnv, extraEnv: def.extraEnv, baseUrl: def.baseUrl, key });
-  // With the Rust agent selected, `mini-agent-rs test-model` runs the same test without Python.
-  const rust = process.env.MINITUI_AGENT === "rust" ? rustAgentBin() : undefined;
+  // With the Rust agent (the default when its binary is there), `mini-agent-rs test-model` runs it.
+  const rust = rustAgent();
   return runHelperScript(script, [modelName], env, rust ? [rust, "test-model"] : undefined).then((code) => code === 0);
 }

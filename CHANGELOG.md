@@ -2,6 +2,26 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.23.0 — 2026-09-30
+
+The Rust agent is now the default, and the web app groups panes into windows.
+
+### Changed
+
+- **The Rust agent is the default** for the terminal UI, `mini-tui -p` and the web app whenever its
+  binary is found: `MINITUI_AGENT_BIN`, `agent-rs/target/release/mini-agent-rs`,
+  `~/.local/lib/mini-tui/mini-agent-rs` (new), or `mini-agent-rs` on `PATH`. Without one, mini-tui
+  uses the Python agent as before. `MINITUI_AGENT=python` keeps Python on purpose.
+- Runs pass `MINI_AGENT_CONFIG_DIR` (the bundled YAML configs) unless one is already set, so a
+  binary installed outside the checkout finds `mini.yaml`. Before, such a run failed with
+  "Could not find config file".
+
+### Added
+
+- Web app: **windows**, each with up to **12 panes** (was 6 in total). The sidebar lists the windows
+  with a pane count, starts a new one, and renames or closes one. Any pane can move to another
+  window or to a new one from its menu. Every window is remembered per browser.
+
 ## 0.22.1 — 2026-09-30
 
 With `MINITUI_AGENT=rust`, mini-tui now needs no Python at all.
