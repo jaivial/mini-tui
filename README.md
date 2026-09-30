@@ -9,6 +9,14 @@ append-only trajectory journal/control file as before. The public `mini` CLI rem
 is used automatically for older or custom agents. The harness still produces the same messages and
 artifacts, so the integration is observable and reversible.
 
+Three ways to use it:
+- **Terminal UI** (`mini-tui`), described below.
+- **[Web app](#web-app)** (`bun run web`): panes, notes, a terminal, and sessions on remote hosts.
+- **[Headless](#headless-mini-tui--p-no-tui)** (`mini-tui -p`), for scripts and CI.
+
+The agent behind all three is the bundled Python mini-swe-agent, or its
+**[Rust port](#the-rust-agent-optional)**. The Rust port is a single binary that needs no Python.
+
 ![mini-tui running a task](docs/screenshots/run.png)
 
 ## Features
@@ -143,10 +151,27 @@ bun run web:dev      # Vite dev server, hot reload
 Sessions started in the browser land in the same `~/.config/mini-tui/sessions.db` the terminal UI's
 `/resume` reads, so both front ends see each other. `/resume` works in the browser too, even from a new
 chat with nothing running: it lists every saved session, searchable, and sending a message continues the
-one you pick. Split the window into **panes** like tmux (`Ctrl+\`), each running its own session at the
-same time. Every pane has a **notes** sidebar that saves as you type. Settings has an **interface size**
-and a separate **text size**. Remote runs need `mini-tui` on the server; the hosts
-panel has a **Test** button that checks reachability and agent presence.
+one you pick.
+
+What the web app does:
+- **History in the sidebar**, by recency or grouped **by folder**.
+- **A folder picker** for new chats that also browses remote hosts.
+- **Prompt memory** with `↑`/`↓`.
+- **A toast when a session finishes**, with a **View** button that jumps to it.
+- **Panes** like tmux (`Ctrl+\`), each running its own session at the same time.
+- **A side panel in every pane**, with two tabs:
+  - **Notes**, saved as you type.
+  - **Terminal**, a real shell in the session's folder (over SSH for a remote session) that survives
+    hiding the panel and reloading the page. Open it with `` Ctrl+` `` or `/terminal`.
+- **Settings** with an **interface size** and a separate **text size**.
+
+Notes, the terminal and prompt memory all travel over one hub WebSocket per tab, with no REST
+polling. A server restart (a deploy) does not lose your panes: sessions reopen from the saved
+history when the page reconnects.
+
+The terminal is a shell as the user the server runs as, so keep the server behind authentication,
+or turn the terminal off with `MINITUI_WEB_TERMINAL=0`. Remote runs need `mini-tui` on the server;
+the hosts panel has a **Test** button that checks reachability and agent presence.
 
 <table>
 <tr>
@@ -216,8 +241,14 @@ the whole UI live and the choice persists.
 ## Requirements
 
 - [Bun](https://bun.sh) ≥ 1.3 (OpenTUI ships a native Zig renderer; Node ≥ 26.4 also works)
-- Python ≥ 3.10 with the bundled agent installed (`pip install -e ./agent`) — or any `mini` on
-  your `PATH`; your `~/.config/mini-swe-agent/.env` is honored either way
+- An agent, one of:
+  - Python ≥ 3.10 with the bundled agent installed (`pip install -e ./agent`), or any `mini` on
+    your `PATH`;
+  - the [Rust agent](#the-rust-agent-optional): no Python needed, either a
+    [release binary](https://github.com/jaivial/mini-tui/releases/latest) or `cargo build --release`
+    in `agent-rs/`.
+
+  `~/.config/mini-swe-agent/.env` is honored either way.
 
 ## Install
 
@@ -228,6 +259,14 @@ python3 -m pip install -e ./agent   # bundled mini-swe-agent → `mini` + `mini-
 
 # optional: make `mini-tui` available everywhere
 cp bin/mini-tui ~/.local/bin/mini-tui && chmod +x ~/.local/bin/mini-tui
+```
+
+Without Python, download the static Rust agent instead of the `pip install` step:
+
+```bash
+curl -LO https://github.com/jaivial/mini-tui/releases/latest/download/mini-agent-rs-x86_64-linux-musl
+chmod +x mini-agent-rs-x86_64-linux-musl
+export MINITUI_AGENT=rust MINITUI_AGENT_BIN=$PWD/mini-agent-rs-x86_64-linux-musl
 ```
 
 ## Usage
@@ -369,20 +408,37 @@ mini-tui appends `MESSAGE <text>` / `MODEL <id>` lines to the run's control file
 
 ## The Rust agent (optional)
 
-`agent-rs/` is a Rust port of the bundled agent's runner: the same command line, configs,
-trajectory, journal and control file, as one self-contained binary. It starts in about 2 ms
-instead of about 190 ms, and a session waiting for your next message holds about 4 MB instead
-of about 36 MB. The static build runs on any x86-64 Linux box, with no Python needed.
+`agent-rs/` is a Rust port of the bundled agent's runner. It uses the same command line, configs,
+trajectory, journal and control file, packaged as one self-contained binary.
+
+| | Python agent | Rust agent |
+| --- | --- | --- |
+| Start a run | ~190 ms | ~2 ms |
+| A session waiting for your next message | ~36 MB | ~4 MB |
+| Needs | Python ≥ 3.10 + the agent's packages | nothing (static build: any x86-64 Linux) |
 
 ```sh
 cd agent-rs && cargo build --release      # or: --target x86_64-unknown-linux-musl (static)
 MINITUI_AGENT=rust mini-tui               # MINITUI_AGENT_BIN=/path/to/mini-agent-rs to pick a binary
 ```
 
-The Python agent stays the default. `agent-rs/tests/parity/run_all.sh` runs both agents on the
-same scripted tasks and scripted HTTP servers and checks that they write identical
-trajectories and send identical requests. See `agent-rs/README.md` for what is and is not
-ported.
+Prebuilt binaries (`mini-agent-rs-x86_64-linux-musl`, `…-linux-gnu`, `SHA256SUMS`) are attached to
+every [release](https://github.com/jaivial/mini-tui/releases/latest). With `MINITUI_AGENT=rust` the
+binary also generates session titles and runs the providers panel's connection tests, so nothing
+runs through Python. The Python agent stays the default; if the binary is missing, mini-tui says so
+and falls back to Python.
+
+It covers everything mini-tui uses:
+- **The loop:** limits, follow-ups, `/model`, `/compact` and automatic compaction, `--resume`,
+  interrupts.
+- **Models:** cli-proxy, Rosetta, DeepSeek, Xiaomi, OpenAI, Anthropic, the provider registry and
+  OpenCode Go.
+- **Environments:** local and docker.
+
+`agent-rs/tests/parity/run_all.sh` runs both agents on the same scripted tasks and scripted HTTP
+servers: 26 scenarios plus 8 helper cases. It checks that they write identical trajectories, exit the
+same way and send identical requests. See [`agent-rs/README.md`](agent-rs/README.md) for what is and
+is not ported.
 
 ## Bundled mini-swe-agent
 
@@ -455,16 +511,21 @@ bun test          # parser fixtures + in-memory OpenTUI render tests (no TTY, no
 bun run typecheck
 bun run screenshots   # regenerates docs/screenshots/*.png from scripted scenes
 bun run benchmark:tui -- 5000   # terminal-free long-run parser + item-index benchmark
+MINITUI_AGENT=rust bun test     # the same suite on the Rust agent
+
+cd web && bun run e2e           # the web app in a real browser (see web/README.md for the others)
+cd agent-rs && cargo test --release && sh tests/parity/run_all.sh   # Rust agent: unit + parity
 ```
 
 ## Notes and known limits
 
 - Yolo only: runs use the integrated agent entry (or the compatible `mini -y --exit-immediately`
   fallback) — the UI visualizes and forwards prompts, it never confirms or rejects commands.
-- No token streaming: the trajectory updates once per step, so the spinner covers model calls and
-  command execution. Follow-ups sent mid-step are picked up at the next step.
+- No token streaming in the terminal UI: the transcript updates once per step, so the spinner covers
+  model calls and command execution. The web app shows the reply as it streams. Follow-ups sent
+  mid-step are picked up at the next step.
 - After a submission the run stays open ("type to continue") while the TUI is attached; quitting
   the TUI ends it.
 - The code highlighter degrades to plain text when a tree-sitter grammar is unavailable.
 - If the TUI is killed hard, the agent child may survive: check `<session>/pid` and
-  `pgrep -af "minisweagent.run.tui|mini -y --exit-immediately"`.
+  `pgrep -af "minisweagent.run.tui|mini-agent-rs|mini -y --exit-immediately"`.
