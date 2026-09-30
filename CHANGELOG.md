@@ -2,6 +2,16 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.23.2 — 2026-09-30
+
+### Fixed
+
+- **Parallel runs no longer share a run folder.** A folder was named by second + the first 24
+  characters of the task, so two runs started in the same second with a similar prompt (an inlined
+  `$skill` makes every prompt start alike) wrote the same `traj.json`, `mini.log` and control file,
+  and each headless agent executed the other's task. Folder names now end in a random suffix, and
+  the folder is created with a non-recursive `mkdir` that refuses to reuse an existing one.
+
 ## 0.23.1 — 2026-09-30
 
 ### Fixed

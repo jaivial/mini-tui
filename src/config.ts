@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -39,10 +40,26 @@ export interface SessionPaths {
   controlPath: string;
 }
 
+/**
+ * A NEW run directory, never an existing one. Timestamp + slug alone collided: runs started in the
+ * same second whose tasks share a prefix (a `$skill` expansion puts the same text first in every
+ * prompt) got the same folder, so parallel headless agents shared `traj.json`, `mini.log` and the
+ * control file and read each other's trajectory. A random suffix makes the name unique, and the
+ * non-recursive `mkdir` fails on a clash instead of silently reusing a folder.
+ */
 export function createSessionDir(task: string): SessionPaths {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const dir = join(RUNS_DIR, `${stamp}-${slugify(task)}`);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(RUNS_DIR, { recursive: true });
+  let dir = "";
+  for (let attempt = 0; ; attempt++) {
+    dir = join(RUNS_DIR, `${stamp}-${slugify(task)}-${randomBytes(3).toString("hex")}`);
+    try {
+      mkdirSync(dir);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST" || attempt >= 4) throw err;
+    }
+  }
   return {
     dir,
     trajPath: join(dir, "traj.json"),
