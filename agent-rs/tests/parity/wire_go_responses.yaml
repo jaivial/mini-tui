@@ -1,0 +1,6 @@
+agent:
+  system_template: "Go responses system."
+  instance_template: "{{task}}"
+model:
+  model_name: opencode-go/grok-4.7
+  observation_template: "{{output.returncode}}|{{output.output}}"

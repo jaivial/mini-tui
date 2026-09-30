@@ -367,6 +367,23 @@ mini-tui appends `MESSAGE <text>` / `MODEL <id>` lines to the run's control file
   a submission via an *exit hold* (the run stays open so one conversation can span many turns);
 - applies `MODEL` switches from the next step.
 
+## The Rust agent (optional)
+
+`agent-rs/` is a Rust port of the bundled agent's runner: the same command line, configs,
+trajectory, journal and control file, as one self-contained binary. It starts in about 2 ms
+instead of about 190 ms, and a session waiting for your next message holds about 4 MB instead
+of about 36 MB. The static build runs on any x86-64 Linux box, with no Python needed.
+
+```sh
+cd agent-rs && cargo build --release      # or: --target x86_64-unknown-linux-musl (static)
+MINITUI_AGENT=rust mini-tui               # MINITUI_AGENT_BIN=/path/to/mini-agent-rs to pick a binary
+```
+
+The Python agent stays the default. `agent-rs/tests/parity/run_all.sh` runs both agents on the
+same scripted tasks and scripted HTTP servers and checks that they write identical
+trajectories and send identical requests. See `agent-rs/README.md` for what is and is not
+ported.
+
 ## Bundled mini-swe-agent
 
 `agent/` vendors [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) (v2.4.6 base via

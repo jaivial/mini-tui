@@ -1,0 +1,28 @@
+[package]
+name = "mini-agent-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of the mini-swe-agent runner that mini-tui drives (same CLI, trajectory, journal and control file)"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "mini-agent-rs"
+path = "src/main.rs"
+
+[dependencies]
+minijinja = { version = "2", features = ["preserve_order", "json", "loop_controls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+ureq = { version = "2", default-features = false, features = ["tls", "native-certs"] }
+regex = "1"
+libc = "0.2"
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "unwind"

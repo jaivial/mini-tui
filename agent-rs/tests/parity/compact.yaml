@@ -1,0 +1,21 @@
+# /compact on a live run (COMPACT line) and the summary call through the scripted model.
+agent:
+  system_template: "system prompt"
+  instance_template: "{{task}}"
+model:
+  model_class: minisweagent.models.test_models.DeterministicToolcallModel
+  model_name: deterministic
+  outputs:
+    - role: assistant
+      content: "step one, a long enough note to be kept by the fallback summary if needed"
+      tool_calls: [{id: k1, type: function, function: {name: bash, arguments: '{"command": "seq 1 300"}'}}]
+      extra: {actions: [{command: "seq 1 300", tool_call_id: k1}]}
+    - role: assistant
+      content: "first answer"
+      extra: {submission: "first answer"}
+    - role: assistant
+      content: "SUMMARY: the user asked for a sequence; seq 1 300 ran and printed 300 lines. Nothing else is pending except answering the follow-up. This summary is intentionally longer than two hundred characters so that the agent keeps it verbatim instead of falling back."
+      extra: {}
+    - role: assistant
+      content: "after compaction"
+      extra: {submission: "after compaction"}

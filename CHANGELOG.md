@@ -2,6 +2,33 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.22.0 — 2026-09-29
+
+The agent, rewritten in Rust: same behavior, one self-contained binary.
+
+### Added
+
+- **A Rust port of the agent** (`agent-rs/`, opt-in with `MINITUI_AGENT=rust`). It is a drop-in
+  for the bundled mini-swe-agent runner: the same command line, YAML configs, `.env`, `<traj>.json`
+  export, `<traj>.jsonl` journal (streamed deltas included) and `MSWEA_CONTROL_FILE` protocol.
+  - **The agent:** the full loop, with limits, format errors, plain-text answers and the submit
+    marker; resume with tool-call repair; holding at exit for follow-ups; model switches;
+    automatic, manual and overflow compaction; SIGINT and SIGTERM, with the command's process
+    group killed.
+  - **Models:** the OpenAI chat-completions, Anthropic Messages and OpenAI Responses clients,
+    behind the same name routing: cli-proxy, Rosetta, DeepSeek, Xiaomi, OpenAI, Anthropic, the
+    provider registry and OpenCode Go.
+  - **Environments:** the local and docker environments.
+  - **Speed and size:** starts in about 2 ms instead of about 190 ms, and a session waiting for a
+    follow-up holds about 4 MB instead of about 36 MB. The static musl build needs no Python on a
+    remote host.
+  - **Parity:** `agent-rs/tests/parity/` runs 24 scenarios through both agents, locally and
+    against a scripted HTTP server, and checks that every message, journal line, exit code and
+    request body is identical. mini-tui's own 75 tests that drive the real agent pass on it.
+  - **Not ported:** the litellm, portkey and requesty classes and the exotic sandboxes.
+- `MINITUI_AGENT=rust` / `MINITUI_AGENT_BIN` pick the Rust agent. If the binary is missing,
+  mini-tui falls back to the Python agent with a message.
+
 ## 0.21.0 — 2026-09-29
 
 An interactive terminal beside the notes, and panes that survive a server restart.

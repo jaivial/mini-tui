@@ -74,6 +74,33 @@ describe("mini argument builders", () => {
     }
   });
 
+  test("the Rust agent: MINITUI_AGENT=rust runs mini-agent-rs with the same arguments", () => {
+    const old = { agent: process.env.MINITUI_AGENT, bin: process.env.MINITUI_AGENT_BIN, embedded: process.env.MINITUI_EMBEDDED_AGENT };
+    process.env.MINITUI_AGENT = "rust";
+    process.env.MINITUI_AGENT_BIN = "/bin/true"; // any existing file stands in for the binary
+    delete process.env.MINITUI_EMBEDDED_AGENT;
+    try {
+      setRunnerSupport(undefined);
+      expect(detectRunner()).toBe("rust");
+      expect(buildRunnerCommand({ task: "fix it", model: "m", compactOnly: false }, SESSION, "rust")).toEqual([
+        "/bin/true", "-y", "--exit-immediately", "-o", "/runs/x/traj.json", "-m", "m", "-t", "fix it",
+      ]);
+      // A missing binary falls back to the Python agent instead of failing every run.
+      process.env.MINITUI_AGENT_BIN = "/nonexistent/mini-agent-rs";
+      expect(detectRunner()).not.toBe("rust");
+      // An explicit `mini` launcher (MINITUI_EMBEDDED_AGENT=0) always wins.
+      process.env.MINITUI_AGENT_BIN = "/bin/true";
+      process.env.MINITUI_EMBEDDED_AGENT = "0";
+      expect(detectRunner()).toBe("cli");
+    } finally {
+      for (const [k, v] of [["MINITUI_AGENT", old.agent], ["MINITUI_AGENT_BIN", old.bin], ["MINITUI_EMBEDDED_AGENT", old.embedded]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      setRunnerSupport(undefined);
+    }
+  });
+
   test("run environment owns the control channel and is silent", () => {
     const old = process.env.MSWEA_CONTROL_FILE;
     process.env.MSWEA_CONTROL_FILE = "/stale/control";

@@ -1,0 +1,20 @@
+# Answer, hold at exit, take a follow-up (with a newline and quotes), answer again.
+agent:
+  system_template: "sys"
+  instance_template: "Task: {{task}}"
+model:
+  model_class: minisweagent.models.test_models.DeterministicToolcallModel
+  model_name: deterministic
+  outputs:
+    - role: assistant
+      content: "first answer"
+      extra: {submission: "first answer"}
+    - role: assistant
+      content: "checking"
+      tool_calls:
+        - {id: c9, type: function, function: {name: bash, arguments: '{"command": "echo followup"}'}}
+      extra:
+        actions: [{command: "echo followup", tool_call_id: c9}]
+    - role: assistant
+      content: "second answer"
+      extra: {submission: "second answer"}

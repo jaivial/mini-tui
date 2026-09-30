@@ -1,0 +1,6 @@
+agent:
+  system_template: "Responses system."
+  instance_template: "{{task}}"
+model:
+  model_name: openai/gpt-6-astra
+  observation_template: "{{output.returncode}}|{{output.output}}"

@@ -1,0 +1,63 @@
+[
+ {
+  "json": {
+   "id": "m1",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "thinking",
+     "thinking": "plan",
+     "signature": "sig"
+    },
+    {
+     "type": "text",
+     "text": "Running."
+    },
+    {
+     "type": "tool_use",
+     "id": "tu_1",
+     "name": "bash",
+     "input": {
+      "command": "echo messages-ok"
+     }
+    }
+   ],
+   "stop_reason": "tool_use",
+   "usage": {
+    "input_tokens": 50,
+    "output_tokens": 7,
+    "cache_read_input_tokens": 10,
+    "cache_creation_input_tokens": 5
+   }
+  }
+ },
+ {
+  "status": 400,
+  "json": {
+   "type": "error",
+   "error": {
+    "type": "invalid_request_error",
+    "message": "tool_choice any is not supported"
+   }
+  }
+ },
+ {
+  "json": {
+   "id": "m2",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "All done via Messages."
+    }
+   ],
+   "stop_reason": "end_turn",
+   "usage": {
+    "input_tokens": 80,
+    "output_tokens": 4
+   }
+  }
+ }
+]

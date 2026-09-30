@@ -1,0 +1,9 @@
+agent:
+  system_template: "Go system."
+  instance_template: "{{task}}"
+model:
+  model_name: opencode-go/deepseek-v4-flash
+  observation_template: "{{output.returncode}}|{{output.output}}"
+  model_kwargs:
+    max_completion_tokens: 1000
+    store: true

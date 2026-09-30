@@ -1,0 +1,5 @@
+agent:
+  system_template: "s"
+  instance_template: "{{task}}"
+model:
+  model_name: deepseek/deepseek-chat

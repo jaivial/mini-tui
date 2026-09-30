@@ -1,0 +1,7 @@
+# Wait for the first answer to be journaled (system, user, assistant), then send a follow-up.
+WAIT_JOURNAL 3
+SLEEP 0.4
+MESSAGE "line one\nline \"two\""
+WAIT_JOURNAL 7
+SLEEP 0.4
+KILL

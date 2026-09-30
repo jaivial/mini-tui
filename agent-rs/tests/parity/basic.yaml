@@ -1,0 +1,55 @@
+# Two tool calls (one fails, one writes stderr), then a plain-text answer.
+agent:
+  max_consecutive_format_errors: 10
+  cost_limit: 3.
+  system_template: |
+    You are a helpful assistant on {{system}}. Task follows.
+  instance_template: |
+    Please solve: {{task}}
+    {%- if system == "Darwin" %} (mac){% endif %}
+    cwd={{ cwd | tojson }} steps={{ step_limit }} cost={{ cost_limit }} cfg={{ compaction.enabled }}
+environment:
+  env:
+    PAGER: cat
+model:
+  model_class: minisweagent.models.test_models.DeterministicToolcallModel
+  model_name: deterministic
+  cost_per_call: 0.01
+  observation_template: |
+    {%- if output.output | length < 10000 -%}
+    {
+      "returncode": {{ output.returncode }},
+      "output": {{ output.output | tojson }}
+      {%- if output.exception_info %}, "exception_info": {{ output.exception_info | tojson }}{% endif %}
+    }
+    {%- else -%}
+    {
+      "returncode": {{ output.returncode }},
+      "output_head": {{ output.output[:5000] | tojson }},
+      "output_tail": {{ output.output[-5000:] | tojson }},
+      "elided_chars": {{ output.output | length - 10000 }},
+      "warning": "Output too long."
+    }
+    {%- endif -%}
+  outputs:
+    - role: assistant
+      content: "Let me look."
+      tool_calls:
+        - {id: call_1, type: function, function: {name: bash, arguments: '{"command": "echo héllo <b>; echo oops 1>&2; exit 3"}'}}
+        - {id: call_2, type: function, function: {name: bash, arguments: '{"command": "printf ''%s'' \"tab\tquote\\\" é 😀\""}'}}
+      extra:
+        cost: 0.5
+        actions:
+          - {command: "echo héllo <b>; echo oops 1>&2; exit 3", tool_call_id: call_1}
+          - {command: "printf '%s' \"tab\tquote\\\" é 😀\"", tool_call_id: call_2}
+    - role: assistant
+      content: "Big output next."
+      tool_calls:
+        - {id: call_3, type: function, function: {name: bash, arguments: '{"command": "seq 1 4000"}'}}
+      extra:
+        actions:
+          - {command: "seq 1 4000", tool_call_id: call_3}
+    - role: assistant
+      content: "The answer is 42."
+      extra:
+        submission: "The answer is 42."

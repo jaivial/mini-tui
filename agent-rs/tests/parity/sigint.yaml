@@ -1,0 +1,11 @@
+agent:
+  system_template: "s"
+  instance_template: "{{task}}"
+model:
+  model_class: minisweagent.models.test_models.DeterministicToolcallModel
+  model_name: deterministic
+  outputs:
+    - role: assistant
+      content: "long command"
+      tool_calls: [{id: z1, type: function, function: {name: bash, arguments: '{"command": "sleep 20"}'}}]
+      extra: {actions: [{command: "sleep 20", tool_call_id: z1}]}
