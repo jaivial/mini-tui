@@ -74,7 +74,7 @@ describe("mini argument builders", () => {
     }
   });
 
-  test("the Rust agent: MINITUI_AGENT=rust runs mini-agent-rs with the same arguments", () => {
+  test("the Rust agent: the default when its binary is there, with the same arguments", () => {
     const old = { agent: process.env.MINITUI_AGENT, bin: process.env.MINITUI_AGENT_BIN, embedded: process.env.MINITUI_EMBEDDED_AGENT };
     process.env.MINITUI_AGENT = "rust";
     process.env.MINITUI_AGENT_BIN = "/bin/true"; // any existing file stands in for the binary
@@ -92,6 +92,12 @@ describe("mini argument builders", () => {
       process.env.MINITUI_AGENT_BIN = "/bin/true";
       process.env.MINITUI_EMBEDDED_AGENT = "0";
       expect(detectRunner()).toBe("cli");
+      delete process.env.MINITUI_EMBEDDED_AGENT;
+      // Rust is the default whenever its binary is there, asked for or not; `python` opts out.
+      delete process.env.MINITUI_AGENT;
+      expect(detectRunner()).toBe("rust");
+      process.env.MINITUI_AGENT = "python";
+      expect(detectRunner()).not.toBe("rust");
     } finally {
       for (const [k, v] of [["MINITUI_AGENT", old.agent], ["MINITUI_AGENT_BIN", old.bin], ["MINITUI_EMBEDDED_AGENT", old.embedded]] as const) {
         if (v === undefined) delete process.env[k];
@@ -128,6 +134,22 @@ describe("mini argument builders", () => {
         else process.env[k] = v;
       }
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a run tells the Rust agent where the bundled YAML configs are, unless one was chosen", () => {
+    const old = process.env.MINI_AGENT_CONFIG_DIR;
+    delete process.env.MINI_AGENT_CONFIG_DIR;
+    try {
+      const dir = buildRunEnv(SESSION).MINI_AGENT_CONFIG_DIR!;
+      expect(dir.endsWith("/agent/src/minisweagent/config")).toBe(true);
+      expect(require("node:fs").existsSync(`${dir}/mini.yaml`)).toBe(true);
+      expect(buildRunEnv(SESSION, { MINI_AGENT_CONFIG_DIR: "/mine" }).MINI_AGENT_CONFIG_DIR).toBe("/mine");
+      process.env.MINI_AGENT_CONFIG_DIR = "/from-env";
+      expect(buildRunEnv(SESSION).MINI_AGENT_CONFIG_DIR).toBe("/from-env");
+    } finally {
+      if (old === undefined) delete process.env.MINI_AGENT_CONFIG_DIR;
+      else process.env.MINI_AGENT_CONFIG_DIR = old;
     }
   });
 

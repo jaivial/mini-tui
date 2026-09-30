@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 import { PYTHON_BIN } from "./helpers";
-import { rustAgentBin } from "./mini/spawn";
+import { rustAgent } from "./mini/spawn";
 import { fallbackTitle } from "./sessions";
 
 const SCRIPT = join(import.meta.dir, "..", "scripts", "gen_title.py");
@@ -13,8 +13,8 @@ const TIMEOUT_MS = 20_000;
  * title or `null` — callers fall back to `fallbackTitle(task)`.
  */
 export function generateTitle(task: string, model: string, onTitle: (title: string) => void, onDone?: () => void): void {
-  // With the Rust agent selected, no Python is needed: `mini-agent-rs title` is the same helper.
-  const rust = process.env.MINITUI_AGENT === "rust" ? rustAgentBin() : undefined;
+  // With the Rust agent (the default when its binary is there), `mini-agent-rs title` is the same helper.
+  const rust = rustAgent();
   const child = rust
     ? spawn(rust, ["title", task, model], { stdio: ["ignore", "pipe", "ignore"] })
     : spawn(PYTHON_BIN, [SCRIPT, task, model], { stdio: ["ignore", "pipe", "ignore"] });

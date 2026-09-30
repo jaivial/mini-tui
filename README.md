@@ -263,12 +263,13 @@ python3 -m pip install -e ./agent   # bundled mini-swe-agent → `mini` + `mini-
 cp bin/mini-tui ~/.local/bin/mini-tui && chmod +x ~/.local/bin/mini-tui
 ```
 
-Without Python, download the static Rust agent instead of the `pip install` step:
+Without Python, download the static Rust agent instead of the `pip install` step. mini-tui finds it
+there on its own:
 
 ```bash
-curl -LO https://github.com/jaivial/mini-tui/releases/latest/download/mini-agent-rs-x86_64-linux-musl
-chmod +x mini-agent-rs-x86_64-linux-musl
-export MINITUI_AGENT=rust MINITUI_AGENT_BIN=$PWD/mini-agent-rs-x86_64-linux-musl
+mkdir -p ~/.local/lib/mini-tui
+curl -Lo ~/.local/lib/mini-tui/mini-agent-rs https://github.com/jaivial/mini-tui/releases/latest/download/mini-agent-rs-x86_64-linux-musl
+chmod +x ~/.local/lib/mini-tui/mini-agent-rs
 ```
 
 ## Usage
@@ -421,14 +422,20 @@ trajectory, journal and control file, packaged as one self-contained binary.
 
 ```sh
 cd agent-rs && cargo build --release      # or: --target x86_64-unknown-linux-musl (static)
-MINITUI_AGENT=rust mini-tui               # MINITUI_AGENT_BIN=/path/to/mini-agent-rs to pick a binary
+mini-tui                                  # uses it: Rust is the default once the binary is there
+MINITUI_AGENT=python mini-tui             # the Python agent instead
 ```
 
 Prebuilt binaries (`mini-agent-rs-x86_64-linux-musl`, `…-linux-gnu`, `SHA256SUMS`) are attached to
-every [release](https://github.com/jaivial/mini-tui/releases/latest). With `MINITUI_AGENT=rust` the
-binary also generates session titles and runs the providers panel's connection tests, so nothing
-runs through Python. The Python agent stays the default; if the binary is missing, mini-tui says so
-and falls back to Python.
+every [release](https://github.com/jaivial/mini-tui/releases/latest).
+
+**Rust is the default** for the terminal UI, `mini-tui -p` and the web app, whenever the binary is found:
+`MINITUI_AGENT_BIN`, else `agent-rs/target/release/mini-agent-rs`, else `~/.local/lib/mini-tui/mini-agent-rs`,
+else `mini-agent-rs` on `PATH`. The binary also generates session titles and runs the providers panel's
+connection tests, so nothing runs through Python. Without a binary, mini-tui uses the Python agent as
+before; `MINITUI_AGENT=python` chooses it on purpose, and `MINITUI_AGENT=rust` says so when the binary is
+missing. mini-tui points the binary at the bundled YAML configs (`MINI_AGENT_CONFIG_DIR`), so a copy
+installed outside the checkout works too.
 
 It covers everything mini-tui uses:
 - **The loop:** limits, follow-ups, `/model`, `/compact` and automatic compaction, `--resume`,
@@ -513,7 +520,7 @@ bun test          # parser fixtures + in-memory OpenTUI render tests (no TTY, no
 bun run typecheck
 bun run screenshots   # regenerates docs/screenshots/*.png from scripted scenes
 bun run benchmark:tui -- 5000   # terminal-free long-run parser + item-index benchmark
-MINITUI_AGENT=rust bun test     # the same suite on the Rust agent
+MINITUI_AGENT=python bun test   # the same suite on the Python agent (Rust when its binary is built)
 
 cd web && bun run e2e           # the web app in a real browser (see web/README.md for the others)
 cd agent-rs && cargo test --release && sh tests/parity/run_all.sh   # Rust agent: unit + parity
