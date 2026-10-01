@@ -2,6 +2,14 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.26.0 — 2026-10-01
+
+### Added
+
+- **Landing page and docs (`site/`).** A prerendered SvelteKit site with a home page, a web-app page, six
+  docs guides, a changelog rendered from this file, `sitemap.xml`, `robots.txt`, `llms.txt`, Open Graph
+  images and JSON-LD. `bun run seo` audits the built pages and `bun run browse` drives them in a real browser.
+
 ## 0.25.0 — 2026-10-01
 
 ### Changed

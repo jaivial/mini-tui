@@ -1,0 +1,40 @@
+{
+  "name": "mini-tui-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Landing page and docs for mini-tui, prerendered to static HTML.",
+  "scripts": {
+    "dev": "vite dev --port 4320",
+    "build": "vite build",
+    "preview": "vite preview --port 4321",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "seo": "bun scripts/seo-check.mjs",
+    "assets": "bun scripts/make-assets.mjs",
+    "browse": "bun scripts/browse-check.mjs"
+  },
+  "devDependencies": {
+    "@internationalized/date": "^3.12.0",
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.70.3",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "bits-ui": "^2.18.0",
+    "playwright-core": "^1.63.0",
+    "svelte": "^5",
+    "svelte-check": "^4.7.6",
+    "tailwind-variants": "^3.3.0",
+    "tailwindcss": "^4",
+    "typescript": "5.9",
+    "vite": "^8.3.1"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@lucide/svelte": "^1.48.0",
+    "clsx": "^2.1.1",
+    "markdown-it": "^15.0.2",
+    "motion": "^13.4.4",
+    "tailwind-merge": "^3.7.0"
+  }
+}

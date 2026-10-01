@@ -5,3 +5,8 @@ docs/screenshots/*.json
 # web app build output and deps
 web/dist/
 web/node_modules/
+
+# landing page (site/): build output and deps
+site/build/
+site/.svelte-kit/
+site/node_modules/

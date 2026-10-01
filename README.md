@@ -234,6 +234,24 @@ field a plain textarea, so IME, autocorrect and paste all keep working.
 Built for touch as well as a keyboard: 44px targets on a finger, bottom-sheet dialogs, safe-area insets and
 `dvh` layout. Light and dark, six accent palettes. Full details: [web/README.md](web/README.md).
 
+## Landing page and docs
+
+`site/` is the project's landing page and documentation: SvelteKit prerendered to static HTML (every route
+is a real `.html` file, readable with JavaScript off), Tailwind 4 with shadcn-svelte components, and
+scroll-reveal motion that only ever hides content it is about to animate in.
+
+```bash
+cd site && bun install
+bun run dev         # http://127.0.0.1:4320
+bun run build       # prerender every route to site/build
+bun run seo         # audit the built pages: titles, descriptions, canonicals, JSON-LD, alt text, links, sitemap
+bun run browse      # real-browser check at desktop / tablet / phone
+```
+
+The canonical origin comes from `VITE_SITE_URL`, and the base path is derived from it, so links, canonical
+tags and the sitemap cannot disagree. `.github/workflows/site.yml` runs the audits and publishes to GitHub
+Pages on every push to `main` that touches the site. Docs are markdown in `site/src/content/docs/`.
+
 ## Themes
 
 Six palettes — pick one in `/settings` (`Tab` to the theme group): moving the selection repaints
