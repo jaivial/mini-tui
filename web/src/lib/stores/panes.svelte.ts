@@ -38,6 +38,15 @@ const KEY = "minitui.panes";
 const uid = (p: string) => `${p}${Math.random().toString(36).slice(2, 9)}`;
 const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, sideTab: "notes", memory: new PromptMemory(), memoryOf: null });
 
+/** The first pane of a first visit. Any id works; it only has to be unique like every other one. */
+const FIRST = uid("p");
+
+/** The same tree with some pane ids replaced (splits keep theirs). */
+function renameLeaves(node: Node, to: Map<string, string>): Node {
+  if (node.kind === "pane") return to.has(node.id) ? { kind: "pane", id: to.get(node.id)! } : node;
+  return { ...node, a: renameLeaves(node.a, to), b: renameLeaves(node.b, to) };
+}
+
 /** What is written to localStorage for one window: the tree, what each pane shows, where the focus was. */
 interface Saved {
   tree: Node;
@@ -47,9 +56,9 @@ interface Saved {
 
 class PaneStore {
   /** The window on screen: its layout, its panes and where the focus is. Swapped on a window switch. */
-  tree = $state<Node>({ kind: "pane", id: "p1" });
-  panes = $state<Record<string, Pane>>({ p1: blank("p1") });
-  focusedId = $state("p1");
+  tree = $state<Node>({ kind: "pane", id: FIRST });
+  panes = $state<Record<string, Pane>>({ [FIRST]: blank(FIRST) });
+  focusedId = $state(FIRST);
   /** A saved layout was brought back. When not (a first visit), the app opens the latest session. */
   restored = false;
 
@@ -114,9 +123,15 @@ class PaneStore {
 
   // ------------------------------------------------------------ windows
 
-  /** The panes of the window on screen, as a value to shelve (not live state). */
+  /**
+   * The panes of the window on screen, to shelve. The pane objects themselves are kept, never a
+   * `$state.snapshot` of them: a snapshot is a deep plain clone, and it turns each pane's
+   * `PromptMemory` (a class) into a bare object without its methods. Back on screen, the prompt
+   * bar's `memory.push()` then threw before the message was sent, so Send silently did nothing
+   * until a reload. Only the tree, which is plain data, is snapshotted.
+   */
   #hold(): { tree: Node; panes: Record<string, Pane>; focused: string } {
-    return { tree: $state.snapshot(this.tree) as Node, panes: $state.snapshot(this.panes) as Record<string, Pane>, focused: this.focusedId };
+    return { tree: $state.snapshot(this.tree) as Node, panes: { ...this.panes }, focused: this.focusedId };
   }
   /** Put a shelved window back on screen. */
   #unhold(w: { tree: Node; panes: Record<string, Pane>; focused: string }) {
@@ -140,8 +155,9 @@ class PaneStore {
       delete this.#kept[id];
       this.#unhold(kept);
     } else {
-      // A window nobody has filled yet: one empty pane, the way the app starts.
-      const first = blank("p1");
+      // A window nobody has filled yet: one empty pane, the way the app starts. Its id must be new:
+      // pane ids are unique across every window (the lookups below search them all).
+      const first = blank();
       this.tree = { kind: "pane", id: first.id };
       this.panes = { [first.id]: first };
       this.focusedId = first.id;
@@ -265,9 +281,12 @@ class PaneStore {
     if (sessionId) {
       const other = this.paneOf(sessionId);
       if (other && other.id !== paneId) {
+        // Already shown somewhere: go to that pane (switching window first when it is on another one)
+        // and leave the pane you were in exactly as it was. The window's own last focus does not
+        // matter here: the pane showing this session is the one that takes focus.
         const wid = this.windowOf(sessionId);
-        if (wid && wid !== this.#wid) this.switchTo(wid); // it is open on another window: go there
-        else this.focus(other.id);
+        if (wid && wid !== this.#wid) this.switchTo(wid);
+        this.focus(other.id);
         return other.id;
       }
     }
@@ -339,26 +358,35 @@ class PaneStore {
       const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as
         | { v?: number; byWindow?: Record<string, { tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown; sideTab?: unknown }>; focused?: unknown }>; tree?: unknown; panes?: unknown; focused?: unknown }
         | null;
-      if (!raw || !raw.byWindow) return;
+      if (!raw || (!raw.byWindow && raw.v !== 1)) return;
       if (raw.v === 1) raw.byWindow = { [windows.activeId]: { tree: raw.tree, panes: raw.panes as never, focused: raw.focused } }; // the old, one-window format
-      if (raw.v !== 2) return;
+      if (raw.v !== 1 && raw.v !== 2) return;
       let cameBack = false;
-      for (const [wid, one] of Object.entries(raw.byWindow)) {
+      const taken = new Set<string>();
+      for (const [wid, one] of Object.entries(raw.byWindow ?? {})) {
         if (!windows.list.some((w) => w.id === wid)) continue; // a window that is gone takes its panes with it
         const tree = restore(one?.tree);
         if (!tree) continue;
+        // Pane ids must be unique across windows. Layouts saved before that held (every window's
+        // first pane was "p1") get fresh ids for any id another window already took.
+        const renamed = new Map<string, string>();
+        for (const id of leaves(tree)) if (taken.has(id)) renamed.set(id, uid("p"));
+        const fixedTree = renamed.size ? renameLeaves(tree, renamed) : tree;
         const panes: Record<string, Pane> = {};
         for (const id of leaves(tree)) {
           const saved = one?.panes?.[id];
-          panes[id] = { ...blank(id), sessionId: typeof saved?.sessionId === "string" ? saved.sessionId : null, notesOpen: saved?.notesOpen === true, sideTab: saved?.sideTab === "terminal" ? "terminal" : "notes" };
+          const nid = renamed.get(id) ?? id;
+          taken.add(nid);
+          panes[nid] = { ...blank(nid), sessionId: typeof saved?.sessionId === "string" ? saved.sessionId : null, notesOpen: saved?.notesOpen === true, sideTab: saved?.sideTab === "terminal" ? "terminal" : "notes" };
         }
-        const focused = typeof one?.focused === "string" && panes[one.focused] ? one.focused : leaves(tree)[0]!;
+        const savedFocus = typeof one?.focused === "string" ? (renamed.get(one.focused) ?? one.focused) : "";
+        const focused = panes[savedFocus] ? savedFocus : leaves(fixedTree)[0]!;
         cameBack = true; // some saved layout came back: the app must not second-guess it on load
         if (wid === windows.activeId) {
-          this.tree = tree;
+          this.tree = fixedTree;
           this.panes = panes;
           this.focusedId = focused;
-        } else this.#kept[wid] = { tree, panes, focused };
+        } else this.#kept[wid] = { tree: fixedTree, panes, focused };
       }
       if (count(this.tree) !== 1 || this.#wid !== windows.activeId) this.#swapTo(windows.activeId);
       this.restored = cameBack;

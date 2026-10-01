@@ -73,3 +73,33 @@ describe("expanded folders", async () => {
     expect(isExpanded(g(0), { expanded: { "/w": true } })).toBe(true);
   });
 });
+
+describe("live sessions keep their place", () => {
+  const live = (id: string, cwd: string, createdAt: number, updatedAt: number, status = "running") => ({ id, cwd, createdAt, updatedAt, status, title: id }) as any;
+  test("open sessions in a folder are ordered by when they started, not by their last update", async () => {
+    const { byStart } = await import("../web/src/lib/sessionFolders");
+    const a = live("a", "/w", 100, 900);
+    const b = live("b", "/w", 200, 300);
+    // b started last, so it is first, even though a was updated more recently.
+    expect([a, b].sort(byStart).map((s) => s.id)).toEqual(["b", "a"]);
+    // A step in a (its updatedAt moves on) changes nothing.
+    a.updatedAt = 5000;
+    expect([a, b].sort(byStart).map((s) => s.id)).toEqual(["b", "a"]);
+    expect(groupByFolder([a, b], [], [])[0]!.open.map((s) => s.id)).toEqual(["b", "a"]);
+  });
+  test("folders with live sessions do not trade places as those sessions step", () => {
+    const x = live("x", "/x", 100, 900);
+    const y = live("y", "/y", 200, 300);
+    const order = () => groupByFolder([x, y], [], []).map((g) => g.cwd);
+    expect(order()).toEqual(["/y", "/x"]);
+    x.updatedAt = 9999; // a step in /x
+    expect(order()).toEqual(["/y", "/x"]);
+  });
+  test("ties are broken by id, so equal start times still give one order", async () => {
+    const { byStart } = await import("../web/src/lib/sessionFolders");
+    const p = live("p", "/w", 100, 1);
+    const q = live("q", "/w", 100, 2);
+    expect([q, p].sort(byStart).map((s) => s.id)).toEqual(["p", "q"]);
+    expect([p, q].sort(byStart).map((s) => s.id)).toEqual(["p", "q"]);
+  });
+});
