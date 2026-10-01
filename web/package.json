@@ -12,7 +12,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "shots": "bun scripts/screenshots.mjs",
     "e2e": "bun scripts/e2e.mjs",
-    "readme-shots": "bun scripts/readme-shots.mjs"
+    "readme-shots": "bun scripts/readme-shots.mjs",
+    "windows-shots": "bun scripts/windows-shots.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",

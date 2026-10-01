@@ -3,15 +3,15 @@
 export const hero = {
   kicker: "Terminal and browser.",
   title: "The coding agent that runs where you work.",
-  sub: "mini-tui is a fast terminal and web UI for the mini-swe-agent coding agent. Run several sessions at once, stream each over its own WebSocket, keep the agent headless on a server over SSH, and bring your own model keys.",
+  sub: "mini-tui is a fast terminal and web UI for the mini-swe-agent coding agent. Split the screen into panes, group them into windows, and watch every session work at once, on any device. Bring your own model keys.",
 };
 
 export const features = [
   {
     id: "sessions",
-    icon: "layers",
-    title: "Many sessions, one screen",
-    body: "A sidebar of sessions that keep working in the background. Switch to one and its transcript is already current.",
+    icon: "layout-grid",
+    title: "Panes and windows",
+    body: "Up to 12 panes in a window, each its own session, all running at once. As many windows as you like, a status dot per pane.",
   },
   {
     id: "sockets",
@@ -85,6 +85,21 @@ export const agents = {
   ],
 } as const;
 
+/** Panes and windows: the multi-session layout, advertised on the home page. */
+export const workspaceShots = {
+  main: { src: "screens/web-panes.webp", alt: "Four mini-tui sessions side by side in a window called Backend, three of them working; the sidebar lists the Backend, Frontend and Release windows with a status dot per pane", w: 3360, h: 2000 },
+  move: { src: "screens/web-move-pane.webp", alt: "A pane's menu open, offering to move the pane to the Frontend or Release window or to a new window", w: 3360, h: 2000 },
+  phone: { src: "screens/web-phone-windows.webp", alt: "The same windows in the sidebar of a phone", w: 780, h: 1688 },
+};
+export const workspacePoints = [
+  { title: "Split like tmux", body: "Ctrl+\\ splits right, Ctrl+Shift+\\ splits down. Drag a divider to resize. Alt+1 to Alt+0 jump between panes." },
+  { title: "Up to 12 panes in a window", body: "Each pane is a whole chat with its own session, prompt and notes, and every one streams at the same time." },
+  { title: "As many windows as you like", body: "Group panes by project: Backend, Frontend, Release. Rename them, and switch with one click in the sidebar." },
+  { title: "A dot for every pane", body: "Each window row shows its panes as dots: working, done or idle. A finished turn stays marked until you look at it." },
+  { title: "Move a pane anywhere", body: "From a pane's menu, send it to another window or to a new one. Its session keeps running on the way." },
+  { title: "The same on every device", body: "The windows and panes live on the server, so your phone, laptop and a second tab show the same layout, live." },
+] as const;
+
 export const faq = [
   { q: "What is mini-tui?", a: "mini-tui is a terminal and browser interface for the mini-swe-agent coding agent. It shows the agent's thinking, commands and results as they happen, and lets you run several sessions side by side." },
   { q: "Does mini-tui cost anything?", a: "There is no account and no subscription. The source is public on GitHub. You pay only the model provider whose key you connect, if that provider charges for usage." },
@@ -92,6 +107,7 @@ export const faq = [
   { q: "Where do my API keys go?", a: "Keys are stored on the machine running mini-tui, in a file only your user can read. The web API never sends a key back to the browser; it returns a masked hint such as sk-…a1b2." },
   { q: "Can the agent run on a remote server?", a: "Yes. In remote mode the agent runs headless on a server over SSH while the interface stays on your machine. The prompt is passed as a single-quoted literal, so it cannot execute as a command on the server." },
   { q: "Does the web app work on a phone?", a: "Yes. It uses 44px touch targets, bottom-sheet dialogs, safe-area insets and a keyboard-aware prompt bar. Put it behind a reverse proxy with authentication to reach it from other devices." },
+  { q: "Can I run several sessions side by side?", a: "Yes. Split the web app into panes like tmux, up to 12 in a window, each running its own session at the same time. Group panes into as many windows as you like, see a working, done or idle dot for every pane in the sidebar, and move a pane to another window from its menu. The layout is kept on the server, so every device shows the same windows." },
   { q: "Python or Rust: which agent should I use?", a: "The Rust agent, unless you need a Python-only extension. It is a port of the same runner as one static binary: it starts in under a millisecond instead of about 65 ms and holds about 4.5 MB per waiting session instead of about 36 MB. It needs no Python. Both read the same configs and write the same trajectories, and a parity suite checks that they behave the same." },
   { q: "How is it different from the terminal UI?", a: "They are the same agent and share the same session history, so a session started in one shows up in the other. The web app adds a sidebar of concurrent sessions and remote hosts; the terminal UI is lighter and needs no browser." },
 ] as const;

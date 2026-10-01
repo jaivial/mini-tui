@@ -1,6 +1,6 @@
 ---
 title: The web app
-description: Run mini-tui in a browser: several sessions at once, one WebSocket per session, draft chats, command and skill chips, a model switcher, and phone support.
+description: Run mini-tui in a browser: panes and windows of sessions running at once, the same layout on every device, chips, a model switcher, and phone support.
 section: Web app
 order: 3
 ---
@@ -32,6 +32,8 @@ and asks for a fresh snapshot if a frame does not line up.
 
 ## Panes and windows
 
+![Four sessions side by side in a window called Backend, with the Backend, Frontend and Release windows in the sidebar](/screens/web-panes.webp#3360x2000)
+
 Split the screen into **panes** like tmux, each with its own session running at the same time: `Ctrl+\`
 splits right and `Ctrl+Shift+\` splits down. Then:
 
@@ -45,7 +47,10 @@ window row shows:
 - a **New window** button;
 - a pencil to rename it.
 
-Any pane can move to another window, or to a new one, from its pane menu. Clicking a session that a pane
+Any pane can move to another window, or to a new one, from its pane menu.
+
+![A pane's menu, offering to move the pane to the Frontend or Release window or to a new one](/screens/web-move-pane.webp#3360x2000)
+ Clicking a session that a pane
 already shows takes you to that pane, switching window if needed.
 
 ## The same on every device

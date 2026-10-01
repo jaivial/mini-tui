@@ -137,9 +137,28 @@ The agent behind all three is the bundled Python mini-swe-agent, or its
 
 ## Web app
 
-The same agent, in a browser: a sidebar for running **several sessions at once**, live streaming over
-**one WebSocket per session**, and a remote mode that keeps the agent **headless on a server over SSH**
-while the UI stays on your machine.
+The same agent, in a browser, with **every session running at once in panes and windows**:
+
+- split the screen like tmux, up to **12 panes in a window**;
+- group panes into as many **windows** as you like, each with a working, done or idle dot per pane in the sidebar;
+- move any pane to another window from its menu;
+- keep the same layout on **every device** (it lives on the server).
+
+Each session streams over **its own WebSocket**, and a remote mode keeps the agent **headless on a server
+over SSH** while the UI stays on your machine.
+
+![mini-tui web app: four sessions side by side in a window called Backend, three of them working; the sidebar lists the Backend, Frontend and Release windows with a status dot per pane](docs/screenshots/web-panes.webp)
+
+<table>
+<tr>
+<td width="72%"><img src="docs/screenshots/web-move-pane.webp" alt="A pane's menu, offering to move the pane to the Frontend or Release window or to a new one"></td>
+<td width="28%"><img src="docs/screenshots/web-phone-windows.webp" alt="The same windows in the sidebar of a phone"></td>
+</tr>
+<tr>
+<td>Move a pane to another window, or to a new one.</td>
+<td>The same windows on a phone.</td>
+</tr>
+</table>
 
 ![mini-tui web app: a running session with a thinking receipt, a command and its result, and the answer](docs/screenshots/web-chat.webp)
 

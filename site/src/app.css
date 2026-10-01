@@ -138,4 +138,5 @@
 .prose-mt th { color: var(--foreground); font-weight: 600; }
 .prose-mt blockquote { border-left: 2px solid var(--primary); padding-left: 1rem; margin: 1rem 0; }
 .prose-mt strong { color: var(--foreground); font-weight: 600; }
+.prose-mt .doc-img { display: block; width: 100%; height: auto; margin: 1.25rem 0; border: 1px solid var(--border); border-radius: var(--radius); }
 .prose-mt kbd { font-family: var(--font-mono); font-size: 0.8em; border: 1px solid var(--border); background: var(--muted); border-radius: 5px; padding: 0.05rem 0.4rem; }
