@@ -2,6 +2,22 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.24.0 — 2026-10-01
+
+### Added
+
+- **A status dot for every pane on the sidebar's window rows**, in reading order:
+  - **live** (pulsing): the pane's session is working.
+  - **done** (solid green, red for an error): a turn that pane saw running has finished, and the pane
+    has not been clicked since. The first click on that pane turns it idle. Switching to its window
+    alone does not.
+  - **idle** (an empty ring): a new chat, a waiting session, an interrupted turn (your own doing), or
+    a finished turn already looked at.
+
+  It works for windows off screen too, and a "done" survives a reload. Each dot has its state in
+  words (a tooltip, and the row's screen-reader label). Up to six dots go in a row, so a 12-pane
+  window takes two rows and its name still has room.
+
 ## 0.23.3 — 2026-10-01
 
 ### Fixed

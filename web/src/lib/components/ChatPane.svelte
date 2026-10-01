@@ -22,6 +22,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
   import { api } from "../api";
   import { parseCommand } from "../completion";
   import { splitSent } from "../promptMemory";
+  import { paneStatus } from "../paneStatus";
 
   /**
    * One pane: a chat (a session, or a new chat until its first message) with its own header, transcript,
@@ -312,7 +313,11 @@ import { windows as windowStore } from "../stores/windows.svelte";
   aria-current={focused && total > 1 ? "true" : undefined}
   data-pane={pane.id}
   onfocusin={() => panes.focus(pane.id)}
-  onpointerdown={() => panes.focus(pane.id)}
+  onpointerdown={() => {
+    panes.focus(pane.id);
+    // The first click after a turn finished: its "done" dot in the sidebar turns "idle".
+    if (paneStatus(session, pane) === "done") panes.acknowledge(pane.id);
+  }}
 >
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
     {#if session}

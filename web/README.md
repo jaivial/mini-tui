@@ -109,7 +109,8 @@ starts with a slash goes to the agent unchanged; a bare unknown word (`/modle`) 
 On touch there are `/` and `$` buttons, since a phone keyboard buries both characters.
 
 **Windows** (tmux style). The screen shows one window at a time; each holds its own panes. The sidebar lists
-them with a pane count and has a **New window** button, a pencil renames one (nothing goes back to "Window 3"),
+them with a pane count and a status dot per pane (live while it works; done when a turn it was
+running finishes, until you click that pane; idle otherwise), and has a **New window** button, a pencil renames one (nothing goes back to "Window 3"),
 and any pane can move to another window or to a new one from its pane menu — its session, its tab and its
 notes go with it, the window it leaves folds if that was its last pane, and the app follows the pane. A new
 window starts empty. Switching window swaps the panes over, a half-typed prompt included, and the sessions of
