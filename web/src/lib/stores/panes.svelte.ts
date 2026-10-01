@@ -32,11 +32,14 @@ export interface Pane {
   memory: PromptMemory;
   /** The session the memory was seeded from, so it is reseeded when the pane shows another one. */
   memoryOf: string | null;
+  /** The last turn (`startedAt`) this pane saw running, and the last one it acknowledged (a click). See `paneStatus`. */
+  liveTurn: number | null;
+  seenTurn: number | null;
 }
 
 const KEY = "minitui.panes";
 const uid = (p: string) => `${p}${Math.random().toString(36).slice(2, 9)}`;
-const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, sideTab: "notes", memory: new PromptMemory(), memoryOf: null });
+const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, sideTab: "notes", memory: new PromptMemory(), memoryOf: null, liveTurn: null, seenTurn: null });
 
 /** The first pane of a first visit. Any id works; it only has to be unique like every other one. */
 const FIRST = uid("p");
@@ -50,7 +53,7 @@ function renameLeaves(node: Node, to: Map<string, string>): Node {
 /** What is written to localStorage for one window: the tree, what each pane shows, where the focus was. */
 interface Saved {
   tree: Node;
-  panes: Record<string, { sessionId: string | null; notesOpen: boolean; sideTab: "notes" | "terminal" }>;
+  panes: Record<string, { sessionId: string | null; notesOpen: boolean; sideTab: "notes" | "terminal"; liveTurn?: number | null; seenTurn?: number | null }>;
   focused: string;
 }
 
@@ -101,6 +104,42 @@ class PaneStore {
   dropWindow(id: string) {
     delete this.#kept[id];
     if (this.#wid !== id) this.#save();
+  }
+
+  /** The panes of a window in reading order, on screen or shelved: what the sidebar's dots read. */
+  panesIn(id: string): Pane[] {
+    const set = id === this.#wid ? { tree: this.tree, panes: this.panes } : this.#kept[id];
+    return set ? leaves(set.tree).map((p) => set.panes[p]).filter((p): p is Pane => !!p) : [];
+  }
+
+  /**
+   * Record that a pane's session is running turn `startedAt`. The app feeds every running session it
+   * sees, so a finish later shows as "done" on every pane that was showing it, in any window.
+   */
+  noteRunning(sessionId: string, startedAt: number) {
+    let changed = false;
+    for (const set of [{ panes: this.panes }, ...Object.values(this.#kept)]) {
+      for (const p of Object.values(set.panes)) {
+        if (p.sessionId === sessionId && p.liveTurn !== startedAt) {
+          p.liveTurn = startedAt;
+          changed = true;
+        }
+      }
+    }
+    // Saved, so a turn that finishes while the page is closed still shows "done" when it reopens.
+    if (changed) this.#saveSoon();
+  }
+
+  /**
+   * The first click on a pane whose turn is "done": it becomes "idle". The caller checks that the
+   * pane is "done" first; a click while the session is still running acknowledges nothing.
+   */
+  acknowledge(paneId: string) {
+    const pane = this.panes[paneId];
+    if (pane && pane.liveTurn !== null && pane.seenTurn !== pane.liveTurn) {
+      pane.seenTurn = pane.liveTurn;
+      this.#save();
+    }
   }
 
   /** How many panes a window holds, on screen or shelved. */
@@ -296,6 +335,9 @@ class PaneStore {
       pane.sessionId = sessionId;
       pane.prompt = "";
       pane.chips = [];
+      // Another conversation: a finish seen for the old one means nothing for this one.
+      pane.liveTurn = null;
+      pane.seenTurn = null;
       if (!sessionId) pane.draft = { targetId: "local", model: "", cwd: "" };
     }
     this.focus(paneId);
@@ -340,7 +382,7 @@ class PaneStore {
     this.#timer = setTimeout(() => this.#save(), 250);
   }
   #one(tree: Node, panes: Record<string, Pane>, focused: string): Saved {
-    return { tree: $state.snapshot(tree) as Node, panes: Object.fromEntries(Object.entries(panes).map(([id, p]) => [id, { sessionId: p.sessionId, notesOpen: p.notesOpen, sideTab: p.sideTab }])), focused };
+    return { tree: $state.snapshot(tree) as Node, panes: Object.fromEntries(Object.entries(panes).map(([id, p]) => [id, { sessionId: p.sessionId, notesOpen: p.notesOpen, sideTab: p.sideTab, liveTurn: p.liveTurn, seenTurn: p.seenTurn }])), focused };
   }
   #save() {
     try {
@@ -356,7 +398,7 @@ class PaneStore {
   #load() {
     try {
       const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as
-        | { v?: number; byWindow?: Record<string, { tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown; sideTab?: unknown }>; focused?: unknown }>; tree?: unknown; panes?: unknown; focused?: unknown }
+        | { v?: number; byWindow?: Record<string, { tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown; sideTab?: unknown; liveTurn?: unknown; seenTurn?: unknown }>; focused?: unknown }>; tree?: unknown; panes?: unknown; focused?: unknown }
         | null;
       if (!raw || (!raw.byWindow && raw.v !== 1)) return;
       if (raw.v === 1) raw.byWindow = { [windows.activeId]: { tree: raw.tree, panes: raw.panes as never, focused: raw.focused } }; // the old, one-window format
@@ -377,7 +419,15 @@ class PaneStore {
           const saved = one?.panes?.[id];
           const nid = renamed.get(id) ?? id;
           taken.add(nid);
-          panes[nid] = { ...blank(nid), sessionId: typeof saved?.sessionId === "string" ? saved.sessionId : null, notesOpen: saved?.notesOpen === true, sideTab: saved?.sideTab === "terminal" ? "terminal" : "notes" };
+          const turn = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+          panes[nid] = {
+            ...blank(nid),
+            sessionId: typeof saved?.sessionId === "string" ? saved.sessionId : null,
+            notesOpen: saved?.notesOpen === true,
+            sideTab: saved?.sideTab === "terminal" ? "terminal" : "notes",
+            liveTurn: turn(saved?.liveTurn),
+            seenTurn: turn(saved?.seenTurn),
+          };
         }
         const savedFocus = typeof one?.focused === "string" ? (renamed.get(one.focused) ?? one.focused) : "";
         const focused = panes[savedFocus] ? savedFocus : leaves(fixedTree)[0]!;

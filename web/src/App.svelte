@@ -15,6 +15,7 @@
   import { store } from "./lib/stores/sessions.svelte";
   import { panes } from "./lib/stores/panes.svelte";
 import { windows } from "./lib/stores/windows.svelte";
+  import { paneStatus, statusLabel } from "./lib/paneStatus";
   import { ui } from "./lib/stores/ui.svelte";
   import { toasts } from "./lib/stores/toast.svelte";
   import { api } from "./lib/api";
@@ -128,6 +129,11 @@ import { windows } from "./lib/stores/windows.svelte";
 
   // ---- "Session finished" toasts, with View to open it.
   const finishes = new FinishWatcher();
+  // Every running turn is noted on the panes that show it, so its finish can show as "done" on the
+  // window rows' dots (in this window or another) until that pane is clicked.
+  $effect(() => {
+    for (const s of Object.values(store.sessions)) if (s.status === "running") untrack(() => panes.noteRunning(s.id, s.startedAt));
+  });
   $effect(() => {
     for (const s of Object.values(store.sessions)) {
       const finish = finishes.observe(s.id, s.status, s.startedAt);
@@ -272,7 +278,21 @@ import { windows } from "./lib/stores/windows.svelte";
   /** Where a pane can go: the other windows, and a new one. */
   const moveTargets = $derived(windows.list.filter((w) => w.id !== windows.activeId).map((w) => ({ id: w.id, label: windows.label(w.id, (wid) => panes.paneCount(wid)) })));
   /** The sidebar's window list: name or number, pane count, and which is on screen. */
-  const windowRows = $derived(windows.list.map((w) => ({ id: w.id, label: windows.label(w.id, (wid) => panes.paneCount(wid)), name: w.name, panes: panes.paneCount(w.id), active: w.id === windows.activeId })));
+  const windowRows = $derived(
+    windows.list.map((w) => ({
+      id: w.id,
+      label: windows.label(w.id, (wid) => panes.paneCount(wid)),
+      name: w.name,
+      panes: panes.paneCount(w.id),
+      active: w.id === windows.activeId,
+      // One dot per pane, in reading order: live, done (until clicked) or idle.
+      dots: panes.panesIn(w.id).map((p) => {
+        const s = p.sessionId ? store.sessions[p.sessionId] : null;
+        const status = paneStatus(s, p);
+        return { id: p.id, status, label: `${s?.title || "New chat"}: ${statusLabel(status, s?.status === "error")}`, error: status === "done" && s?.status === "error" };
+      }),
+    })),
+  );
   /** Another window on screen: these panes are shelved with their prompts, that window's come back. */
   function switchWindow(id: string) {
     if (id === windows.activeId) return;

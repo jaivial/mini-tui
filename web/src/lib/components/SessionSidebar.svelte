@@ -55,7 +55,15 @@
     /** A saved session being opened right now. */
     openingId?: string;
     /** Every window, in order, with its pane count and which is on screen. */
-    windows?: { id: string; label: string; name: string | null; panes: number; active: boolean }[];
+    windows?: {
+      id: string;
+      label: string;
+      name: string | null;
+      panes: number;
+      active: boolean;
+      /** One per pane, in reading order. */
+      dots?: { id: string; status: "live" | "done" | "idle"; label: string; error?: boolean }[];
+    }[];
     /** Show a window. */
     onwindow?: (id: string) => void;
     /** Start a new, empty window. */
@@ -320,7 +328,24 @@
               >
                 <AppWindow size={12} strokeWidth={1.75} class="shrink-0 {w.active ? 'text-brand' : 'text-ink-faint'}" aria-hidden="true" />
                 <span class="min-w-0 flex-1 truncate text-[12px] leading-4">{w.label}</span>
-                {#if w.active}<span class="pulse-live size-1.5 shrink-0 rounded-full bg-brand" aria-label="on screen"></span>{/if}
+                {#if w.dots?.length}
+                  <!--
+                    One dot per pane, in reading order, six to a row (12 panes make two rows, so the name
+                    keeps its room). Shape carries the state as well as colour: live pulses, done is
+                    solid (green, or red for an error), idle is an empty ring.
+                  -->
+                  <span class="pane-dots grid shrink-0 place-items-center gap-[3px]" style="grid-template-columns: repeat({Math.min(w.dots.length, 6)}, 7px)" role="img" aria-label="Panes: {w.dots.map((d, i) => `${i + 1} ${d.label}`).join(', ')}">
+                    {#each w.dots as d (d.id)}
+                      <span
+                        class="dot size-[7px] shrink-0 rounded-full"
+                        data-status={d.status}
+                        class:pulse-live={d.status === "live"}
+                        class:is-error={d.error}
+                        title={d.label}
+                      ></span>
+                    {/each}
+                  </span>
+                {/if}
                 <span class="tnum shrink-0 rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="{w.panes} {w.panes === 1 ? 'pane' : 'panes'}">{w.panes}</span>
               </button>
               <button
@@ -549,3 +574,25 @@
     </button>
   </div>
 </aside>
+
+<style>
+  /* Pane status dots on the window rows. Shape carries the state as well as colour. */
+  .dot {
+    transition-property: background-color, box-shadow;
+    transition-duration: 150ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  .dot[data-status="live"] {
+    background: var(--color-brand);
+  }
+  .dot[data-status="done"] {
+    background: var(--color-ok);
+  }
+  .dot[data-status="done"].is-error {
+    background: var(--color-err);
+  }
+  .dot[data-status="idle"] {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.25px var(--color-ink-faint);
+  }
+</style>

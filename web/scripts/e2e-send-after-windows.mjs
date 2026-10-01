@@ -183,6 +183,50 @@ try {
   // Rows may leave as runs finish; the ones still live never change places.
   const kept = (r) => r.filter((t) => full.every((x) => x.includes(t)));
   check("...and they hold one order while they stream", full.every((r) => JSON.stringify(kept(r)) === JSON.stringify(kept(full[0]))), JSON.stringify(full.map((r) => r.join(","))));
+  // ---- 5. a status dot per pane on each window row: live, done until clicked, idle
+  const dots = (w) => sidebar.getByRole("radio", { name: new RegExp(w) }).locator(".dot").evaluateAll((els) => els.map((e) => e.dataset.status));
+  // Window 2 is on screen. Start a run in its pane 2 and one in window 1's pane 1 (off screen later).
+  await sidebar.getByRole("radio", { name: /Window 1/ }).click();
+  await page.waitForTimeout(500); // the earlier runs have finished by now (held 4 s each)
+  for (let t = 0; t < 20 && (await dots("Window 1")).includes("live"); t++) await page.waitForTimeout(300);
+  for (const p of [0, 1]) await panes().nth(p).click({ position: { x: 40, y: 80 } }); // clear any "done"
+  await sidebar.getByRole("radio", { name: /Window 2/ }).click();
+  await page.waitForTimeout(300);
+  for (let t = 0; t < 20 && (await dots("Window 2")).includes("live"); t++) await page.waitForTimeout(300);
+  for (const p of [0, 1]) await panes().nth(p).click({ position: { x: 40, y: 80 } });
+  await page.waitForTimeout(300);
+  check("each window row has one dot per pane, idle when nothing runs", JSON.stringify(await dots("Window 1")) === '["idle","idle"]' && JSON.stringify(await dots("Window 2")) === '["idle","idle"]', `${JSON.stringify(await dots("Window 1"))} ${JSON.stringify(await dots("Window 2"))}`);
+  await panes().nth(1).getByLabel("Prompt").fill("dot test here");
+  await panes().nth(1).getByRole("button", { name: "Send message" }).click();
+  await sidebar.getByRole("radio", { name: /Window 1/ }).click();
+  await page.waitForTimeout(300);
+  await panes().nth(0).getByLabel("Prompt").fill("dot test off screen");
+  await panes().nth(0).getByRole("button", { name: "Send message" }).click();
+  await page.waitForTimeout(600);
+  check("a running pane is live, in this window and in the one off screen", JSON.stringify(await dots("Window 1")) === '["live","idle"]' && JSON.stringify(await dots("Window 2")) === '["idle","live"]', `${JSON.stringify(await dots("Window 1"))} ${JSON.stringify(await dots("Window 2"))}`);
+  const liveDot = sidebar.getByRole("radio", { name: /Window 1/ }).locator(".dot").first();
+  check("...the live dot says what it is in words too", /working/.test((await liveDot.getAttribute("title")) ?? "") && /working/.test((await sidebar.getByRole("radio", { name: /Window 1/ }).locator(".pane-dots").getAttribute("aria-label")) ?? ""));
+  await page.waitForTimeout(4500); // both runs end (held 4 s)
+  check("when a run ends its pane is done, in both windows", JSON.stringify(await dots("Window 1")) === '["done","idle"]' && JSON.stringify(await dots("Window 2")) === '["idle","done"]', `${JSON.stringify(await dots("Window 1"))} ${JSON.stringify(await dots("Window 2"))}`);
+  await page.reload();
+  await page.waitForTimeout(1500);
+  check("...and still done after a reload", JSON.stringify(await dots("Window 1")) === '["done","idle"]' && JSON.stringify(await dots("Window 2")) === '["idle","done"]', `${JSON.stringify(await dots("Window 1"))} ${JSON.stringify(await dots("Window 2"))}`);
+  await panes().nth(1).click({ position: { x: 40, y: 80 } }); // window 1, the other pane: not the done one
+  await page.waitForTimeout(200);
+  check("clicking another pane leaves it done", JSON.stringify(await dots("Window 1")) === '["done","idle"]', JSON.stringify(await dots("Window 1")));
+  await panes().nth(0).click({ position: { x: 40, y: 80 } });
+  await page.waitForTimeout(200);
+  check("the first click on the done pane turns it idle", JSON.stringify(await dots("Window 1")) === '["idle","idle"]', JSON.stringify(await dots("Window 1")));
+  check("...and the other window's done pane waits for its own click", JSON.stringify(await dots("Window 2")) === '["idle","done"]', JSON.stringify(await dots("Window 2")));
+  await sidebar.getByRole("radio", { name: /Window 2/ }).click();
+  await page.waitForTimeout(300);
+  check("switching to that window alone does not clear it", JSON.stringify(await dots("Window 2")) === '["idle","done"]', JSON.stringify(await dots("Window 2")));
+  await panes().nth(1).click({ position: { x: 40, y: 80 } });
+  await page.waitForTimeout(200);
+  check("...its first click does", JSON.stringify(await dots("Window 2")) === '["idle","idle"]', JSON.stringify(await dots("Window 2")));
+  await page.reload();
+  await page.waitForTimeout(1500);
+  check("...and an acknowledged pane stays idle after a reload", JSON.stringify(await dots("Window 2")) === '["idle","idle"]' && JSON.stringify(await dots("Window 1")) === '["idle","idle"]', `${JSON.stringify(await dots("Window 1"))} ${JSON.stringify(await dots("Window 2"))}`);
   await ctx.close();
 
   // ---- 4. a layout saved before pane ids were unique (every window's first pane was "p1")
@@ -210,6 +254,43 @@ try {
   check("an old layout with \"p1\" in two windows comes back whole", JSON.stringify(onB) === JSON.stringify(["Gamma task", "Delta task"]) && JSON.stringify(onA) === JSON.stringify(["Alpha task", "Beta task"]), `${JSON.stringify(onB)} / ${JSON.stringify(onA)}`);
   check("...and its panes now have ids no other window uses", new Set([...idsA, ...idsB]).size === idsA.length + idsB.length, JSON.stringify([idsA, idsB]));
   await ctx3.close();
+
+  // ---- 6. dot rows stay tidy: 12 panes in a window, and a phone
+  const ctx4 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await ctx4.addInitScript(() => {
+    if (localStorage.getItem("minitui.seeded")) return;
+    localStorage.setItem("minitui.seeded", "1");
+    let tree = { kind: "pane", id: "q1" };
+    const panes = { q1: { sessionId: null } };
+    for (let i = 2; i <= 12; i++) {
+      tree = { kind: "split", id: `t${i}`, dir: i % 2 ? "row" : "col", ratio: 0.5, a: tree, b: { kind: "pane", id: `q${i}` } };
+      panes[`q${i}`] = { sessionId: null };
+    }
+    localStorage.setItem("minitui.windows", JSON.stringify({ v: 1, list: [{ id: "wz", name: "Busy" }, { id: "wy", name: null }], active: "wy" }));
+    localStorage.setItem("minitui.panes", JSON.stringify({ v: 2, byWindow: { wz: { tree, panes, focused: "q1" }, wy: { tree: { kind: "pane", id: "y1" }, panes: { y1: { sessionId: null } }, focused: "y1" } } }));
+  });
+  const big = await ctx4.newPage();
+  await big.goto(base);
+  await big.waitForTimeout(1500);
+  const busy = big.locator("aside").getByRole("radio", { name: /Busy/ });
+  const n = await busy.locator(".dot").count();
+  const rowBox = await busy.boundingBox();
+  const dotsBox = await busy.locator(".pane-dots").boundingBox();
+  const labelBox = await busy.locator("span.truncate").boundingBox();
+  check("a 12-pane window shows 12 dots inside its row", n === 12 && dotsBox.x + dotsBox.width <= rowBox.x + rowBox.width + 0.5 && dotsBox.y >= rowBox.y - 0.5 && dotsBox.y + dotsBox.height <= rowBox.y + rowBox.height + 0.5, JSON.stringify({ n, rowBox, dotsBox }));
+  check("...and the window's name keeps room to be read", labelBox.width >= 40, JSON.stringify(labelBox));
+  await ctx4.close();
+  const ctx5 = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const phone = await ctx5.newPage();
+  await phone.goto(base);
+  await phone.waitForTimeout(1200);
+  await phone.locator('button[aria-label="Toggle sidebar"]').first().click();
+  await phone.waitForTimeout(500);
+  const prow = phone.locator("aside").getByRole("radio").first();
+  const pd = await prow.locator(".pane-dots").boundingBox();
+  const pr = await prow.boundingBox();
+  check("on a phone the dots sit inside the 44px row", !!pd && pd.y >= pr.y && pd.y + pd.height <= pr.y + pr.height && pr.height >= 44, JSON.stringify({ pd, pr }));
+  await ctx5.close();
 } catch (e) {
   console.log("THREW", e);
   failed++;
