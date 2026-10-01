@@ -10,6 +10,15 @@
     { src: "/screens/web-model-picker.webp", alt: "The model switcher open above the prompt bar, grouped by provider", title: "A model switcher that keeps up", body: "Search, arrow keys and Enter. Grouped by provider, and a model that is not listed can be typed." },
     { src: "/screens/web-settings-providers.webp", alt: "Settings, Providers tab: connected providers with masked keys", title: "Providers, tested before saved", body: "A key is checked with one real request first, then stored on your machine. The browser only ever sees a masked hint." },
   ];
+  // What the web app gained after the screenshots above were taken (0.20 to 0.26).
+  const recent = [
+    { title: "Windows of panes", body: "Up to 12 panes in a window, as many windows as you like. Move any pane to another window, or to a new one." },
+    { title: "One workspace everywhere", body: "Your windows, panes and sidebar are kept on the server: a phone, a laptop and a second tab all show the same thing, live." },
+    { title: "A status dot per pane", body: "Working, done or idle, on each window row in the sidebar. A finished turn stays marked until you click its pane." },
+    { title: "Notes and a terminal", body: "Every pane has a side panel with notes that save as you type, and a real shell in the session's folder." },
+    { title: "The Rust agent", body: "One static binary behind every session: under a millisecond to start, about 4.5 MB per waiting session." },
+    { title: "sudo where you need it", body: "Agents and the terminal can run sudo under the account's own rules, the same as in the terminal UI." },
+  ] as const;
   const phone = [
     { src: "/screens/web-phone-chat.webp", alt: "mini-tui on a phone showing a session transcript and the prompt bar" },
     { src: "/screens/web-phone-sessions.webp", alt: "The sessions drawer open on a phone" },
@@ -21,16 +30,16 @@
     path: "/web-app/",
     title: "The mini-tui web app",
     description: "A browser UI for the mini-swe-agent coding agent: several sessions at once, one WebSocket each, draft chats, command and skill chips, a model switcher, and a phone layout.",
-    modified: "2026-09-29",
+    modified: "2026-10-01",
     crumbs: [{ name: "Home", path: "/" }, { name: "Web app", path: "/web-app/" }],
   }}
 />
 
-<div class="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
+<div class="mx-auto max-w-7xl 2xl:max-w-[90rem] px-4 py-16 sm:px-6 sm:py-24">
   <div class="mx-auto max-w-3xl text-center">
     <h1 class="text-4xl font-semibold tracking-tight sm:text-5xl">The agent, in your browser</h1>
     <p class="mt-4 text-lg text-muted-foreground">The same agent and the same session history as the terminal UI, with a sidebar of sessions that keep working while you look at another.</p>
-    <div class="mt-8 flex justify-center gap-3">
+    <div class="mt-8 flex flex-wrap justify-center gap-3">
       <Button size="lg" href={resolve("/docs/web-app/")}>Read the guide</Button>
       <Button size="lg" variant="outline" href={resolve("/docs/install/")}>Install</Button>
     </div>
@@ -50,8 +59,20 @@
     {/each}
   </ul>
 
+  <section aria-labelledby="recent-h" class="mt-24">
+    <h2 id="recent-h" class="text-center text-3xl font-semibold tracking-tight">New since these screenshots</h2>
+    <ul use:reveal={{ children: true }} class="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {#each recent as r (r.title)}
+        <li class="min-w-0 rounded-xl border bg-card p-5">
+          <h3 class="font-semibold">{r.title}</h3>
+          <p class="mt-1.5 text-sm text-muted-foreground">{r.body}</p>
+        </li>
+      {/each}
+    </ul>
+  </section>
+
   <section aria-labelledby="phone-h" class="mt-24 grid items-center gap-10 md:grid-cols-2">
-    <div>
+    <div class="min-w-0">
       <h2 id="phone-h" class="text-3xl font-semibold tracking-tight">Made for a phone, too</h2>
       <p class="mt-3 text-muted-foreground">44px touch targets, dialogs that rise as bottom sheets, safe-area insets and a layout that tracks the visible viewport. The prompt bar grows a line at a time and never covers the keyboard.</p>
       <ul class="mt-5 space-y-2 text-sm text-muted-foreground">
@@ -60,9 +81,9 @@
         <li>Keyboard and screen-reader friendly</li>
       </ul>
     </div>
-    <ul class="flex justify-center gap-4">
+    <ul class="flex min-w-0 justify-center gap-3 sm:gap-4">
       {#each phone as p (p.src)}
-        <li class="w-40 overflow-hidden rounded-[1.75rem] border bg-card sm:w-48"><img src={asset(p.src)} alt={p.alt} width="780" height="1688" loading="lazy" decoding="async" class="block h-auto w-full" /></li>
+        <li class="w-[min(10rem,calc(50%-0.375rem))] overflow-hidden rounded-[1.75rem] border bg-card sm:w-48"><img src={asset(p.src)} alt={p.alt} width="780" height="1688" loading="lazy" decoding="async" class="block h-auto w-full" /></li>
       {/each}
     </ul>
   </section>

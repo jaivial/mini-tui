@@ -2,12 +2,13 @@
  * The docs, read from `src/content/docs/*.md` at build time (Vite `import.meta.glob`, so they are bundled
  * and prerendered: nothing touches the filesystem at request time). Vite-only; the pure logic is `docs.ts`.
  */
+import { base } from "$app/paths";
 import { buildDoc, docSections as sections, neighbours as near, type Doc } from "./docs";
 
 const files = import.meta.glob("../content/docs/*.md", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
 export const docs: Doc[] = Object.entries(files)
-  .map(([path, source]) => buildDoc(path.split("/").pop()!.replace(/\.md$/, ""), source))
+  .map(([path, source]) => buildDoc(path.split("/").pop()!.replace(/\.md$/, ""), source, base))
   .sort((a, b) => a.order - b.order || a.slug.localeCompare(b.slug));
 
 export const docBySlug = (slug: string): Doc | undefined => docs.find((d) => d.slug === slug);

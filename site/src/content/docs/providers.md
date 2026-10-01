@@ -2,7 +2,7 @@
 title: Providers and models
 description: Bring your own model keys to mini-tui: supported providers, how a key is tested and stored, how a model is chosen, and which key each run receives.
 section: Use it
-order: 6
+order: 7
 ---
 
 mini-tui talks to models directly, with no proxy layer in between. You bring the key.

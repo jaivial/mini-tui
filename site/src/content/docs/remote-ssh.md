@@ -2,7 +2,7 @@
 title: Run the agent over SSH
 description: Keep the coding agent headless on a server while the mini-tui web UI stays on your machine. How remote hosts work and how the prompt travels safely over ssh.
 section: Web app
-order: 3
+order: 4
 ---
 
 Remote mode keeps the **agent headless on a server** while the UI stays on your machine. Use it to run on a

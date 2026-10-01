@@ -2,6 +2,34 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.26.1 — 2026-10-01
+
+### Site
+
+- **Python or Rust.** A new guide (`/docs/rust-agent/`) and a section on the home page compare the two
+  agents. The numbers were measured on one box with the parity suite's `basic` task, median of five runs:
+  - 0.7 ms vs 65 ms to start;
+  - 51 ms vs 661 ms per scripted turn;
+  - 4.5 MB vs 35.7 MB per waiting session.
+
+  The guide also covers what the Rust agent ports and how parity is kept. **Rust agent** is in the header.
+- **Install the Rust agent in one command.** The install guide and the home page download the static
+  binary to `~/.local/lib/mini-tui/`, where mini-tui finds it, and show how to verify it against
+  `SHA256SUMS` or build it from source.
+- The web-app page and guide now cover what came after 0.19: windows of panes, one workspace on every
+  device, the status dots, notes and the terminal, the Rust agent, and `sudo`. The version badge says
+  0.26.
+- **Mobile and width fixes.**
+  - The home page scrolled sideways on every phone: the install steps' code could not shrink, so the page
+    was 552 px wide on a 390 px screen. The web-app page did the same at 320 px.
+  - Long commands now wrap on a phone instead of hiding off the edge.
+  - The page container is wider (1280 px, 1440 px on very wide screens), and the docs column grew from
+    608 px to 704 to 864 px, so wide screens are no longer mostly empty.
+  - The comparison is a table where there is room and labelled cards on a phone.
+- Markdown links between docs pages now get the site's base path, so they work on GitHub Pages.
+- `bun run layout`: a width audit of every page at 320 to 1440 px that fails on sideways scroll, on
+  anything wider than the screen, or on a squeezed column.
+
 ## 0.26.0 — 2026-10-01
 
 ### Added

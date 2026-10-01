@@ -2,7 +2,7 @@
 import { docs } from "./docs-data";
 import type { SitemapEntry } from "./seo";
 
-const MODIFIED = "2026-09-29";
+const MODIFIED = "2026-10-01";
 
 export const pages: SitemapEntry[] = [
   { path: "/", priority: 1, changefreq: "weekly", modified: MODIFIED },

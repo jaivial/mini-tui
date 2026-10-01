@@ -2,7 +2,7 @@
 title: Commands and skills
 description: Slash commands and $skills in mini-tui: what each command does, how skills are matched, how they reach the agent, and where they live on disk.
 section: Use it
-order: 4
+order: 5
 ---
 
 ## Commands

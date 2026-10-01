@@ -47,7 +47,11 @@ export function parseFrontMatter(source: string): { data: Record<string, string>
   return { data, body: source.slice(m[0].length) };
 }
 
-export function render(body: string): { html: string; headings: Heading[] } {
+/**
+ * `base` is the site's base path (`/mini-tui` on GitHub Pages). Markdown links to a page of this site
+ * are written from the root (`/docs/install/`), so they read the same in the repo; they get the base here.
+ */
+export function render(body: string, base = ""): { html: string; headings: Heading[] } {
   const md = new MarkdownIt({ html: false, linkify: true, typographer: false });
   const headings: Heading[] = [];
   const used = new Map<string, number>();
@@ -71,15 +75,16 @@ export function render(body: string): { html: string; headings: Heading[] } {
   md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
     const href = String(tokens[idx]!.attrGet("href") ?? "");
     if (/^https?:\/\//.test(href)) tokens[idx]!.attrSet("rel", "noopener");
+    else if (base && href.startsWith("/") && !href.startsWith("//") && !href.startsWith(`${base}/`)) tokens[idx]!.attrSet("href", `${base}${href}`);
     return defaultLink ? defaultLink(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
   };
   return { html: md.render(body), headings };
 }
 
-export function buildDoc(slug: string, source: string): Doc {
+export function buildDoc(slug: string, source: string, base = ""): Doc {
   const { data, body } = parseFrontMatter(source);
   if (!data.title || !data.description) throw new Error(`docs/${slug}.md needs a title and a description in its front matter`);
-  const { html, headings } = render(body);
+  const { html, headings } = render(body, base);
   return {
     slug,
     title: data.title,
