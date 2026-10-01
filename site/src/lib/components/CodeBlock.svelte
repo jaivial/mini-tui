@@ -19,7 +19,9 @@
 </script>
 
 <div class="relative rounded-lg border bg-card">
-  <pre class="overflow-x-auto p-4 pr-14 font-mono text-[13px] leading-relaxed text-card-foreground"><code>{code}</code></pre>
+  <!-- Long lines wrap (a URL breaks anywhere) instead of hiding half a command off the edge of a phone;
+       the copy button still copies the exact text. -->
+  <pre class="overflow-x-auto p-4 pr-14 font-mono text-[13px] leading-relaxed break-all whitespace-pre-wrap text-card-foreground"><code>{code}</code></pre>
   <Button variant="ghost" size="icon" class="absolute top-2 right-2" onclick={copy} aria-label={copied ? "Copied" : label} title={copied ? "Copied" : label}>
     {#if copied}<Check aria-hidden="true" class="text-primary" />{:else}<Copy aria-hidden="true" />{/if}
   </Button>

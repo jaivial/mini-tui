@@ -246,6 +246,7 @@ bun run dev         # http://127.0.0.1:4320
 bun run build       # prerender every route to site/build
 bun run seo         # audit the built pages: titles, descriptions, canonicals, JSON-LD, alt text, links, sitemap
 bun run browse      # real-browser check at desktop / tablet / phone
+bun run layout      # width audit: no sideways scroll, no squeezed column, at 320 to 1440 px
 ```
 
 The canonical origin comes from `VITE_SITE_URL`, and the base path is derived from it, so links, canonical

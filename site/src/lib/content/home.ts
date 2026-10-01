@@ -57,11 +57,33 @@ export const features = [
   },
 ] as const;
 
+export const RUST_INSTALL =
+  "mkdir -p ~/.local/lib/mini-tui\ncurl -fLo ~/.local/lib/mini-tui/mini-agent-rs \\\n  https://github.com/jaivial/mini-tui/releases/latest/download/mini-agent-rs-x86_64-linux-musl\nchmod +x ~/.local/lib/mini-tui/mini-agent-rs";
+
 export const steps = [
-  { n: 1, title: "Install", code: "git clone https://github.com/jaivial/mini-tui && cd mini-tui\nbun install && python3 -m pip install -e ./agent" },
-  { n: 2, title: "Start the web app", code: "bun run web   # http://127.0.0.1:4317" },
-  { n: 3, title: "Connect a model", code: "# Settings, Providers: paste a key.\n# It is tested with a real request first." },
+  { n: 1, title: "Get mini-tui", code: "git clone https://github.com/jaivial/mini-tui && cd mini-tui\nbun install" },
+  { n: 2, title: "Add the Rust agent (one binary, no Python)", code: RUST_INSTALL },
+  { n: 3, title: "Start the web app", code: "bun run web   # http://127.0.0.1:4317" },
+  { n: 4, title: "Connect a model", code: "# Settings, Providers: paste a key.\n# It is tested with a real request first." },
 ] as const;
+
+/**
+ * Python or Rust: the agent behind the UI. Numbers measured with the parity suite's `basic` scenario,
+ * median of five runs, on one Linux box. Shown on the home page; the docs page explains them.
+ */
+export const agents = {
+  rows: [
+    { label: "Start the runner", python: "65 ms", rust: "0.7 ms" },
+    { label: "One scripted turn", python: "661 ms", rust: "51 ms" },
+    { label: "Memory per waiting session", python: "35.7 MB", rust: "4.5 MB" },
+    { label: "Needs", python: "Python 3.10+ and packages", rust: "Nothing: one 6.7 MB binary" },
+  ],
+  points: [
+    "Same configs, trajectories, journal and control file: either agent resumes the other's sessions.",
+    "Rust is the default once its binary is found. MINITUI_AGENT=python picks Python.",
+    "Kept identical by a parity suite: 26 scenarios and 8 helper cases, byte for byte.",
+  ],
+} as const;
 
 export const faq = [
   { q: "What is mini-tui?", a: "mini-tui is a terminal and browser interface for the mini-swe-agent coding agent. It shows the agent's thinking, commands and results as they happen, and lets you run several sessions side by side." },
@@ -70,6 +92,7 @@ export const faq = [
   { q: "Where do my API keys go?", a: "Keys are stored on the machine running mini-tui, in a file only your user can read. The web API never sends a key back to the browser; it returns a masked hint such as sk-…a1b2." },
   { q: "Can the agent run on a remote server?", a: "Yes. In remote mode the agent runs headless on a server over SSH while the interface stays on your machine. The prompt is passed as a single-quoted literal, so it cannot execute as a command on the server." },
   { q: "Does the web app work on a phone?", a: "Yes. It uses 44px touch targets, bottom-sheet dialogs, safe-area insets and a keyboard-aware prompt bar. Put it behind a reverse proxy with authentication to reach it from other devices." },
+  { q: "Python or Rust: which agent should I use?", a: "The Rust agent, unless you need a Python-only extension. It is a port of the same runner as one static binary: it starts in under a millisecond instead of about 65 ms and holds about 4.5 MB per waiting session instead of about 36 MB. It needs no Python. Both read the same configs and write the same trajectories, and a parity suite checks that they behave the same." },
   { q: "How is it different from the terminal UI?", a: "They are the same agent and share the same session history, so a session started in one shows up in the other. The web app adds a sidebar of concurrent sessions and remote hosts; the terminal UI is lighter and needs no browser." },
 ] as const;
 

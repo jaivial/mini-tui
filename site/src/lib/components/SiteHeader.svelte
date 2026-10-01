@@ -10,12 +10,13 @@
 
   const links = [
     { href: "/docs/", label: "Docs" },
+    { href: "/docs/rust-agent/", label: "Rust agent" },
     { href: "/web-app/", label: "Web app" },
     { href: "/changelog/", label: "Changelog" },
   ] as const;
 
   let open = $state(false);
-  const here = (href: string) => page.url.pathname.replace(/\/$/, "") === resolve(href as "/").replace(/\/$/, "") || (href === "/docs/" && page.url.pathname.includes("/docs"));
+  const here = (href: string) => page.url.pathname.replace(/\/$/, "") === resolve(href as "/").replace(/\/$/, "") || (href === "/docs/" && page.url.pathname.includes("/docs") && !page.url.pathname.includes("/docs/rust-agent"));
 
   // A route change closes the menu; Escape closes it too and returns focus to its button.
   $effect(() => {
@@ -38,7 +39,7 @@
 <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[60] focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-foreground">Skip to content</a>
 
 <header class="sticky top-0 z-50 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
-  <div class="mx-auto flex h-14 max-w-6xl items-center gap-2 px-4 sm:px-6">
+  <div class="mx-auto flex h-14 max-w-7xl 2xl:max-w-[90rem] items-center gap-2 px-4 sm:px-6">
     <a href={resolve("/")} class="mr-2 flex min-h-11 items-center gap-2 font-semibold tracking-tight" aria-label="mini-tui home">
       <Logo /> <span>mini-tui</span>
     </a>
@@ -58,7 +59,7 @@
   </div>
   {#if open}
     <nav id="mobile-nav" aria-label="Mobile" class="border-t bg-background md:hidden">
-      <ul class="mx-auto flex max-w-6xl flex-col gap-1 px-4 py-3">
+      <ul class="mx-auto flex max-w-7xl 2xl:max-w-[90rem] flex-col gap-1 px-4 py-3">
         {#each links as l (l.href)}
           <li><a href={resolve(l.href)} class="flex min-h-11 items-center rounded-md px-3 text-base text-foreground hover:bg-muted">{l.label}</a></li>
         {/each}

@@ -2,7 +2,7 @@
 title: Headless mode and the CLI
 description: Run mini-tui with no UI using mini-tui -p, like claude -p. Text, JSON and stream-json output, sessions, guard rails and exit codes for scripts, CI and cron.
 section: Use it
-order: 5
+order: 6
 ---
 
 `-p` (or `--print`) runs one turn with no UI. The answer goes to stdout and the process exits with the run's

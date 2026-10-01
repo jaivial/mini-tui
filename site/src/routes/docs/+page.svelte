@@ -13,12 +13,12 @@
     title: "Documentation",
     description: "Guides for mini-tui: install it, run the web app, use commands and skills, connect model providers, run the agent over SSH, and script it headlessly.",
     type: "article",
-    modified: "2026-09-29",
+    modified: "2026-10-01",
     crumbs: [{ name: "Home", path: "/" }, { name: "Docs", path: "/docs/" }],
   }}
 />
 
-<div class="mx-auto grid max-w-6xl gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[14rem_1fr]">
+<div class="mx-auto grid max-w-7xl 2xl:max-w-[90rem] gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[14rem_minmax(0,1fr)]">
   <DocsNav />
   <div>
     <h1 class="text-4xl font-semibold tracking-tight">Documentation</h1>

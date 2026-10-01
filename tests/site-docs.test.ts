@@ -107,3 +107,18 @@ describe("the real docs", () => {
     expect(new Set(all.map((d) => d.description)).size).toBe(all.length);
   });
 });
+
+describe("links inside the docs", () => {
+  test("a link to a page of this site gets the base path; external and anchor links do not", async () => {
+    const { render } = await import("../site/src/lib/docs");
+    const { html } = render("[a](/docs/install/) [b](https://example.com/x) [c](#here) [d](/mini-tui/docs/x/)", "/mini-tui");
+    expect(html).toContain('href="/mini-tui/docs/install/"');
+    expect(html).toContain('href="https://example.com/x" rel="noopener"');
+    expect(html).toContain('href="#here"');
+    expect(html).toContain('href="/mini-tui/docs/x/"'); // already based: not doubled
+  });
+  test("with no base path (a site at the root), links are left as written", async () => {
+    const { render } = await import("../site/src/lib/docs");
+    expect(render("[a](/docs/install/)").html).toContain('href="/docs/install/"');
+  });
+});

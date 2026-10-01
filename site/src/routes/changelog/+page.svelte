@@ -10,12 +10,12 @@
     title: "Changelog",
     description: "Release notes for mini-tui: what changed in every version, newest first, including the 0.19 web app release.",
     type: "article",
-    modified: "2026-09-29",
+    modified: "2026-10-01",
     crumbs: [{ name: "Home", path: "/" }, { name: "Changelog", path: "/changelog/" }],
   }}
 />
 
-<div class="mx-auto max-w-3xl px-4 py-16 sm:px-6">
+<div class="mx-auto w-full max-w-5xl px-4 py-16 sm:px-6">
   <h1 class="text-4xl font-semibold tracking-tight">Changelog</h1>
   <p class="mt-3 text-muted-foreground">The latest releases. Older ones are in the <a class="text-primary underline underline-offset-4" href="{REPO}/blob/main/CHANGELOG.md">full changelog</a>.</p>
   {#each data.items as r (r.version)}

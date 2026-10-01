@@ -16,12 +16,12 @@
     title: doc.title,
     description: doc.description,
     type: "article",
-    modified: "2026-09-29",
+    modified: "2026-10-01",
     crumbs: [{ name: "Home", path: "/" }, { name: "Docs", path: "/docs/" }, { name: doc.title, path: `/docs/${doc.slug}/` }],
   }}
 />
 
-<div class="mx-auto grid max-w-6xl gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[14rem_minmax(0,1fr)] xl:grid-cols-[14rem_minmax(0,1fr)_12rem]">
+<div class="mx-auto grid max-w-7xl 2xl:max-w-[90rem] gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[14rem_minmax(0,1fr)] xl:grid-cols-[15rem_minmax(0,1fr)_13rem]">
   <DocsNav />
   <article class="min-w-0">
     <nav aria-label="Breadcrumb" class="mb-4 text-sm text-muted-foreground">

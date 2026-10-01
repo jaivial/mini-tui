@@ -11,7 +11,8 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "seo": "bun scripts/seo-check.mjs",
     "assets": "bun scripts/make-assets.mjs",
-    "browse": "bun scripts/browse-check.mjs"
+    "browse": "bun scripts/browse-check.mjs",
+    "layout": "bun scripts/layout-check.mjs"
   },
   "devDependencies": {
     "@internationalized/date": "^3.12.0",

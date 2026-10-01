@@ -6,7 +6,7 @@
 </script>
 
 <footer class="border-t">
-  <div class="mx-auto grid max-w-6xl gap-10 px-4 py-12 sm:px-6 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
+  <div class="mx-auto grid max-w-7xl 2xl:max-w-[90rem] gap-10 px-4 py-12 sm:px-6 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
     <div>
       <div class="flex items-center gap-2 font-semibold tracking-tight"><Logo /> mini-tui</div>
       <p class="mt-3 max-w-xs text-sm text-muted-foreground">A terminal and web UI for the mini-swe-agent coding agent. Source on GitHub.</p>
