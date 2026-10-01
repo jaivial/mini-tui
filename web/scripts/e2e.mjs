@@ -65,7 +65,8 @@ try {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await ctx.newPage();
   const sockets = [];
-  page.on("websocket", (ws) => { const rec = { url: ws.url(), frames: [], closed: false }; sockets.push(rec); ws.on("framereceived", (f) => rec.frames.push(JSON.parse(String(f.payload)))); ws.on("close", () => (rec.closed = true)); });
+  // Session sockets only: the hub socket (notes, terminal, the shared workspace) is one per tab, always.
+  page.on("websocket", (ws) => { if (!/\/api\/sessions\//.test(ws.url())) return; const rec = { url: ws.url(), frames: [], closed: false }; sockets.push(rec); ws.on("framereceived", (f) => rec.frames.push(JSON.parse(String(f.payload)))); ws.on("close", () => (rec.closed = true)); });
   // Route every session socket through a proxy we control, so the test can cut one mid-stream.
   const proxied = [];
   await page.routeWebSocket(/\/api\/sessions\/[^/]+\/socket/, (ws) => {

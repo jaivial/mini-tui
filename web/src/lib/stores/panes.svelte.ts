@@ -4,8 +4,8 @@
  *
  * Everything a pane holds lives here, not in its component: splitting moves a pane to a new place in
  * the tree, which remounts its component, and a half-typed prompt must survive that. The layout and
- * which session each pane shows are saved to localStorage, so a reload brings the same panes back;
- * prompts and chips are not (the same as before panes existed).
+ * which session each pane shows live in the shared workspace on the server (`lib/workspace.ts`), so a
+ * reload, another tab and another device all show the same panes; prompts and chips stay in the tab.
  *
  * There is one tree, one set of panes and one focus **per window** (`windows.svelte.ts`): switching
  * window swaps all three over, so what you were typing in one is still there when you come back. Only
@@ -15,7 +15,8 @@
 import { MAX_PANES, count, leaves, neighbour, remove, restore, setRatio, split, type Dir, type Node } from "../panes";
 import type { Chip } from "../chips";
 import { PromptMemory } from "../promptMemory";
-import { windows } from "./windows.svelte";
+import { legacy, windows } from "./windows.svelte";
+import { saveParts, startingDoc, workspace } from "../workspace";
 
 export interface Pane {
   id: string;
@@ -43,6 +44,11 @@ const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId
 
 /** The first pane of a first visit. Any id works; it only has to be unique like every other one. */
 const FIRST = uid("p");
+
+/** Whether a saved layout has (readable) panes for this window. */
+function byWindowHas(byWindow: Record<string, { tree?: unknown }> | undefined, id: string): boolean {
+  return !!byWindow?.[id] && restore(byWindow[id]!.tree) !== null;
+}
 
 /** The same tree with some pane ids replaced (splits keep theirs). */
 function renameLeaves(node: Node, to: Map<string, string>): Node {
@@ -74,7 +80,33 @@ class PaneStore {
     windows.adopt();
     this.#wid = windows.activeId;
     this.#load();
+    // Another device or tab changed the layout: show what it shows.
+    workspace.onRemote((doc) => this.#adoptRemote(doc));
   }
+
+  /**
+   * Take a layout another device saved. Panes this tab already has keep their in-tab state (a
+   * half-typed prompt, the ↑/↓ memory) when they still show the same session; everything else is
+   * rebuilt from the shared copy.
+   */
+  #adoptRemote(doc: { windows?: unknown; panes?: unknown }) {
+    if (doc.windows !== undefined) windows.adoptRemote(doc.windows);
+    if (doc.panes === undefined) return;
+    const mine = new Map<string, Pane>();
+    for (const set of [{ panes: this.panes }, ...Object.values(this.#kept)]) for (const p of Object.values(set.panes)) mine.set(p.id, p);
+    this.#kept = {};
+    // Nothing is on screen until the new layout is laid out: there is nothing to shelve.
+    this.#wid = windows.activeId;
+    this.#remote = true;
+    try {
+      this.#apply(doc.panes, mine);
+    } finally {
+      this.#remote = false;
+    }
+  }
+
+  /** True while a layout from another device is being applied: it must not be saved straight back. */
+  #remote = false;
 
   get order(): string[] {
     return leaves(this.tree);
@@ -385,19 +417,25 @@ class PaneStore {
     return { tree: $state.snapshot(tree) as Node, panes: Object.fromEntries(Object.entries(panes).map(([id, p]) => [id, { sessionId: p.sessionId, notesOpen: p.notesOpen, sideTab: p.sideTab, liveTurn: p.liveTurn, seenTurn: p.seenTurn }])), focused };
   }
   #save() {
+    if (this.#remote) return;
     try {
       const byWindow: Record<string, Saved> = {};
       for (const [id, set] of Object.entries(this.#kept)) byWindow[id] = this.#one(set.tree, set.panes, set.focused);
       byWindow[this.#wid] = this.#one(this.tree, this.panes, this.focusedId);
-      localStorage.setItem(KEY, JSON.stringify({ v: 2, byWindow, focused: this.focusedId }));
-      windows.save(); // the ids above mean nothing if the list of windows is not saved with them
+      // One version for both: the pane ids mean nothing without the list of windows they belong to.
+      saveParts({ panes: { v: 2, byWindow, focused: this.focusedId }, windows: windows.snapshot() });
     } catch {
       /* private mode, or storage full: panes still work, they just are not remembered */
     }
   }
   #load() {
+    this.#apply(startingDoc().panes ?? legacy(KEY), new Map());
+  }
+
+  /** Build every window's panes from a saved layout. `mine`: this tab's panes, to keep their prompts. */
+  #apply(value: unknown, mine: Map<string, Pane>) {
     try {
-      const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as
+      const raw = value as
         | { v?: number; byWindow?: Record<string, { tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown; sideTab?: unknown; liveTurn?: unknown; seenTurn?: unknown }>; focused?: unknown }>; tree?: unknown; panes?: unknown; focused?: unknown }
         | null;
       if (!raw || (!raw.byWindow && raw.v !== 1)) return;
@@ -420,9 +458,11 @@ class PaneStore {
           const nid = renamed.get(id) ?? id;
           taken.add(nid);
           const turn = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+          const sessionId = typeof saved?.sessionId === "string" ? saved.sessionId : null;
+          const had = mine.get(nid);
           panes[nid] = {
-            ...blank(nid),
-            sessionId: typeof saved?.sessionId === "string" ? saved.sessionId : null,
+            ...(had && had.sessionId === sessionId ? had : blank(nid)),
+            sessionId,
             notesOpen: saved?.notesOpen === true,
             sideTab: saved?.sideTab === "terminal" ? "terminal" : "notes",
             liveTurn: turn(saved?.liveTurn),
@@ -438,7 +478,15 @@ class PaneStore {
           this.focusedId = focused;
         } else this.#kept[wid] = { tree: fixedTree, panes, focused };
       }
-      if (count(this.tree) !== 1 || this.#wid !== windows.activeId) this.#swapTo(windows.activeId);
+      // On screen: the window that is active, laid out above. When the active window's panes were not
+      // in the layout (an unreadable entry), it starts with one empty pane.
+      if (!byWindowHas(raw.byWindow, windows.activeId)) {
+        const first = blank();
+        this.tree = { kind: "pane", id: first.id };
+        this.panes = { [first.id]: first };
+        this.focusedId = first.id;
+      }
+      this.#wid = windows.activeId;
       this.restored = cameBack;
     } catch {
       /* unreadable: start from one pane */

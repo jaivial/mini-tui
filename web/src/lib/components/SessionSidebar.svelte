@@ -4,7 +4,9 @@
   import Spinner from "./Spinner.svelte";
   import { sidebarHistory } from "../stores/history.svelte";
   import { folderStore } from "../stores/folders.svelte";
-  import { byStart, folderTitle, groupByFolder, isExpanded, loadPrefs, normalizeCwd, savePrefs, toggleIn, type FolderGroup } from "../sessionFolders";
+  import { byStart, folderTitle, groupByFolder, isExpanded, loadPrefs, normalizeCwd, PREFS_KEY, toggleIn, type FolderGroup } from "../sessionFolders";
+  import { savePart, startingDoc, workspace } from "../workspace";
+  import { legacy } from "../legacy";
   import { ChevronDown, Pin, PinOff, Folder, FolderPlus, Clock3, FolderTree, Pencil, X } from "@lucide/svelte";
   import { groupByRecency, unresumableReason } from "../resume";
   import type { HistoryItem } from "../types";
@@ -117,8 +119,24 @@
     return () => clearTimeout(timer);
   });
   // ---- "By folder": every folder with sessions, open and saved ones together, pinned folders first.
-  const prefs = $state(loadPrefs());
-  $effect(() => savePrefs($state.snapshot(prefs)));
+  // Shared like the windows and panes: the view, pinned folders and open folders are the same on
+  // every device, and a change on one shows on the others at once.
+  const prefs = $state(loadPrefs(startingDoc().sidebar ?? legacy(PREFS_KEY)));
+  // Saving what the server already holds is a no-op (the client compares), so adopting a push never
+  // echoes it back.
+  $effect(() => {
+    const value = $state.snapshot(prefs);
+    untrack(() => savePart("sidebar", value));
+  });
+  $effect(() =>
+    workspace.onRemote((doc) => {
+      if (doc.sidebar === undefined) return;
+      const next = loadPrefs(doc.sidebar);
+      prefs.view = next.view;
+      prefs.pinned = next.pinned;
+      prefs.expanded = next.expanded;
+    }),
+  );
   const home = $derived(store.list.find((s) => s.target === "local" && /^\/home\/[^/]+/.test(s.cwd))?.cwd.match(/^\/home\/[^/]+/)?.[0] ?? "");
   // Loaded on demand: the first time the view is shown, and again when the set of sessions changes.
   $effect(() => {

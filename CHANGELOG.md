@@ -2,6 +2,25 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.25.0 — 2026-10-01
+
+### Changed
+
+- **The web app's workspace is the same on every device, browser and tab.** The windows, their
+  panes, which session each pane shows, the status dots and the sidebar's view, pinned and opened
+  folders used to live in each browser's localStorage, so every device showed its own layout. They
+  now live on the server (`~/.config/mini-tui/web-workspace.json`) and travel over the hub socket
+  like notes. A tab is sent the saved workspace when it connects. A change made anywhere (open a
+  session, split, move a pane, switch window, rename, pin) shows on every other open tab and device
+  at once, with no reload and no polling.
+  - What is yours stays in your tab: a half-typed prompt, its chips and the ↑/↓ memory, and the
+    interface and text sizes and theme. Another device's change never wipes them.
+  - Versioned saves: two devices changing the layout at the same moment end on one and the same
+    layout. A stale save never overwrites a newer one.
+  - The first browser to load this version seeds the shared copy with the layout it already had.
+    Offline, a tab opens on the last workspace it saw, and adopts the server's when it reconnects.
+  - The hub socket now opens with every tab, since every tab watches the workspace.
+
 ## 0.24.0 — 2026-10-01
 
 ### Added

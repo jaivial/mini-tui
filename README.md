@@ -167,8 +167,11 @@ What the web app does:
     hiding the panel and reloading the page. Open it with `` Ctrl+` `` or `/terminal`.
 - **Settings** with an **interface size** and a separate **text size**.
 
-Notes, the terminal and prompt memory all travel over one hub WebSocket per tab, with no REST
-polling. A server restart (a deploy) does not lose your panes: sessions reopen from the saved
+**One workspace on every device**: the windows, panes and sidebar are kept on the server, so a phone,
+a laptop and a second tab all show the same thing, and a change on one appears on the others live.
+
+Notes, the terminal, the shared workspace and prompt memory all travel over one hub WebSocket per tab,
+with no REST polling. A server restart (a deploy) does not lose your panes: sessions reopen from the saved
 history when the page reconnects.
 
 The terminal is a shell as the user the server runs as, so keep the server behind authentication,

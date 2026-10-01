@@ -218,9 +218,12 @@ try {
   const ph = await phone.newPage();
   await ph.goto(base);
   await ph.waitForTimeout(1200);
-  await ph.getByRole("button", { name: "New chat here" }).tap().catch(async () => { await ph.getByRole("button", { name: "Toggle sidebar" }).first().tap(); });
+  // The phone opens on the same layout as the desktop (the workspace is shared), so it starts its own
+  // new chat from the sidebar, the way you would on a phone.
+  await ph.getByRole("button", { name: "Toggle sidebar" }).first().tap();
   await ph.waitForTimeout(400);
-  if ((await ph.getByRole("button", { name: /^Folder: / }).count()) === 0) { await ph.getByRole("button", { name: "Toggle sidebar" }).first().tap(); await ph.getByRole("button", { name: "New chat", exact: true }).tap(); }
+  await ph.locator("aside").getByRole("button", { name: "New chat", exact: true }).tap();
+  await ph.waitForTimeout(400);
   await ph.getByRole("button", { name: /^Folder: / }).tap();
   const pd = ph.getByRole("dialog", { name: /Choose a folder/ });
   await pd.waitFor();

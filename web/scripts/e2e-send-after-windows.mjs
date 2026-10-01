@@ -57,11 +57,31 @@ const startServer = () => spawn("bun", ["src/web/serve.ts", "--port", String(POR
 let server = startServer();
 const base = `http://127.0.0.1:${PORT}`;
 for (let i = 0; i < 60; i++) { try { if ((await fetch(`${base}/api/health`)).ok) break; } catch {} await Bun.sleep(100); }
-for (const id of ["s-alpha", "s-beta", "s-gamma", "s-delta"]) await fetch(`${base}/api/history/${id}`, { method: "POST" });
+const openAll = async () => {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    for (const id of ["s-alpha", "s-beta", "s-gamma", "s-delta"]) await fetch(`${base}/api/history/${id}`, { method: "POST" }).catch(() => {});
+    const held = await fetch(`${base}/api/sessions`).then((r) => r.json()).catch(() => []);
+    if (["s-alpha", "s-beta", "s-gamma", "s-delta"].every((id) => held.some((s) => s.id === id))) return;
+    await Bun.sleep(150);
+  }
+  throw new Error("the seeded sessions never opened");
+};
+await openAll();
 
 function chrome() { const r = `${homedir()}/.cache/ms-playwright`; for (const d of readdirSync(r).filter((d) => d.startsWith("chromium-")).sort().reverse()) { const b = `${r}/${d}/chrome-linux64/chrome`; if (existsSync(b)) return b; } }
 
 const browser = await chromium.launch({ executablePath: chrome() });
+
+// Put a given workspace on the server: write its file and restart (the workspace is read at start).
+const seedWorkspace = async (doc) => {
+  server.kill();
+  await Bun.sleep(400);
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(dir, "web-workspace.json"), JSON.stringify({ version: 1, doc, updatedAt: Date.now() }));
+  server = startServer();
+  for (let i = 0; i < 60; i++) { try { if ((await fetch(`${base}/api/health`)).ok) break; } catch {} await Bun.sleep(100); }
+  await openAll();
+};
 let failed = 0;
 const check = (name, ok, extra = "") => { console.log(`${ok ? "PASS" : "FAIL"}  ${name}${extra ? "  " + extra : ""}`); if (!ok) failed++; };
 const calls = () => fake.calls().length;
@@ -231,14 +251,13 @@ try {
 
   // ---- 4. a layout saved before pane ids were unique (every window's first pane was "p1")
   const ctx3 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  await ctx3.addInitScript(() => {
-    if (localStorage.getItem("minitui.seeded")) return;
-    localStorage.setItem("minitui.seeded", "1");
-    localStorage.setItem("minitui.windows", JSON.stringify({ v: 1, list: [{ id: "wa", name: null }, { id: "wb", name: null }], active: "wb" }));
-    localStorage.setItem("minitui.panes", JSON.stringify({ v: 2, focused: "p1", byWindow: {
+  // An old shape, as it was saved (in a browser, then seeded to the server by the first tab).
+  await seedWorkspace({
+    windows: { v: 1, list: [{ id: "wa", name: null }, { id: "wb", name: null }], active: "wb" },
+    panes: { v: 2, focused: "p1", byWindow: {
       wa: { tree: { kind: "split", id: "s1", dir: "row", ratio: 0.5, a: { kind: "pane", id: "p1" }, b: { kind: "pane", id: "p2" } }, panes: { p1: { sessionId: "s-alpha" }, p2: { sessionId: "s-beta" } }, focused: "p1" },
       wb: { tree: { kind: "split", id: "s1", dir: "row", ratio: 0.5, a: { kind: "pane", id: "p1" }, b: { kind: "pane", id: "p3" } }, panes: { p1: { sessionId: "s-gamma" }, p3: { sessionId: "s-delta" } }, focused: "p3" },
-    } }));
+    } },
   });
   const old = await ctx3.newPage();
   await old.goto(base);
@@ -257,18 +276,18 @@ try {
 
   // ---- 6. dot rows stay tidy: 12 panes in a window, and a phone
   const ctx4 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  await ctx4.addInitScript(() => {
-    if (localStorage.getItem("minitui.seeded")) return;
-    localStorage.setItem("minitui.seeded", "1");
+  {
     let tree = { kind: "pane", id: "q1" };
     const panes = { q1: { sessionId: null } };
     for (let i = 2; i <= 12; i++) {
       tree = { kind: "split", id: `t${i}`, dir: i % 2 ? "row" : "col", ratio: 0.5, a: tree, b: { kind: "pane", id: `q${i}` } };
       panes[`q${i}`] = { sessionId: null };
     }
-    localStorage.setItem("minitui.windows", JSON.stringify({ v: 1, list: [{ id: "wz", name: "Busy" }, { id: "wy", name: null }], active: "wy" }));
-    localStorage.setItem("minitui.panes", JSON.stringify({ v: 2, byWindow: { wz: { tree, panes, focused: "q1" }, wy: { tree: { kind: "pane", id: "y1" }, panes: { y1: { sessionId: null } }, focused: "y1" } } }));
-  });
+    await seedWorkspace({
+      windows: { v: 1, list: [{ id: "wz", name: "Busy" }, { id: "wy", name: null }], active: "wy" },
+      panes: { v: 2, byWindow: { wz: { tree, panes, focused: "q1" }, wy: { tree: { kind: "pane", id: "y1" }, panes: { y1: { sessionId: null } }, focused: "y1" } } },
+    });
+  }
   const big = await ctx4.newPage();
   await big.goto(base);
   await big.waitForTimeout(1500);

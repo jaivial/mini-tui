@@ -127,6 +127,13 @@ reason. The layout, each pane's session and the windows are remembered in the br
 or a small tablet) the same panes show as tabs, one on screen at a time. The layout logic is `lib/panes.ts`,
 pure and tested; the windows are `lib/stores/windows.svelte.ts`.
 
+**One workspace everywhere.** The windows, panes, which session each pane shows, the status dots and the
+sidebar's view and folders are kept on the server (`~/.config/mini-tui/web-workspace.json`), not in the
+browser. Every device, browser and tab shows the same thing, and a change on one shows on the others at once.
+It travels over the hub socket like notes (`ws.watch` / `ws.save`, versioned, so two devices changing it
+together end on one layout; `src/web/workspace.ts`, `web/src/lib/workspaceClient.ts`). A half-typed prompt,
+its chips and the ↑/↓ memory stay in their tab, and so do the interface and text sizes and the theme.
+
 **Notes** (the notebook button in a pane's header, `/notes`, or `Ctrl/⌘+Shift+.`): a sidebar on the pane's
 right with a plain text area for that session. It saves 600 ms after you stop typing, and also when the panel
 closes, on blur, on `Ctrl/⌘+S`, and when the page hides. Notes are stored in the shared database (a `notes`
