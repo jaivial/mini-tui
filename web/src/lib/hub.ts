@@ -64,7 +64,7 @@ export class HubConnection {
     };
   }
 
-  /** Connect on first use, so a tab that never opens notes never holds the socket. */
+  /** Connect on first use. Every tab uses it now (the shared workspace), so in practice at load. */
   #ensure() {
     if (this.#started) return;
     this.#started = true;

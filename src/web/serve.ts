@@ -17,6 +17,8 @@ import { NOTE_MAX, getNote, saveNote } from "../sessions";
 import { FolderError, listLocal, listRemote } from "./folders";
 import { Hub, type HubClient } from "./hub";
 import { Terminals } from "./terminals";
+import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
+import { homedir } from "node:os";
 import { sshArgs } from "./ssh";
 import {
   COMMANDS,
@@ -85,6 +87,9 @@ hub = new Hub({ get: (id) => getNote(sessions.db(), id), save: (id, body, base) 
     return { cwd: s?.cwd };
   },
 });
+// The shared workspace (windows, panes, sidebar): one file, so every device shows the same layout.
+const workspace = new WorkspaceStore(join(process.env.MINITUI_CONFIG_DIR ?? join(homedir(), ".config", "mini-tui"), "web-workspace.json"));
+hub.workspace = { get: () => workspace.get(), save: (doc, base) => workspace.save(doc, base), max: WORKSPACE_MAX };
 // No shell outlives the server (a restart, a deploy, Ctrl+C in a dev shell).
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.once(sig, () => {

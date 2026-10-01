@@ -12,12 +12,16 @@
  */
 import type { Note, SaveNoteResult } from "../sessions";
 import type { OpenSpec, TermOut, Terminals } from "./terminals";
+import type { SaveWorkspaceResult, Workspace } from "./workspace";
 
 export type HubIn =
   | { t: "ping" }
   | { t: "note.watch"; id: string }
   | { t: "note.unwatch"; id: string }
   | { t: "note.save"; id: string; body: string; base?: number; req: number }
+  /** The shared workspace (windows, panes, sidebar): watch it, or save a new version of it. */
+  | { t: "ws.watch" }
+  | { t: "ws.save"; doc: unknown; base: number; req: number }
   /** Attach to (or start) terminal `id` for `session`, at the viewer's size. */
   | { t: "term.open"; id: string; session?: string; cols: number; rows: number }
   | { t: "term.input"; id: string; data: string }
@@ -34,6 +38,10 @@ export type HubOut =
   | { t: "note"; note: Note }
   | { t: "note.saved"; req: number; note: Note }
   | { t: "note.conflict"; req: number; current: Note }
+  /** The workspace's value: sent on watch, and whenever another tab or device changes it. */
+  | { t: "ws"; workspace: Workspace }
+  | { t: "ws.saved"; req: number; version: number }
+  | { t: "ws.conflict"; req: number; current: Workspace }
   | { t: "error"; req?: number; id?: string; error: string }
   | TermOut;
 
@@ -47,11 +55,21 @@ export interface NoteStore {
   save(id: string, body: string, base?: number): SaveNoteResult;
 }
 
+export interface WorkspaceSource {
+  get(): Workspace;
+  save(doc: unknown, base: number): SaveWorkspaceResult;
+  max: number;
+}
+
 const NOTE_ID = /^[\w.-]{1,128}$/;
 
 export class Hub {
   #watch = new Map<string, Set<HubClient>>();
   #of = new Map<HubClient, Set<string>>();
+  /** Clients watching the shared workspace. */
+  #ws = new Set<HubClient>();
+  /** Where the shared workspace is kept; absent in tests that only exercise notes. */
+  workspace?: WorkspaceSource;
 
   constructor(
     private readonly notes: NoteStore,
@@ -69,6 +87,7 @@ export class Hub {
   /** A client went away: forget every watch it held. */
   leave(client: HubClient): void {
     this.terminals?.manager.detach(client as never);
+    this.#ws.delete(client);
     for (const id of this.#of.get(client) ?? []) this.#unwatch(client, id);
     this.#of.delete(client);
   }
@@ -97,6 +116,7 @@ export class Hub {
       return;
     }
     if (typeof msg.t === "string" && msg.t.startsWith("term.")) return this.#term(client, msg);
+    if (msg.t === "ws.watch" || msg.t === "ws.save") return this.#workspace(client, msg);
     if (msg.t === "note.watch" || msg.t === "note.unwatch" || msg.t === "note.save") {
       const req = msg.t === "note.save" && Number.isInteger(msg.req) ? msg.req : undefined;
       if (typeof msg.id !== "string" || !NOTE_ID.test(msg.id)) {
@@ -116,6 +136,29 @@ export class Hub {
    */
   noteChanged(note: Note, except?: HubClient): void {
     for (const c of this.#watch.get(note.id) ?? []) if (c !== except) c.send({ t: "note", note });
+  }
+
+  #workspace(client: HubClient, msg: Extract<HubIn, { t: "ws.watch" | "ws.save" }>): void {
+    const ws = this.workspace;
+    if (!ws) return void client.send({ t: "error", error: "the shared workspace is not available on this server" });
+    if (msg.t === "ws.watch") {
+      this.#ws.add(client);
+      return void client.send({ t: "ws", workspace: ws.get() });
+    }
+    const req = Number.isInteger(msg.req) ? msg.req : undefined;
+    if (req === undefined) return void client.send({ t: "error", error: "a save needs a request number" });
+    if (typeof msg.base !== "number" || msg.doc === undefined) return void client.send({ t: "error", req, error: "a save needs a doc and its base version" });
+    if (JSON.stringify(msg.doc).length > ws.max) return void client.send({ t: "error", req, error: "the workspace is too large" });
+    let result: SaveWorkspaceResult;
+    try {
+      result = ws.save(msg.doc, msg.base);
+    } catch (error) {
+      return void client.send({ t: "error", req, error: `could not save the workspace: ${(error as Error).message}` });
+    }
+    if (!result.ok) return void client.send({ t: "ws.conflict", req, current: result.current });
+    client.send({ t: "ws.saved", req, version: result.workspace.version });
+    // Everyone else watching gets the new layout now; the sender already has it.
+    for (const c of this.#ws) if (c !== client) c.send({ t: "ws", workspace: result.workspace });
   }
 
   #term(client: HubClient, msg: HubIn): void {

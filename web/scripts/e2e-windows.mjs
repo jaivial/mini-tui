@@ -165,21 +165,22 @@ try {
 
   await ctx.close();
 
-  // A phone: its own browser, so its own windows, and the same sidebar controls.
+  // A phone: another browser, and the same windows (the workspace is shared by every device).
   const ctx2 = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   const phone = await ctx2.newPage();
   await phone.goto(base);
   await phone.waitForTimeout(1200);
   await phone.locator('button[aria-label="Toggle sidebar"]').first().click();
   await phone.waitForTimeout(500);
-  check("on a phone, the window list is in the sidebar", (await winRows(phone)).length === 1, JSON.stringify(await winRows(phone)));
+  const shared = (await winRows(phone)).length;
+  check("on a phone, the window list is in the sidebar, the same windows as the desktop", shared === 3, JSON.stringify(await winRows(phone)));
   await phone.locator("aside").getByRole("button", { name: "New window" }).click();
   await phone.waitForTimeout(700);
   // On a phone the drawer closes when the new window takes over; open it again to see the list.
   check("...the new window is on screen and the drawer got out of the way", (await phone.locator("aside").count()) === 0 && (await paneBoxes(phone)).length === 1);
   await phone.locator('button[aria-label="Toggle sidebar"]').first().click();
   await phone.waitForTimeout(500);
-  check("...the button starts a window there too", (await winRows(phone)).length === 2 && (await winRows(phone))[1].checked === "true", JSON.stringify(await winRows(phone)));
+  check("...the button starts a window there too", (await winRows(phone)).length === shared + 1 && (await winRows(phone))[shared].checked === "true", JSON.stringify(await winRows(phone)));
   check("...44px or more to tap it", await phone.locator("aside").getByRole("button", { name: "New window" }).evaluate((el) => el.getBoundingClientRect().height >= 44));
   await phone.locator("aside").getByRole("radio", { name: /Window 1/ }).click();
   await phone.waitForTimeout(600);

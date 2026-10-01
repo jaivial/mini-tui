@@ -94,7 +94,8 @@ export function folderTitle(cwd: string, home = ""): { name: string; parent: str
 }
 
 // ---- remembered in this browser
-const KEY = "minitui.sidebar";
+/** Where a browser kept these before they were shared (read once, to seed the server copy). */
+export const PREFS_KEY = "minitui.sidebar";
 export interface SidebarPrefs {
   view: "recent" | "folder";
   pinned: string[];
@@ -107,9 +108,9 @@ export function isExpanded(g: Pick<FolderGroup, "cwd" | "open" | "pinned">, pref
   const chosen = prefs.expanded[g.cwd];
   return chosen ?? (g.open.length > 0 || g.pinned);
 }
-export function loadPrefs(): SidebarPrefs {
+export function loadPrefs(value?: unknown): SidebarPrefs {
   try {
-    const v = JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<SidebarPrefs>;
+    const v = (value ?? {}) as Partial<SidebarPrefs>;
     const strings = (x: unknown) => (Array.isArray(x) ? x.filter((s): s is string => typeof s === "string").slice(0, 200) : []);
     const expanded: Record<string, boolean> = {};
     if (v.expanded && typeof v.expanded === "object") for (const [k, b] of Object.entries(v.expanded).slice(0, 500)) if (typeof b === "boolean") expanded[k] = b;
@@ -118,13 +119,7 @@ export function loadPrefs(): SidebarPrefs {
     return { view: "recent", pinned: [], expanded: {} };
   }
 }
-export function savePrefs(p: SidebarPrefs): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(p));
-  } catch {
-    /* private mode */
-  }
-}
 export function toggleIn(list: string[], item: string): string[] {
   return list.includes(item) ? list.filter((x) => x !== item) : [...list, item];
 }
+

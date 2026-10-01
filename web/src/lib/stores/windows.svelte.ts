@@ -6,8 +6,12 @@
  * Only the order, the names and which window is on screen live here. The panes themselves, their tree
  * and what each one shows belong to `panes.svelte.ts`, which keeps one set per window and swaps them on
  * a switch (so a half-typed prompt survives moving a pane out and back). Everything is saved to
- * localStorage with the panes.
+ * the shared workspace with the panes (`lib/workspace.ts`), so every device shows the same windows.
  */
+import { savePart, startingDoc } from "../workspace";
+import { legacy } from "../legacy";
+export { legacy };
+
 export interface Win {
   id: string;
   /** What you called it, or null for "Window 3". */
@@ -15,6 +19,7 @@ export interface Win {
 }
 
 const KEY = "minitui.windows";
+
 export const uid = (p: string) => `${p}${Math.random().toString(36).slice(2, 9)}`;
 
 class WindowStore {
@@ -28,10 +33,13 @@ class WindowStore {
    */
   createdId = $state("");
 
-  /** Names and order read back from storage. Empty on a first visit or an unreadable value. */
+  /** Names and order read back from the workspace. Empty on a first visit or an unreadable value. */
   #load(): boolean {
+    return this.#read(startingDoc().windows ?? legacy(KEY));
+  }
+  #read(value: unknown): boolean {
     try {
-      const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as { v?: number; list?: unknown; active?: unknown } | null;
+      const raw = value as { v?: number; list?: unknown; active?: unknown } | null;
       if (!raw || raw.v !== 1 || !Array.isArray(raw.list)) return false;
       const list: Win[] = [];
       for (const w of raw.list) {
@@ -121,12 +129,24 @@ class WindowStore {
     return name;
   }
 
+  /** The value saved to the shared workspace (the pane store saves it together with the panes). */
+  snapshot() {
+    return { v: 1, list: $state.snapshot(this.list), active: this.activeId };
+  }
   save() {
-    try {
-      localStorage.setItem(KEY, JSON.stringify({ v: 1, list: $state.snapshot(this.list), active: this.activeId }));
-    } catch {
-      /* private mode, or storage full: windows still work, they just are not remembered */
+    savePart("windows", this.snapshot());
+  }
+
+  /** Another device changed the windows: take its list, names and which one is on screen. */
+  adoptRemote(raw: unknown): boolean {
+    const before = JSON.stringify(this.snapshot());
+    const prev = { list: this.list, active: this.activeId };
+    if (!this.#read(raw)) {
+      this.list = prev.list;
+      this.activeId = prev.active;
+      return false;
     }
+    return JSON.stringify(this.snapshot()) !== before;
   }
 }
 

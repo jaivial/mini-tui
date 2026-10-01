@@ -349,6 +349,28 @@ try {
   const ph = await phone.newPage();
   await ph.goto(base);
   await ph.waitForTimeout(1200);
+  // The phone opens on the desktop's layout (one shared workspace). Start a window of its own, with
+  // one session pane, for the phone checks below.
+  // The sessions sidebar (the notes panel is an <aside> too).
+  const side = () => ph.locator("aside").filter({ has: ph.getByRole("button", { name: "New chat", exact: true }) });
+  const openSide = async () => {
+    if (await side().count()) return;
+    // The notes panel may cover the pane on a phone (the desktop left it open, and it is shared):
+    // close it first, then the sidebar toggle in the pane header is reachable.
+    const closeNotes = ph.getByRole("button", { name: /^Close (notes|side panel)/i });
+    if (await closeNotes.count()) await closeNotes.first().tap().catch(() => {});
+    await ph.getByRole("button", { name: "Toggle sidebar" }).first().tap();
+    await ph.waitForTimeout(400);
+  };
+  await openSide();
+  await side().getByRole("button", { name: "New window" }).tap();
+  await ph.waitForTimeout(600);
+  await openSide();
+  // A saved session no window shows yet: it opens in the new window's pane.
+  await side().getByRole("button", { name: /Migrate settings page/ }).first().tap();
+  await ph.waitForTimeout(900);
+  if (await side().count()) await ph.getByRole("button", { name: "Close sidebar" }).tap().catch(() => {});
+  await ph.waitForTimeout(300);
   await ph.locator("section[data-pane]").getByRole("button", { name: "Pane menu" }).tap();
   check("on a phone the menu offers a new pane (not two directions)", (await ph.getByRole("menuitem", { name: /New pane/ }).count()) === 1 && (await ph.getByRole("menuitem", { name: /Split right/ }).count()) === 0);
   await ph.getByRole("menuitem", { name: /New pane/ }).tap();
