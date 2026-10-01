@@ -10,7 +10,7 @@
   import { Badge } from "$lib/components/ui/badge";
   import * as Card from "$lib/components/ui/card";
   import * as Accordion from "$lib/components/ui/accordion";
-  import { agents, faq, features, hero, RUST_INSTALL, screens, steps } from "$lib/content/home";
+  import { agents, faq, features, hero, RUST_INSTALL, screens, steps, workspacePoints, workspaceShots } from "$lib/content/home";
   import { reveal } from "$lib/motion";
   import { DESCRIPTION, REPO, RELEASE } from "$lib/site";
 </script>
@@ -21,7 +21,7 @@
 <div class="relative overflow-hidden border-b">
   <div class="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] bg-[radial-gradient(60%_60%_at_50%_0%,color-mix(in_oklab,var(--primary)_16%,transparent),transparent)]" aria-hidden="true"></div>
   <div class="mx-auto max-w-7xl 2xl:max-w-[90rem] px-4 pt-16 pb-10 text-center sm:px-6 sm:pt-24">
-    <Badge variant="secondary" class="mb-6 font-mono">v{RELEASE}: now with a Rust agent</Badge>
+    <Badge variant="secondary" class="mb-6 font-mono">v{RELEASE}: panes, windows and a Rust agent</Badge>
     <h1 class="mx-auto max-w-3xl text-4xl font-semibold tracking-tight sm:text-6xl">{hero.title}</h1>
     <p class="mx-auto mt-5 max-w-2xl text-base text-muted-foreground sm:text-lg">{hero.sub}</p>
     <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
@@ -32,7 +32,7 @@
 
     <figure class="mx-auto mt-12 max-w-5xl">
       <div class="overflow-hidden rounded-xl border bg-card shadow-[0_0_0_1px_var(--border),0_24px_60px_-24px_rgb(0_0_0/0.35)]">
-        <img src={asset(`/${screens[0].src}`)} alt={screens[0].alt} width={screens[0].w} height={screens[0].h} fetchpriority="high" decoding="async" class="block h-auto w-full" />
+        <img src={asset(`/${workspaceShots.main.src}`)} alt={workspaceShots.main.alt} width={workspaceShots.main.w} height={workspaceShots.main.h} fetchpriority="high" decoding="async" class="block h-auto w-full" />
       </div>
     </figure>
   </div>
@@ -54,6 +54,30 @@
   </ul>
 </Section>
 
+<Section id="panes" title="Every session at once, in panes and windows" lede="Split the screen like tmux, group the panes into windows, and keep an eye on all of them from the sidebar. It is the same layout on every device you open it on.">
+  <div use:reveal class="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,2fr)] lg:items-center">
+    <figure class="min-w-0 overflow-hidden rounded-xl border bg-card">
+      <img src={asset(`/${workspaceShots.move.src}`)} alt={workspaceShots.move.alt} width={workspaceShots.move.w} height={workspaceShots.move.h} loading="lazy" decoding="async" class="block h-auto w-full" />
+      <figcaption class="border-t px-4 py-3 text-sm font-medium">Move a pane to another window, or to a new one</figcaption>
+    </figure>
+    <figure class="mx-auto w-full max-w-[16rem] min-w-0 overflow-hidden rounded-[1.75rem] border bg-card lg:max-w-none">
+      <img src={asset(`/${workspaceShots.phone.src}`)} alt={workspaceShots.phone.alt} width={workspaceShots.phone.w} height={workspaceShots.phone.h} loading="lazy" decoding="async" class="block h-auto w-full" />
+      <figcaption class="border-t px-4 py-3 text-center text-sm font-medium">Same windows on a phone</figcaption>
+    </figure>
+  </div>
+  <ul use:reveal={{ children: true }} class="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {#each workspacePoints as p (p.title)}
+      <li class="min-w-0 rounded-xl border bg-card p-5">
+        <h3 class="font-semibold">{p.title}</h3>
+        <p class="mt-1.5 text-sm text-muted-foreground">{p.body}</p>
+      </li>
+    {/each}
+  </ul>
+  <p class="mt-8 text-center text-sm">
+    <a class="inline-flex min-h-11 items-center gap-1 text-primary underline underline-offset-4" href={resolve("/docs/web-app/" as "/")}>How panes and windows work <ArrowRight class="size-3.5" aria-hidden="true" /></a>
+  </p>
+</Section>
+
 <Section id="see-it" title="See it in motion" lede="A 24-second tour: a live session, commands and chips, the model switcher, and the phone layout.">
   <div use:reveal class="mx-auto max-w-4xl overflow-hidden rounded-xl border bg-card">
     <!-- preload="none" keeps the video off the critical path; the poster is the only thing fetched until play. -->
@@ -69,7 +93,7 @@
 
 <Section id="tour" title="Designed to be used, not just looked at">
   <ul use:reveal={{ children: true, gap: 0.1 }} class="grid gap-6 md:grid-cols-2">
-    {#each screens.slice(1) as s (s.src)}
+    {#each screens as s (s.src)}
       <li>
         <figure class="overflow-hidden rounded-xl border bg-card">
           <img src={asset(`/${s.src}`)} alt={s.alt} width={s.w} height={s.h} loading="lazy" decoding="async" class="block h-auto w-full" />

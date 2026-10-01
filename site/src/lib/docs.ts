@@ -78,6 +78,19 @@ export function render(body: string, base = ""): { html: string; headings: Headi
     else if (base && href.startsWith("/") && !href.startsWith("//") && !href.startsWith(`${base}/`)) tokens[idx]!.attrSet("href", `${base}${href}`);
     return defaultLink ? defaultLink(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options);
   };
+  // Images: same base path as links, loaded lazily, and sized when the file says so (`src#WxH`), so the
+  // page does not jump as they load. The alt text is required; a missing one fails the SEO audit.
+  md.renderer.rules.image = (tokens, idx) => {
+    const t = tokens[idx]!;
+    let src = String(t.attrGet("src") ?? "");
+    const size = /#(\d+)x(\d+)$/.exec(src);
+    if (size) src = src.slice(0, size.index);
+    if (base && src.startsWith("/") && !src.startsWith("//") && !src.startsWith(`${base}/`)) src = `${base}${src}`;
+    const alt = (t.children ?? []).map((c) => c.content).join("") || t.content;
+    const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    const dims = size ? ` width="${size[1]}" height="${size[2]}"` : "";
+    return `<img src="${esc(src)}" alt="${esc(alt)}"${dims} loading="lazy" decoding="async" class="doc-img">`;
+  };
   return { html: md.render(body), headings };
 }
 

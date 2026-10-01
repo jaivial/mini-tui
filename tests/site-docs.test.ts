@@ -122,3 +122,18 @@ describe("links inside the docs", () => {
     expect(render("[a](/docs/install/)").html).toContain('href="/docs/install/"');
   });
 });
+
+describe("images inside the docs", () => {
+  test("an image gets the base path, lazy loading, its alt text and the size from #WxH", async () => {
+    const { render } = await import("../site/src/lib/docs");
+    const { html } = render("![Four panes side by side](/screens/web-panes.webp#3360x2000)", "/mini-tui");
+    expect(html).toContain('src="/mini-tui/screens/web-panes.webp"');
+    expect(html).toContain('alt="Four panes side by side"');
+    expect(html).toContain('width="3360" height="2000"');
+    expect(html).toContain('loading="lazy"');
+  });
+  test("quotes and angle brackets in alt text cannot break out of the attribute", async () => {
+    const { render } = await import("../site/src/lib/docs");
+    expect(render('![a "b" <c>](/x.png)').html).toContain('alt="a &quot;b&quot; &lt;c>"');
+  });
+});

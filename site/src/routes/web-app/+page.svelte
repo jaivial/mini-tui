@@ -12,7 +12,7 @@
   ];
   // What the web app gained after the screenshots above were taken (0.20 to 0.26).
   const recent = [
-    { title: "Windows of panes", body: "Up to 12 panes in a window, as many windows as you like. Move any pane to another window, or to a new one." },
+    { title: "Move a pane anywhere", body: "From a pane's menu, send it to another window or to a new one. Its session keeps running on the way." },
     { title: "One workspace everywhere", body: "Your windows, panes and sidebar are kept on the server: a phone, a laptop and a second tab all show the same thing, live." },
     { title: "A status dot per pane", body: "Working, done or idle, on each window row in the sidebar. A finished turn stays marked until you click its pane." },
     { title: "Notes and a terminal", body: "Every pane has a side panel with notes that save as you type, and a real shell in the session's folder." },
@@ -38,12 +38,20 @@
 <div class="mx-auto max-w-7xl 2xl:max-w-[90rem] px-4 py-16 sm:px-6 sm:py-24">
   <div class="mx-auto max-w-3xl text-center">
     <h1 class="text-4xl font-semibold tracking-tight sm:text-5xl">The agent, in your browser</h1>
-    <p class="mt-4 text-lg text-muted-foreground">The same agent and the same session history as the terminal UI, with a sidebar of sessions that keep working while you look at another.</p>
+    <p class="mt-4 text-lg text-muted-foreground">The same agent and the same session history as the terminal UI, split into panes and windows, so every session keeps working where you can see it.</p>
     <div class="mt-8 flex flex-wrap justify-center gap-3">
       <Button size="lg" href={resolve("/docs/web-app/")}>Read the guide</Button>
       <Button size="lg" variant="outline" href={resolve("/docs/install/")}>Install</Button>
     </div>
   </div>
+
+  <figure use:reveal class="mt-16 overflow-hidden rounded-xl border bg-card shadow-[0_0_0_1px_var(--border),0_24px_60px_-24px_rgb(0_0_0/0.35)]">
+    <img src={asset("/screens/web-panes.webp")} alt="Four sessions side by side in a window called Backend, three of them working; the sidebar lists the Backend, Frontend and Release windows with a status dot per pane" width="3360" height="2000" loading="lazy" decoding="async" class="block h-auto w-full" />
+    <figcaption class="border-t px-4 py-3 text-sm">
+      <span class="font-semibold">Panes and windows.</span>
+      <span class="text-muted-foreground">Up to 12 panes in a window, each its own session, and as many windows as you like. The dots in the sidebar say which panes are working, done or idle.</span>
+    </figcaption>
+  </figure>
 
   <ul use:reveal={{ children: true, gap: 0.1 }} class="mt-16 grid gap-10 md:grid-cols-2">
     {#each shots as s (s.src)}

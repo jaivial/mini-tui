@@ -2,6 +2,27 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.26.2 — 2026-10-01
+
+### Site and README
+
+- **Panes and windows, front and centre.** The home page opens on the web app's multi-pane screen: four
+  sessions side by side in a "Backend" window, with three windows and their status dots in the sidebar.
+  It also has a new section, "Every session at once, in panes and windows":
+  - the pane menu moving a pane to another window;
+  - the same windows on a phone;
+  - six points: split like tmux, 12 panes per window, unlimited windows, a dot per pane, moving panes,
+    and the same layout on every device.
+
+  The first feature card, the hero text, the badge and a new FAQ answer say the same. The web-app page
+  and guide show the screenshots, and the README's Web app section leads with them.
+- `web/scripts/windows-shots.mjs` (`bun run windows-shots` in `web/`) makes those screenshots from the
+  real built app with invented data. The workspace comes from a mock hub, so no real session, path or
+  host can reach an image. A shot is refused unless the page shows what it claims: four panes, the three
+  windows, the move menu.
+- Markdown images in the docs get the site's base path, lazy loading, their alt text, and a size from
+  `#WxH`, so the page does not jump as they load.
+
 ## 0.26.1 — 2026-10-01
 
 ### Site
