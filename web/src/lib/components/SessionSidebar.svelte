@@ -4,7 +4,7 @@
   import Spinner from "./Spinner.svelte";
   import { sidebarHistory } from "../stores/history.svelte";
   import { folderStore } from "../stores/folders.svelte";
-  import { folderTitle, groupByFolder, isExpanded, loadPrefs, normalizeCwd, savePrefs, toggleIn, type FolderGroup } from "../sessionFolders";
+  import { byStart, folderTitle, groupByFolder, isExpanded, loadPrefs, normalizeCwd, savePrefs, toggleIn, type FolderGroup } from "../sessionFolders";
   import { ChevronDown, Pin, PinOff, Folder, FolderPlus, Clock3, FolderTree, Pencil, X } from "@lucide/svelte";
   import { groupByRecency, unresumableReason } from "../resume";
   import type { HistoryItem } from "../types";
@@ -86,7 +86,9 @@
     session.model.toLowerCase().includes(query);
 
   const visible = $derived(store.list.filter(matches));
-  const live = $derived(visible.filter((s) => s.status === "running"));
+  // Stable while live: a running session's `updatedAt` changes on every step, which would reshuffle
+  // these rows constantly. Live rows keep the order they were started in; the others stay newest first.
+  const live = $derived(visible.filter((s) => s.status === "running").sort(byStart));
   const idle = $derived(visible.filter((s) => s.status !== "running" && s.status !== "done"));
   const done = $derived(visible.filter((s) => s.status === "done" || s.status === "error" || s.status === "interrupted"));
 

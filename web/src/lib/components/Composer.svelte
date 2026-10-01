@@ -109,8 +109,14 @@
 
   function send() {
     if (!canSend) return;
-    memory?.push({ chips: [...chips], text: value });
-    onsend(composePrompt(chips, value));
+    const message = composePrompt(chips, value);
+    // Recall is a convenience: whatever happens to it, the message still goes out.
+    try {
+      memory?.push({ chips: [...chips], text: value });
+    } catch (error) {
+      console.error("prompt memory", error);
+    }
+    onsend(message);
   }
 
   /**

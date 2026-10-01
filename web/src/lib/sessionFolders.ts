@@ -25,6 +25,12 @@ export function normalizeCwd(cwd: string): string {
   return t.length > 1 ? t.replace(/\/+$/, "") || "/" : t;
 }
 
+/**
+ * Open sessions in a stable order: newest started first. Not by `updatedAt`, which moves on every
+ * step of a running session, so live rows would keep swapping places under your pointer.
+ */
+export const byStart = (a: { createdAt: number; id: string }, b: { createdAt: number; id: string }) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
 export function groupByFolder(
   open: SessionState[],
   saved: HistoryItem[],
@@ -57,13 +63,24 @@ export function groupByFolder(
     g.updatedAt = Math.max(g.updatedAt, h.updatedAt);
   }
   for (const g of map.values()) {
-    g.open.sort((a, b) => b.updatedAt - a.updatedAt);
+    // Live sessions first, in the order they started (they step constantly, so `updatedAt` would
+    // reshuffle them); the rest of the folder's open sessions newest first, as before.
+    g.open.sort((a, b) => {
+      const la = a.status === "running", lb = b.status === "running";
+      if (la !== lb) return la ? -1 : 1;
+      return la ? byStart(a, b) : b.updatedAt - a.updatedAt;
+    });
     g.saved.sort((a, b) => b.updatedAt - a.updatedAt);
     // A session open in this server may not be saved yet (the count comes from the database).
     g.total = Math.max(g.total, g.saved.length + g.open.filter((s) => !saved.some((h) => h.id === s.id)).length);
   }
   const rank = (g: FolderGroup) => (g.pinned ? pinned.indexOf(g.cwd) : Number.POSITIVE_INFINITY);
-  return [...map.values()].sort((a, b) => rank(a) - rank(b) || b.running - a.running || b.updatedAt - a.updatedAt);
+  // Folders with live sessions come first, but among themselves they hold their place: ordering live
+  // folders by `updatedAt` would make them trade places on every step. Newest started session wins.
+  const started = (g: FolderGroup) => Math.max(0, ...g.open.filter((s) => s.status === "running").map((s) => s.createdAt));
+  return [...map.values()].sort(
+    (a, b) => rank(a) - rank(b) || b.running - a.running || (a.running && b.running ? started(b) - started(a) : b.updatedAt - a.updatedAt) || (a.cwd < b.cwd ? -1 : a.cwd > b.cwd ? 1 : 0),
+  );
 }
 
 /** `/home/me/work/api` -> `api` as the title, `~/work` as the dim context line under it. */

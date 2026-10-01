@@ -300,6 +300,14 @@ import { windows } from "./lib/stores/windows.svelte";
    * None of them collide with typing: every one needs Ctrl, Cmd or Alt.
    */
   function onkey(event: KeyboardEvent) {
+    handleKey(event);
+    // A shortcut the app took is finished here. Letting it travel on would hand it to the field it
+    // came from, which a split or a window switch may have just unmounted: that field then reads its
+    // own state after being destroyed (Svelte's "derived_inert": stale values).
+    if (event.defaultPrevented) event.stopPropagation();
+  }
+
+  function handleKey(event: KeyboardEvent) {
     const mod = event.metaKey || event.ctrlKey;
     // Inside the terminal, the shell owns Ctrl+letters (Ctrl+K kills a line, Ctrl+B moves back...):
     // only the pane shortcuts that cannot mean anything to a shell (Ctrl+`, Alt+digit, Ctrl+Alt+arrows,

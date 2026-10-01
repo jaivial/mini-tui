@@ -2,6 +2,30 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.23.3 — 2026-10-01
+
+### Fixed
+
+- **Send stopped working in a pane after switching windows** (until a reload). Shelving a window took a
+  deep copy of its panes (`$state.snapshot`), which turned each pane's prompt memory, a class, into a
+  plain object with no methods. Back on screen, the prompt bar's `memory.push()` threw before the
+  message went out, so the Send button did nothing. The panes are now kept as they are. A failure in
+  prompt memory can no longer block a send in any case.
+- **A shortcut no longer reaches a prompt field it just unmounted.** A split or a window switch from the
+  keyboard handed the key on to the old pane's field, which then read its own state after being
+  destroyed (Svelte's `derived_inert`: stale values).
+- **Pane ids are unique across windows.** Every new window's first pane used to be `p1`, so a lookup
+  could find a pane in the wrong window. Clicking a session that one window showed could then empty a
+  pane in another. Layouts saved with the old ids are repaired when they load.
+
+### Changed
+
+- **A click on a session that a pane already shows goes to that pane**, switching window when it is on
+  another one. No pane changes what it shows, and the pane you were in is left as it was.
+- **Live sessions hold their place in the sidebar.** They are ordered by when they started, not by
+  their last update, which moved on every step and kept reshuffling the rows. Folders with live
+  sessions do the same. Finished and idle sessions stay newest first.
+
 ## 0.23.2 — 2026-09-30
 
 ### Fixed
