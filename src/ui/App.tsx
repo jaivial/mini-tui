@@ -36,6 +36,7 @@ import {
 import { cleanTaskText, createParseState, messagesToEvents, parseInfo, type ParseState } from "../traj/parse";
 import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
+import { SubagentSync, type SubagentView } from "../mini/subagents";
 import { attachMini, foreignRunAlive, runnerSupportsCompactOnly, spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
 import { copyText, pasteText, pastedLine, pastedToken } from "../clipboard";
@@ -192,7 +193,7 @@ export function deriveStatus(status: RunStatus, events: RunEvent[]): RunStatus {
 }
 
 /** Notices mini-tui adds to the transcript itself, as opposed to ones parsed from the agent's journal. */
-const UI_NOTES = new Set(["model", "skills"]);
+const UI_NOTES = new Set(["model", "skills", "subagents"]);
 function isUiNote(event: RunEvent): boolean {
   return event.type === "notice" && (!event.interruptType || UI_NOTES.has(event.interruptType));
 }
@@ -739,6 +740,42 @@ export function App(props: AppProps) {
     });
   };
 
+  /** The subagents this session's agent started, saved as sessions under it (`/resume` opens them). */
+  const subagentSync = useRef<SubagentSync | null>(null);
+  const syncSubagents = (): SubagentView[] => {
+    const id = sessionIdRef.current;
+    const traj = live.current.run?.session.trajPath;
+    if (!persist || !id || !traj) return [];
+    subagentSync.current ??= new SubagentSync(db);
+    try {
+      return subagentSync.current.sync(id, traj);
+    } catch {
+      return [];
+    }
+  };
+  useEffect(() => {
+    if (staticMode) return;
+    const timer = setInterval(() => syncSubagents(), 2000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** `/subagents`: one notice listing them (state, steps, cost, what each is doing). */
+  const showSubagents = () => {
+    const views = syncSubagents();
+    const text = views.length
+      ? [
+          `${views.length} subagent${views.length === 1 ? "" : "s"} (open one with /resume, they are saved as sessions):`,
+          ...views.map(
+            (v) =>
+              `  ${v.name.padEnd(16)} ${(v.exitStatus && v.state !== "running" ? `${v.state} ${v.exitStatus}` : v.state).padEnd(20)} ${String(v.steps).padStart(4)} steps  $${v.cost.toFixed(3)}  ${v.state === "running" ? v.lastCommand : v.task}`.slice(0, 160),
+          ),
+        ].join("\n")
+      : "no subagents yet: the agent starts them with `mini-agent-rs agent spawn` (Rust agent only)";
+    itemAppendHint.current = true;
+    setEvents((prev) => [...prev, { type: "notice", text, interruptType: "subagents" }]);
+  };
+
   /** `/new`: stop whatever runs and start a blank session (model and settings stay). */
   const newSession = () => {
     latestSave.current(); // flush the throttled save
@@ -868,6 +905,7 @@ export function App(props: AppProps) {
       return;
     }
     if (command === "compact") return compactNow();
+    if (command === "subagents" || command === "agents") return showSubagents();
     // `$skill` anywhere: mini gets each referenced skill's SKILL.md ahead of the prompt.
     const expanded = expandSkills(trimmed, skillsDir);
     if (expanded.missing.length && !expanded.used.length && /^\$/.test(trimmed)) {

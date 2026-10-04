@@ -82,6 +82,23 @@ export interface SessionState extends SessionSummary {
   info: RunInfo;
   error?: string;
   startedAt: number;
+  /** Subagents this session's agent started; each one is a session of its own. */
+  subagents?: SubagentView[];
+  /** The session that started this one as a subagent. */
+  parentId?: string;
+}
+
+/** A subagent as its parent session lists it. */
+export interface SubagentView {
+  name: string;
+  sessionId: string;
+  /** starting, running, waiting (turn done, context kept), stopped, exited */
+  state: string;
+  exitStatus: string;
+  steps: number;
+  cost: number;
+  task: string;
+  lastCommand: string;
 }
 
 export type TargetKind = "local" | "remote";

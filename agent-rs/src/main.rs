@@ -10,6 +10,7 @@ mod config;
 mod e2e;
 mod environment;
 mod models;
+mod subagents;
 mod templates;
 mod util;
 
@@ -202,6 +203,8 @@ extern "C" fn on_signal(sig: libc::c_int) {
 
 /// Die by the signal that stopped us, as Python does (the parent sees -2 / -15).
 fn die_by_signal() -> ! {
+    // Raising the signal skips destructors: stop the subagents (they save) first.
+    subagents::shutdown();
     let sig = SIGNAL.load(Ordering::SeqCst);
     let sig = if sig == 0 { libc::SIGTERM } else { sig };
     unsafe {
@@ -250,7 +253,19 @@ fn run(o: Options) -> Result<(), String> {
     let model = models::get_model(None, &model_cfg)?;
     let env = environment::get_environment(&section("environment"))?;
     let agent_config = AgentConfig::from(&agent_cfg)?;
+    // Subagents: a hub for this session's children (socket + monitor), reachable from the bash
+    // tool as `mini-agent-rs agent …`. Its guard stops the children when the run ends.
+    let _subagents = match &agent_config.output_path {
+        Some(traj) => {
+            let mut specs = o.configs.clone();
+            // Children inherit the run's config files, not its one-off `key=value` overrides of this run's limits.
+            specs.retain(|s| !s.starts_with("agent.step_limit="));
+            subagents::start(traj, &specs, agent_config.cost_limit)
+        }
+        None => None,
+    };
     let mut agent = Agent::new(model, env, agent_config);
+    agent.requested_model = model_cfg.get("model_name").and_then(Value::as_str).unwrap_or("").to_string();
     let resume: Option<Vec<Value>> = match &o.resume {
         Some(p) => {
             let text = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
@@ -345,6 +360,9 @@ fn main() {
         config::load_dotenv();
         install_signals();
         std::process::exit(e2e::main(&argv[1..]));
+    }
+    if argv.first().map(String::as_str) == Some("agent") {
+        std::process::exit(subagents::client(&argv[1..]));
     }
     if argv.first().map(String::as_str) == Some("browser") {
         std::process::exit(e2e::server::client(&argv[1..]));

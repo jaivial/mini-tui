@@ -3,6 +3,7 @@
   import { PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Settings as SettingsIcon } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import SessionHeader from "./SessionHeader.svelte";
+  import SubagentStrip from "./SubagentStrip.svelte";
   import Transcript from "./Transcript.svelte";
   import Composer from "./Composer.svelte";
   import Skeleton from "./Skeleton.svelte";
@@ -116,6 +117,19 @@ import { windows as windowStore } from "../stores/windows.svelte";
     !session ? "Used for your first message." : session.target === "remote" ? "Applies from the next turn." : session.status === "running" ? "Applies from the next step." : "Applies to your next message.",
   );
 
+  /**
+   * A subagent (or the parent of one) in this pane. The server knows it as a saved session: open
+   * it from the history, which also follows its agent live while it runs.
+   */
+  async function openSubagent(id: string) {
+    try {
+      if (!store.sessions[id]) store.adopt(await api.openHistory(id));
+      panes.show(pane.id, id);
+    } catch (error) {
+      toasts.push("Could not open that session", { detail: (error as Error).message, tone: "err" });
+    }
+  }
+
   function newChat() {
     panes.show(pane.id, null);
     queueMicrotask(() => composer?.focus());
@@ -140,6 +154,16 @@ import { windows as windowStore } from "../stores/windows.svelte";
         if (!session) toasts.push("Nothing to compact yet", { detail: "Send a message first.", tone: "info" });
         else await api.compact(session.id).catch((e) => toasts.push("Could not compact", { detail: (e as Error).message, tone: "err" }));
         break;
+      case "subagents": {
+        const kids = session?.subagents ?? [];
+        if (!kids.length) toasts.push("No subagents yet", { detail: "The agent starts them with `mini-agent-rs agent spawn` (Rust agent). They appear above the transcript.", tone: "info" });
+        else if (cmd.arg) {
+          const hit = kids.find((k) => k.name === cmd.arg);
+          if (hit) await openSubagent(hit.sessionId);
+          else toasts.push(`No subagent named ${cmd.arg}`, { detail: kids.map((k) => k.name).join(", "), tone: "err" });
+        } else toasts.push(`${kids.length} subagent${kids.length === 1 ? "" : "s"}`, { detail: kids.map((k) => `${k.name}: ${k.state}${k.exitStatus ? ` (${k.exitStatus})` : ""} · ${k.steps} steps`).join("\n"), tone: "info" });
+        break;
+      }
       case "split":
         onsplit(cmd.arg === "down" || cmd.arg === "v" ? "col" : "row");
         break;
@@ -331,6 +355,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
           showSidebarToggle={first}
           paneTools={tools}
         />
+        <SubagentStrip {session} onopen={openSubagent} />
       </div>
 
       <main bind:this={scroller} class="relative z-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">

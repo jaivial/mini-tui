@@ -72,6 +72,44 @@ Not ported, because mini-tui never uses them:
 
 Asking for one of these is an error that names what is supported.
 
+## Subagents (`mini-agent-rs agent`)
+
+Every run is also an orchestrator. It starts a small hub (a Unix socket its bash commands reach
+through `MINI_AGENT_SOCKET`), so the model can split work across child agents that the session owns:
+
+```sh
+mini-agent-rs agent spawn api "write the API tests" --cwd ~/repo --max-steps 60
+mini-agent-rs agent send api "also cover the 404 path"    # mid-run, or continue a finished one
+mini-agent-rs agent ls | wait [--any] | result | tail | model | stop
+mini-agent-rs agent ask "which branch?"                    # inside a child: message the parent
+```
+
+- **One process per child, for its whole life.** A child is an ordinary run with its control file
+  kept open. When its turn ends it holds its context, so a follow-up is one `MESSAGE` line, not a
+  new process replaying the history. A message sent mid-turn lands before its next model call.
+  Children that exited (stopped, crashed, or the session restarted) continue from their saved
+  conversation under the same name.
+- **Reports without polling.** When a child finishes, fails, stalls (`MINI_AGENT_STALL_S`, 600 s)
+  or asks something, the parent gets one `[subagent <name>] …` user message (`interrupt_type:
+  Subagent`) before its next model call. A parent holding at its exit is woken by it. A turn the
+  parent already saw (through `wait` or `result`) is not reported twice.
+- **Owned.** Children stop with the parent (SIGINT, so they save). Their spend counts toward the
+  parent's cost limit, and a child's budget is capped by what that limit has left. After
+  `LimitsExceeded`, the next `send` gives the child another turn's budget (`STEPS` / `COST` control
+  lines). Children run on the parent's current model unless `-m` or `agent model` says otherwise.
+- **Visible.** `<traj dir>/subagents/index.json` lists the children, and `info.subagents` in the
+  parent's trajectory does too. mini-tui saves each child as a session under its parent
+  (`parent_id`) and announces its live agent: the web app shows a strip of subagents above the
+  transcript, any of which opens (and follows live) in the pane; the TUI lists them with
+  `/subagents` and opens them with `/resume`.
+- **Bounded.** At most 8 live children (`MINI_AGENT_MAX_SUBAGENTS`), nesting 2 deep
+  (`MINI_AGENT_MAX_DEPTH`). `MINI_AGENT_SUBAGENTS=0` turns the hub off. A run that starts no child
+  writes exactly what the Python agent writes, so the parity suite is unaffected.
+
+The bundled `$subagents` skill teaches the model this loop. The `orch` script of `$orchestration`
+forwards `start` / `followup` / `ls` / `wait` / `result` / `stop` to it when it runs inside such a
+session. Detached headless runs remain for your own terminal and the Python agent.
+
 ## Parity with the Python agent
 
 `tests/parity/` runs the same scripted task through both agents and diffs everything mini-tui

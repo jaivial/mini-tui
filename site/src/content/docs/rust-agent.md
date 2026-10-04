@@ -139,6 +139,20 @@ requesty and OpenRouter-SDK model classes, the singularity, bubblewrap, contree 
 the interactive confirm mode, and `mini-extra`. Asking for one of them is an error that names what is
 supported.
 
+## Subagents: one session, many agents
+
+The Rust agent can split work across **subagents that the session owns**. From its bash tool the
+model runs `mini-agent-rs agent spawn <name> "<task>"`; the child is a full agent with its own
+context. It keeps that context between turns, so a follow-up is a single message instead of a new
+run. You can steer it mid-run with `agent send`. When it finishes, fails, stalls or asks a question,
+it reports back to the parent by itself, so the orchestrator never spends steps polling. Children
+stop with their session and count toward its cost limit.
+
+Every subagent is saved as a session under its parent. In the web app a strip above the
+transcript lists them with their state and cost: click one to follow it live in the pane, or
+message it like any session. In the terminal UI, `/subagents` lists them and `/resume` opens one.
+Reference the bundled `$subagents` skill in a prompt to have the agent use them.
+
 ## How it is kept identical
 
 `agent-rs/tests/parity/run_all.sh` runs both agents on the same scripted tasks against the same scripted

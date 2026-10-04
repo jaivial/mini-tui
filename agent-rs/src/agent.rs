@@ -124,6 +124,9 @@ pub struct Agent {
     compacting: Option<String>,
     control_model: Option<String>,
     calibration: Option<f64>,
+    /// The model name as asked for (`-m`, the config, then `MODEL` switches): routable, unlike the
+    /// client's own id (which drops the provider prefix). Subagents start on it.
+    pub requested_model: String,
 }
 
 impl Agent {
@@ -146,6 +149,7 @@ impl Agent {
             compacting: None,
             control_model: None,
             calibration: None,
+            requested_model: String::new(),
         }
     }
 
@@ -265,6 +269,15 @@ impl Agent {
             let line = line.trim();
             if line == "COMPACT" {
                 self.compact_requested = true;
+            } else if let Some(n) = line.strip_prefix("STEPS ") {
+                // A parent extending this subagent's budget: N more model calls from now.
+                if let Ok(n) = n.trim().parse::<i64>() {
+                    self.config.step_limit = self.n_calls + n.max(1);
+                }
+            } else if let Some(x) = line.strip_prefix("COST ") {
+                if let Ok(x) = x.trim().parse::<f64>() {
+                    self.config.cost_limit = self.cost + x.max(0.0);
+                }
             } else if let Some(name) = line.strip_prefix("MODEL ") {
                 let n = name.trim();
                 model = if n.is_empty() { None } else { Some(n.to_string()) };
@@ -287,6 +300,10 @@ impl Agent {
         (model, messages)
     }
 
+    fn parent_model_name(&self) -> String {
+        if self.requested_model.is_empty() { self.model.model_name() } else { self.requested_model.clone() }
+    }
+
     fn apply_model_switch(&mut self, name: Option<String>) {
         let Some(name) = name else { return };
         if self.control_model.as_deref() == Some(name.as_str()) {
@@ -294,7 +311,10 @@ impl Agent {
         }
         self.control_model = Some(name.clone());
         match get_model(Some(&name), &Obj::new()) {
-            Ok(m) => self.model = m,
+            Ok(m) => {
+                self.model = m;
+                self.requested_model = name.clone();
+            }
             Err(e) => eprintln!("WARNING: could not switch to model {name}: {e}"),
         }
     }
@@ -303,13 +323,30 @@ impl Agent {
         let (model, messages) = self.drain_control();
         self.apply_model_switch(model);
         self.apply_pending_compaction();
-        let any = !messages.is_empty();
+        let mut any = !messages.is_empty();
         for text in messages {
             self.add_messages(vec![Self::user_task_message(&text)]);
         }
+        any |= self.add_subagent_notes();
         if any {
             self.save(false);
         }
+    }
+
+    /// What this session's subagents reported (finished, failed, stalled, asked) since the last
+    /// step, as one user message the model reads before its next call.
+    fn add_subagent_notes(&mut self) -> bool {
+        crate::subagents::set_parent_state(self.cost, self.config.cost_limit, &self.parent_model_name());
+        let notes = crate::subagents::take_notes();
+        if notes.is_empty() {
+            return false;
+        }
+        self.add_messages(vec![json!({
+            "role": "user",
+            "content": notes.join("\n\n"),
+            "extra": {"interrupt_type": "Subagent", "timestamp": now()},
+        })]);
+        true
     }
 
     fn apply_pending_compaction(&mut self) {
@@ -330,7 +367,19 @@ impl Agent {
     /// Hold at exit for a follow-up: true when a `MESSAGE` arrived.
     fn wait_for_followup(&mut self) -> Result<bool, ModelError> {
         if Self::control_file().is_none() {
-            return Ok(false);
+            // No one can send a follow-up (a headless run), but subagents still at work will
+            // report: hold for them, so ending a turn never kills the children it started.
+            while crate::subagents::live_children() > 0 {
+                if STOP.load(Ordering::SeqCst) {
+                    return Err(interrupted_idle());
+                }
+                if crate::subagents::has_notes() && self.add_subagent_notes() {
+                    self.save(false);
+                    return Ok(true);
+                }
+                interruptible_sleep(std::time::Duration::from_millis(200));
+            }
+            return Ok(self.add_subagent_notes());
         }
         loop {
             if STOP.load(Ordering::SeqCst) {
@@ -343,6 +392,13 @@ impl Agent {
                 for text in messages {
                     self.add_messages(vec![Self::user_task_message(&text)]);
                 }
+                self.add_subagent_notes();
+                self.save(false);
+                return Ok(true);
+            }
+            // A subagent finishing (or asking) wakes a session that holds at its exit: it reads
+            // the report and carries on, instead of waiting for the user to poke it.
+            if crate::subagents::has_notes() && self.add_subagent_notes() {
                 self.save(false);
                 return Ok(true);
             }
@@ -354,6 +410,7 @@ impl Agent {
 
     pub fn run(&mut self, task: &str, resume: Option<Vec<Value>>, compact_only: bool) -> Result<Obj, ModelError> {
         self.extra_vars.insert("task".into(), json!(task));
+        crate::subagents::set_parent_state(self.cost, self.config.cost_limit, &self.parent_model_name());
         if let Some(resume) = resume.filter(|r| !r.is_empty()) {
             self.messages = Self::repair_tool_call_history(resume.into_iter().filter(|m| role(m) != "exit").collect());
             if compact_only {
@@ -444,7 +501,8 @@ impl Agent {
     fn query(&mut self) -> Result<Value, Flow> {
         self.apply_control_commands();
         let c = &self.config;
-        if (c.step_limit > 0 && c.step_limit <= self.n_calls) || (c.cost_limit > 0.0 && c.cost_limit <= self.cost) {
+        let spent = self.cost + crate::subagents::children_cost();
+        if (c.step_limit > 0 && c.step_limit <= self.n_calls) || (c.cost_limit > 0.0 && c.cost_limit <= spent) {
             return Err(Flow::Interrupt(vec![Self::exit_message("LimitsExceeded", "LimitsExceeded", "")]));
         }
         if c.wall_time_limit_seconds > 0 && c.wall_time_limit_seconds <= (now() - self.start) as i64 {
@@ -706,6 +764,12 @@ impl Agent {
             "messages": self.messages,
             "trajectory_format": "mini-swe-agent-1.1",
         });
+        // Only when this session started subagents: a run without any stays byte-identical to
+        // the Python agent's trajectory (the parity suite compares them).
+        if let Some(children) = crate::subagents::snapshot() {
+            data["info"]["subagents"] = children;
+            data["info"]["subagents_cost"] = json!(crate::subagents::children_cost());
+        }
         let obj = data.as_object_mut().unwrap();
         merge_into(obj, self.model.serialize().as_object().unwrap());
         merge_into(obj, self.env.serialize().as_object().unwrap());

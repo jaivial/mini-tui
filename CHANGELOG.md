@@ -2,6 +2,40 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.29.0 — 2026-10-04
+
+### Added
+
+- **Subagents owned by the session, in Rust (`mini-agent-rs agent`).** Orchestration used to start
+  every child as a detached headless run: a Python supervisor, then `mini-tui -p`, then the agent,
+  with no control channel. The orchestrator could not talk to a running child, every follow-up was
+  a new run replaying the whole history (21 of the 64 runs on this machine), and it learned
+  progress by polling with its own steps. Now every Rust session runs a small hub, and the model
+  drives it from its bash tool:
+  - `agent spawn` starts a child as one process for its whole life, with its own control file kept
+    open. A follow-up (`agent send`) is one message to the same process, with all its context, and
+    a message sent mid-turn lands before the child's next model call. A child that exited
+    continues from its saved conversation under the same name.
+  - When a child finishes, fails, stalls or asks something (`agent ask`, from inside it), the
+    parent gets a `[subagent <name>] …` message before its next step. A parent that already ended
+    its turn is woken by it. No polling.
+  - Children stop with their session and count toward its cost limit; a child's budget is capped
+    by what is left. After `LimitsExceeded`, the next `send` grants another turn's budget (new
+    `STEPS` / `COST` control lines). Children run on the parent's current model by default.
+  - `agent ls | wait | result | tail | model | stop` cover the rest. Limits: 8 live children,
+    nesting 2 deep. A run that starts no child writes exactly what the Python agent writes (the
+    parity suite stays identical).
+- **Subagents in the web app and the TUI.** Each child is saved as a session under its parent
+  (`parent_id`), and its live agent is announced like any other. The web app shows a strip of
+  subagents above the transcript (state, steps, cost): click one to follow it live in the pane,
+  and its own strip links back to the parent. `/subagents [name]` lists them or opens one. In the
+  TUI, `/subagents` lists them and `/resume` opens one.
+- **The `$subagents` skill** (bundled) teaches the loop: split, spawn, keep working, steer, collect,
+  verify. `$orchestration`'s `orch` forwards `start`, `followup`, `ls`, `status`, `tail`, `wait`,
+  `result` and `stop` to the session's hub when run inside a Rust session. Its detached headless
+  runs remain for your own terminal, the Python agent, and runs that must outlive the session
+  (`ORCH_DETACHED=1`).
+
 ## 0.28.0 — 2026-10-04
 
 ### Added

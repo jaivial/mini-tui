@@ -42,6 +42,7 @@ import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 import { probeHost, startRemoteRun, type RemoteRun, type SshTarget } from "./ssh";
+import { SubagentSync, type SubagentView } from "../mini/subagents";
 
 /** One saved session in the history list: metadata only, no transcript. */
 export interface HistoryItem {
@@ -84,6 +85,10 @@ export interface LiveSession {
   apiCalls: number;
   cost: number;
   exitStatus: string;
+  /** Subagents this session's agent started (`mini-agent-rs agent spawn`), each a session of its own. */
+  subagents?: SubagentView[];
+  /** The session that started this one as a subagent. */
+  parentId?: string;
 }
 
 export interface RemoteHostRecord {
@@ -184,6 +189,7 @@ export class SessionManager {
   #onChange: (session: LiveSession) => void;
 
   #syncTimer?: ReturnType<typeof setInterval>;
+  #subagents = new SubagentSync(() => this.db());
 
   constructor(onChange: (session: LiveSession) => void, options: { syncMs?: number } = {}) {
     this.#onChange = onChange;
@@ -191,6 +197,28 @@ export class SessionManager {
     if (every > 0) {
       this.#syncTimer = setInterval(() => this.syncExternal(), every);
       (this.#syncTimer as { unref?: () => void }).unref?.();
+    }
+  }
+
+  /**
+   * Children of the sessions this server follows: saved as sessions under their parent, their live
+   * agents announced so they can be opened and messaged, and listed on the parent for the UI.
+   */
+  #syncSubagents(): void {
+    for (const entry of this.#live.values()) {
+      const traj = entry.trajPath;
+      if (!traj) continue;
+      let views: SubagentView[];
+      try {
+        views = this.#subagents.sync(entry.session.id, traj);
+      } catch {
+        continue;
+      }
+      if (!views.length && !entry.session.subagents?.length) continue;
+      const before = JSON.stringify(entry.session.subagents ?? []);
+      if (JSON.stringify(views) === before) continue;
+      entry.session.subagents = views;
+      this.#emit(entry);
     }
   }
 
@@ -209,6 +237,7 @@ export class SessionManager {
    *   here) replaces the stale copy, so the next message continues the real conversation.
    */
   syncExternal(): void {
+    this.#syncSubagents();
     const idle = [...this.#live.values()].filter(
       (entry) => entry.session.target === "local" && !(entry.run && !entry.exited) && entry.session.status !== "running",
     );
@@ -634,7 +663,7 @@ export class SessionManager {
     // The agent's own trajectory is the freshest copy of the conversation (the owner saves its
     // transcript only every few seconds): the transcript is rebuilt from it. Until it has messages
     // (the agent just started) the saved copy stays on screen.
-    const where = record.owner === "web" ? "another mini-tui web server" : "a terminal";
+    const where = record.owner === "web" ? "another mini-tui web server" : record.owner === "subagent" ? "its parent session (subagent)" : "a terminal";
     entry.session.events = entry.session.events.filter((event) => !(event.type === "notice" && event.interruptType === "attach"));
     entry.session.events.push({ type: "notice", text: `following the agent running in ${where}`, interruptType: "attach" });
     entry.rebuild = true;
@@ -1173,6 +1202,7 @@ export function restoreFromRow(row: SessionRecord): LiveSession {
     apiCalls: Number(row.api_calls) || 0,
     cost: Number(row.cost) || 0,
     exitStatus,
+    ...(row.parent_id ? { parentId: row.parent_id } : {}),
   };
 }
 

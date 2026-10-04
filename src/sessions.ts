@@ -19,6 +19,8 @@ export interface SessionRecord {
   events_json: string;
   info_json: string;
   messages_json: string;
+  /** The session whose agent started this one as a subagent ('' for a top-level session). */
+  parent_id?: string;
 }
 
 export const DEFAULT_DB_PATH = process.env.MINITUI_DB_PATH ?? join(homedir(), ".config", "mini-tui", "sessions.db");
@@ -68,6 +70,12 @@ export function openDb(path: string = DEFAULT_DB_PATH): Database {
     db.exec("ALTER TABLE sessions ADD COLUMN messages_json TEXT NOT NULL DEFAULT '[]'");
   } catch {
     // column already exists (databases created before --resume support)
+  }
+  try {
+    // A subagent's session points at the session whose agent started it.
+    db.exec("ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''");
+  } catch {
+    // column already exists
   }
   // The agent each UI is running for a session right now, so another UI (the web app, a second
   // terminal) can follow that same agent and talk to it instead of forking the conversation.
@@ -194,6 +202,28 @@ export function clearLiveRun(db: Database, sessionId: string, trajPath: string):
 
 export function getLiveRun(db: Database, sessionId: string): LiveRunRecord | null {
   return (db.query("SELECT * FROM live_runs WHERE session_id = ?").get(sessionId) as LiveRunRecord | undefined) ?? null;
+}
+
+/**
+ * Record a subagent as a session of its own, under its parent: same history, `/resume` and web
+ * sidebar as any other session. Idempotent (the id is derived from the parent and the name).
+ */
+export function upsertSubagentSession(
+  db: Database,
+  record: { id: string; parentId: string; title: string; cwd: string; model: string; task: string },
+): void {
+  const now = Date.now();
+  db.query(
+    `INSERT INTO sessions (id, title, cwd, model, task, created_at, updated_at, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET model = excluded.model, parent_id = excluded.parent_id`,
+  ).run(record.id, record.title, record.cwd, record.model, record.task, now, now, record.parentId);
+}
+
+/** The subagent sessions a session started, oldest first. */
+export function listSubagentSessions(db: Database, parentId: string): Array<{ id: string; title: string; exit_status: string; cost: number }> {
+  return db
+    .query("SELECT id, title, exit_status, cost FROM sessions WHERE parent_id = ? ORDER BY created_at")
+    .all(parentId) as Array<{ id: string; title: string; exit_status: string; cost: number }>;
 }
 
 /** `updated_at` of each listed session: a cheap way to notice another process saved one. */
