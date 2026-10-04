@@ -10,7 +10,7 @@
     title: "Changelog",
     description: "Release notes for mini-tui: what changed in every version, newest first, including the 0.19 web app release.",
     type: "article",
-    modified: "2026-10-01",
+    modified: "2026-10-04",
     crumbs: [{ name: "Home", path: "/" }, { name: "Changelog", path: "/changelog/" }],
   }}
 />

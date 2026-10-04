@@ -14,6 +14,7 @@ Type `/` at the start of a message.
 | `/new` | Start a new chat. In the web app nothing is created until you send. |
 | `/model [id]` | Open the model picker, or switch straight to an id. |
 | `/compact` | Summarize the conversation now to free context. |
+| `/subagents [name]` | List the subagents this session started, or open one (web app). In the terminal, `/resume` opens one. |
 | `/connect` | Connect a provider with your own API key. |
 | `/settings` | Open settings. |
 | `/skills` | Browse the skills you can reference with `$name`. |
@@ -40,3 +41,12 @@ mini-tui keeps its own folder, `~/.config/mini-tui/skills/` (override with `MINI
 and at every startup, each skill in `~/.claude/skills` that the folder does not have yet is copied in.
 Copies are never overwritten, and a skill you delete is not re-imported. `bun run sync-skills` runs it by
 hand.
+
+## Bundled skills
+
+mini-tui ships its own skills and installs them into that folder at install and at every startup. A newer
+version replaces a copy you have not edited; one you edited or deleted is left as you made it.
+
+- `$subagents`: how an agent splits work across subagents of its own session (Rust agent): spawn them,
+  keep working while they run, steer them with messages, and collect and check their results.
+- `$e2e`: how an agent writes and runs `mini-agent-rs e2e` browser tests.

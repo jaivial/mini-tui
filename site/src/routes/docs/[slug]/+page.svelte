@@ -16,7 +16,7 @@
     title: doc.title,
     description: doc.description,
     type: "article",
-    modified: "2026-10-01",
+    modified: "2026-10-04",
     crumbs: [{ name: "Home", path: "/" }, { name: "Docs", path: "/docs/" }, { name: doc.title, path: `/docs/${doc.slug}/` }],
   }}
 />

@@ -17,6 +17,11 @@ Three ways to use it:
 The agent behind all three is the bundled Python mini-swe-agent, or its
 **[Rust port](#the-rust-agent-optional)**. The Rust port is a single binary that needs no Python.
 
+The terminal UI and the web app share one session history **and one live agent per session**: open
+a session in both and they stream the same run, and a prompt typed in either reaches the same agent.
+With the Rust agent, a session can also **[start subagents](#subagents)** of its own and see them
+report back.
+
 ![mini-tui running a task](docs/screenshots/run.png)
 
 ## Features
@@ -46,11 +51,21 @@ The agent behind all three is the bundled Python mini-swe-agent, or its
   yet is copied in, including symlinked skills and the `synced/<bucket>/` layout. Copies are
   never overwritten, and a skill you delete from mini-tui's folder is not re-imported.
   `bun run sync-skills` runs the sync by hand.
-- **Bundled skills, carried everywhere.** mini-tui ships its own skills in `skills/`, starting
-  with **`$e2e`** (how agents write and run `mini-agent-rs e2e` tests). They are installed into
+- **Bundled skills, carried everywhere.** mini-tui ships its own skills in `skills/`:
+  **`$e2e`** (how agents write and run `mini-agent-rs e2e` tests) and **`$subagents`** (how an
+  agent splits work across its own subagents). They are installed into
   the skills folder at install and at every startup of the TUI, `-p` and the web server; a newer
   bundled version replaces an unedited copy, while an edited or deleted one is left as you made
   it. `mini-agent-rs e2e skill` prints `$e2e` on hosts with only the binary.
+- **The TUI and the web app on the same session.** Every UI records the agent it runs for a
+  session. Opening that session elsewhere (the web app, another terminal) follows the same agent
+  live instead of starting a second one: its output streams in as it is written, and a prompt,
+  `/model` or `/compact` sent from either UI reaches it. Closing one view leaves the agent to the
+  other. Sessions that a terminal continued while the web app held them are reloaded before the
+  next message, so a conversation never forks.
+- **Subagents (`/subagents`).** With the Rust agent, a session can split its work across child
+  agents it owns ([details](#subagents)). `/subagents` lists them with their state, steps and
+  cost; each one is saved as a session, so `/resume` opens it.
 - **`/compact`.** Summarizes the conversation now, with or without a run in flight. While it
   runs, the transcript shows `Compacting...` and the status line `compacting`. Auto-compaction
   (at 80 % of the context window) shows the same state.
@@ -173,7 +188,11 @@ bun run web:dev      # Vite dev server, hot reload
 ```
 
 Sessions started in the browser land in the same `~/.config/mini-tui/sessions.db` the terminal UI's
-`/resume` reads, so both front ends see each other. `/resume` works in the browser too, even from a new
+`/resume` reads, so both front ends see each other. **A session running in a terminal opens live in
+the browser**: the web app follows that terminal's agent (its output streams in, your prompts go to
+it) instead of showing a frozen copy or starting a second agent, and the terminal does the same for
+a session the browser runs. Opening a session never fails because a terminal is saving at that
+moment: the database runs in WAL mode, so readers never wait for a writer. `/resume` works in the browser too, even from a new
 chat with nothing running: it lists every saved session, searchable, and sending a message continues the
 one you pick.
 
@@ -190,6 +209,10 @@ What the web app does:
   - **Terminal**, a real shell in the session's folder (over SSH for a remote session) that survives
     hiding the panel and reloading the page. Open it with `` Ctrl+` `` or `/terminal`.
 - **Settings** with an **interface size** and a separate **text size**.
+- **Subagents above the transcript.** A session whose agent started subagents shows them in a strip
+  under its header, each with a status dot, its steps and its cost. Click one to follow it live in
+  the pane (and message it like any session); its own strip links back to the parent.
+  `/subagents [name]` lists them or opens one.
 
 **One workspace on every device**: the windows, panes and sidebar are kept on the server, so a phone,
 a laptop and a second tab all show the same thing, and a change on one appears on the others live.
@@ -420,6 +443,7 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `/` | opens the command palette: `↑`/`↓` or click to select · `Enter`/`Tab` fills the prompt (never sends) |
 | `$` | anywhere in the prompt: opens the skills panel (filters as you type) · `Enter`/`Tab` inserts `$name` |
 | `/compact` | summarize the conversation now (frees context) |
+| `/subagents` | list the subagents this session started (each is a session: `/resume` opens it) |
 | `↑` / `↓` (in the prompt) | browse the prompts sent in this session · `↓` past the newest restores your draft |
 | `Esc` | close the palette / leave the prompt · **double `Esc` interrupts the run** |
 | `ctrl+c` | clear the prompt · press it twice (within 1.5 s) to close |
@@ -458,6 +482,14 @@ mini-tui appends `MESSAGE <text>` / `MODEL <id>` lines to the run's control file
 - injects `MESSAGE` lines as `UserNewTask` prompts — from the agent's next step mid-run, and after
   a submission via an *exit hold* (the run stays open so one conversation can span many turns);
 - applies `MODEL` switches from the next step.
+
+### One agent, several UIs
+
+Each UI that starts an agent records it in the `live_runs` table of `sessions.db` (session,
+trajectory, control file, pid). Another UI opening that session checks that the pid still runs that
+trajectory, then follows it the same way: it reads the same journal and writes to the same control
+file. So the web app, the terminal and a subagent's parent all drive one process, and whichever UI
+started it decides when it ends.
 
 ## The Rust agent (optional)
 
@@ -504,9 +536,37 @@ It covers everything mini-tui uses:
 - **Environments:** local and docker.
 
 `agent-rs/tests/parity/run_all.sh` runs both agents on the same scripted tasks and scripted HTTP
-servers: 28 scenarios plus 8 helper cases. It checks that they write identical trajectories, exit the
+servers: 31 scenarios plus 8 helper cases. It checks that they write identical trajectories, exit the
 same way and send identical requests. See [`agent-rs/README.md`](agent-rs/README.md) for what is and
 is not ported.
+
+### Subagents
+
+A session on the Rust agent can split its work across **subagents it owns**. The model drives them
+from its bash tool, and the bundled `$subagents` skill teaches it how:
+
+```sh
+mini-agent-rs agent spawn api "write the API tests" --cwd ~/repo --max-steps 60
+mini-agent-rs agent send api "also cover the 404 path"   # mid-run, or continue a finished one
+mini-agent-rs agent ls | wait | result | tail | model | stop
+mini-agent-rs agent ask "which branch?"                   # inside a subagent: ask the parent
+```
+
+- **One process per subagent.** It keeps its whole context between turns, so a follow-up is a
+  single message, not a new run replaying the history. A message sent mid-run lands before its next
+  step. One that exited continues from its saved conversation under the same name.
+- **It reports back by itself.** When a subagent finishes, fails, stalls or asks something, the
+  parent reads a `[subagent <name>] …` message before its next step. A parent that already ended
+  its turn is woken by it, so the orchestrator never spends steps polling.
+- **Owned by the session.** Subagents stop with it, count toward its cost limit, and run on its
+  current model unless told otherwise. At most 8 run at once, nested at most 2 deep.
+- **Visible everywhere.** Each subagent is saved as a session under its parent: the web app shows
+  them above the transcript, the TUI lists them with `/subagents`, and any of them opens live.
+
+A run that starts no subagent behaves exactly like the Python agent: the parity suite still
+compares every scenario byte for byte. `$orchestration`'s `orch` forwards its commands to the
+session's subagents when it runs inside a Rust session. Its detached headless runs remain for your
+own terminal and the Python agent. Full reference: [`agent-rs/README.md`](agent-rs/README.md#subagents-mini-agent-rs-agent).
 
 ## Bundled mini-swe-agent
 

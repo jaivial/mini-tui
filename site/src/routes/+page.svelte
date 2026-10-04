@@ -15,7 +15,7 @@
   import { DESCRIPTION, REPO, RELEASE } from "$lib/site";
 </script>
 
-<Seo page={{ path: "/", title: "mini-tui: terminal and web UI for the mini-swe-agent", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-10-01" }} />
+<Seo page={{ path: "/", title: "mini-tui: terminal and web UI for the mini-swe-agent", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-10-04" }} />
 
 <!-- Hero: the one <h1>, the primary action, and the product in the first viewport. -->
 <div class="relative overflow-hidden border-b">
@@ -39,7 +39,7 @@
 </div>
 
 <Section id="features" title="Everything the agent does, in the open" lede="A UI that stays out of the way of the work, and gets out of the way faster than you can read a transcript.">
-  <ul use:reveal={{ children: true }} class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+  <ul use:reveal={{ children: true }} class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
     {#each features as f (f.id)}
       <li>
         <Card.Root class="h-full">

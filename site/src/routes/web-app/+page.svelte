@@ -10,14 +10,14 @@
     { src: "/screens/web-model-picker.webp", alt: "The model switcher open above the prompt bar, grouped by provider", title: "A model switcher that keeps up", body: "Search, arrow keys and Enter. Grouped by provider, and a model that is not listed can be typed." },
     { src: "/screens/web-settings-providers.webp", alt: "Settings, Providers tab: connected providers with masked keys", title: "Providers, tested before saved", body: "A key is checked with one real request first, then stored on your machine. The browser only ever sees a masked hint." },
   ];
-  // What the web app gained after the screenshots above were taken (0.20 to 0.26).
+  // What the web app gained after the screenshots above were taken (0.20 to 0.29).
   const recent = [
+    { title: "Live with the terminal", body: "Open a session a terminal is running and follow the same agent here, live. A message from either one reaches it." },
+    { title: "Subagents above the transcript", body: "A session's subagents in a strip: state, steps and cost. Click one to watch it live, then step back to its parent." },
     { title: "Move a pane anywhere", body: "From a pane's menu, send it to another window or to a new one. Its session keeps running on the way." },
     { title: "One workspace everywhere", body: "Your windows, panes and sidebar are kept on the server: a phone, a laptop and a second tab all show the same thing, live." },
     { title: "A status dot per pane", body: "Working, done or idle, on each window row in the sidebar. A finished turn stays marked until you click its pane." },
     { title: "Notes and a terminal", body: "Every pane has a side panel with notes that save as you type, and a real shell in the session's folder." },
-    { title: "The Rust agent", body: "One static binary behind every session: under a millisecond to start, about 4.5 MB per waiting session." },
-    { title: "sudo where you need it", body: "Agents and the terminal can run sudo under the account's own rules, the same as in the terminal UI." },
   ] as const;
   const phone = [
     { src: "/screens/web-phone-chat.webp", alt: "mini-tui on a phone showing a session transcript and the prompt bar" },
@@ -29,8 +29,8 @@
   page={{
     path: "/web-app/",
     title: "The mini-tui web app",
-    description: "A browser UI for the mini-swe-agent coding agent: several sessions at once, one WebSocket each, draft chats, command and skill chips, a model switcher, and a phone layout.",
-    modified: "2026-10-01",
+    description: "A browser UI for the mini-swe-agent coding agent: sessions in panes, live with the terminal, subagents, skill chips, a model switcher and a phone layout.",
+    modified: "2026-10-04",
     crumbs: [{ name: "Home", path: "/" }, { name: "Web app", path: "/web-app/" }],
   }}
 />

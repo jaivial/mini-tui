@@ -39,6 +39,26 @@ follow-ups continue the same conversation mid-run. The trajectory journal is
 watched and parsed with the TUI's incremental parser — the web UI renders
 exactly the events the terminal UI would.
 
+### Sessions running elsewhere (a terminal, a subagent)
+
+A session can already have a live agent when the browser opens it: a terminal UI is running it, or
+it is a subagent another session started. Every UI records its agent in `live_runs`
+(`sessions.db`), so the server attaches to that agent instead of starting a second one. It follows
+its journal (the transcript streams in live) and writes prompts, model switches and `/compact` to
+its control file. Held sessions are checked every second (`MINITUI_WEB_SYNC_MS`). A newer save from
+a terminal replaces the server's copy before the next prompt, and an agent that starts in a terminal
+for a held session is picked up. Only an id that exists nowhere answers 404. Any other failure to
+open answers 503, which the client retries, so a pane is never reset to a new chat by mistake.
+
+### Subagents
+
+A session on the Rust agent can start subagents (`mini-agent-rs agent spawn`). The server reads
+their index from the parent's run folder. It saves each one as a session with `parent_id` set and
+announces its live agent. The session's `subagents` field lists them: name, state, steps, cost and
+the session id. `SubagentStrip.svelte` shows them under the header, and a click opens one in the
+pane. A subagent's own strip links back to its parent through `parentId`. `/subagents [name]` lists
+them or opens one.
+
 ### Remote sessions (SSH)
 
 The agent runs **headless on the server**; the UI never leaves this machine.

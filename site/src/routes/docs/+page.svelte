@@ -13,7 +13,7 @@
     title: "Documentation",
     description: "Guides for mini-tui: install it, run the web app, use commands and skills, connect model providers, run the agent over SSH, and script it headlessly.",
     type: "article",
-    modified: "2026-10-01",
+    modified: "2026-10-04",
     crumbs: [{ name: "Home", path: "/" }, { name: "Docs", path: "/docs/" }],
   }}
 />

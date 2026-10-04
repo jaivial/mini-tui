@@ -14,6 +14,18 @@ export const features = [
     body: "Up to 12 panes in a window, each its own session, all running at once. As many windows as you like, a status dot per pane.",
   },
   {
+    id: "live",
+    icon: "monitor-smartphone",
+    title: "Terminal and browser, one session",
+    body: "Open a session a terminal is running and the browser follows the same agent live. Type in either one; nothing forks.",
+  },
+  {
+    id: "subagents",
+    icon: "workflow",
+    title: "Subagents that report back",
+    body: "A session splits its work across agents it owns. Each one keeps its context, takes messages mid-run and reports when it is done.",
+  },
+  {
     id: "sockets",
     icon: "plug",
     title: "One WebSocket per session",
@@ -81,7 +93,8 @@ export const agents = {
   points: [
     "Same configs, trajectories, journal and control file: either agent resumes the other's sessions.",
     "Rust is the default once its binary is found. MINITUI_AGENT=python picks Python.",
-    "Kept identical by a parity suite: 26 scenarios and 8 helper cases, byte for byte.",
+    "Kept identical by a parity suite: 31 scenarios and 8 helper cases, byte for byte.",
+    "Only the Rust agent runs subagents: a session's own agents, owned and costed by it.",
   ],
 } as const;
 
@@ -109,7 +122,8 @@ export const faq = [
   { q: "Does the web app work on a phone?", a: "Yes. It uses 44px touch targets, bottom-sheet dialogs, safe-area insets and a keyboard-aware prompt bar. Put it behind a reverse proxy with authentication to reach it from other devices." },
   { q: "Can I run several sessions side by side?", a: "Yes. Split the web app into panes like tmux, up to 12 in a window, each running its own session at the same time. Group panes into as many windows as you like, see a working, done or idle dot for every pane in the sidebar, and move a pane to another window from its menu. The layout is kept on the server, so every device shows the same windows." },
   { q: "Python or Rust: which agent should I use?", a: "The Rust agent, unless you need a Python-only extension. It is a port of the same runner as one static binary: it starts in under a millisecond instead of about 65 ms and holds about 4.5 MB per waiting session instead of about 36 MB. It needs no Python. Both read the same configs and write the same trajectories, and a parity suite checks that they behave the same." },
-  { q: "How is it different from the terminal UI?", a: "They are the same agent and share the same session history, so a session started in one shows up in the other. The web app adds a sidebar of concurrent sessions and remote hosts; the terminal UI is lighter and needs no browser." },
+  { q: "How is it different from the terminal UI?", a: "They are the same agent and share the same session history. A session running in a terminal opens live in the browser: both follow the same agent, and a message typed in either one reaches it. The web app adds panes, windows and remote hosts; the terminal UI is lighter and needs no browser." },
+  { q: "Can one session start other agents?", a: "Yes, with the Rust agent. A session can start subagents to split its work. Each one is a full agent that keeps its context between turns and takes messages while it runs. It reports back by itself when it finishes, fails or has a question, so the main agent never wastes steps checking on it. Subagents stop with their session and count toward its cost limit. Each is saved as a session of its own, so you can open any of them and watch it live." },
 ] as const;
 
 export const screens = [

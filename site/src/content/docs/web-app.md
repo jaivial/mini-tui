@@ -1,6 +1,6 @@
 ---
 title: The web app
-description: Run mini-tui in a browser: panes and windows of sessions running at once, the same layout on every device, chips, a model switcher, and phone support.
+description: Run mini-tui in a browser: panes and windows of sessions, live sessions shared with the terminal, subagents, a model switcher, and phone support.
 section: Web app
 order: 3
 ---
@@ -60,6 +60,24 @@ on the server (`~/.config/mini-tui/web-workspace.json`), not in the browser. A p
 tab all show the same thing, and a change on one appears on the others immediately.
 
 What you are typing stays in its own tab, and so do the interface and text sizes and the theme.
+
+## A session running in a terminal
+
+Open a session that a terminal UI is running right now and the web app follows that terminal's agent:
+its output streams in as it is written, and what you send from the browser goes to the same agent. Nothing
+forks, and no second agent starts. The terminal does the same for a session the browser runs. Closing
+either view leaves the agent running for the other one.
+
+If a terminal continues a session while the web app holds it, the browser picks up the newer
+conversation before your next message.
+
+## Subagents
+
+With the Rust agent, a session can start subagents to split its work. They appear in a strip under the
+session's header, each with a status dot, its steps and its cost. Click one to follow it live in the pane
+and message it like any session; its own strip links back to the parent. `/subagents` lists them and
+`/subagents <name>` opens one. See [Subagents](/docs/rust-agent/#subagents-one-session-many-agents) for
+how they work.
 
 ## Notes and a terminal
 
