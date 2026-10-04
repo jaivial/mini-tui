@@ -1,0 +1,42 @@
+# Turn counting: a scripted model that batches several independent commands into ONE reply,
+# the way a real agent does. Both agents must send the same prompts and therefore take the
+# same number of turns and run the same tool calls (no "the Rust one reads more files").
+agent:
+  max_consecutive_format_errors: 5
+  cost_limit: 3.
+  system_template: |
+    You are a helpful assistant that can interact with a computer.
+  instance_template: |
+    Please solve: {{task}}
+    cwd={{ cwd | tojson }}
+model:
+  model_class: minisweagent.models.test_models.DeterministicToolcallModel
+  model_name: deterministic
+  cost_per_call: 0.01
+  observation_template: |
+    {"returncode": {{ output.returncode }}, "output": {{ output.output | tojson }}}
+  outputs:
+    - role: assistant
+      content: "Looking around."
+      tool_calls:
+        - {id: call_1, type: function, function: {name: bash, arguments: '{"command": "echo one"}'}}
+        - {id: call_2, type: function, function: {name: bash, arguments: '{"command": "echo two"}'}}
+        - {id: call_3, type: function, function: {name: bash, arguments: '{"command": "echo three"}'}}
+      extra:
+        actions:
+          - {command: "echo one", tool_call_id: call_1}
+          - {command: "echo two", tool_call_id: call_2}
+          - {command: "echo three", tool_call_id: call_3}
+    - role: assistant
+      content: "Checking the second group."
+      tool_calls:
+        - {id: call_4, type: function, function: {name: bash, arguments: '{"command": "echo four"}'}}
+        - {id: call_5, type: function, function: {name: bash, arguments: '{"command": "echo five"}'}}
+      extra:
+        actions:
+          - {command: "echo four", tool_call_id: call_4}
+          - {command: "echo five", tool_call_id: call_5}
+    - role: assistant
+      content: "Done."
+      extra:
+        submission: "All five commands ran."

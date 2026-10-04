@@ -2,6 +2,107 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.28.0 — 2026-10-04
+
+### Added
+
+- **The web app and the terminal UI share one live agent per session.** Every UI now records the
+  agent it runs for a session (a `live_runs` table in the shared `sessions.db`). Opening a session
+  in the web app while a terminal runs it follows that very agent: its output streams into the
+  browser as it is written, and a prompt, a model switch or `/compact` sent from the browser goes
+  to the same agent through its control file. A prompt typed in the terminal streams into the
+  browser and marks the session working. The terminal does the same for a session the web app
+  runs. Closing either view only lets go of the agent; the UI that started it decides when it ends.
+- **Held web sessions follow the terminal's saves.** A session the web server holds idle is
+  refreshed when a terminal saves a newer turn of it, so the next message from the browser
+  continues the real conversation instead of forking a stale copy.
+
+### Fixed
+
+- **Clicking a session in the web app no longer fails while a terminal is saving.** Every UI shares
+  `sessions.db`, and a terminal rewrites its whole (often multi-MB) transcript every few seconds.
+  In SQLite's default journal mode that write locks the file, so the web server's read failed at
+  once with "database is locked": the open answered 500 and the pane fell back to a new chat. The
+  database is now opened in WAL mode with a busy timeout, so readers never wait for a writer.
+- **A failed open is no longer reported as a deleted session.** Only an id that is nowhere answers
+  404 (the browser then drops the pane); any other failure answers 503, which the browser retries.
+- **Rows written by other UIs are restored defensively.** Unreadable JSON, missing fields and
+  oversized outputs degrade to an empty or trimmed transcript instead of failing the open.
+
+## 0.27.1 — 2026-10-02
+
+### Fixed
+
+- **`/compact` in the web app now works after a turn.** It refused with "compaction needs a live
+  local run: send a message first" as soon as the session's status left `running` — which it does
+  the moment a turn finishes, so the command only ever worked *during* a turn. The gate is now the
+  same one the terminal UI applies: an agent holding its control file gets `COMPACT` on it, whether
+  it is mid-turn or waiting at its exit. An agent that already left gets a `--compact-only` run over
+  the saved conversation, exactly like the TUI's `/compact` between runs (and refused honestly when
+  only the plain `mini` CLI is installed). A remote turn is still out of reach: it is one-shot
+  `ssh` with no control channel. The refusals now say which of the three cases applies instead of
+  always blaming the missing run.
+- **An empty `MINITUI_MINI_BIN` / `MINI_BIN` is now read as unset.** A variable left empty by a
+  parent process used to override the launcher with `""`, which hid the runner's console script and
+  the interpreter read from its shebang, so the agent was misdetected as the bare `mini` CLI
+  (`--compact-only`, `--continue` and model switching degraded with it).
+- **The compaction reaches the saved conversation as it happens.** The `--compact-only` run the web
+  app starts between turns holds at its exit afterwards (for the next prompt), which could be a long
+  time: `/resume` and the sidebar served the un-compacted conversation until then.
+- **Auto-compaction parity scenarios.** `agent-rs/tests/parity/autocompact.yaml` drives both agents
+  past the compaction trigger with no `COMPACT` line, so the automatic path (estimate → summarize →
+  keep the tail) is compared between Python and Rust like every other behaviour, instead of only
+  the manual `COMPACT` one; `autocompact_window.yaml` does it with the window coming from the
+  model's own `context_window` config, the case an unknown model id used to fall out of.
+
+## 0.27.0 — 2026-10-02
+
+### Added
+
+- **`mini-agent-rs e2e`: AI end-to-end tests, in Rust** (`agent-rs/src/e2e/`, guide in
+  `agent-rs/E2E.md`). Plain-language goals (`act`) and checks (`assert`) are handed to worker
+  subagents (ordinary `mini-agent-rs` runs on the harness' models) that drive a headless Chrome
+  through a `browser` command; exact steps and `expect` checks need no model; actions a later
+  check confirms are cached and replayed with no model calls. One `e2e.yaml` per project:
+  environments, auth profiles (nginx HTTP Basic Auth, login forms, TOTP), secrets by reference
+  only (never shown to workers, scrubbed from every file written), and `base_url: auto`, which
+  finds the nginx vhost serving the project. Reports: `report.md`, `junit.xml`, `report.json`.
+  Subcommands: `init`, `detect-url`, `check-url`, `run`, `last`, `clear-cache`, `skill`.
+- **Bundled skills.** mini-tui ships its own skills in `skills/` and installs them into
+  `~/.config/mini-tui/skills/` at install, at every TUI / `-p` / web-server startup and with
+  `bun run sync-skills`, wherever mini-tui is installed. A newer bundled version replaces an
+  unedited copy; an edited copy, a same-named skill of your own, or a deleted one is left alone
+  (state in `.bundled.json`).
+- **`$e2e`**, the first bundled skill: how an agent finds the binary, sets up `e2e.yaml`, keeps
+  credentials out of files and messages, writes `*.e2e.yaml` tests, runs them in the background
+  and polls with `e2e last`, and reads the reports. `mini-agent-rs e2e skill` prints the same text
+  (it is compiled in), so hosts with only the binary have it too.
+
+## 0.26.3 — 2026-10-02
+
+### Fixed
+
+- **"Does the Rust agent use more tool calls and take longer?"** It does not, and the project can
+  now prove it. Both agents send the model byte-identical prompts, so nothing asks the model to do
+  more work: same system prompt (read from the same `mini.yaml`), same tools, same observations,
+  same limits, same compaction. Two new parity scenarios guard the property directly:
+  - `agent-rs/tests/parity/turns.yaml` — a model that batches several independent commands into
+    one reply, the way a real agent does. Both agents must take the same number of model turns, run
+    the same tool calls and write the same trajectory.
+  - `agent-rs/tests/parity/wire_batch.{yaml,json}` — the same over the wire, against the scripted
+    HTTP server, with every request body compared byte for byte.
+
+  Measured on one box: both agents reach their first model request with identical prompts, the Rust
+  one in ~7 ms against Python's ~173 ms, and the Rust agent runs the same turn count and the same
+  tool calls. A run that does take more turns is model-side variation (sampling, or context pressure
+  forcing a compaction), not the runner — the guide now says how to tell them apart.
+
+### Docs
+
+- The Rust agent guide has a "Does the Rust agent make more tool calls?" section: what is identical,
+  what to check when two runs differ (same model and config, compaction in the transcript, diff the
+  trajectories), and why local overhead never adds a tool call. The README says the same in short.
+
 ## 0.26.2 — 2026-10-01
 
 ### Site and README

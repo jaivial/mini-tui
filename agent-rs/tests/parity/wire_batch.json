@@ -1,0 +1,98 @@
+[
+ {
+  "sse": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "role": "assistant",
+       "content": "working",
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "b1",
+         "type": "function",
+         "function": {
+          "name": "bash",
+          "arguments": "{\"command\": \"echo one\"}"
+         }
+        },
+        {
+         "index": 1,
+         "id": "b2",
+         "type": "function",
+         "function": {
+          "name": "bash",
+          "arguments": "{\"command\": \"echo two\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   },
+   {
+    "choices": [],
+    "usage": {
+     "prompt_tokens": 100,
+     "completion_tokens": 12
+    }
+   }
+  ]
+ },
+ {
+  "sse": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "role": "assistant",
+       "content": "one more",
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "b3",
+         "type": "function",
+         "function": {
+          "name": "bash",
+          "arguments": "{\"command\": \"echo three\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   },
+   {
+    "choices": [],
+    "usage": {
+     "prompt_tokens": 100,
+     "completion_tokens": 12
+    }
+   }
+  ]
+ },
+ {
+  "json": {
+   "id": "x",
+   "choices": [
+    {
+     "index": 0,
+     "message": {
+      "role": "assistant",
+      "content": "Three commands ran."
+     },
+     "finish_reason": "stop"
+    }
+   ],
+   "usage": {
+    "prompt_tokens": 200,
+    "completion_tokens": 5
+   }
+  }
+ }
+]

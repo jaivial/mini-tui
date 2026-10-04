@@ -46,6 +46,11 @@ The agent behind all three is the bundled Python mini-swe-agent, or its
   yet is copied in, including symlinked skills and the `synced/<bucket>/` layout. Copies are
   never overwritten, and a skill you delete from mini-tui's folder is not re-imported.
   `bun run sync-skills` runs the sync by hand.
+- **Bundled skills, carried everywhere.** mini-tui ships its own skills in `skills/`, starting
+  with **`$e2e`** (how agents write and run `mini-agent-rs e2e` tests). They are installed into
+  the skills folder at install and at every startup of the TUI, `-p` and the web server; a newer
+  bundled version replaces an unedited copy, while an edited or deleted one is left as you made
+  it. `mini-agent-rs e2e skill` prints `$e2e` on hosts with only the binary.
 - **`/compact`.** Summarizes the conversation now, with or without a run in flight. While it
   runs, the transcript shows `Compacting...` and the status line `compacting`. Auto-compaction
   (at 80 % of the context window) shows the same state.
@@ -474,6 +479,15 @@ MINITUI_AGENT=python mini-tui             # the Python agent instead
 Prebuilt binaries (`mini-agent-rs-x86_64-linux-musl`, `…-linux-gnu`, `SHA256SUMS`) are attached to
 every [release](https://github.com/jaivial/mini-tui/releases/latest).
 
+**Does the Rust agent use more tool calls, or take longer?** No. Both agents send the model
+byte-identical prompts, so the model batches commands into replies exactly the same way and neither
+one makes it do more work. Two parity scenarios lock that in: `turns` (a model that batches several
+commands per reply must produce the same turns, tool calls and trajectory on both) and
+`batch-calls` (the same over the wire, with every request body compared byte for byte). The Rust
+agent also gets to its first model request sooner (~7 ms vs ~173 ms). If two runs of the same task
+really do differ, the difference is on the model side — sampling and context pressure decide how
+much a model batches per reply — and not in the runner.
+
 **Rust is the default** for the terminal UI, `mini-tui -p` and the web app, whenever the binary is found:
 `MINITUI_AGENT_BIN`, else `agent-rs/target/release/mini-agent-rs`, else `~/.local/lib/mini-tui/mini-agent-rs`,
 else `mini-agent-rs` on `PATH`. The binary also generates session titles and runs the providers panel's
@@ -490,7 +504,7 @@ It covers everything mini-tui uses:
 - **Environments:** local and docker.
 
 `agent-rs/tests/parity/run_all.sh` runs both agents on the same scripted tasks and scripted HTTP
-servers: 26 scenarios plus 8 helper cases. It checks that they write identical trajectories, exit the
+servers: 28 scenarios plus 8 helper cases. It checks that they write identical trajectories, exit the
 same way and send identical requests. See [`agent-rs/README.md`](agent-rs/README.md) for what is and
 is not ported.
 

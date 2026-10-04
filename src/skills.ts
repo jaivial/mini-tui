@@ -6,21 +6,31 @@
  * symlinked skills and the nested `synced/<bucket>/<name>/` layout — that the folder does not
  * have yet is copied in. Copies are never overwritten: edits made in mini-tui stay.
  *
+ * Skills bundled with mini-tui (`<repo>/skills/<name>/`, e.g. `e2e`) are native: installed into
+ * that folder on every startup and install, and refreshed when the bundled copy changes, unless
+ * the user edited their copy (then it is left alone) or deleted it (then it stays deleted).
+ *
  * A prompt such as `follow $good-code, then use $better-ui and $pr-body` is sent to mini as
  * one `<skills>` block with each referenced skill's instructions, then the prompt verbatim.
  * The transcript collapses the block back to the prompt as typed.
  */
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** mini-tui's own skills folder (what the `$` palette lists and prompts expand from). */
 export const SKILLS_DIR = process.env.MINITUI_SKILLS_DIR ?? join(homedir(), ".config", "mini-tui", "skills");
 /** Where skills are inherited from (Claude Code layout). */
 export const CLAUDE_SKILLS_DIR = process.env.MINITUI_CLAUDE_SKILLS_DIR ?? join(homedir(), ".claude", "skills");
+/** Skills shipped with mini-tui itself (the repo's `skills/` folder). */
+export const BUNDLED_SKILLS_DIR = process.env.MINITUI_BUNDLED_SKILLS_DIR ?? join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
 /** Names imported by the last syncs, so a skill deleted in mini-tui is not re-imported. */
 const SYNC_STATE = ".synced-from-claude.json";
+/** `name → hash` of each bundled skill as last installed (detects user edits and deletions). */
+const BUNDLED_STATE = ".bundled.json";
 
 export interface Skill {
   name: string;
@@ -132,6 +142,109 @@ export function syncSkills(from: string = CLAUDE_SKILLS_DIR, to: string = SKILLS
     }
   }
   return result;
+}
+
+/** A stable hash of a skill folder's files (relative paths + contents). */
+export function hashSkillDir(dir: string): string {
+  const hash = createHash("sha256");
+  const walk = (base: string) => {
+    for (const name of readdirSync(base).sort()) {
+      if (name.startsWith(".")) continue;
+      const path = join(base, name);
+      if (isDir(path)) walk(path);
+      else {
+        hash.update(relative(dir, path));
+        hash.update("\0");
+        hash.update(readFileSync(path));
+        hash.update("\0");
+      }
+    }
+  };
+  walk(dir);
+  return hash.digest("hex").slice(0, 16);
+}
+
+export interface BundledResult {
+  installed: string[];
+  updated: string[];
+  /** Bundled skills whose copy the user edited: left as they are. */
+  kept: string[];
+  dir: string;
+}
+
+/**
+ * Install mini-tui's bundled skills into `to`: new ones are copied, ones still identical to
+ * the copy last installed are refreshed to the bundled version, edited copies are kept, and a
+ * bundled skill the user deleted is not reinstalled. Bundled skills win over a same-named skill
+ * imported from ~/.claude (imported copies are not user edits).
+ */
+export function installBundledSkills(from: string = BUNDLED_SKILLS_DIR, to: string = SKILLS_DIR): BundledResult {
+  const result: BundledResult = { installed: [], updated: [], kept: [], dir: to };
+  const source = discoverSkills(from);
+  if (source.size === 0) return result;
+  mkdirSync(to, { recursive: true });
+  const statePath = join(to, BUNDLED_STATE);
+  let state: Record<string, string> = {};
+  try {
+    state = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, string>;
+  } catch {
+    state = {};
+  }
+  let imported: string[] = [];
+  try {
+    imported = JSON.parse(readFileSync(join(to, SYNC_STATE), "utf8")) as string[];
+  } catch {
+    imported = [];
+  }
+  let changed = false;
+  for (const [name, folder] of source) {
+    const target = join(to, name);
+    const bundledHash = hashSkillDir(folder);
+    const known = state[name];
+    try {
+      if (!existsSync(target)) {
+        if (known) continue; // installed before, deleted by the user: stays deleted
+        cpSync(realpathSync(folder), target, { recursive: true, dereference: true });
+        result.installed.push(name);
+      } else {
+        const current = hashSkillDir(target);
+        if (current === bundledHash) {
+          if (known === bundledHash) continue;
+        } else if (known === current || (!known && imported.includes(name))) {
+          rmSync(target, { recursive: true, force: true });
+          cpSync(realpathSync(folder), target, { recursive: true, dereference: true });
+          result.updated.push(name);
+        } else {
+          result.kept.push(name); // the user's own skill of that name, or an edited copy
+          continue;
+        }
+      }
+      state[name] = bundledHash;
+      changed = true;
+    } catch {
+      // unreadable source or a race: try again next startup
+    }
+  }
+  if (changed) {
+    try {
+      writeFileSync(statePath, `${JSON.stringify(state, null, 1)}\n`);
+    } catch {
+      // best-effort bookkeeping
+    }
+  }
+  return result;
+}
+
+/** Bundled skills first (they are mini-tui's own), then the ~/.claude import. */
+export function syncAllSkills(): { added: string[]; bundled: BundledResult } {
+  let bundled: BundledResult = { installed: [], updated: [], kept: [], dir: SKILLS_DIR };
+  try {
+    bundled = installBundledSkills();
+  } catch {
+    // never block startup
+  }
+  const added = syncSkills().added;
+  return { added: [...bundled.installed, ...added], bundled };
 }
 
 export {

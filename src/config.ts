@@ -8,7 +8,9 @@ import { join } from "node:path";
  * constant would freeze whatever the environment held the first time any module loaded this file.
  */
 export function miniBin(): string {
-  return process.env.MINITUI_MINI_BIN ?? process.env.MINI_BIN ?? "mini";
+  // An empty override means "unset": a variable left over from a parent process must not hide the
+  // launcher (and with it the runner's console script, and the interpreter read from its shebang).
+  return process.env.MINITUI_MINI_BIN || process.env.MINI_BIN || "mini";
 }
 
 /** @deprecated the value at import time; use `miniBin()`. */

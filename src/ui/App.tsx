@@ -36,7 +36,7 @@ import {
 import { cleanTaskText, createParseState, messagesToEvents, parseInfo, type ParseState } from "../traj/parse";
 import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
-import { runnerSupportsCompactOnly, spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
+import { attachMini, foreignRunAlive, runnerSupportsCompactOnly, spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
 import { copyText, pasteText, pastedLine, pastedToken } from "../clipboard";
 import { gitBranch, shortPath } from "../git";
@@ -47,11 +47,14 @@ import {
   countSessions,
   createSession,
   fallbackTitle,
+  getLiveRun,
   getSession,
   getSessionPreview,
   listSessions,
   openDb,
   saveTranscript,
+  registerLiveRun,
+  clearLiveRun,
   writeResumeFile,
   type SessionRecord,
 } from "../sessions";
@@ -509,6 +512,12 @@ export function App(props: AppProps) {
     consumedRef.current = messages.length;
     itemAppendHint.current = startFrom > 0 && incoming.length > 0;
     setEvents((prevEvents) => (startFrom === 0 ? fresh : incoming.length ? [...prevEvents, ...incoming] : prevEvents));
+    // A prompt sent to this agent from elsewhere (the web app follows the same agent): its task
+    // lands here with no echo of ours, and the agent is working on it.
+    if (startFrom > 0 && !exitedRef.current && !interruptedRef.current && incoming.some((event) => event.type === "task") && !waitingAtExit(messages)) {
+      setStatus("running");
+      setTurnStartedAt(Date.now());
+    }
     const nextInfo = parseInfo(traj);
     setInfo((previous) => (sameRunInfo(previous, nextInfo) ? previous : nextInfo));
     // The agent's journal says when a summary call is running; a compaction message (or a
@@ -555,6 +564,8 @@ export function App(props: AppProps) {
   latestSave.current = () => {
     const id = sessionIdRef.current;
     if (!persist || !id) return;
+    // The web app owns the agent this terminal follows, and saves it: two writers would only fight.
+    if (live.current.run?.attached && !exitedRef.current) return;
     lastSaveAt.current = Date.now();
     try {
       saveTranscript(db(), id, events, info, messagesRef.current);
@@ -601,10 +612,27 @@ export function App(props: AppProps) {
       env: modelEnv(spec.model || modelOverride || DEFAULT_MODEL, connections),
     });
     live.current = { run };
+    // Announce the agent, so the web app (or another terminal) opening this session follows this
+    // very agent live and sends its prompts to it, instead of resuming a second copy beside it.
+    const announced = sessionIdRef.current;
+    if (persist && announced && run.pid) {
+      try {
+        registerLiveRun(db(), { session_id: announced, traj_path: run.session.trajPath, control_path: run.session.controlPath, pid: run.pid, owner: "tui" });
+      } catch {
+        // best-effort
+      }
+    }
     consumedRef.current = 0; // fresh trajectory: events rebuild from its first message
     parseStateRef.current = createParseState();
     live.current.watch = watchTrajectory(run.session.trajPath, applySnapshot);
     run.exited.then((code) => {
+      if (persist && announced) {
+        try {
+          clearLiveRun(db(), announced, run.session.trajPath);
+        } catch {
+          // a stale row is harmless: its pid no longer runs that trajectory
+        }
+      }
       if (live.current.run !== run) return; // superseded (e.g. `/new`): don't touch the new session
       exitedRef.current = true;
       setCompacting(null);
@@ -669,6 +697,46 @@ export function App(props: AppProps) {
     }
     setStatus("done");
     setInputFocused(true);
+    attachToLiveRun(record.id);
+  };
+
+  /**
+   * The session may be running right now in the web app: follow that agent (its trajectory
+   * streams here and prompts typed here reach it) instead of starting a second one beside it.
+   */
+  const attachToLiveRun = (sessionId: string) => {
+    let record;
+    try {
+      record = getLiveRun(db(), sessionId);
+    } catch {
+      return;
+    }
+    if (!record) return;
+    const foreign = { trajPath: record.traj_path, controlPath: record.control_path, pid: record.pid };
+    if (!foreignRunAlive(foreign)) return;
+    live.current.watch?.stop();
+    live.current.run?.kill();
+    const run = attachMini(foreign);
+    live.current = { run };
+    exitedRef.current = false;
+    interruptedRef.current = false;
+    // Rebuild from the agent's own trajectory: it is newer than the owner's last save.
+    consumedRef.current = 0;
+    parseStateRef.current = createParseState();
+    const traj = readTrajectory(foreign.trajPath);
+    if (traj && (traj.messages ?? []).length) applySnapshot(traj);
+    const holding = traj ? waitingAtExit(traj.messages ?? []) : false;
+    setStatus(holding ? "done" : "running");
+    if (!holding) setTurnStartedAt(Date.now());
+    live.current.watch = watchTrajectory(foreign.trajPath, applySnapshot);
+    run.exited.then(() => {
+      if (live.current.run !== run) return;
+      exitedRef.current = true;
+      live.current.watch?.stop();
+      const final = readTrajectory(foreign.trajPath);
+      if (final) applySnapshot(final);
+      setStatus((current) => (current === "running" ? "done" : current));
+    });
   };
 
   /** `/new`: stop whatever runs and start a blank session (model and settings stay). */

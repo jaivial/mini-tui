@@ -80,7 +80,7 @@ HTTP clients it also diffs every request body sent to a scripted server. Timesta
 durations are the only values normalized.
 
 ```sh
-sh tests/parity/run_all.sh     # 26 scenarios + 8 helper cases; "ALL IDENTICAL" or the differences
+sh tests/parity/run_all.sh     # 28 scenarios + 8 helper cases; "ALL IDENTICAL" or the differences
 cargo test --release           # unit tests
 ```
 
@@ -89,6 +89,9 @@ Scenarios:
   missing files; the submit marker; the text model; resume; compact-only; follow-ups; `/compact`
   on a live run; `MODEL` switches; SIGINT and SIGTERM during a command and during a model call;
   the global cost and call limits; the shipped `mini.yaml`.
+- **Turn and tool-call counting** (`turns.yaml`, `wire_batch.*`): a model that batches several
+  independent commands into one reply must look the same to both agents — same turns, same tool
+  calls, same prompts — so neither one makes the model do more work.
 - **Helpers:** `title` and `test-model` against the Python scripts. Cases: clean text, whitespace,
   over-long titles, tool-call replies, empty replies, 401s. Stdout, exit code, stderr and the
   request must all match.

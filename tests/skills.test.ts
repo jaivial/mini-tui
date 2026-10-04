@@ -10,6 +10,7 @@ import {
   expandSkills,
   findSkillRefs,
   insertSkill,
+  installBundledSkills,
   listSkills,
   skillQueryAt,
   syncSkills,
@@ -115,5 +116,41 @@ describe("syncing from ~/.claude/skills", () => {
   test("a missing source is a no-op", () => {
     expect(syncSkills(join(root, "none"), join(root, "x"))).toEqual({ added: [], dir: join(root, "x") });
     expect(existsSync(join(root, "x"))).toBe(false);
+  });
+});
+
+describe("bundled skills (mini-tui's own skills/ folder)", () => {
+  const bundled = join(root, "bundled");
+  const own = join(root, "own-bundled");
+  skill(bundled, "e2e", "---\nname: e2e\ndescription: v1\n---\nV1\n");
+
+  test("installs, refreshes unedited copies, keeps edits, respects deletion", () => {
+    expect(installBundledSkills(bundled, own).installed).toEqual(["e2e"]);
+    expect(readFileSync(join(own, "e2e", "SKILL.md"), "utf8")).toContain("V1");
+    expect(installBundledSkills(bundled, own)).toEqual({ installed: [], updated: [], kept: [], dir: own }); // idempotent
+    skill(bundled, "e2e", "---\nname: e2e\ndescription: v2\n---\nV2\n"); // a new mini-tui version
+    expect(installBundledSkills(bundled, own).updated).toEqual(["e2e"]);
+    expect(readFileSync(join(own, "e2e", "SKILL.md"), "utf8")).toContain("V2");
+    writeFileSync(join(own, "e2e", "SKILL.md"), "---\nname: e2e\n---\nMY EDIT\n"); // the user edits it
+    skill(bundled, "e2e", "---\nname: e2e\ndescription: v3\n---\nV3\n");
+    expect(installBundledSkills(bundled, own).kept).toEqual(["e2e"]);
+    expect(readFileSync(join(own, "e2e", "SKILL.md"), "utf8")).toContain("MY EDIT");
+    rmSync(join(own, "e2e"), { recursive: true }); // the user deletes it
+    expect(installBundledSkills(bundled, own).installed).toEqual([]);
+    expect(existsSync(join(own, "e2e"))).toBe(false);
+  });
+
+  test("a same-named skill the user already had is never replaced", () => {
+    const mine = join(root, "own-preexisting");
+    skill(mine, "e2e", "---\nname: e2e\n---\nMINE\n");
+    expect(installBundledSkills(bundled, mine).kept).toEqual(["e2e"]);
+    expect(readFileSync(join(mine, "e2e", "SKILL.md"), "utf8")).toContain("MINE");
+  });
+
+  test("the shipped e2e skill is a valid, listed skill", () => {
+    const shipped = join(import.meta.dir, "..", "skills");
+    const listed = listSkills(shipped);
+    expect(listed.map((s) => s.name)).toContain("e2e");
+    expect(listed.find((s) => s.name === "e2e")!.description).toContain("mini-agent-rs e2e");
   });
 });

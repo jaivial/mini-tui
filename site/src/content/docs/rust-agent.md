@@ -36,6 +36,41 @@ message: ten idle sessions hold about 45 MB on Rust and about 357 MB on Python.
 Model calls take the same time with both: the model is the slow part of a real turn. The Rust agent
 saves the start-up, the time between steps, and the memory.
 
+## "Does the Rust agent make more tool calls?"
+
+No. The two agents send the model **byte-identical prompts**, so the model behaves the same with
+both and neither one asks it to do more work. Two parity scenarios guard exactly that:
+
+- `turns` — a model that batches several independent commands into one reply (what a real agent
+  does after reading the repository). Both agents must take the same number of model turns, run
+  the same tool calls, and write the same trajectory.
+- `batch-calls` — the same over the wire, against a scripted HTTP server: every request body
+  both agents send is compared byte for byte.
+
+So the prompt, the tools, the observations, the limits, the compaction and the journal are the
+same on both sides. The system prompt is read from the same `mini.yaml`, and the model is chosen
+by mini-tui and passed to whichever agent runs.
+
+If one run really does take more turns or more tool calls than another with the same task, the
+difference is on the model side, not the agent's: the two are not deterministic. Sampling,
+reasoning depth and server load decide how many commands a model chooses to batch per reply,
+and a run that starts in a different session, at a different time, or with a different context
+will naturally differ. What to check when it happens:
+
+1. **Same model and config?** The two runs must use the same `-m` model and the same `-c` specs.
+   `/model` in a session, `MININITUI_MODEL`, or a model with a smaller context window changes
+   how much the model batches.
+2. **Context pressure.** A run that gets near the window compacts (`/compact`, or automatic at
+   80% of it). After a summary the model re-reads more and batches less, so it needs more turns.
+   The transcript shows a "context compacted" line where that happened.
+3. **Compare prompts, not vibes.** Both agents write the same trajectory format, so you can diff
+   them: `~/.config/mini-tui/runs/<session>/traj.json` (or the `--print` stream). If the
+   trajectories match turn for turn, the agents behaved identically.
+
+Local overhead never adds tool calls: the Rust agent reaches its first model request in about
+7 ms where Python takes about 173 ms, and it uses about 4.5 MB of memory for a waiting session
+where Python uses about 35.7 MB.
+
 ## Install the Rust agent
 
 The static build runs on any x86-64 Linux, with no Python needed. Put it where mini-tui looks for it:
@@ -107,7 +142,7 @@ supported.
 ## How it is kept identical
 
 `agent-rs/tests/parity/run_all.sh` runs both agents on the same scripted tasks against the same scripted
-HTTP servers: 26 scenarios plus 8 helper cases. For each one it checks that both agents:
+HTTP servers: 28 scenarios plus 8 helper cases. For each one it checks that both agents:
 
 - write identical trajectories and journals;
 - exit the same way;

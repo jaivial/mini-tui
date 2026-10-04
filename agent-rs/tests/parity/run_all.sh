@@ -18,6 +18,10 @@ run cost-limit     parity/cost_limit.yaml
 run resume         parity/resume.yaml --resume "$PWD/parity/resume_src.json" --task "continue please"
 run followup       parity/followup.yaml --control-script parity/followup.control
 run compact        parity/compact.yaml --control-script parity/compact.control
+run autocompact    parity/autocompact.yaml
+# Same again with the window taken from the model config (`context_window`), not a known id: an
+# unknown model must compact from its configured limit, not fall back to 200k and overflow.
+run autocompact-window parity/autocompact_window.yaml
 run sigint         parity/sigint.yaml --control-script parity/sigint.control
 printf 'WAIT_JOURNAL 2\nSLEEP 1.0\nKILL\n' > /tmp/parity-term.control
 run sigterm        parity/sigint.yaml --control-script /tmp/parity-term.control
@@ -28,6 +32,9 @@ run global-cost    parity/cost_limit.yaml --env MSWEA_GLOBAL_COST_LIMIT=0.5
 run compact-only   parity/resume.yaml --resume "$PWD/parity/resume_long.json" --task "" --compact-only
 # The shipped configs, with a scripted model swapped in (the templates are what matters).
 run mini.yaml      ../../agent/src/minisweagent/config/mini.yaml --extra-config parity/script_answer.yaml
+# Turn/tool-call counting: a model that batches several commands into one reply must look
+# the same to both agents (same prompts, same turns, same tool calls).
+run turns          parity/turns.yaml
 # The HTTP clients against a scripted server: trajectories and every request body must match.
 wire() {
   name=$1; shift
@@ -37,6 +44,9 @@ wire() {
   if ! echo "$out" | grep -q '^IDENTICAL'; then fail=1; echo "$out" | sed -n '2,12p'; fi
 }
 wire cliproxy-sse    parity/wire_chat.yaml parity/wire_chat.json --base-env CLIPROXY_API_BASE
+# A model that batches several commands into one reply: both agents must send the same
+# prompts and run the same tool calls, or the model would be asked to do more work.
+wire batch-calls    parity/wire_batch.yaml parity/wire_batch.json --base-env CLIPROXY_API_BASE
 wire rosetta         parity/wire_rosetta.yaml parity/wire_chat.json --base-env ROSETTA_API_BASE
 wire deepseek-alias  parity/wire_deepseek.yaml parity/wire_chat.json --base-env DEEPSEEK_API_BASE --key-env DEEPSEEK_API_KEY
 wire zai-registry    parity/wire_zai.yaml parity/wire_chat.json --base-env ZAI_API_BASE --key-env ZAI_API_KEY

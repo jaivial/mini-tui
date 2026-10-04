@@ -166,4 +166,17 @@ describe("mini argument builders", () => {
       else process.env.MSWEA_CONTROL_FILE = old;
     }
   });
+
+  test("an empty override means unset: it must not hide the launcher from the runner probe", () => {
+    const saved = process.env.MINITUI_MINI_BIN;
+    try {
+      // A parent process leaves the variable behind with nothing in it; reading it as an override
+      // would point `mini` at "" and make the runner look like a bare CLI (no `--compact-only`).
+      process.env.MINITUI_MINI_BIN = "";
+      expect(miniBin()).toBe("mini");
+    } finally {
+      if (saved === undefined) delete process.env.MINITUI_MINI_BIN;
+      else process.env.MINITUI_MINI_BIN = saved;
+    }
+  });
 });

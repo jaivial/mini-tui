@@ -7,6 +7,7 @@
 mod agent;
 mod compaction;
 mod config;
+mod e2e;
 mod environment;
 mod models;
 mod templates;
@@ -156,6 +157,17 @@ fn parse_args(argv: &[String]) -> Result<ParseResult, String> {
 extern "C" fn on_signal(sig: libc::c_int) {
     SIGNAL.store(sig, Ordering::SeqCst);
     STOP.store(true, Ordering::SeqCst);
+    if sig == libc::SIGINT {
+        // e2e: interrupt the worker subagents too (they save); the coordinator then winds down.
+        for g in e2e::worker::GROUPS.iter() {
+            let g = g.load(Ordering::SeqCst);
+            if g > 0 {
+                unsafe {
+                    libc::kill(g, libc::SIGINT);
+                }
+            }
+        }
+    }
     if sig == libc::SIGTERM {
         // Python dies on SIGTERM without saving: do the same at once, whatever we are blocked in
         // (a model call's socket read included). Only the running command's process group is
@@ -164,6 +176,23 @@ extern "C" fn on_signal(sig: libc::c_int) {
         unsafe {
             if pg > 0 {
                 libc::killpg(pg, libc::SIGKILL);
+            }
+            // The e2e coordinator's worker subagents and browsers (each in its own process
+            // group). Workers get SIGTERM first: their handler kills their running command's
+            // group (which a SIGKILL of the worker would orphan), then everything is killed.
+            for g in e2e::worker::GROUPS.iter() {
+                let g = g.load(Ordering::SeqCst);
+                if g > 0 {
+                    libc::kill(g, libc::SIGTERM);
+                }
+            }
+            let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 300_000_000 };
+            libc::nanosleep(&ts, &mut ts);
+            for g in e2e::worker::GROUPS.iter() {
+                let g = g.load(Ordering::SeqCst);
+                if g > 0 {
+                    libc::killpg(g, libc::SIGKILL);
+                }
             }
             libc::signal(libc::SIGTERM, libc::SIG_DFL);
             libc::raise(libc::SIGTERM);
@@ -311,6 +340,15 @@ fn cmd_test_model(args: &[String]) -> i32 {
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // `e2e` (the test coordinator) and `browser` (its workers' client): see E2E.md.
+    if argv.first().map(String::as_str) == Some("e2e") {
+        config::load_dotenv();
+        install_signals();
+        std::process::exit(e2e::main(&argv[1..]));
+    }
+    if argv.first().map(String::as_str) == Some("browser") {
+        std::process::exit(e2e::server::client(&argv[1..]));
+    }
     // One-shot helpers mini-tui runs besides the agent itself.
     if let Some(cmd) = argv.first().map(String::as_str).filter(|c| *c == "title" || *c == "test-model") {
         config::load_dotenv();

@@ -20,6 +20,7 @@ import { Terminals } from "./terminals";
 import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
 import { homedir } from "node:os";
 import { sshArgs } from "./ssh";
+import { syncAllSkills } from "../skills";
 import {
   COMMANDS,
   connectProvider,
@@ -111,8 +112,22 @@ function held(id: string) {
     const restored = sessions.openHistory(id);
     broadcast({ type: "session", session: summarize(restored) });
     return restored;
-  } catch {
-    return undefined;
+  } catch (error) {
+    // Only an id that is nowhere is "unknown". Anything else (the database busy with a terminal's
+    // save, an unreadable row) is a failure to report: answering 404 made the browser conclude the
+    // session was deleted and turn its pane into a new chat.
+    if (/unknown session/.test((error as Error).message)) return undefined;
+    throw error;
+  }
+}
+
+/** 404 for an id that is nowhere, 503 (retry) for anything else that stopped us reading it. */
+function heldOrError(id: string): { session: ReturnType<typeof held>; error?: Response } {
+  try {
+    const session = held(id);
+    return session ? { session } : { session, error: json({ error: "unknown session" }, 404) };
+  } catch (error) {
+    return { session: undefined, error: json({ error: `could not open the session: ${(error as Error).message}` }, 503) };
   }
 }
 
@@ -171,6 +186,13 @@ const CORS = {
   "access-control-allow-headers": "content-type",
 };
 
+// Bundled skills (e.g. $e2e) and new ~/.claude skills, as the terminal UI does at startup.
+try {
+  syncAllSkills();
+} catch {
+  // a broken skills folder must never block the server
+}
+
 const server = Bun.serve({
   port: PORT,
   hostname: HOST,
@@ -190,7 +212,13 @@ const server = Bun.serve({
         hub.join(client);
         return;
       }
-      const session = held(ws.data.id);
+      let session;
+      try {
+        session = held(ws.data.id);
+      } catch {
+        ws.close(1013, "try again"); // transient: the client reconnects
+        return;
+      }
       if (!session) {
         ws.close(4404, "unknown session");
         return;
@@ -297,7 +325,8 @@ const server = Bun.serve({
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "expected a websocket upgrade" }, 426);
         if (!sameOrigin(request.headers)) return json({ error: "cross-origin websocket refused" }, 403);
         const id = decodeURIComponent(socketMatch[1] as string);
-        if (!held(id)) return json({ error: "unknown session" }, 404);
+        const found = heldOrError(id);
+        if (found.error) return found.error;
         if (srv.upgrade(request, { data: { kind: "session", id } satisfies SocketData })) return undefined as unknown as Response;
         return json({ error: "websocket upgrade failed" }, 400);
       }
@@ -343,6 +372,7 @@ const server = Bun.serve({
           return json({ ok: true });
         }
         if (action === "/compact" && request.method === "POST") {
+          if (!sessions.get(id)) return json({ error: "unknown session" }, 404);
           try {
             sessions.compact(id);
             return json({ ok: true });
@@ -359,8 +389,8 @@ const server = Bun.serve({
           return json({ ok: true });
         }
         if (!action && request.method === "GET") {
-          const session = held(id);
-          return session ? json(toWire(session)) : json({ error: "unknown session" }, 404);
+          const found = heldOrError(id);
+          return found.error ?? json(toWire(found.session!));
         }
       }
 
@@ -382,7 +412,7 @@ const server = Bun.serve({
           try {
             return json(toWire(sessions.openHistory(id)));
           } catch (error) {
-            return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 500);
+            return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 503);
           }
         }
         if (request.method === "DELETE") {

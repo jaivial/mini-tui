@@ -38,6 +38,7 @@ export function fallbackTitle(task: string): string {
 export function openDb(path: string = DEFAULT_DB_PATH): Database {
   mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path, { create: true });
+  configureConcurrency(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -68,7 +69,40 @@ export function openDb(path: string = DEFAULT_DB_PATH): Database {
   } catch {
     // column already exists (databases created before --resume support)
   }
+  // The agent each UI is running for a session right now, so another UI (the web app, a second
+  // terminal) can follow that same agent and talk to it instead of forking the conversation.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS live_runs (
+      session_id TEXT PRIMARY KEY,
+      traj_path TEXT NOT NULL,
+      control_path TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      owner TEXT NOT NULL DEFAULT '',
+      started_at INTEGER NOT NULL
+    );
+  `);
   return db;
+}
+
+/**
+ * Several processes share this file: every terminal UI, the web server, headless runs. A TUI saves
+ * a multi-MB transcript every few seconds, and in the default rollback-journal mode that write
+ * locks the whole file, so any other process reading at that moment failed at once with
+ * "database is locked" (the web app answered 500 and dropped the session it was opening). In WAL
+ * mode readers never wait for a writer; the busy timeout covers two writers meeting.
+ */
+function configureConcurrency(db: Database): void {
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+  } catch {
+    // best-effort
+  }
+  try {
+    const row = db.query("PRAGMA journal_mode").get() as { journal_mode?: string } | null;
+    if (row?.journal_mode !== "wal") db.exec("PRAGMA journal_mode = WAL");
+  } catch {
+    // another process holds the file right now: the next open switches it
+  }
 }
 
 export function createSession(
@@ -133,6 +167,44 @@ export function writeResumeFile(id: string, messages: TrajectoryMessage[]): stri
 
 export function getSession(db: Database, id: string): SessionRecord | null {
   return (db.query("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRecord | undefined) ?? null;
+}
+
+/** An agent process some UI is running for a session (see `live_runs`). */
+export interface LiveRunRecord {
+  session_id: string;
+  traj_path: string;
+  control_path: string;
+  pid: number;
+  /** Who started it ("tui", "web"): informational. */
+  owner: string;
+  started_at: number;
+}
+
+/** Record the agent now running for a session (replacing any earlier one). */
+export function registerLiveRun(db: Database, run: Omit<LiveRunRecord, "started_at"> & { started_at?: number }): void {
+  db.query(
+    `INSERT OR REPLACE INTO live_runs (session_id, traj_path, control_path, pid, owner, started_at) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(run.session_id, run.traj_path, run.control_path, run.pid, run.owner, run.started_at ?? Date.now());
+}
+
+/** Forget a session's live run, only if it is still this one (a newer run may have replaced it). */
+export function clearLiveRun(db: Database, sessionId: string, trajPath: string): void {
+  db.query("DELETE FROM live_runs WHERE session_id = ? AND traj_path = ?").run(sessionId, trajPath);
+}
+
+export function getLiveRun(db: Database, sessionId: string): LiveRunRecord | null {
+  return (db.query("SELECT * FROM live_runs WHERE session_id = ?").get(sessionId) as LiveRunRecord | undefined) ?? null;
+}
+
+/** `updated_at` of each listed session: a cheap way to notice another process saved one. */
+export function sessionStamps(db: Database, ids: string[]): Map<string, number> {
+  const stamps = new Map<string, number>();
+  if (!ids.length) return stamps;
+  const rows = db
+    .query(`SELECT id, updated_at FROM sessions WHERE id IN (${ids.map(() => "?").join(",")})`)
+    .all(...ids) as Array<{ id: string; updated_at: number }>;
+  for (const row of rows) stamps.set(row.id, row.updated_at);
+  return stamps;
 }
 
 /** The light columns: a listing never needs the (possibly 100+ MB) transcript blobs. */

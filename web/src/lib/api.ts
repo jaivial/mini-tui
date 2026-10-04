@@ -17,10 +17,17 @@ import type {
 } from "./types";
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    ...init,
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
-  });
+  let res: Response;
+  for (let attempt = 0; ; attempt++) {
+    res = await fetch(`/api${path}`, {
+      ...init,
+      headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    });
+    // 503 is "busy, try again" (a terminal UI holding the shared database for a moment): a short
+    // retry turns it into a slower answer instead of a failed click.
+    if (res.status !== 503 || attempt >= 4) break;
+    await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let message = `${res.status} ${res.statusText}`;

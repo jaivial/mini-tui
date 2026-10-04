@@ -2,7 +2,7 @@ import { CONSOLE_TITLE, installConsoleClose } from "./consoleOverlay";
 import { DEFAULT_MODEL } from "./config";
 import { loadLastModel } from "./lastModel";
 import type { TaskSpec } from "./mini/spawn";
-import { syncSkills } from "./skills";
+import { syncAllSkills } from "./skills";
 import { parseArgs, UsageError, withDefaultConfig, type CliArgs, type TuiArgs } from "./cli/args";
 import pkg from "../package.json" with { type: "json" };
 
@@ -83,7 +83,7 @@ if (parsed.command === "version") {
 }
 if (parsed.command === "print") {
   try {
-    syncSkills(); // new ~/.claude skills are usable as $skills right away, like in the TUI
+    syncAllSkills(); // bundled + new ~/.claude skills are usable as $skills right away, like in the TUI
   } catch {
     // a broken skills folder must never block a run
   }
@@ -133,7 +133,7 @@ const runSpec: TaskSpec | undefined =
 // Skills new in ~/.claude/skills join mini-tui's own folder (fast: a directory scan).
 let importedSkills: string[] = [];
 try {
-  importedSkills = syncSkills().added;
+  importedSkills = syncAllSkills().added;
 } catch {
   importedSkills = []; // a broken skills folder must never block startup
 }

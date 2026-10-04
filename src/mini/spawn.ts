@@ -4,9 +4,9 @@
  * the public CLI so overriding the integration never hard-fails.
  */
 
-import { appendFileSync, closeSync, existsSync, openSync, readSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { miniBin, createSessionDir, type SessionPaths } from "../config";
 import { gitIdentityEnv } from "../gitIdentity";
@@ -169,6 +169,8 @@ export interface MiniRun {
   sendUserMessage(text: string): void;
   /** Ask the running agent to compact its context before the next model call (`/compact`). */
   requestCompact(): void;
+  /** Another process owns this agent (see `attachMini`): `kill()` only detaches from it. */
+  attached?: boolean;
 }
 
 /** The YAML configs shipped with the bundled Python agent; the Rust agent reads the same ones. */
@@ -266,6 +268,90 @@ export function spawnMini(spec: TaskSpec): MiniRun {
     sendUserMessage(text: string) {
       // JSON-quoted so multi-line prompts survive the line-based protocol.
       appendFileSync(session.controlPath, `MESSAGE ${JSON.stringify(text)}\n`);
+    },
+  };
+}
+
+/** An agent process another mini-tui process started (a terminal UI, the web server). */
+export interface ForeignRun {
+  trajPath: string;
+  controlPath: string;
+  pid: number;
+}
+
+/** Is `pid` still the agent that writes `trajPath`? (A recycled pid must not pass for it.) */
+export function foreignRunAlive(run: ForeignRun): boolean {
+  if (!run.pid || run.pid <= 0) return false;
+  try {
+    process.kill(run.pid, 0);
+  } catch {
+    // ESRCH: gone. EPERM: alive but someone else's process, so certainly not our agent
+    return false;
+  }
+  try {
+    // On Linux the command line names its trajectory (`-o <traj>`): a reused pid does not.
+    const cmdline = readFileSync(`/proc/${run.pid}/cmdline`, "utf8");
+    return cmdline.includes(run.trajPath);
+  } catch {
+    return existsSync(run.trajPath) || existsSync(run.controlPath);
+  }
+}
+
+/**
+ * Drive an agent another process owns, through the same control file its owner uses: a follow-up,
+ * a model switch or `/compact` sent from here reaches the very agent the other UI is showing, so
+ * both stay one conversation. `kill()` only lets go of it: the owner decides when its agent ends.
+ * `interrupt()` does stop the turn, exactly like pressing Esc Esc in the owner.
+ */
+export function attachMini(foreign: ForeignRun, options: { pollMs?: number } = {}): MiniRun {
+  const dir = dirname(foreign.trajPath);
+  const session: SessionPaths = {
+    dir,
+    trajPath: foreign.trajPath,
+    logPath: join(dir, "mini.log"),
+    pidPath: join(dir, "pid"),
+    controlPath: foreign.controlPath,
+  };
+  let released = false;
+  let resolveExit: (code: number | null) => void = () => {};
+  const exited = new Promise<number | null>((resolve) => (resolveExit = resolve));
+  const timer = setInterval(() => {
+    if (released || foreignRunAlive(foreign)) return;
+    clearInterval(timer);
+    resolveExit(0);
+  }, options.pollMs ?? 500);
+  (timer as { unref?: () => void }).unref?.();
+  const signal = (sig: NodeJS.Signals) => {
+    if (!foreignRunAlive(foreign)) return;
+    try {
+      process.kill(foreign.pid, sig);
+    } catch {
+      // already gone
+    }
+  };
+  return {
+    session,
+    pid: foreign.pid,
+    cmd: [],
+    runner: "rust",
+    exited,
+    attached: true,
+    kill() {
+      released = true;
+      clearInterval(timer);
+    },
+    interrupt() {
+      signal("SIGINT");
+      setTimeout(() => signal("SIGTERM"), 2000).unref?.();
+    },
+    switchModel(model: string) {
+      appendFileSync(foreign.controlPath, `MODEL ${model}\n`);
+    },
+    requestCompact() {
+      appendFileSync(foreign.controlPath, "COMPACT\n");
+    },
+    sendUserMessage(text: string) {
+      appendFileSync(foreign.controlPath, `MESSAGE ${JSON.stringify(text)}\n`);
     },
   };
 }

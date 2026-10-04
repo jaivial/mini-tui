@@ -254,7 +254,7 @@ site cannot start agents or write keys through your browser.
 | `GET` | `/api/providers` | connected (masked) + the catalogue |
 | `POST` | `/api/providers/connect` | test and save a key |
 | `DELETE` | `/api/providers/:id` | forget a connection |
-| `POST` | `/api/sessions/:id/compact` | `/compact` (live local run only) |
+| `POST` | `/api/sessions/:id/compact` | `/compact` (a live run is asked on its control file; between turns a `--compact-only` run compacts the saved conversation) |
 
 Hosts are stored in `~/.config/mini-tui/web-hosts.json`; override the folder with
 `MINITUI_CONFIG_DIR`.

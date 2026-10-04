@@ -19,6 +19,11 @@ ureq = { version = "2", default-features = false, features = ["tls", "native-cer
 regex = "1"
 libc = "0.2"
 rand = "0.8"
+# e2e: DevTools-protocol websocket (local only, no TLS), TOTP and screenshots
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3

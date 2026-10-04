@@ -14,7 +14,7 @@ import { expandLocal } from "./folders";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { spawnMini, type MiniRun } from "../mini/spawn";
+import { attachMini, foreignRunAlive, runnerSupportsCompactOnly, spawnMini, type MiniRun } from "../mini/spawn";
 import { modelEnv } from "../providers";
 import { DEFAULT_MODEL } from "../config";
 import { loadLastModel, saveLastModel } from "../lastModel";
@@ -26,7 +26,12 @@ import {
   listFolders,
   type FolderSummary,
   deleteSession,
+  clearLiveRun,
+  getLiveRun,
   getSession,
+  registerLiveRun,
+  sessionStamps,
+  type SessionRecord,
   openDb,
   saveTranscript,
   updateSession,
@@ -143,6 +148,34 @@ interface Internal {
   trajPath?: string;
   consumed: number;
   parseState: ReturnType<typeof createParseState>;
+  /** Newest `updated_at` of the saved row this copy already reflects (ours or another UI's save). */
+  syncedAt?: number;
+  /** The next trajectory snapshot rebuilds the transcript (just attached to another UI's agent). */
+  rebuild?: boolean;
+}
+
+/** How often held sessions are checked for agents and saves made by other UIs (a terminal). */
+const SYNC_MS = Number(process.env.MINITUI_WEB_SYNC_MS ?? 1000);
+
+/** The agent answered and holds at its exit (only compaction notes may follow the `exit`). */
+function waitingAtExit(messages: TrajectoryMessage[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role === "exit") return true;
+    const itype = (message.extra as Record<string, unknown> | undefined)?.interrupt_type;
+    if (itype !== "Compaction" && itype !== "CompactionSkipped") return false;
+  }
+  return false;
+}
+
+function parseJson<T>(text: string | null | undefined, fallback: T): T {
+  if (!text) return fallback;
+  try {
+    const value = JSON.parse(text);
+    return value === null || value === undefined ? fallback : (value as T);
+  } catch {
+    return fallback;
+  }
 }
 
 export class SessionManager {
@@ -150,8 +183,47 @@ export class SessionManager {
   #db: ReturnType<typeof openDb> | null = null;
   #onChange: (session: LiveSession) => void;
 
-  constructor(onChange: (session: LiveSession) => void) {
+  #syncTimer?: ReturnType<typeof setInterval>;
+
+  constructor(onChange: (session: LiveSession) => void, options: { syncMs?: number } = {}) {
     this.#onChange = onChange;
+    const every = options.syncMs ?? SYNC_MS;
+    if (every > 0) {
+      this.#syncTimer = setInterval(() => this.syncExternal(), every);
+      (this.#syncTimer as { unref?: () => void }).unref?.();
+    }
+  }
+
+  /** Stop the background sync (tests, shutdown). */
+  dispose(): void {
+    if (this.#syncTimer) clearInterval(this.#syncTimer);
+    this.#syncTimer = undefined;
+  }
+
+  /**
+   * Keep held sessions in step with the other UIs that share the database.
+   *
+   * - An agent another UI runs for a held session (a terminal continued it) is followed: its
+   *   trajectory streams here as it is written, and prompts sent from here reach it.
+   * - A save another UI made since we last looked (a turn that ran while nothing was attached
+   *   here) replaces the stale copy, so the next message continues the real conversation.
+   */
+  syncExternal(): void {
+    const idle = [...this.#live.values()].filter(
+      (entry) => entry.session.target === "local" && !(entry.run && !entry.exited) && entry.session.status !== "running",
+    );
+    if (!idle.length) return;
+    let stamps: Map<string, number>;
+    try {
+      stamps = sessionStamps(this.db(), idle.map((entry) => entry.session.id));
+    } catch {
+      return; // the database is busy: try again on the next tick
+    }
+    for (const entry of idle) {
+      if (this.#attachExternal(entry)) continue;
+      const stamp = stamps.get(entry.session.id);
+      if (stamp !== undefined && stamp > (entry.syncedAt ?? 0)) this.#reloadFromDb(entry);
+    }
   }
 
   db() {
@@ -177,6 +249,14 @@ export class SessionManager {
   /** Parse new messages and append the resulting events. */
   #ingest(entry: Internal, traj: Trajectory, showSystem = false): void {
     const messages = traj.messages ?? [];
+    if (entry.rebuild && messages.length) {
+      // Attached to another UI's agent: its trajectory replaces the saved copy shown meanwhile.
+      entry.rebuild = false;
+      entry.consumed = 0;
+      entry.parseState = createParseState();
+      entry.session.events = entry.session.events.filter((event) => event.type === "notice" && event.interruptType === "attach");
+      entry.pendingTasks = [];
+    }
     if (messages.length < entry.consumed) {
       // A rewrite from scratch: replay the whole thing.
       entry.consumed = 0;
@@ -221,6 +301,12 @@ export class SessionManager {
     if (info.exitStatus) entry.session.exitStatus = info.exitStatus;
 
     const exit = [...fresh].reverse().find((event) => event.type === "exit");
+    // A turn this server did not start (a prompt typed in the terminal that owns the agent): its
+    // task arriving with no exit after it means the agent is working again.
+    if (!exit && entry.run && !entry.exited && entry.session.status !== "running" && entry.session.status !== "interrupted" && fresh.some((event) => event.type === "task")) {
+      entry.session.status = "running";
+      entry.session.startedAt = Date.now();
+    }
     // A stop the user asked for stays a stop: the exit the agent journals as it winds down must not
     // turn "interrupted" back into "done" (or "error").
     if (exit && exit.type === "exit" && entry.session.status !== "interrupted") {
@@ -310,10 +396,12 @@ export class SessionManager {
     } catch {
       // the /resume history is best-effort
     }
+    this.#announce(entry, run);
 
     entry.watch = watchTrajectory(run.session.trajPath, (traj) => this.#ingest(entry, traj));
 
     void run.exited.then(async (code) => {
+      this.#retire(entry, run);
       if (entry.run !== run) return;
       entry.exited = true;
       entry.watch?.stop();
@@ -471,6 +559,8 @@ export class SessionManager {
   /** Save to the same /resume history the TUI reads. */
   #persist(entry: Internal): void {
     const session = entry.session;
+    // An agent another UI owns is saved by that UI: two writers of one row would only fight.
+    if (entry.run?.attached && !entry.exited) return;
     try {
       if (session.messages.length) {
         saveTranscript(this.db(), session.id, session.events, session.info, session.messages);
@@ -487,7 +577,129 @@ export class SessionManager {
       }
     } catch {
       // persistence is best-effort
+    } finally {
+      // Even a failed save means this copy is the newest: an older row must not replace it later.
+      entry.syncedAt = Date.now();
     }
+  }
+
+  /** Tell the other UIs which agent runs this session, so they follow it instead of forking it. */
+  #announce(entry: Internal, run: MiniRun): void {
+    if (run.attached || !run.pid) return;
+    try {
+      registerLiveRun(this.db(), {
+        session_id: entry.session.id,
+        traj_path: run.session.trajPath,
+        control_path: run.session.controlPath,
+        pid: run.pid,
+        owner: "web",
+      });
+    } catch {
+      // best-effort: without it a terminal shows the saved transcript instead of the live one
+    }
+  }
+
+  #retire(entry: Internal, run: MiniRun): void {
+    if (run.attached) return;
+    try {
+      clearLiveRun(this.db(), entry.session.id, run.session.trajPath);
+    } catch {
+      // a stale row is harmless: its pid no longer runs that trajectory
+    }
+  }
+
+  /**
+   * Follow the agent another UI (a terminal) is running for this session, if there is one.
+   * Returns true when the session is now attached to it.
+   */
+  #attachExternal(entry: Internal): boolean {
+    if (entry.session.target !== "local") return false;
+    if (entry.run && !entry.exited) return entry.run.attached === true;
+    let record;
+    try {
+      record = getLiveRun(this.db(), entry.session.id);
+    } catch {
+      return false;
+    }
+    if (!record || this.#ownsTraj(record.traj_path)) return false;
+    const foreign = { trajPath: record.traj_path, controlPath: record.control_path, pid: record.pid };
+    if (!foreignRunAlive(foreign)) return false;
+
+    const run = attachMini(foreign);
+    entry.run = run;
+    entry.exited = false;
+    entry.trajPath = foreign.trajPath;
+    entry.pendingTasks = [];
+    entry.watch?.stop();
+    // The agent's own trajectory is the freshest copy of the conversation (the owner saves its
+    // transcript only every few seconds): the transcript is rebuilt from it. Until it has messages
+    // (the agent just started) the saved copy stays on screen.
+    const where = record.owner === "web" ? "another mini-tui web server" : "a terminal";
+    entry.session.events = entry.session.events.filter((event) => !(event.type === "notice" && event.interruptType === "attach"));
+    entry.session.events.push({ type: "notice", text: `following the agent running in ${where}`, interruptType: "attach" });
+    entry.rebuild = true;
+    entry.consumed = 0;
+    entry.parseState = createParseState();
+    const traj = readTrajectory(foreign.trajPath);
+    if (traj) this.#ingest(entry, traj);
+    if (traj && waitingAtExit(traj.messages ?? [])) {
+      // Its turn is over and it holds for the next prompt: done (or the error its exit says).
+      if (entry.session.status === "running" || entry.session.status === "idle") entry.session.status = "done";
+    } else {
+      entry.session.status = "running";
+      entry.session.startedAt = Date.now();
+    }
+    entry.watch = watchTrajectory(foreign.trajPath, (snapshot) => this.#ingest(entry, snapshot));
+
+    void run.exited.then(() => {
+      if (entry.run !== run) return;
+      entry.exited = true;
+      entry.watch?.stop();
+      const final = readTrajectory(foreign.trajPath);
+      if (final) this.#ingest(entry, final);
+      entry.session.partial = undefined;
+      const status: SessionStatus =
+        entry.session.status === "interrupted" ? "interrupted" : entry.session.status === "error" ? "error" : "done";
+      entry.session.status = status;
+      entry.syncedAt = 0; // the owner's final save is the truth: pick it up on the next sync
+      this.#emit(entry);
+    });
+    this.#emit(entry);
+    return true;
+  }
+
+  #ownsTraj(trajPath: string): boolean {
+    for (const entry of this.#live.values()) if (entry.run && !entry.run.attached && entry.run.session.trajPath === trajPath) return true;
+    return false;
+  }
+
+  /** Replace a held, idle session with its saved row (another UI saved a newer one). */
+  #reloadFromDb(entry: Internal): void {
+    let row: SessionRecord | null;
+    try {
+      row = getSession(this.db(), entry.session.id);
+    } catch {
+      return;
+    }
+    if (!row) return;
+    const restored = restoreFromRow(row);
+    entry.syncedAt = row.updated_at;
+    if (restored.messages.length === entry.session.messages.length && restored.events.length === entry.session.events.length) return;
+    Object.assign(entry.session, {
+      title: restored.title,
+      model: restored.model || entry.session.model,
+      events: restored.events,
+      messages: restored.messages,
+      info: restored.info,
+      apiCalls: restored.apiCalls,
+      cost: restored.cost,
+      exitStatus: restored.exitStatus,
+      status: restored.status,
+    });
+    entry.consumed = restored.messages.length;
+    entry.parseState = createParseState(restored.messages);
+    entry.pendingTasks = [];
+    this.#emit(entry);
   }
 
   /** Follow-up: continues the same conversation through the control channel. */
@@ -496,6 +708,11 @@ export class SessionManager {
     if (!entry) throw new Error("unknown session");
     const text = prompt.trim();
     if (!text) return;
+    // A terminal may be running (or may have just continued) this conversation: talk to its agent,
+    // or at least continue from its latest save, never from a stale copy that would fork it.
+    if (!(entry.run && !entry.exited) && entry.session.target === "local") {
+      if (!this.#attachExternal(entry)) this.#refreshIfStale(entry);
+    }
     const running = !!entry.run && !entry.exited;
     if (!running && entry.session.target === "local" && entry.session.messages.length === 0) {
       // Nothing was saved to continue from (the session never made a model call). Say so instead of
@@ -535,6 +752,60 @@ export class SessionManager {
   }
 
   /**
+   * `/compact` between turns: the agent is gone (it exited instead of holding the control file),
+   * so a fresh `--compact-only` run summarizes the saved conversation and holds at its exit for
+   * the next prompt. The terminal UI does exactly this.
+   */
+  #compactOnly(entry: Internal): void {
+    const session = entry.session;
+    const history = session.messages;
+    let resumePath: string;
+    try {
+      resumePath = writeResumeFile(session.id, history);
+    } catch (error) {
+      this.#fail(entry, `could not prepare the saved conversation: ${(error as Error).message}`);
+      return;
+    }
+    const cwd = existsSync(session.cwd) ? session.cwd : process.cwd();
+    const model = session.model || DEFAULT_MODEL || loadLastModel();
+    const run = spawnMini({
+      task: "",
+      model: model || undefined,
+      env: modelEnv(model),
+      cwd,
+      resumePath,
+      compactOnly: true,
+      control: true,
+    });
+    entry.run = run;
+    entry.exited = false;
+    entry.trajPath = run.session.trajPath;
+    this.#announce(entry, run);
+    entry.consumed = history.length;
+    entry.parseState = createParseState(history, history.length);
+    entry.watch?.stop();
+    // The compaction has to reach the saved conversation while it happens: the agent holds at its
+    // exit afterwards, which may be a long time, and `/resume` must not serve the un-compacted one.
+    entry.watch = watchTrajectory(run.session.trajPath, (traj) => {
+      this.#ingest(entry, traj);
+      this.#persist(entry);
+    });
+
+    void run.exited.then((code) => {
+      this.#retire(entry, run);
+      if (entry.run !== run) return;
+      entry.exited = true;
+      entry.watch?.stop();
+      const final = readTrajectory(run.session.trajPath);
+      if (final) this.#ingest(entry, final);
+      const interrupted = session.status === "interrupted";
+      session.partial = undefined;
+      this.#finish(entry, interrupted ? "interrupted" : code === 0 ? "done" : "error", code);
+    });
+    this.#emit(entry);
+  }
+
+  /**
    * Continue a local session from its saved messages: a new agent process with `--resume <file>`, in the
    * session's own folder and on its own model, journalling into a fresh trajectory that this session then
    * follows. The old turns are already in `session.events`; only the new ones are appended.
@@ -567,6 +838,7 @@ export class SessionManager {
     entry.run = run;
     entry.exited = false;
     entry.trajPath = run.session.trajPath;
+    this.#announce(entry, run);
     // The new trajectory replays the saved messages first, so `consumed` starts at their count and only
     // what the agent adds is parsed. The parse state is rebuilt from the same prefix.
     entry.consumed = history.length;
@@ -575,6 +847,7 @@ export class SessionManager {
     entry.watch = watchTrajectory(run.session.trajPath, (traj) => this.#ingest(entry, traj));
 
     void run.exited.then((code) => {
+      this.#retire(entry, run);
       // A newer run may have replaced this one (the user sent again): only the current run may settle.
       if (entry.run !== run) return;
       entry.exited = true;
@@ -586,6 +859,15 @@ export class SessionManager {
       this.#finish(entry, interrupted ? "interrupted" : code === 0 ? "done" : "error", code);
     });
     this.#emit(entry);
+  }
+
+  #refreshIfStale(entry: Internal): void {
+    try {
+      const stamp = sessionStamps(this.db(), [entry.session.id]).get(entry.session.id);
+      if (stamp !== undefined && stamp > (entry.syncedAt ?? 0)) this.#reloadFromDb(entry);
+    } catch {
+      // keep what we have
+    }
   }
 
   #fail(entry: Internal, message: string): void {
@@ -644,18 +926,35 @@ export class SessionManager {
   }
 
   /**
-   * `/compact`: ask the running agent to summarize its context before its next model call. Only a
-   * live local run has a control channel; a remote turn is one-shot, so there is nothing to ask.
+   * `/compact`: summarize the conversation now.
+   *
+   * A live agent (one that holds its control file, whether it is mid-turn or waiting at its
+   * exit) gets `COMPACT` on that file and summarizes before its next model call. An agent that
+   * already left gets a `--compact-only` run over the saved conversation, exactly like the
+   * terminal UI. Only a remote turn is out of reach: it is a one-shot `ssh` with no channel.
    */
   compact(id: string): void {
     const entry = this.#live.get(id);
     if (!entry) throw new Error("unknown session");
-    if (!entry.run || entry.session.status !== "running") {
-      throw new Error("compaction needs a live local run: send a message first");
+    if (entry.run && !entry.exited) {
+      entry.run.requestCompact();
+      entry.session.events.push({ type: "notice", text: "compacting the conversation before the next step", interruptType: "context" });
+      this.#emit(entry);
+      return;
     }
-    entry.run.requestCompact();
-    entry.session.events.push({ type: "notice", text: "compacting the conversation before the next step", interruptType: "context" });
-    this.#emit(entry);
+    if (entry.session.target === "remote") {
+      throw new Error("compaction needs a live local run: a remote turn is one-shot");
+    }
+    if (entry.session.messages.length < 3) {
+      throw new Error("nothing to compact yet: send a message first");
+    }
+    if (!runnerSupportsCompactOnly()) {
+      throw new Error("/compact between turns needs the integrated runner (pip install -e ./agent); it still works while a run is live");
+    }
+    entry.session.events.push({ type: "notice", text: "compacting the saved conversation", interruptType: "context" });
+    entry.session.status = "running";
+    entry.session.startedAt = Date.now();
+    this.#compactOnly(entry);
   }
 
   async #continueRemote(entry: Internal, prompt: string): Promise<void> {
@@ -786,31 +1085,25 @@ export class SessionManager {
    */
   openHistory(id: string): LiveSession {
     const held = this.#live.get(id);
-    if (held) return held.session;
+    if (held) {
+      // Held but idle: a terminal may have moved on since (a newer save, or its agent is live now).
+      if (!(held.run && !held.run.attached && !held.exited) && held.session.target === "local") {
+        if (!this.#attachExternal(held)) this.#refreshIfStale(held);
+      }
+      return held.session;
+    }
     const row = getSession(this.db(), id);
     if (!row) throw new Error("unknown session");
-    const events = row.events_json ? (JSON.parse(row.events_json) as RunEvent[]) : [];
-    const messages = row.messages_json ? (JSON.parse(row.messages_json) as TrajectoryMessage[]) : [];
-    const info = row.info_json ? (JSON.parse(row.info_json) as RunInfo) : { cost: 0, apiCalls: 0 };
-    const session: LiveSession = {
-      id: row.id,
-      title: row.title,
-      cwd: row.cwd,
-      model: row.model,
-      task: row.task,
-      target: "local",
-      status: row.exit_status === "Submitted" ? "done" : row.exit_status ? "error" : "idle",
-      events,
-      messages,
-      info,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      startedAt: row.updated_at,
-      apiCalls: row.api_calls,
-      cost: row.cost,
-      exitStatus: row.exit_status,
+    const session = restoreFromRow(row);
+    const entry: Internal = {
+      session,
+      consumed: session.messages.length,
+      parseState: createParseState(session.messages),
+      syncedAt: row.updated_at,
     };
-    this.#live.set(row.id, { session, consumed: messages.length, parseState: createParseState(messages) });
+    this.#live.set(row.id, entry);
+    // Opened while a terminal is running it: follow that agent live instead of a frozen copy.
+    this.#attachExternal(entry);
     return session;
   }
 
@@ -840,6 +1133,47 @@ export class SessionManager {
       open: this.#live.has(row.id),
     }));
   }
+}
+
+/**
+ * Build a session from its saved row. Rows come from every UI (and every version of it), so nothing
+ * is trusted: unreadable JSON, missing fields and oversized outputs all degrade to something the
+ * browser can render instead of failing the open.
+ */
+export function restoreFromRow(row: SessionRecord): LiveSession {
+  const rawEvents = parseJson<unknown>(row.events_json, []);
+  const events = (Array.isArray(rawEvents) ? rawEvents : [])
+    .filter((event): event is RunEvent => !!event && typeof event === "object" && typeof (event as RunEvent).type === "string")
+    .map(boundEvent);
+  const rawMessages = parseJson<unknown>(row.messages_json, []);
+  const messages = (Array.isArray(rawMessages) ? rawMessages : []).filter(
+    (message): message is TrajectoryMessage => !!message && typeof message === "object",
+  );
+  const rawInfo = parseJson<Partial<RunInfo>>(row.info_json, {});
+  const info: RunInfo = {
+    ...(rawInfo && typeof rawInfo === "object" ? rawInfo : {}),
+    cost: Number(rawInfo?.cost ?? row.cost ?? 0) || 0,
+    apiCalls: Number(rawInfo?.apiCalls ?? row.api_calls ?? 0) || 0,
+  };
+  const exitStatus = row.exit_status ?? "";
+  return {
+    id: row.id,
+    title: row.title || titleFor(row.task ?? "") || row.id,
+    cwd: row.cwd ?? "",
+    model: row.model ?? "",
+    task: row.task ?? "",
+    target: "local",
+    status: exitStatus === "Submitted" ? "done" : exitStatus ? "error" : "idle",
+    events,
+    messages,
+    info,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.updated_at,
+    apiCalls: Number(row.api_calls) || 0,
+    cost: Number(row.cost) || 0,
+    exitStatus,
+  };
 }
 
 /**

@@ -1,0 +1,38 @@
+# Automatic compaction: the estimate crosses the trigger, so the agent summarizes on its own
+# before the next model call (no `COMPACT` line involved). The context_window here is small on
+# purpose: `claude-opus-5-5` resolves to a 1M window, so `max_context_tokens` caps the
+# trigger at 12000 tokens and the second step crosses it.
+agent:
+  system_template: "system prompt"
+  instance_template: "{{task}}"
+  compaction:
+    enabled: true
+    threshold: 0.8
+    reserve_tokens: 2000
+    max_context_tokens: 12000
+model:
+  model_class: minisweagent.models.test_models.DeterministicToolcallModel
+  model_name: claude-opus-5-5
+  observation_template: |
+    {
+      "returncode": {{ output.returncode }},
+      "output_head": {{ output.output[:3000] | tojson }},
+      "output_tail": {{ output.output[-3000:] | tojson }},
+      "elided_chars": {{ output.output | length - 6000 }},
+      "warning": "Output too long."
+    }
+  outputs:
+    - role: assistant
+      content: "Step one."
+      tool_calls: [{id: ac1, type: function, function: {name: bash, arguments: '{"command": "seq 1 9000"}'}}]
+      extra: {actions: [{command: "seq 1 9000", tool_call_id: ac1}]}
+    - role: assistant
+      content: "Step two."
+      tool_calls: [{id: ac2, type: function, function: {name: bash, arguments: '{"command": "seq 1 9000"}'}}]
+      extra: {actions: [{command: "seq 1 9000", tool_call_id: ac2}]}
+    - role: assistant
+      content: "SUMMARY: the user asked for two number sequences; both seq 1 9000 runs printed their lines and nothing else is pending except the final answer. This summary is deliberately longer than two hundred characters so that the agent keeps it verbatim instead of falling back to a truncated transcript of the conversation."
+      extra: {}
+    - role: assistant
+      content: "done after the automatic compaction"
+      extra: {submission: "done after the automatic compaction"}

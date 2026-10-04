@@ -1,0 +1,22 @@
+agent:
+  system_template: "system prompt"
+  instance_template: "{{task}}"
+  compaction:
+    enabled: true
+    threshold: 0.8
+    reserve_tokens: 2000
+model:
+  model_class: minisweagent.models.test_models.DeterministicToolcallModel
+  model_name: totally-unknown-model
+  context_window: 20000
+  outputs:
+    - role: assistant
+      content: "Step one."
+      tool_calls: [{id: cw1, type: function, function: {name: bash, arguments: '{"command": "seq 1 9000"}'}}]
+      extra: {actions: [{command: "seq 1 9000", tool_call_id: cw1}]}
+    - role: assistant
+      content: "SUMMARY: the user asked for a number sequence; seq 1 9000 printed its lines and nothing else is pending except the final answer. This summary is deliberately longer than two hundred characters so that the agent keeps it verbatim instead of falling back to a truncated transcript."
+      extra: {}
+    - role: assistant
+      content: "done after compaction"
+      extra: {submission: "done after compaction"}
