@@ -16,6 +16,7 @@
 //!   them as sessions under their parent and follow any of them live.
 
 use crate::util::now;
+use crate::resources::{self, Tracker};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -39,6 +40,9 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
                                          a finished one continues with its full context.
       --steps N / --cost USD             extend its budget (automatic after LimitsExceeded)
   agent model <name> <model>             switch its model from its next step
+  agent resources [--json]               the box's free memory, an average subagent's cost, and
+                                         how many more may start (the 10 GiB reserve applies)
+  agent can-spawn N [--json]             would N more subagents fit now?
   agent ls [--json]                      every subagent: state, steps, cost, idle, last command
   agent status <name> [--json]           one subagent in detail
   agent wait [names...] [--any] [--timeout S]
@@ -104,6 +108,11 @@ pub struct Child {
     resume_task: String,
     /// Turns the parent has already been told about (directly through `wait`/`result`, or by a note).
     turns_seen: i64,
+    /// Last sampled RSS of this child's process group (MiB); 0 when not sampled yet.
+    pub mem_rss: u64,
+    /// Its rolling mean RSS, and its peak (MiB): what a new child is charged for.
+    pub mem_avg: u64,
+    pub mem_peak: u64,
 }
 
 impl Child {
@@ -133,6 +142,9 @@ impl Child {
             "idle_s": (now() - self.last_activity).max(0.0) as i64,
             "last_command": first_line(&self.last_command, 160),
             "exit_code": self.exit_code,
+            "mem_rss": self.mem_rss,
+            "mem_avg": self.mem_avg,
+            "mem_peak": self.mem_peak,
         })
     }
 
@@ -159,9 +171,14 @@ pub struct Hub {
     /// The parent's cost limit and own spend, for capping a child's budget.
     parent_limit: f64,
     parent_cost: f64,
-    index_written: String,
     /// The model the parent runs on now (children default to it, `/model` switches included).
     parent_model: String,
+    /// Rolling memory use of each live child, and the fan-out question it answers.
+    usage: Tracker,
+    /// Monitor ticks so far: memory sampling runs every other one.
+    tick: u64,
+    /// Fingerprint of the roster the last `index.json` write held (see `roster_key`).
+    index_key: String,
 }
 
 fn round4(x: f64) -> f64 {
@@ -368,8 +385,10 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
         notes: vec![],
         parent_limit,
         parent_cost: 0.0,
-        index_written: String::new(),
         parent_model: String::new(),
+        usage: Tracker::default(),
+        tick: 0,
+        index_key: String::new(),
     };
     let hub = Arc::new(Mutex::new(hub));
     let _ = HUB.set(hub.clone());
@@ -547,6 +566,16 @@ impl Hub {
     /// Read new journal lines, notice exits and stalls, refresh the totals and the index.
     fn monitor(&mut self) {
         let stall_s: f64 = env_num("MINI_AGENT_STALL_S", 600.0);
+        // Sampling memory is a few small reads per live child: every other tick is plenty.
+        self.tick += 1;
+        let sample = self.tick % 2 == 0;
+        if sample {
+            // Drop the bookkeeping of children whose process is gone, then sample the live ones.
+            let gone: Vec<String> = self.children.iter().filter(|c| c.proc.is_none()).map(|c| c.name.clone()).collect();
+            for n in gone {
+                self.usage.drop(&n);
+            }
+        }
         let mut notes = vec![];
         for c in self.children.iter_mut() {
             for line in read_new(&c.journal, &mut c.offset, &mut c.partial) {
@@ -635,6 +664,9 @@ impl Hub {
                     c.stop_requested = false;
                 }
             }
+            if sample && c.proc.is_some() && c.pid > 0 && c.running() {
+                c.mem_rss = self.usage.observe(&c.name, c.pid, now() - c.started_at).rss_mb;
+            }
             if c.running() && !c.stall_reported && stall_s > 0.0 && now() - c.last_activity > stall_s {
                 c.stall_reported = true;
                 notes.push((String::new(), 0, format!(
@@ -656,21 +688,18 @@ impl Hub {
         if self.children.is_empty() {
             return;
         }
+        // Nothing a UI shows has changed since the last tick: skip building and serializing the
+        // whole roster (100 children = 100 JSON objects) four times a second for nothing.
+        let key = self.roster_key();
+        if self.index_key == key {
+            return;
+        }
+        self.index_key = key;
         let mut v = json!({
             "parent_pid": std::process::id(),
             "socket": self.socket.display().to_string(),
             "children": self.children.iter().map(Child::summary).collect::<Vec<_>>(),
         });
-        // `idle_s` changes every tick: leave it out of the change check.
-        let mut stable = v.clone();
-        for c in stable["children"].as_array_mut().unwrap() {
-            c.as_object_mut().unwrap().remove("idle_s");
-        }
-        let key = stable.to_string();
-        if key == self.index_written {
-            return;
-        }
-        self.index_written = key;
         v["updated_at"] = json!(now());
         let _ = std::fs::create_dir_all(&self.dir);
         let path = self.dir.join("index.json");
@@ -689,10 +718,21 @@ impl Hub {
         if self.depth >= max_depth {
             return Err(format!("subagents may not start subagents beyond depth {max_depth}: do this task yourself"));
         }
-        let max_live: usize = env_num("MINI_AGENT_MAX_SUBAGENTS", 8);
+        let max_live: usize = env_num("MINI_AGENT_MAX_SUBAGENTS", 100).min(100);
         let live = self.children.iter().filter(|c| c.proc.is_some()).count();
         if live >= max_live {
             return Err(format!("{live} subagents are already alive (limit {max_live}): `agent stop` one you no longer need"));
+        }
+        // The OOM guard: the same calculus `agent resources` reports, enforced at the gate. A batch
+        // that would not fit is refused here, and the session keeps running (exit 1, a message).
+        let fits = self.fanout_left();
+        if live as u64 >= fits {
+            let r = self.resources_report();
+            let b = &r.budget;
+            return Err(format!(
+                "refusing subagent: {live} are alive and the box has room for {fits} more.\n  memory {} free, the session keeps {} for itself, a subagent costs {} on average ({}).\n  `agent resources` shows the numbers; `agent stop` one that is done, then spawn again.",
+                crate::resources::gb_g(b.available_mb), crate::resources::gb_g(b.reserve_mb), crate::resources::gb_g(b.per_child_mb()), crate::resources::gb_g(b.avg_child_mb)
+            ));
         }
         if let Some(i) = self.children.iter().position(|c| c.name == name) {
             if self.children[i].proc.is_some() {
@@ -775,6 +815,9 @@ impl Hub {
             replaying: false,
             resume_task: String::new(),
             turns_seen: 0,
+            mem_rss: 0,
+            mem_avg: 0,
+            mem_peak: 0,
         };
         self.launcher().exec(&mut child, &task, None)?;
         let pid = child.pid;
@@ -784,8 +827,59 @@ impl Hub {
         Ok(format!("started subagent {name} (pid {pid}) in {cwd}{skills_note}{capped}\nYou will be told when it finishes; meanwhile keep working, or `agent wait {name}`."))
     }
 
+    /// A short fingerprint of everything a UI shows about the children, `idle_s` left out (it moves
+    /// every tick). Two identical keys mean the roster on disk is already current.
+    fn roster_key(&self) -> String {
+        let mut key = String::with_capacity(64 * self.children.len());
+        for c in self.children.iter() {
+            use std::fmt::Write as _;
+            let _ = write!(
+                key,
+                "{}|{}|{}|{}|{:.4}|{}|{}|{}|{}|{}|{}|",
+                c.name,
+                c.state,
+                c.exit_status,
+                c.steps,
+                c.total_cost(),
+                c.calls,
+                c.turns,
+                c.pid,
+                c.mem_rss,
+                c.mem_avg,
+                c.mem_peak,
+            );
+        }
+        key
+    }
+
     fn launcher(&self) -> Launcher {
         Launcher { exe: self.exe.clone(), configs: self.configs.clone(), socket: self.socket.clone(), depth: self.depth }
+    }
+
+    /// Live subagents: the ones a new spawn would have to share memory with.
+    fn live_count(&self) -> u64 {
+        self.children.iter().filter(|c| c.proc.is_some()).count() as u64
+    }
+
+    /// The resource report `agent resources` shows, and the calculation `spawn` enforces.
+    fn resources_report(&mut self) -> resources::Report {
+        let (avail, total) = resources::meminfo().unwrap_or((0, 0));
+        let (l1, _, _) = resources::loadavg();
+        let live = self.live_count();
+        let report = resources::snapshot(Some(avail), Some(total), resources::cpu_count(), l1, &self.usage, live);
+        // Carry the per-child averages onto the children the UIs list.
+        for c in self.children.iter_mut() {
+            if let Some(u) = self.usage.get(&c.name) {
+                c.mem_avg = u.avg_rss_mb;
+                c.mem_peak = u.peak_rss_mb;
+            }
+        }
+        report
+    }
+
+    /// How many more subagents may start now, by the reserve-memory and CPU calculus.
+    fn fanout_left(&mut self) -> u64 {
+        self.resources_report().max_fanout
     }
 }
 
@@ -1057,6 +1151,27 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
         "ls" => {
             let rows: Vec<Value> = h.children.iter().map(Child::summary).collect();
             Ok(ok(table(&h.children), Value::Array(rows)))
+        }
+        // The numbers a fan-out must be planned around: free memory, the average cost of a running
+        // subagent, and how many more may start (memory, then CPU, then the cap of 100).
+        "resources" => {
+            let r = h.resources_report();
+            Ok(if req.get("json").and_then(Value::as_bool).unwrap_or(false) {
+                ok(String::new(), r.to_value())
+            } else {
+                ok(r.text(), r.to_value())
+            })
+        }
+        // A plan that asks for N children at once takes all of them or none: reserve N.
+        "can-spawn" => {
+            let n = req.get("n").and_then(Value::as_u64).unwrap_or(1).max(1);
+            let free = h.fanout_left();
+            let live = h.live_count();
+            let r = h.resources_report();
+            let head = if free >= n { format!("room for {n} more: {free} fit in the free memory now") } else {
+                format!("room for {free} more, {n} asked: spawn {free} now and the rest as these finish")
+            };
+            Ok(ok(head, json!({"fits": free >= n, "max_fanout": free, "requested": n, "live": live, "resources": r.to_value()})))
         }
         "status" => h.child(&s(req, "name")).map(|c| {
             let v = c.summary();
@@ -1340,6 +1455,16 @@ pub fn client(args: &[String]) -> i32 {
                 }
             }
             "ls" => {}
+            "resources" => {
+                if let Some(n) = rest.iter().position(|a| a == "--json") { req["json"] = json!(true); let _ = n; }
+                if let Some(v) = positional.first() {
+                    return Err(format!("resources takes no argument (got {v:?})"));
+                }
+            }
+            "can-spawn" => {
+                let n = positional.first().cloned().ok_or("can-spawn needs a number of subagents")?;
+                req["n"] = json!(n.parse::<u64>().map_err(|_| "can-spawn needs a number")?);
+            }
             other => return Err(format!("unknown command {other:?}")),
         }
         Ok(())

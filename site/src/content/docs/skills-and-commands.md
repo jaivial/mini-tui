@@ -47,6 +47,8 @@ hand.
 mini-tui ships its own skills and installs them into that folder at install and at every startup. A newer
 version replaces a copy you have not edited; one you edited or deleted is left as you made it.
 
-- `$subagents`: how an agent splits work across subagents of its own session (Rust agent): spawn them,
-  keep working while they run, steer them with messages, and collect and check their results.
+- `$subagents`: how an agent splits work across subagents of its own session (Rust agent): read the
+  room (`agent resources`), size the fan-out to the free memory against a 10 GiB reserve (up to 100
+  live children), spawn them, keep working while they run, steer them with messages, and collect and
+  check their results.
 - `$e2e`: how an agent writes and runs `mini-agent-rs e2e` browser tests.

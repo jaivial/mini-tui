@@ -148,10 +148,25 @@ run. You can steer it mid-run with `agent send`. When it finishes, fails, stalls
 it reports back to the parent by itself, so the orchestrator never spends steps polling. Children
 stop with their session and count toward its cost limit.
 
+Before a fan-out the model reads the room with `agent resources`: the free memory, the **measured
+average memory of the running subagents** (each child's whole process group is sampled while it
+runs), and `max fan-out now` —
+
+```
+min( (MemAvailable - 10 GiB reserve) / avg subagent,  CPU headroom,  100 - live )
+```
+
+Up to **100 subagents** can run at once, never past that room: every `spawn` runs the same
+calculation at the gate and refuses a child that would not fit, with the numbers, and exits 1). The
+session and every other child keep running; only the child that would not fit is not started. The
+reserve keeps 10 GiB free for the session itself, so an orchestrated batch can never push the box
+into swap or under the OOM killer.
+
 Every subagent is saved as a session under its parent. In the web app a strip above the
-transcript lists them with their state and cost: click one to follow it live in the pane, or
-message it like any session. In the terminal UI, `/subagents` lists them and `/resume` opens one.
-Reference the bundled `$subagents` skill in a prompt to have the agent use them.
+transcript lists them with their state, cost and **resident memory**: click one to follow it live
+in the pane, or message it like any session. In the terminal UI, `/subagents` lists them and
+`/resume` opens one. Reference the bundled `$subagents` skill in a prompt to have the agent use
+them.
 
 ## How it is kept identical
 

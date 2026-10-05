@@ -53,7 +53,7 @@ impl Model for DeterministicModel {
     fn query(&mut self, _messages: &[Value], _sink: Option<DeltaSink>) -> Result<Reply, ModelError> {
         loop {
             let Some(output) = self.outputs.get(self.index).cloned() else {
-                return Err(ModelError { message: "list index out of range".into(), status: None, abort: true, kind: "IndexError".into() });
+                return Err(ModelError { message: "list index out of range".into(), status: None, abort: true, kind: "IndexError".into(), connect_refused: false });
             };
             self.index += 1;
             let actions = output.pointer("/extra/actions").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -62,7 +62,7 @@ impl Model for DeterministicModel {
                 let cmd = a.get("command").and_then(Value::as_str).unwrap_or("");
                 if let Some(secs) = cmd.strip_prefix("/sleep ") {
                     if !crate::agent::interruptible_sleep(std::time::Duration::from_secs_f64(secs.trim().parse().unwrap_or(0.0))) {
-                        return Err(ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into() });
+                        return Err(ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false });
                     }
                     retry = true;
                     break;

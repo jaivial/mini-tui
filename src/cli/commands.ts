@@ -8,6 +8,7 @@
  */
 
 import { DEFAULT_MODEL } from "../config";
+import { defaultDoctorModel, formatDoctor, runDoctor } from "../cliproxyDoctor";
 import { loadLastModel, saveLastModel } from "../lastModel";
 import { MODELS } from "../models";
 import { connectionModelOptions, loadConnections } from "../providers";
@@ -16,7 +17,7 @@ import { OUTPUT_MODES, loadSettings, saveSettings, type OutputMode } from "../se
 import { SKILLS_DIR, listSkills } from "../skills";
 import type { RunEvent } from "../traj/schema";
 import { THEMES } from "../ui/theme";
-import type { ModelArgs, ModelsArgs, SessionsArgs, SettingsArgs, SkillsArgs } from "./args";
+import type { DoctorArgs, ModelArgs, ModelsArgs, SessionsArgs, SettingsArgs, SkillsArgs } from "./args";
 import { finalAnswer, formatEventText, type HeadlessIO } from "./headless";
 
 type Out = Pick<HeadlessIO, "stdout" | "stderr">;
@@ -150,4 +151,18 @@ export function settingsCommand(args: SettingsArgs, out: Out): number {
   if (args.json) json(out, settings);
   else out.stdout(`${key} → ${args.value}\n`);
   return 0;
+}
+
+/**
+ * `mini-tui doctor [-m <model>]` - why is a `cliproxy/` model failing?
+ *
+ * cli-proxy is a local gateway, so a failed run there has four possible causes that all read the
+ * same in the transcript. This names the first one that is wrong instead of leaving the user to
+ * decode a log tail.
+ */
+export async function doctorCommand(args: DoctorArgs, out: Out): Promise<number> {
+  const report = await runDoctor(args.model || defaultDoctorModel());
+  if (args.json) return json(out, report), report.ok ? 0 : 1;
+  out.stdout(`${formatDoctor(report)}\n`);
+  return report.ok ? 0 : 1;
 }

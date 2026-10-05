@@ -99,6 +99,10 @@ export interface SubagentView {
   cost: number;
   task: string;
   lastCommand: string;
+  /** Now, rolling mean and peak of the child's memory (MiB): the fan-out budget it is spending. */
+  memRss: number;
+  memAvg: number;
+  memPeak: number;
 }
 
 export type TargetKind = "local" | "remote";

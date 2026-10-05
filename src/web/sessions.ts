@@ -183,6 +183,19 @@ function parseJson<T>(text: string | null | undefined, fallback: T): T {
   }
 }
 
+/** Whether the subagent strip the UI shows would change: same length, and every shown field equal. */
+function viewsChanged(before: SubagentView[] | undefined, after: SubagentView[]): boolean {
+  const prev = before ?? [];
+  if (prev.length !== after.length) return true;
+  for (let i = 0; i < after.length; i++) {
+    const a = prev[i]!, b = after[i]!;
+    if (a.sessionId !== b.sessionId || a.state !== b.state || a.exitStatus !== b.exitStatus) return true;
+    if (a.steps !== b.steps || a.cost !== b.cost || a.memRss !== b.memRss || a.memAvg !== b.memAvg) return true;
+    if (a.lastCommand !== b.lastCommand || a.task !== b.task) return true;
+  }
+  return false;
+}
+
 export class SessionManager {
   #live = new Map<string, Internal>();
   #db: ReturnType<typeof openDb> | null = null;
@@ -215,8 +228,9 @@ export class SessionManager {
         continue;
       }
       if (!views.length && !entry.session.subagents?.length) continue;
-      const before = JSON.stringify(entry.session.subagents ?? []);
-      if (JSON.stringify(views) === before) continue;
+      // Compare by the fields the UI actually shows, without serializing the whole array twice
+      // per session per tick: at 100 children that was the largest cost of an idle tick.
+      if (!viewsChanged(entry.session.subagents, views)) continue;
       entry.session.subagents = views;
       this.#emit(entry);
     }

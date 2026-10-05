@@ -424,7 +424,7 @@ impl Agent {
                 self.add_messages(vec![Self::user_task_message(task)]);
             }
         } else if compact_only {
-            return Err(ModelError { message: "compact_only requires resume_messages".into(), status: None, abort: true, kind: "ValueError".into() });
+            return Err(ModelError { message: "compact_only requires resume_messages".into(), status: None, abort: true, kind: "ValueError".into(), connect_refused: false });
         } else {
             self.messages.clear();
             let vars = self.template_vars();
@@ -824,16 +824,16 @@ impl Agent {
 }
 
 fn template_error(e: String) -> ModelError {
-    ModelError { message: e, status: None, abort: true, kind: "UndefinedError".into() }
+    ModelError { message: e, status: None, abort: true, kind: "UndefinedError".into(), connect_refused: false }
 }
 
 fn interrupted() -> ModelError {
-    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into() }
+    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false }
 }
 
 /// Stopped while holding at exit: Python dies in `time.sleep` without saving again.
 fn interrupted_idle() -> ModelError {
-    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterruptIdle".into() }
+    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterruptIdle".into(), connect_refused: false }
 }
 
 /// `<traj>.json` -> `<traj>.jsonl` (Python's `with_suffix`).

@@ -5,6 +5,7 @@
 //! (`MSWEA_CONTROL_FILE`: `MODEL`, `MESSAGE`, `COMPACT`), the same YAML configs and `.env`.
 
 mod agent;
+mod resources;
 mod compaction;
 mod config;
 mod e2e;

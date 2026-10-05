@@ -19,6 +19,8 @@ spend counts toward its cost limit, and every one is saved as a session under th
 ```bash
 mini-agent-rs agent spawn <name> [--cwd DIR] [-m MODEL] [--max-steps N] [--cost-limit USD] [--skill NAME] "<task>"
 mini-agent-rs agent spawn <name> --prompt-file task.md      # long tasks ('-' = stdin)
+mini-agent-rs agent resources [--json]     # free memory, avg subagent cost, max fan-out
+mini-agent-rs agent can-spawn N            # would N more fit right now?
 mini-agent-rs agent ls                     # NAME STATE STEPS COST IDLE LAST
 mini-agent-rs agent send <name> "<text>"   # steer it mid-run, or continue a finished one
 mini-agent-rs agent wait [names] [--any] [--timeout 20]
@@ -61,10 +63,52 @@ You were started by another session for one task. Do it and end with a short sum
 blocked on a decision only that session can make, `mini-agent-rs agent ask "<question>"` sends it
 there; keep working on what you can meanwhile, its answer arrives as a new message.
 
+## Before you fan out: check the box
+
+Every `spawn` is refused when the machine cannot afford it, so find out first:
+
+```bash
+mini-agent-rs agent resources
+# free memory 45.8 GiB of 62.7 GiB - reserve 10.0 GiB - available to spend 35.8 GiB
+# avg subagent 256 MiB (floor 256 MiB) - 0 live of a cap of 100
+# cpus 12 - load 11.43
+# max fan-out now: 100 more subagents
+```
+
+The number to plan around is **`max fan-out now`**: how many more may start, and it is
+
+```
+min( (MemAvailable - reserve) / per-subagent,  CPU headroom,  100 - live )
+```
+
+- `reserve` is **10 GiB** by default (`MINI_AGENT_RESERVE_MEM_MB`): memory this session never spends
+  on subagents, so the box never gets pushed into swap or killed by the OOM killer.
+- `per subagent` is the **average RSS of the running subagents, measured** (rolling mean of samples
+  of each child's whole process group); until one has been measured it is a 256 MiB floor
+  (`MINI_AGENT_CHILD_MEM_MB`). Children you fan out have a cost, not a hope: heavy ones are charged
+  their real average, so fewer of them fit.
+- The CPU term binds only when the box is already saturated (1-min load >= the CPU count); below
+  that, subagents are mostly waiting on the model and the CPU is not the limit.
+- The last term is the cap: **100 live** subagents, the hard ceiling. `agent can-spawn N` turns
+  a plan of N into "all N fit now" or "spawn N as these finish".
+
+So measure and then decide how many to start:
+
+```bash
+mini-agent-rs agent resources --json | jq -r '.max_fanout'   # machine-readable
+mini-agent-rs agent can-spawn 30                             # "room for 30 more" or why not
+```
+
+If `max fan-out now` is 0, do not spawn: `agent resources` says what binds (the reserve, a heavier
+average child than free memory, or the CPU). Stop the children that are done (`agent stop w1 w2`),
+collect their results, and spawn the rest as the room reappears. **The session survives a refused
+spawn** - only that child does not start (exit code 1, the reason printed); no batch is ever taken
+down because one more did not fit.
+
 ## Limits
 
-- At most 8 live subagents per session (`MINI_AGENT_MAX_SUBAGENTS`), nesting 2 deep
-  (`MINI_AGENT_MAX_DEPTH`). Each turn defaults to 200 steps and $2, capped by what this session's
-  cost limit has left.
+- Up to **100 live subagents** per session (`MINI_AGENT_MAX_SUBAGENTS`, clamped to 100), never past
+  the free memory the calculus above allows, nesting 2 deep (`MINI_AGENT_MAX_DEPTH`). Each turn
+  defaults to 200 steps and $2, capped by what this session's cost limit has left.
 - Only the Rust agent (`mini-agent-rs`) has subagents. On the Python agent, `agent` commands say so;
   use `$orchestration` (`orch`) there.

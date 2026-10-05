@@ -86,3 +86,19 @@ describe("step", () => {
     expect(step(0, 1, 0)).toBe(-1);
   });
 });
+
+describe("a model the gateway no longer serves", () => {
+  // The server annotates the description (see src/web/config.ts); the picker highlights it.
+  const flagged = { id: "cliproxy/claude-opus-5-5", name: "n", description: "cli-proxy \u00b7 Claude Opus 5.5 \u2014 NOT SERVED by cli-proxy (subscription signed out)" };
+  test("the flag survives the mapping into picker options", () => {
+    expect(toOption(flagged).description).toContain("NOT SERVED");
+  });
+  test("it is still listed and still selectable \u2014 annotated, not hidden", () => {
+    const { flat } = buildGroups([...CATALOGUE, flagged], "");
+    expect(flat.some((o) => o.id === flagged.id)).toBe(true);
+  });
+  test("the flag text is searchable, so `not served` finds the broken models", () => {
+    const { flat } = buildGroups([...CATALOGUE, flagged], "not served");
+    expect(flat.map((o) => o.id)).toEqual([flagged.id]);
+  });
+});

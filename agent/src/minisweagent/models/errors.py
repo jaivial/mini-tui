@@ -33,7 +33,12 @@ def classify_status(status: int, detail: Any, base: str) -> ProviderError:
     lowered = str(detail).lower()
     if status in ABORT_STATUSES and "rate limit" not in lowered:
         if status in (401, 403):
-            message += " Check the API key (`mini-extra config set KEY VALUE`)."
+            # A gateway (cli-proxy, Rosetta) fronts its own subscription login, so a 401 from it
+            # is usually not the key mini sends: the upstream OAuth token is what expired.
+            if "oauth" in lowered or "revoked" in lowered or "invalid_grant" in lowered:
+                message += " This is the provider's own login, not the key mini sends: re-authenticate the subscription behind this endpoint."
+            else:
+                message += " Check the API key (`mini-extra config set KEY VALUE`)."
         if status == 402:
             message += " Top up your balance — retrying will not fix this."
         return ProviderAbortError(message, status)

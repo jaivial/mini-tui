@@ -74,7 +74,7 @@ conversation before your next message.
 ## Subagents
 
 With the Rust agent, a session can start subagents to split its work. They appear in a strip under the
-session's header, each with a status dot, its steps and its cost. Click one to follow it live in the pane
+session's header, each with a status dot, its steps, its cost and its resident memory. Click one to follow it live in the pane
 and message it like any session; its own strip links back to the parent. `/subagents` lists them and
 `/subagents <name>` opens one. See [Subagents](/docs/rust-agent/#subagents-one-session-many-agents) for
 how they work.

@@ -760,7 +760,12 @@ export function App(props: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** `/subagents`: one notice listing them (state, steps, cost, what each is doing). */
+  function memLine(rss: number, avg: number): string {
+    const f = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)}G` : `${mb}M`);
+    return `mem ${f(rss)}/${f(avg)}`;
+  }
+
+  /** `/subagents` lists each child's memory too: now, the average it is charged for, its peak. */
   const showSubagents = () => {
     const views = syncSubagents();
     const text = views.length
@@ -768,7 +773,7 @@ export function App(props: AppProps) {
           `${views.length} subagent${views.length === 1 ? "" : "s"} (open one with /resume, they are saved as sessions):`,
           ...views.map(
             (v) =>
-              `  ${v.name.padEnd(16)} ${(v.exitStatus && v.state !== "running" ? `${v.state} ${v.exitStatus}` : v.state).padEnd(20)} ${String(v.steps).padStart(4)} steps  $${v.cost.toFixed(3)}  ${v.state === "running" ? v.lastCommand : v.task}`.slice(0, 160),
+              `  ${v.name.padEnd(16)} ${(v.exitStatus && v.state !== "running" ? `${v.state} ${v.exitStatus}` : v.state).padEnd(20)} ${String(v.steps).padStart(4)} steps  $${v.cost.toFixed(3)}  ${v.memAvg ? `${memLine(v.memRss, v.memAvg)}  ` : ""}${v.state === "running" ? v.lastCommand : v.task}`.slice(0, 190),
           ),
         ].join("\n")
       : "no subagents yet: the agent starts them with `mini-agent-rs agent spawn` (Rust agent only)";

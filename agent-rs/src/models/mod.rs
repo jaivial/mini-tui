@@ -22,6 +22,10 @@ pub struct ModelError {
     pub abort: bool,
     /// The Python exception class name this corresponds to (for exit messages).
     pub kind: String,
+    /// The TCP connect was refused: nothing is listening on that address. Retrying cannot
+    /// start the service, and a local gateway comes back (or not) within seconds rather than
+    /// minutes, so the retry policy treats it differently from a remote transport error.
+    pub connect_refused: bool,
 }
 
 impl std::fmt::Display for ModelError {
@@ -71,7 +75,7 @@ pub fn global_stats_add(cost: f64) -> Result<(), ModelError> {
             message: format!("Global cost/call limit exceeded: ${:.4} / {}", st.0, st.1),
             status: None,
             abort: true,
-            kind: "RuntimeError".into(),
+            kind: "RuntimeError".into(), connect_refused: false,
         });
     }
     Ok(())

@@ -29,14 +29,22 @@ pub fn classify_status(status: u16, detail: &str, base: &str) -> ModelError {
     let lowered = detail.to_lowercase();
     if ABORT_STATUSES.contains(&status) && !lowered.contains("rate limit") {
         if status == 401 || status == 403 {
-            message.push_str(" Check the API key (`mini-extra config set KEY VALUE`).");
+            // A gateway (cli-proxy, Rosetta) fronts its own subscription login, so a 401 from it
+            // is usually not the key mini sends: the upstream OAuth token is what expired. Say
+            // which, or the user edits a perfectly good key and the run still fails.
+            let upstream = lowered.contains("oauth") || lowered.contains("revoked") || lowered.contains("invalid_grant");
+            if upstream {
+                message.push_str(" This is the provider's own login, not the key mini sends: re-authenticate the subscription behind this endpoint.");
+            } else {
+                message.push_str(" Check the API key (`mini-extra config set KEY VALUE`).");
+            }
         }
         if status == 402 {
             message.push_str(" Top up your balance — retrying will not fix this.");
         }
-        return ModelError { message, status: Some(status), abort: true, kind: "ProviderAbortError".into() };
+        return ModelError { message, status: Some(status), abort: true, kind: "ProviderAbortError".into(), connect_refused: false };
     }
-    ModelError { message, status: Some(status), abort: false, kind: "ProviderError".into() }
+    ModelError { message, status: Some(status), abort: false, kind: "ProviderError".into(), connect_refused: false }
 }
 
 fn http_error(status: u16, text: &str, base: &str) -> ModelError {
@@ -59,7 +67,45 @@ fn value_text(v: &Value) -> String {
 }
 
 fn transport_error(e: &dyn std::fmt::Display, base: &str) -> ModelError {
-    ModelError { message: format!("{e} ({base})"), status: None, abort: false, kind: "ProviderError".into() }
+    let text = e.to_string();
+    let refused = is_connect_refused(&text);
+    let mut message = format!("{text} ({base})");
+    if refused {
+        message.push_str(&refused_hint(base));
+    }
+    ModelError { message, status: None, abort: false, kind: "ProviderError".into(), connect_refused: refused }
+}
+
+/// What a refused connect means for a gateway mini talks to, and what to check first.
+fn refused_hint(base: &str) -> String {
+    let local = ["127.0.0.1", "localhost", "[::1]"].iter().any(|h| base.contains(h));
+    let name = if base.contains(":8317") {
+        "cli-proxy (cliproxy/)"
+    } else if base.contains(":9120") {
+        "rosetta"
+    } else {
+        "the gateway"
+    };
+    if local {
+        // The port is the actionable bit: it is what `ss -ltn` and the service unit use.
+        let host = base.split("://").nth(1).unwrap_or(base);
+        let port = host.split('/').next().unwrap_or("").rsplit(':').next().unwrap_or("");
+        format!(" -- {name} is not listening on port {port}: start it, or point CLIPROXY_API_BASE where it runs (`ss -ltn | grep {port}`). mini re-probes a few times a second apart before giving up")
+    } else {
+        format!(" -- the host at {} is unreachable: check the network, the VPN and that {name} is up there", base.trim_end_matches('/'))
+    }
+}
+
+/// Does this transport error mean "nothing is listening on that address"? `ureq` wraps
+/// `std::io::Error`, whose `Display` ends with the OS message, so a refused TCP connect
+/// reads "Connect error: Connection refused (os error 111)". Matched on text rather than
+/// by unwrapping the source chain because `ureq::Error::Transport` does not expose it.
+fn is_connect_refused(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    if lowered.contains("connect error") {
+        return lowered.contains("refused") || lowered.contains("unreachable");
+    }
+    lowered.contains("connection refused") || lowered.contains("os error 111") || lowered.contains("os error 146")
 }
 
 fn request(url: &str, headers: &[(String, String)], timeout: f64, accept: &str) -> ureq::Request {
@@ -71,7 +117,7 @@ fn request(url: &str, headers: &[(String, String)], timeout: f64, accept: &str) 
 }
 
 fn stopped() -> ModelError {
-    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into() }
+    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false }
 }
 
 /// Run a blocking HTTP call on a worker thread so a stop signal is seen at once: std's socket
@@ -129,7 +175,7 @@ fn post_json_blocking(base: &str, path: &str, body: &Value, headers: &[(String, 
                 message: format!("invalid JSON from {base}: {}", text.chars().take(300).collect::<String>()),
                 status: None,
                 abort: false,
-                kind: "ProviderError".into(),
+                kind: "ProviderError".into(), connect_refused: false,
             })
         }
         Err(ureq::Error::Status(code, resp)) => {
@@ -255,6 +301,10 @@ pub fn read_chat_sse(reader: impl Read, sink: &mut Option<DeltaSink>) -> std::io
 
 /// Retry transient errors: `MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT` attempts (default 10),
 /// exponential wait between 4 and 60 seconds; abort errors are raised at once.
+///
+/// A refused TCP connect is the one non-abort error that retrying cannot fix by itself: the
+/// gateway is down, not slow. It is also the one that comes back fastest, so it gets its own
+/// policy (see `refused_wait`); any other error keeps the shared exponential schedule.
 pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<T, ModelError> {
     let attempts: u32 = std::env::var("MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT").ok().and_then(|s| s.parse().ok()).unwrap_or(10).max(1);
     let min_wait: f64 = std::env::var("MINI_AGENT_RETRY_MIN_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(4.0);
@@ -266,12 +316,30 @@ pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<
             Err(e) if e.abort || attempt >= attempts => return Err(e),
             Err(e) => {
                 let wait = retry_wait(attempt, min_wait);
+                let wait = if e.connect_refused { refused_wait(attempt, min_wait) } else { wait };
                 eprintln!("WARNING: Retrying in {wait:.1} seconds as it raised {}: {}.", e.kind, e.message);
                 if !crate::agent::interruptible_sleep(Duration::from_secs_f64(wait)) {
-                    return Err(ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into() });
+                    return Err(ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false });
                 }
             }
         }
+    }
+}
+
+/// How long to wait between attempts when nothing is listening. The connect is refused
+/// instantly, so these are the only cheap retries there are, and the shared curve is the
+/// wrong shape for it: `MINI_AGENT_RETRY_MIN_WAIT` is a floor for a *slow* provider, while a
+/// gateway that is coming back answers within seconds. So the first refusal is re-probed at
+/// once (the common case: the service was mid-restart) and the rest are capped at
+/// [`REFUSED_CAP`], which keeps the schedule inside a restart-sized window instead of the
+/// 4 minutes the shared curve would spend before saying anything.
+const REFUSED_CAP: f64 = 2.0;
+
+fn refused_wait(attempt: u32, min_wait: f64) -> f64 {
+    if attempt == 1 {
+        0.0
+    } else {
+        retry_wait(attempt, min_wait).min(REFUSED_CAP)
     }
 }
 
@@ -317,6 +385,71 @@ mod tests {
     fn retry_waits_like_tenacity() {
         let waits: Vec<f64> = (1..=7).map(|a| retry_wait(a, 4.0)).collect();
         assert_eq!(waits, vec![4.0, 4.0, 4.0, 8.0, 16.0, 32.0, 60.0]);
+    }
+
+    #[test]
+    fn a_refused_connect_is_recognised() {
+        // The exact text ureq produces for the gateway-down case.
+        assert!(is_connect_refused("http://127.0.0.1:8317/v1/chat/completions: Connection Failed: Connect error: Connection refused (os error 111)"));
+        assert!(is_connect_refused("Network Error: Connect error: Connection refused (os error 111)"));
+        assert!(is_connect_refused("Connect error: connection refused"));
+        assert!(is_connect_refused("Connection refused (os error 111)"));
+        // Not a refusal: timeouts, resets, DNS failures, a mid-stream drop.
+        assert!(!is_connect_refused("Network Error: timed out reading response"));
+        assert!(!is_connect_refused("Connection reset by peer (os error 104)"));
+        assert!(!is_connect_refused("dns error: failed to lookup address information"));
+        assert!(!is_connect_refused("connection closed before message completed"));
+        assert!(!is_connect_refused(""));
+    }
+
+    #[test]
+    fn refused_connects_reprobe_at_once_then_stay_short() {
+        let waits: Vec<f64> = (1..=6).map(|a| refused_wait(a, 4.0)).collect();
+        assert_eq!(waits, vec![0.0, 2.0, 2.0, 2.0, 2.0, 2.0]);
+        // Never the shared curve's long tail: a refused connect is cheap to re-probe.
+        assert!(refused_wait(5, 4.0) < retry_wait(5, 4.0));
+        // Ten attempts, the default, stays inside a restart-sized window (~18 s), where the
+        // shared curve would have spent 4 minutes before reporting anything.
+        let total: f64 = (1..10).map(|a| refused_wait(a, 4.0)).sum();
+        assert!(total < 20.0, "{total}");
+        let shared: f64 = (1..10).map(|a| retry_wait(a, 4.0)).sum();
+        assert!(shared > 200.0, "{shared}");
+    }
+
+    #[test]
+    fn a_gateway_that_comes_back_is_caught_as_fast_as_before() {
+        // The gateway restarts and is listening again after `up_at` seconds: when does the
+        // retry loop notice? The capped schedule must not be slower than the shared one.
+        let notice = |wait: fn(u32, f64) -> f64, up_at: f64| {
+            let mut t = 0.0;
+            for attempt in 1..=10u32 {
+                if t >= up_at {
+                    return t;
+                }
+                t += wait(attempt, 4.0);
+            }
+            t
+        };
+        for up_at in [0.05, 1.0, 3.0, 5.0] {
+            let capped = notice(|a, m| refused_wait(a, m), up_at);
+            let shared = notice(retry_wait, up_at);
+            assert!(capped <= shared + 0.001, "up_at={up_at} capped={capped} shared={shared}");
+        }
+    }
+
+    #[test]
+    fn the_refused_hint_names_the_gateway() {
+        let hint = refused_hint("http://127.0.0.1:8317/v1");
+        assert!(hint.contains("cli-proxy (cliproxy/)"), "{hint}");
+        assert!(hint.contains("port 8317"), "{hint}");
+        assert!(hint.contains("CLIPROXY_API_BASE"), "{hint}");
+        assert!(hint.contains("ss -ltn"), "{hint}");
+        assert!(!hint.contains("8317/v1"), "{hint}");
+        assert!(refused_hint("http://127.0.0.1:9120/v1").contains("rosetta"));
+        assert!(refused_hint("http://localhost:8317/v1").contains("cli-proxy"));
+        let remote = refused_hint("https://token-plan-sgp.xiaomimimo.com/v1");
+        assert!(remote.contains("unreachable"), "{remote}");
+        assert!(!remote.contains("CLIPROXY_API_BASE"), "{remote}");
     }
 
     #[test]

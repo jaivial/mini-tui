@@ -176,3 +176,12 @@ mod tests {
     }
 
 }
+
+/// The clock ticks a second holds, per the kernel (100 on Linux): `/proc/<pid>/stat`'s CPU times are
+/// counted in them, so a CPU second needs this divisor.
+static CLK_TCK: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+
+pub fn clk_tck() -> f64 {
+    let ticks: i64 = (*CLK_TCK.get_or_init(|| unsafe { libc::sysconf(libc::_SC_CLK_TCK) })).max(1);
+    ticks as f64
+}

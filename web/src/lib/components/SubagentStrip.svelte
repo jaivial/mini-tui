@@ -24,7 +24,12 @@
 
   function label(c: SubagentView): string {
     const status = c.exitStatus && c.state !== "running" ? `${c.state}, ${c.exitStatus}` : c.state;
-    return `Subagent ${c.name}: ${status}, ${c.steps} steps, ${cost(c.cost)}. ${c.task}`;
+    const mem = c.memAvg ? `, ${memFmt(c.memAvg)} avg / ${memFmt(c.memPeak)} peak memory` : "";
+    return `Subagent ${c.name}: ${status}, ${c.steps} steps, ${cost(c.cost)}${mem}. ${c.task}`;
+  }
+
+  function memFmt(mb: number): string {
+    return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GiB` : `${mb} MiB`;
   }
 </script>
 
@@ -57,6 +62,7 @@
           <span class="size-1.5 rounded-full {tone(c)}"></span>
           <span class="max-w-36 truncate font-medium text-ink">{c.name}</span>
           <span class="tnum text-ink-faint">{c.steps} · {cost(c.cost)}</span>
+          {#if c.memRss}<span class="tnum text-ink-faint" title="resident memory, now">{memFmt(c.memRss)}</span>{/if}
         </button>
       {/each}
     {/if}

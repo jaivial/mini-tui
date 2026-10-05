@@ -2,6 +2,63 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Bundled `$e2e-army` skill: agentic e2e tests with TesterArmy's `e2e`.** It teaches an agent to
+  set up, write, run and debug [`npx e2e`](https://e2e.tester.army/docs) tests (`e2e.config.ts`,
+  `tests/*.e2e.ts`, `agent.act`/`assert` plus exact `expect`, the replay cache, `e2e explore`).
+  Agent steps run on MiniMax `MiniMax-M3.1-Flash-Preview` through `@ai-sdk/minimax`. The config
+  loads `MINIMAX_TOKEN_PLAN_API_KEY` from `~/.env` because e2e reads no `.env` file itself, and the
+  key is never printed. It is installed like `$e2e` and `$subagents`.
+- **The model picker no longer offers a `cliproxy/` id the gateway cannot serve.** cli-proxy
+  advertises its catalog on `/v1/models` and drops a model from that list when the subscription
+  behind it signs out, so `cliproxy/claude-opus-5-5` stayed in the picker while every run of it died
+  with `auth_unavailable`. The terminal picker and the web app now read that catalog and annotate
+  the entry with a warning, highlighted in the web list. Annotated, not hidden: the id stays
+  selectable, because the gateway may be serving it again by the time the run starts. A gateway that
+  cannot be reached is left unannotated, since a probe that found nothing is no reason to block a run.
+- **`mini-tui doctor [-m <model>]`** - why is `cliproxy/...` failing? cli-proxy is a local gateway,
+  so a `cliproxy/` model has four separate things that can break a run: the gateway process, the API
+  key both sides must agree on, the upstream subscription's OAuth login, and the model id the gateway
+  advertises. All four read the same in a transcript (a refusal, a 401, a 503 in the gateway's own
+  jargon), so `doctor` walks them in the order they break a run and names the first one that is
+  wrong, with the command that fixes it. Its last stage is mini's own `test-model`, bounded to 20 s
+  so a gateway mid-backoff cannot turn a diagnosis into a hang; a green report therefore means a run
+  will work, not merely that a port answers. `--json` for scripts.
+
+### Fixed
+
+- **`cliproxy/claude-opus-5-5` works again.** Two things were wrong behind the gateway. The Claude
+  OAuth subscription had to be re-logged-in (`cli-proxy-api --config ~/cliproxyapi/config.yaml
+  -claude-login -no-browser`, plus an SSH tunnel for the `localhost:54545` callback on a headless
+  host) — without it the id vanished from `/v1/models` and every run died with
+  `auth_unavailable`. With it back, Anthropic still rejected the model: the gateway advertises a
+  built-in `claude-cli/2.1.63` user agent and the API now requires **2.1.280 or newer** for
+  opus-5-5. `claude-header-defaults.user-agent` in the gateway config now reports the version of the
+  Claude Code actually installed (2.1.281), which is what a real client would send. The gateway
+  hot-reloads the config, so no restart was needed.
+
+- **A failed `cliproxy/` run now says which of the four cli-proxy stages broke, above its log tail.**
+  The error banner reads the diagnosis from `mini.log` and prefixes it (`cli-proxy (auth): ...`),
+  keeping the raw log underneath for the details.
+- **A 401 that is the provider's own login is no longer reported as a bad API key.** Behind a gateway
+  (cli-proxy, Rosetta) the key mini sends is usually fine while the upstream OAuth token is what
+  expired or was revoked, so `OAuth access token has been revoked` now reads "re-authenticate the
+  subscription behind this endpoint" instead of sending the user off to edit a working key. Both
+  agents (Rust and Python) agree.
+- **A refused connect to the local gateway fails in seconds, not after four minutes of backoff.**
+  When `cli-proxy` was down, `cliproxy/claude-opus-5-5` reported
+  `ProviderError: ... :8317/v1/chat/completions: Connect error: Connection refused (os error 111)`
+  only after the full exponential schedule (10 attempts, 4 to 60 s, **248 s**), because the retry
+  policy treats every non-abort error the same. A refused TCP connect is the one such error that
+  retrying cannot fix by itself - the gateway is not listening, not slow - and the one whose cause
+  clears fastest, so it now re-probes at once and caps the rest at 2 s: the same ten attempts
+  report in **16 s**. A gateway that comes back mid-retry is caught just as fast as before
+  (measured equal at a 3 s restart), and other transport errors keep the shared curve. The error
+  now also says what is wrong and what to check instead of only naming the socket.
+
 ## 0.29.0 — 2026-10-04
 
 ### Added

@@ -227,7 +227,11 @@
                 >
                   <span class="min-w-0 flex-1">
                     <span class="block truncate font-mono text-[12.5px] {option.id === value ? 'font-semibold text-ink' : 'text-ink'}">{option.name}</span>
-                    <span class="block truncate text-[11.5px] text-ink-muted">{option.description}</span>
+                    <span
+                      class="block truncate text-[11.5px] {option.description.includes('NOT SERVED')
+                        ? 'text-warn'
+                        : 'text-ink-muted'}"
+                      title={option.description}>{option.description}</span>
                   </span>
                   {#if option.id === value}
                     <Check size={14} strokeWidth={2.5} class="shrink-0 text-brand" aria-hidden="true" />

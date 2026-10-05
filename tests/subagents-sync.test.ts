@@ -32,7 +32,7 @@ function writeChild(runDir: string, name: string, state: string, pid: number) {
       line({ t: "msg", m: { role: "assistant", content: `answer of ${name}` } }) +
       line({ t: "info", i: { model_stats: { instance_cost: 0.25, api_calls: 1 }, exit_status: "Submitted", submission: `answer of ${name}` } }),
   );
-  return { name, state, exit_status: "Submitted", task: `task of ${name}`, cwd: dir, model: "m", steps: 1, cost: 0.25, turns: 1, pid, traj_path: traj, control_path: join(childDir, "control"), idle_s: 0, last_command: "" };
+  return { name, state, exit_status: "Submitted", task: `task of ${name}`, cwd: dir, model: "m", steps: 1, cost: 0.25, turns: 1, pid, traj_path: traj, control_path: join(childDir, "control"), idle_s: 0, last_command: "", mem_rss: 412, mem_avg: 380, mem_peak: 460 };
 }
 
 describe("subagents as sessions", () => {

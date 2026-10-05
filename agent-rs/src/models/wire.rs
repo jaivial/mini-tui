@@ -143,7 +143,7 @@ impl WireModel {
         }
         let data = post_chat_stream(&self.api_base, &body, &headers, self.timeout(), sink)?;
         if data.get("choices").and_then(Value::as_array).is_none_or(|c| c.is_empty()) {
-            return Err(ModelError { message: format!("response without choices from {}: {}", self.api_base, data.to_string().chars().take(300).collect::<String>()), status: None, abort: false, kind: "ProviderError".into() });
+            return Err(ModelError { message: format!("response without choices from {}: {}", self.api_base, data.to_string().chars().take(300).collect::<String>()), status: None, abort: false, kind: "ProviderError".into(), connect_refused: false });
         }
         Ok(data)
     }
@@ -182,7 +182,7 @@ impl WireModel {
             Err(e) => return Err(e),
         };
         if data.get("content").is_none() {
-            return Err(ModelError { message: format!("response without content from {}: {}", self.api_base, data.to_string().chars().take(300).collect::<String>()), status: None, abort: false, kind: "Exception".into() });
+            return Err(ModelError { message: format!("response without content from {}: {}", self.api_base, data.to_string().chars().take(300).collect::<String>()), status: None, abort: false, kind: "Exception".into(), connect_refused: false });
         }
         Ok(normalize_anthropic(data))
     }
@@ -268,10 +268,10 @@ impl WireModel {
         }
         let text = e.message.clone();
         if text.contains("MissingSessionID") || text.to_lowercase().contains("x-opencode-session") {
-            return Err(ModelError { message: "OpenCode Go requires a stable 'x-opencode-session' header on every request, which mini-swe-agent sends automatically. Set OPENCODE_GO_SESSION to pin one.".into(), status: e.status, abort: true, kind: "ProviderAbortError".into() });
+            return Err(ModelError { message: "OpenCode Go requires a stable 'x-opencode-session' header on every request, which mini-swe-agent sends automatically. Set OPENCODE_GO_SESSION to pin one.".into(), status: e.status, abort: true, kind: "ProviderAbortError".into(), connect_refused: false });
         }
         if is_opaque_gateway_error(&text) {
-            return Err(ModelError { message: format!("{text} (OpenCode Go returned no error detail; retrying)"), status: e.status, abort: false, kind: "ProviderError".into() });
+            return Err(ModelError { message: format!("{text} (OpenCode Go returned no error detail; retrying)"), status: e.status, abort: false, kind: "ProviderError".into(), connect_refused: false });
         }
         let sampling = regex::Regex::new(r"(?is)(temperature|reasoning_effort|response_format|top_p|top_k).{0,80}(not supported|unsupported|does not support|not allowed)").unwrap();
         if sampling.is_match(&text) {
@@ -291,10 +291,10 @@ impl WireModel {
             }
         }
         if regex::Regex::new(r"(?is)(model.{0,80}(not found|unknown|unsupported|does not exist|not available)|unknown model|invalid model)").unwrap().is_match(&text) {
-            return Err(ModelError { message: format!("{text} Use an id from `mini-extra opencode-go-models`."), status: e.status, abort: true, kind: "ProviderAbortError".into() });
+            return Err(ModelError { message: format!("{text} Use an id from `mini-extra opencode-go-models`."), status: e.status, abort: true, kind: "ProviderAbortError".into(), connect_refused: false });
         }
         if regex::Regex::new(r"(?i)(invalid api key|incorrect api key|invalid_token|unauthorized|authentication fail|bearer)").unwrap().is_match(&text) {
-            return Err(ModelError { message: format!("{text} You can permanently set your API key with `mini-extra config set OPENCODE_GO_API_KEY YOUR_KEY`."), status: e.status, abort: true, kind: "ProviderAbortError".into() });
+            return Err(ModelError { message: format!("{text} You can permanently set your API key with `mini-extra config set OPENCODE_GO_API_KEY YOUR_KEY`."), status: e.status, abort: true, kind: "ProviderAbortError".into(), connect_refused: false });
         }
         Err(e)
     }
@@ -303,7 +303,7 @@ impl WireModel {
         let name = self.config.get("model_name").and_then(Value::as_str).unwrap_or("");
         if prices::price_for(&self.price_provider, name).is_none() {
             if self.cfg_str("cost_tracking").as_deref() != Some("ignore_errors") {
-                return Err(ModelError { message: format!("Error calculating cost for model {name}: no price row in models/prices.py (perhaps it's not registered?). You can ignore this issue from your config file with cost_tracking: 'ignore_errors' or globally with export MSWEA_COST_TRACKING='ignore_errors'."), status: None, abort: true, kind: "RuntimeError".into() });
+                return Err(ModelError { message: format!("Error calculating cost for model {name}: no price row in models/prices.py (perhaps it's not registered?). You can ignore this issue from your config file with cost_tracking: 'ignore_errors' or globally with export MSWEA_COST_TRACKING='ignore_errors'."), status: None, abort: true, kind: "RuntimeError".into(), connect_refused: false });
             }
             return Ok(0.0);
         }
@@ -657,11 +657,11 @@ fn deepseek_error(e: ModelError) -> ModelError {
             Some(s) => format!(" Request `deepseek/{s}` instead: DeepSeek serves it as that id."),
             None => " Run `mini-extra deepseek-models` to list them.".into(),
         };
-        return ModelError { message: format!("DeepSeek has no model id '{passed}'. Ids your key accepts: {names}.{hint}"), status: e.status, abort: true, kind: "ProviderAbortError".into() };
+        return ModelError { message: format!("DeepSeek has no model id '{passed}'. Ids your key accepts: {names}.{hint}"), status: e.status, abort: true, kind: "ProviderAbortError".into(), connect_refused: false };
     }
     let lowered = e.message.to_lowercase();
     if lowered.contains("authentication_error") || lowered.contains("authentication fails") {
-        return ModelError { message: format!("{} You can permanently set your API key with `mini-extra config set DEEPSEEK_API_KEY YOUR_KEY`.", e.message), status: e.status, abort: true, kind: "ProviderAbortError".into() };
+        return ModelError { message: format!("{} You can permanently set your API key with `mini-extra config set DEEPSEEK_API_KEY YOUR_KEY`.", e.message), status: e.status, abort: true, kind: "ProviderAbortError".into(), connect_refused: false };
     }
     e
 }

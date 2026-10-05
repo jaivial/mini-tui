@@ -52,8 +52,10 @@ report back.
   never overwritten, and a skill you delete from mini-tui's folder is not re-imported.
   `bun run sync-skills` runs the sync by hand.
 - **Bundled skills, carried everywhere.** mini-tui ships its own skills in `skills/`:
-  **`$e2e`** (how agents write and run `mini-agent-rs e2e` tests) and **`$subagents`** (how an
-  agent splits work across its own subagents). They are installed into
+  **`$e2e`** (how agents write and run `mini-agent-rs e2e` tests), **`$e2e-army`** (how agents
+  write and run TesterArmy [`e2e`](https://e2e.tester.army/docs) tests, `npx e2e` with
+  `e2e.config.ts`, whose agent steps run on MiniMax `MiniMax-M3.1-Flash-Preview` with the key from
+  `~/.env`) and **`$subagents`** (how an agent splits work across its own subagents). They are installed into
   the skills folder at install and at every startup of the TUI, `-p` and the web server; a newer
   bundled version replaces an unedited copy, while an edited or deleted one is left as you made
   it. `mini-agent-rs e2e skill` prints `$e2e` on hosts with only the binary.
@@ -548,6 +550,7 @@ from its bash tool, and the bundled `$subagents` skill teaches it how:
 ```sh
 mini-agent-rs agent spawn api "write the API tests" --cwd ~/repo --max-steps 60
 mini-agent-rs agent send api "also cover the 404 path"   # mid-run, or continue a finished one
+mini-agent-rs agent resources              # free memory, avg child cost, how many more may start
 mini-agent-rs agent ls | wait | result | tail | model | stop
 mini-agent-rs agent ask "which branch?"                   # inside a subagent: ask the parent
 ```
@@ -559,7 +562,12 @@ mini-agent-rs agent ask "which branch?"                   # inside a subagent: a
   parent reads a `[subagent <name>] …` message before its next step. A parent that already ended
   its turn is woken by it, so the orchestrator never spends steps polling.
 - **Owned by the session.** Subagents stop with it, count toward its cost limit, and run on its
-  current model unless told otherwise. At most 8 run at once, nested at most 2 deep.
+  current model unless told otherwise. Up to 100 run at once, nested at most 2 deep.
+- **It never OOMs the box.** Before you fan out, `agent resources` reports the free memory, the
+  **measured average memory of the running subagents**, and `max fan-out now`:
+  `min((free - 10 GiB reserve) / average child, CPU headroom, 100 - live)`. Every `spawn` runs the
+  same calculation at the gate, so a child that would not fit is refused — the session, and every
+  other child, keeps running.
 - **Visible everywhere.** Each subagent is saved as a session under its parent: the web app shows
   them above the transcript, the TUI lists them with `/subagents`, and any of them opens live.
 

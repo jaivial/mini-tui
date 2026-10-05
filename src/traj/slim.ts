@@ -14,10 +14,16 @@ const HEAVY_EXTRA = new Set(["response", "raw_output"]);
 
 export function slimMessage(message: TrajectoryMessage): TrajectoryMessage {
   const extra = message.extra;
-  if (!extra || typeof extra !== "object" || !Object.keys(extra).some((key) => HEAVY_EXTRA.has(key))) return message;
-  const kept: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(extra)) if (!HEAVY_EXTRA.has(key)) kept[key] = value;
-  return { ...message, extra: kept };
+  const heavyExtra = extra && typeof extra === "object" && Object.keys(extra).some((key) => HEAVY_EXTRA.has(key));
+  const content = typeof message.content === "string" ? boundText(message.content) : message.content;
+  if (!heavyExtra && content === message.content) return message;
+  const next: TrajectoryMessage = { ...message, content };
+  if (heavyExtra) {
+    const kept: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(extra!)) if (!HEAVY_EXTRA.has(key)) kept[key] = value;
+    next.extra = kept;
+  }
+  return next;
 }
 
 /**

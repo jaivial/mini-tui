@@ -13,7 +13,8 @@ Usage:
   mini-tui run ["task"] [-m <model>] [-c <spec>]... [--show-system]
   mini-tui view <traj.json> [--follow] [--show-system]
   mini-tui -p "<prompt>" [options]          headless: run, print the answer, exit
-  mini-tui sessions | models | model | skills | settings   (scripting, see below)
+  mini-tui sessions | models | model | skills | settings    (scripting, see below)
+  mini-tui doctor [-m <model>]      why is cliproxy/... failing?
 
 Headless (-p, --print) — no TUI, for scripts, CI and other agents:
   -m, --model <model>        model for this run (default: $MINITUI_MODEL, the saved
@@ -46,6 +47,8 @@ Scripting commands (add --json for machine-readable output):
   model [<id>]                        print / set the default model of new sessions
   skills                              list $skills
   settings [output-mode|theme <v>]    print / change /settings
+  doctor [-m <model>]                 probe a cliproxy/ model end to end and name the first
+                                      thing that is wrong (gateway, key, upstream login, id)
 
 Prompt commands (TUI):
   /model              open the model picker (or /model <id>)
@@ -95,6 +98,9 @@ if (parsed.command !== "run" && parsed.command !== "view") {
   const commands = await import("./cli/commands");
   const out = { stdout: (text: string) => process.stdout.write(text), stderr: (text: string) => process.stderr.write(text) };
   let code = 0;
+  if (cmd.command === "doctor") {
+    process.exit(await commands.doctorCommand(cmd, out));
+  }
   switch (cmd.command) {
     case "sessions":
       code = commands.sessionsCommand(cmd, out);

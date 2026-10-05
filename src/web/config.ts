@@ -17,6 +17,7 @@ import {
   type SavedConnection,
 } from "../providers";
 import { DEFAULT_SETTINGS, OUTPUT_MODES, loadSettings, saveSettings, type OutputMode, type Settings } from "../settings";
+import { gatewayServes, loadCliproxyCatalogSync, type CliproxyCatalog } from "../cliproxyCatalog";
 import { listSkills } from "../skills";
 import { loadLastModel } from "../lastModel";
 import { MODELS } from "../models";
@@ -207,16 +208,33 @@ export function skillList(dir?: string): SkillInfo[] {
   return listSkills(dir).map(({ name, description }) => ({ name, description }));
 }
 
-/** The default model a fresh chat starts on: the last one picked, else the first in the catalogue. */
+/**
+ * The default model a fresh chat starts on: the last one picked, else the first in the catalogue.
+ *
+ * `cliproxy/` ids are checked against the gateway's own `/v1/models` first: cli-proxy drops a model
+ * from that list when the subscription behind it signs out, and a run then dies with
+ * `auth_unavailable` â which names the gateway's internals, not the cause. Marking it here puts the
+ * reason in the picker, before the user commits a run to it. A gateway that cannot be reached is
+ * left unannotated: the run may still work (another host, a slow start) and the picker must not
+ * block one on a probe it cannot trust.
+ */
 export function modelCatalog(): { id: string; name: string; description: string }[] {
   const all = [...MODELS, ...connectionModelOptions(loadConnections())];
   const seen = new Set<string>();
   const out: { id: string; name: string; description: string }[] = [];
+  let cliproxy: CliproxyCatalog | null = null;
   for (const m of all) {
     const id = String(m.value);
     if (seen.has(id)) continue;
     seen.add(id);
-    out.push({ id, name: m.name, description: m.description });
+    let description = m.description;
+    if (id.startsWith("cliproxy/")) {
+      cliproxy ??= loadCliproxyCatalogSync();
+      if (gatewayServes(cliproxy, id) === false) {
+        description = `${description} — NOT SERVED by cli-proxy (subscription signed out)`;
+      }
+    }
+    out.push({ id, name: m.name, description });
   }
   return out;
 }

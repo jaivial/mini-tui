@@ -13,7 +13,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } fro
 
 import type { Trajectory, TrajectoryInfo, TrajectoryMessage } from "./schema";
 import { POLL_MS } from "../config";
-import { slimMessage } from "./slim";
+import { boundText, slimMessage } from "./slim";
 
 /** `<traj>.json` → `<traj>.jsonl`, mirroring Python's `Path.with_suffix(".jsonl")`. */
 export function journalPathFor(trajPath: string): string {
@@ -100,7 +100,17 @@ function consumeJournal(state: JournalState, journalPath: string): boolean {
       continue; // never accept a torn line as content
     }
     if (entry.t === "msg" && entry.m) {
-      state.messages.push(entry.m);
+      // Bound on the way in: a single tool result can be hundreds of MB (a `cat` of a big
+      // dump, a noisy test run), and the retained array is what every later read, event
+      // conversion and transcript save re-walks. The parse above is the transient peak;
+      // this is what stops it being retained. Files on disk stay complete.
+      const m = entry.m;
+      if (typeof m.content === "string") {
+        const bounded = boundText(m.content);
+        state.messages.push(bounded === m.content ? m : { ...m, content: bounded });
+      } else {
+        state.messages.push(m);
+      }
       // The real message supersedes whatever was streamed for it.
       if (state.partial.thinking || state.partial.text) {
         state.partial.thinking = "";
@@ -142,7 +152,17 @@ export function readTrajectory(path: string): Trajectory | null {
   }
   try {
     const data = JSON.parse(readFileSync(path, "utf8"));
-    return data && typeof data === "object" ? (data as Trajectory) : null;
+    if (!data || typeof data !== "object") return null;
+    // Same bound as the journal path: one tool result here was measured at 437 MB, and a
+    // whole-export read is the one place the full object is materialised at once.
+    const messages = (data as Trajectory).messages;
+    if (Array.isArray(messages)) {
+      return {
+        ...(data as Trajectory),
+        messages: messages.map((m) => (typeof m?.content === "string" ? { ...m, content: boundText(m.content) } : m)),
+      };
+    }
+    return data as Trajectory;
   } catch {
     return null;
   }

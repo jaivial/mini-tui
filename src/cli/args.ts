@@ -71,6 +71,13 @@ export interface ModelArgs {
   json: boolean;
 }
 
+export interface DoctorArgs {
+  command: "doctor";
+  /** Model id to probe (default: the `cliproxy/` catalog's first Claude entry). */
+  model?: string;
+  json: boolean;
+}
+
 export interface SkillsArgs {
   command: "skills";
   json: boolean;
@@ -98,13 +105,14 @@ export type CliArgs =
   | ModelsArgs
   | ModelArgs
   | SkillsArgs
+  | DoctorArgs
   | SettingsArgs
   | HelpArgs
   | VersionArgs;
 
 export class UsageError extends Error {}
 
-const SUBCOMMANDS = new Set(["run", "view", "sessions", "session", "models", "model", "skills", "settings", "help", "version"]);
+const SUBCOMMANDS = new Set(["run", "view", "sessions", "session", "models", "model", "skills", "settings", "doctor", "help", "version"]);
 
 function takeValue(argv: string[], i: number, flag: string): string {
   const value = argv[i + 1];
@@ -159,6 +167,13 @@ export function parseArgs(rawArgv: string[]): CliArgs {
   if (command === "models") return { command: "models", json: rest.includes("--json") };
   if (command === "model") return parseModel(rest);
   if (command === "skills") return { command: "skills", json: rest.includes("--json") };
+  if (command === "doctor") {
+    const modelFlag = rest.indexOf("-m");
+    const modelLong = rest.indexOf("--model");
+    const at = modelFlag >= 0 ? modelFlag : modelLong;
+    const model = at >= 0 ? takeValue(rest, at, rest[at]!) : undefined;
+    return { command: "doctor", model, json: rest.includes("--json") };
+  }
   if (command === "settings") return parseSettings(rest);
   if (command === "run" || command === "view") return parseTui(command, rest);
   if (!SUBCOMMANDS.has(command!) && !command!.startsWith("-")) {

@@ -930,6 +930,44 @@ describe("crash error in the thread", () => {
     setup.renderer.destroy();
   });
 
+  test("a cli-proxy crash names the failing stage above the log tail", async () => {
+    const events: RunEvent[] = [
+      { type: "task", text: "GW-TASK" },
+      {
+        type: "error",
+        text:
+          "ProviderAbortError: HTTP 401 from http://127.0.0.1:8317/v1: OAuth access token has been revoked. " +
+          "This is the provider's own login, not the key mini sends: re-authenticate the subscription behind this endpoint.",
+      },
+    ];
+    const setup = await testRender(
+      <App cwd="." events={events} info={{ cost: 0, apiCalls: 1 }} initialSettings={EXPANDED} onQuit={() => {}} />,
+      { width: 100, height: 24 },
+    );
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    const rows = frame.split("\n");
+    const rowOf = (needle: string) => rows.findIndex((r) => r.includes(needle));
+    expect(frame).toContain("cli-proxy (auth)"); // the diagnosis, not just the raw tail
+    expect(frame).toContain("signed out or cooling down");
+    // the diagnosis comes first: the log stays underneath for the details
+    expect(rowOf("cli-proxy (auth)")).toBeLessThan(rowOf("OAuth access token has been revoked"));
+    setup.renderer.destroy();
+  });
+
+  test("a non-cli-proxy crash keeps the plain tail", async () => {
+    const events: RunEvent[] = [{ type: "error", text: "BadRequestError: Insufficient Balance" }];
+    const setup = await testRender(
+      <App cwd="." events={events} info={{ cost: 0, apiCalls: 1 }} initialSettings={EXPANDED} onQuit={() => {}} />,
+      { width: 100, height: 20 },
+    );
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("mini.log tail");
+    expect(frame).not.toContain("cli-proxy (");
+    setup.renderer.destroy();
+  });
+
   test("a transcript ending with a crash tail reads error; later work turns it live again", () => {
     expect(deriveStatus("done", crashEvents)).toBe("error"); // e.g. a restored session
     expect(deriveStatus("running", [...crashEvents, { type: "assistant", text: "live again" }])).toBe("running");

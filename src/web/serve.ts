@@ -528,11 +528,31 @@ const server = Bun.serve({
           const file = resolve(dist, rel);
           // Containment check: never serve anything outside dist (../ traversal).
           if (file.startsWith(dist) && existsSync(file) && statSync(file).isFile()) {
-            return new Response(readFileSync(file), { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream" } });
+            const isShell = extname(file) === ".html";
+            return new Response(readFileSync(file), {
+              headers: {
+                "content-type": MIME[extname(file)] ?? "application/octet-stream",
+                // The app shell must always be revalidated: it names the current hashed bundles, and a
+                // stale copy asks for files a rebuild has deleted. Hashed assets never change.
+                "cache-control": isShell
+                  ? "no-cache, no-store, must-revalidate"
+                  : rel.startsWith("assets/")
+                    ? "public, max-age=31536000, immutable"
+                    : "no-cache",
+              },
+            });
           }
-          // SPA fallback: any unknown path renders the app shell.
+          // A missing asset (anything under /assets/ or with a file extension) is a real 404. Answering
+          // it with index.html made browsers reject it ("MIME type text/html") after a rebuild.
+          if (rel.startsWith("assets/") || extname(rel) !== "") {
+            return new Response("not found", {
+              status: 404,
+              headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+            });
+          }
+          // SPA fallback: any other unknown path renders the app shell.
           return new Response(readFileSync(join(dist, "index.html")), {
-            headers: { "content-type": "text/html; charset=utf-8" },
+            headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache, no-store, must-revalidate" },
           });
         }
       }

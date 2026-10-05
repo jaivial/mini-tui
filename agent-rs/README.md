@@ -102,9 +102,19 @@ mini-agent-rs agent ask "which branch?"                    # inside a child: mes
   (`parent_id`) and announces its live agent: the web app shows a strip of subagents above the
   transcript, any of which opens (and follows live) in the pane; the TUI lists them with
   `/subagents` and opens them with `/resume`.
-- **Bounded.** At most 8 live children (`MINI_AGENT_MAX_SUBAGENTS`), nesting 2 deep
+- **Bounded.** Up to 100 live children (`MINI_AGENT_MAX_SUBAGENTS`, clamped to 100), nesting 2 deep
   (`MINI_AGENT_MAX_DEPTH`). `MINI_AGENT_SUBAGENTS=0` turns the hub off. A run that starts no child
   writes exactly what the Python agent writes, so the parity suite is unaffected.
+- **Within the free memory, never OOM.** `agent resources` reports the free memory, what an average
+  live child costs (the rolling mean of sampled RSS of its process group, 256 MiB floor until one
+  is measured) and `max fan-out now`:
+
+      min((MemAvailable - reserve) / per-child, cpu-headroom, cap - live)
+
+  with the reserve at 10 GiB by default (`MINI_AGENT_RESERVE_MEM_MB`). The same calculus is
+  enforced at every `spawn`: a child that would not fit is refused with the numbers and exit 1,
+  while the parent and the other children go on. The CPU term binds only when the 1-minute load is
+  at or above the usable CPUs; subagents otherwise sit idle waiting for their next model call.
 
 The bundled `$subagents` skill teaches the model this loop. The `orch` script of `$orchestration`
 forwards `start` / `followup` / `ls` / `wait` / `result` / `stop` to it when it runs inside such a
