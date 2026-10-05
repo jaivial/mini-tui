@@ -112,7 +112,8 @@ report back.
   OpenRouter. Pick a provider, paste your API key, choose a model and the connection is
   **tested for real** (a one-token query through mini's own model layer) before
   being saved locally. Every catalog model of a connected provider joins the `/model` picker,
-  and its key is injected into your runs. Every provider runs on **its own direct base URL**
+  and its key is injected into your runs, including runs the agent starts itself (subagents, a
+  model switch mid-run). Every provider runs on **its own direct base URL**
   (`xiaomi/…`, `deepseek/…`, `anthropic/…`, …) with a dedicated key/base env slot — no
   litellm. Saved connections on the generic `openai/` slot (`OPENAI_API_BASE`/`OPENAI_API_KEY`)
   keep working for any OpenAI-compatible endpoint.
@@ -570,6 +571,15 @@ mini-agent-rs agent ask "which branch?"                   # inside a subagent: a
   other child, keeps running.
 - **Visible everywhere.** Each subagent is saved as a session under its parent: the web app shows
   them above the transcript, the TUI lists them with `/subagents`, and any of them opens live.
+- **Your connected models, no extra key.** A subagent on another model (`-m minimax/...`) gets that
+  model's key from your `/connect` providers (`~/.config/mini-tui/providers.json`), like a run you
+  start yourself. Nothing has to be exported first. A variable you did set still wins.
+- **The parent reviews before it accepts.** A subagent's summary is a claim. The `$subagents`
+  skill has the parent check the diff, the build and the tests itself. When something is missing or
+  wrong, the parent sends the review back to that same subagent (`agent send <name> "<review>"`):
+  each finding with its file and line, and the check to rerun. The subagent fixes the work with all
+  its context, and the parent reviews again until nothing is left. After 3 rounds stuck on one
+  finding it moves that subagent to a stronger model (`agent model`).
 
 A run that starts no subagent behaves exactly like the Python agent: the parity suite still
 compares every scenario byte for byte. `$orchestration`'s `orch` forwards its commands to the

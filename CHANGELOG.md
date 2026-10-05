@@ -2,10 +2,24 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.30.0 — 2026-10-05
 
 ### Added
 
+- **Subagents use your connected models, with no extra key.** A run the agent starts itself (a
+  subagent on another model, a model switch mid-run) now takes the key of that model from your
+  `/connect` providers (`~/.config/mini-tui/providers.json`), as mini-tui already did for the runs
+  you start. Before, `agent spawn -m minimax/MiniMax-M3.1-Flash-Preview` from a session failed with
+  `HTTP 401` unless `MINIMAX_API_KEY` had been exported beforehand, even though MiniMax was
+  connected. Both agents resolve it the same way when the model is built (`models/connections.rs`,
+  `models/connections.py`), and a variable you already set still wins.
+- **`$subagents` and `$orchestration`: the parent reviews the work and sends improvements back to
+  the same subagent.** A subagent's summary is a claim, not proof. The parent now checks the diff,
+  the build and the tests itself. When something is missing or wrong it does not fix it itself and
+  does not start a new run: it sends a review to that subagent's own session (`agent send`, or
+  `orch followup` for detached runs). The review lists each finding with its file and line and the
+  check to rerun. The parent reviews again until nothing is left, and moves a subagent stuck 3
+  rounds on one finding to a stronger model. The report gains a review-rounds column.
 - **Bundled `$e2e-army` skill: agentic e2e tests with TesterArmy's `e2e`.** It teaches an agent to
   set up, write, run and debug [`npx e2e`](https://e2e.tester.army/docs) tests (`e2e.config.ts`,
   `tests/*.e2e.ts`, `agent.act`/`assert` plus exact `expect`, the replay cache, `e2e explore`).

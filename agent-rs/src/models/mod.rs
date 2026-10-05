@@ -4,6 +4,7 @@
 
 pub mod cache_control;
 pub mod catalog;
+pub mod connections;
 pub mod deterministic;
 pub mod go_catalog;
 pub mod http;
@@ -95,6 +96,7 @@ pub fn get_model(name: Option<&str>, config: &Obj) -> Result<Box<dyn Model>, Str
         },
     };
     config.insert("model_name".into(), Value::String(resolved.clone()));
+    connections::apply(&resolved);
     let class = config.shift_remove("model_class").and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     catalog::build(&resolved, &class, config)
 }

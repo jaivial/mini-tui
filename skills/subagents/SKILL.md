@@ -51,16 +51,30 @@ whole context for `send`), `stopped`, `exited`. Exit codes: 0 ok, 1 refused (the
 4. **Steer.** `agent send <name> "…"` reaches a running subagent before its next model call: use it
    to correct course instead of stopping it. A subagent that hit `LimitsExceeded` gets a fresh budget
    with your next `send` and continues with its context.
-5. **Collect.** Read `agent result <name>`, then check the claims yourself (`git diff --stat`, run
-   the tests) before you report. A follow-up is `agent send <name> "now add tests"`: the same
-   subagent, with everything it already knows, no new run.
-6. **Report** a short table to the user: subagent, state, steps, cost, one-line result. They can
-   open any subagent in the web app (the strip above the transcript) or with `/resume` in the TUI.
+5. **Review every result before you accept it.** A subagent's summary is a claim, not proof.
+   Read `agent result <name>`, then check the work yourself: the diff of its files
+   (`git diff --stat`, then the diff itself), the build and tests it was told to pass, and every
+   point of its task, one by one. Done means you verified it, not that it said so.
+6. **Send improvements to the same subagent.** When the review finds something missing, wrong,
+   unverified or below the bar of the task, do not fix it yourself and do not spawn a new
+   subagent: `agent send <name> "<review>"` goes into that subagent's own session, which still has
+   all its context. Write the review as a prompt it can act on alone:
+   - each finding with its file and line, what is wrong, and what done looks like;
+   - the exact check it must run and pass afterwards (build, test, command);
+   - "end with a short summary of what you changed".
+   Then wait for its next result and review again. Repeat until the review finds nothing to
+   improve. If a subagent is stuck after 3 rounds on the same finding, escalate it
+   (`agent model <name> <stronger-model>`) and send the review again; only then take over the
+   finding yourself and say so in the report.
+7. **Report** a short table to the user: subagent, state, steps, cost, review rounds, one-line
+   result (verified by you). They can open any subagent in the web app (the strip above the
+   transcript) or with `/resume` in the TUI.
 
 ## Inside a subagent
 
-You were started by another session for one task. Do it and end with a short summary. If you are
-blocked on a decision only that session can make, `mini-agent-rs agent ask "<question>"` sends it
+You were started by another session for one task. Do it and end with a short summary. A
+message from that session with a review is a request to improve your work: fix every finding in
+it, run the checks it names, and end with a new summary. If you are blocked on a decision only that session can make, `mini-agent-rs agent ask "<question>"` sends it
 there; keep working on what you can meanwhile, its answer arrives as a new message.
 
 ## Before you fan out: check the box

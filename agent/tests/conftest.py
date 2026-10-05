@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 import threading
@@ -7,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from minisweagent.models import GLOBAL_MODEL_STATS
+
+# Hermetic: never pick up the user's real connected providers (~/.config/mini-tui/providers.json).
+os.environ["MINITUI_CONNECTIONS_PATH"] = "/dev/null/mini-tui-no-connections.json"
 
 
 def pytest_addoption(parser):

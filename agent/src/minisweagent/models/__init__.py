@@ -50,6 +50,10 @@ def get_model(input_model_name: str | None = None, config: dict | None = None) -
     config = copy.deepcopy(config)
     config["model_name"] = resolved_model_name
 
+    from minisweagent.models.connections import apply as apply_connection
+
+    apply_connection(resolved_model_name)
+
     model_class = get_model_class(resolved_model_name, config.pop("model_class", ""))
 
     from minisweagent.models.routing import (
