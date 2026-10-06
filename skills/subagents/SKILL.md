@@ -92,7 +92,14 @@ tokens again unless you hand it over. Four layers, cheapest first:
    `<shared-context>` note pointing at one append-only folder. Convention: one file per task
    (`context/<task-id>.md`, stamped with date and author) for findings and artifacts;
    `context/findings.md` and `context/search-cache.jsonl` are shared scratch. A child checks what
-   prior tasks left there before searching, and leaves what it learned for the next one.
+   prior tasks left there before searching, and leaves what it learned for the next one. Use
+   `agent state put <key> <text>` / `get` / `ls` for its keys (a key is one file, atomically
+   replaced), and every task materialized later sees the values: `{{context.<key-stem>}}`,
+   `{{tasks.<id>.result}}` and `{{artifacts.<file-stem>}}` are interpolated into the task text
+   when it launches (unknown `{{vars}}` stay as written). `agent spawn --batch file.json` spawns
+   many children in one command (a JSON list of spawn requests; entries without a budget split
+   what the session has left), and `agent result <name> --json` reads a child back as structured
+   state (result, error, steps, cost, artifacts) instead of prose.
 
 4. **`--fork` (continue a compacted conversation).** The child starts from a source conversation's
    compaction summary plus its last messages (default 12, `--fork-k N` or `MINI_AGENT_FORK_K`),

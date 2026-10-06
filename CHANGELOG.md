@@ -2,6 +2,21 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.36.0 — 2026-10-06
+
+### Added
+
+- **Shared state, structured results and batch spawns (F5 of the execution order — the RLM-lite
+  layer of [`docs/orchestration-plan.md`](docs/orchestration-plan.md))**: `agent state
+  ls|get|put` reads and writes the run tree's shared `context/` folder as keys (one file per key,
+  atomic replace), and the values become `{{var}}` interpolation targets — `{{context.<key>}}`,
+  `{{tasks.<id>.result|status|error|title}}` and `{{artifacts.<file-stem>}}` — resolved into a
+  task's text the moment it materializes (spawn, plan launch or batch; unknown vars stay as
+  written). `agent result <name> --json` returns a structured result (name, state, exit status,
+  result, error, steps, turns, cost, artifacts) instead of prose, and `agent spawn --batch
+  file.json` starts many children in one command — each entry its own spawn request, entries
+  without a budget splitting what the session has left evenly.
+
 ## 0.35.0 — 2026-10-06
 
 ### Added
