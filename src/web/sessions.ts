@@ -230,7 +230,9 @@ export class SessionManager {
     if (this.#syncEvery <= 0 || this.#syncTimer) return;
     this.#syncTimer = setTimeout(() => {
       this.#syncTimer = undefined;
-      this.syncExternal();
+      // A pass that rejects must not take the timer (or the process, on an unhandled rejection)
+      // with it: the next one is scheduled either way.
+      void this.syncExternal().catch(() => {});
       this.#scheduleSync();
     }, this.#syncEvery);
     (this.#syncTimer as { unref?: () => void }).unref?.();
