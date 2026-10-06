@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import PaneTree from "./PaneTree.svelte";
+  import { PANE_MIME } from "../paneLayout";
   import { clampRatio, MIN_RATIO, type Node } from "../panes";
 
   /**
@@ -14,12 +15,15 @@
     pane,
     onresize,
     label,
+    ondrag,
   }: {
     node: Node;
     pane: Snippet<[string]>;
     onresize: (splitId: string, ratio: number) => void;
     /** Human name of a pane, for the divider's accessible name. */
     label: (paneId: string) => string;
+    /** A pane was dragged and let go over this one: the two trade places. Omitted: no dragging. */
+    ondrag?: (from: string, onto: string) => void;
   } = $props();
 
   let box = $state<HTMLElement | null>(null);
@@ -50,6 +54,29 @@
     (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   }
 
+  // ---- drag and drop: the leaf below is where another pane can be let go
+  let hover = $state(false);
+  const mine = node.kind === "pane" ? node.id : "";
+  const isPaneDrag = (event: DragEvent) => !!ondrag && !!event.dataTransfer && event.dataTransfer.types.includes(PANE_MIME);
+
+  function dragover(event: DragEvent) {
+    if (!isPaneDrag(event)) return;
+    // Saying we accept it is what allows the drop, and what turns the cursor into "move".
+    event.preventDefault();
+    event.dataTransfer!.dropEffect = "move";
+    hover = true;
+  }
+  function dragleave() {
+    hover = false;
+  }
+  function drop(event: DragEvent) {
+    const from = event.dataTransfer?.getData(PANE_MIME);
+    hover = false;
+    if (!isPaneDrag(event) || !from || from === mine) return;
+    event.preventDefault();
+    ondrag!(from, mine);
+  }
+
   function key(event: KeyboardEvent) {
     if (node.kind !== "split") return;
     const back = node.dir === "row" ? "ArrowLeft" : "ArrowUp";
@@ -67,7 +94,17 @@
 </script>
 
 {#if node.kind === "pane"}
-  {@render pane(node.id)}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="flex min-h-0 min-w-0 flex-1"
+    class:drop-ready={hover}
+    data-pane-drop={mine}
+    ondragover={dragover}
+    ondragleave={dragleave}
+    ondrop={drop}
+  >
+    {@render pane(node.id)}
+  </div>
 {:else}
   <div bind:this={box} class="flex min-h-0 min-w-0 flex-1 {node.dir === 'row' ? 'flex-row' : 'flex-col'}" class:select-none={dragging}>
     <div class="flex min-h-0 min-w-0" style="flex: {node.ratio} 1 0px">
@@ -127,6 +164,11 @@
     transition-property: background-color, box-shadow;
     transition-duration: 150ms;
     transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  /* The pane another pane is being dragged over: the drop would land here. */
+  .drop-ready {
+    outline: 2px dashed var(--color-brand);
+    outline-offset: -2px;
   }
   .divider:hover,
   .divider.is-dragging,

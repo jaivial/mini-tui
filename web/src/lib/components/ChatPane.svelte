@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Settings as SettingsIcon } from "@lucide/svelte";
+  import { GripVertical, PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Settings as SettingsIcon } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import SubagentStrip from "./SubagentStrip.svelte";
@@ -24,6 +24,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
   import { parseCommand } from "../completion";
   import { splitSent } from "../promptMemory";
   import { paneStatus } from "../paneStatus";
+  import { PANE_MIME } from "../paneLayout";
 
   /**
    * One pane: a chat (a session, or a new chat until its first message) with its own header, transcript,
@@ -46,6 +47,11 @@ import { windows as windowStore } from "../stores/windows.svelte";
     onclosepane,
     windows = [],
     onmove,
+    moves,
+    onmovepane,
+    layouts,
+    onarrange,
+    ondragpane,
   }: {
     pane: Pane;
     number: number;
@@ -64,6 +70,14 @@ import { windows as windowStore } from "../stores/windows.svelte";
     /** The other windows, for "Move to window…". */
     windows?: { id: string; label: string }[];
     onmove?: (to: string | "new", name?: string) => void;
+    /** Which directions have a neighbour to trade places with. */
+    moves?: { left: boolean; right: boolean; up: boolean; down: boolean };
+    onmovepane?: (dir: "left" | "right" | "up" | "down") => void;
+    /** Which whole-layout shapes the panes here can take. */
+    layouts?: { row: boolean; col: boolean; grid: boolean };
+    onarrange?: (shape: "row" | "col" | "grid") => void;
+    /** Drag this pane onto another one: the two trade places. Omitted: nothing to trade with. */
+    ondragpane?: () => void;
   } = $props();
 
   const session = $derived(pane.sessionId ? (store.sessions[pane.sessionId] ?? null) : null);
@@ -266,6 +280,18 @@ import { windows as windowStore } from "../stores/windows.svelte";
     panes.show(pane.id, null);
   }
 
+  /**
+   * A drag of this pane. The pane's id rides along in a type of its own, so only a drop on another
+   * pane accepts it (a file or a link dropped on a chat keeps meaning what it meant: nothing). Some
+   * browsers strike the dragged element's own look; `setData` needs a value, hence the id twice.
+   */
+  function dragstart(event: DragEvent) {
+    if (!ondragpane) return;
+    panes.focus(pane.id);
+    event.dataTransfer?.setData(PANE_MIME, pane.id);
+    event.dataTransfer!.effectAllowed = "move";
+  }
+
   /** Opening moves focus into the panel (after it has rendered); closing leaves it on the button. */
   async function toggleSide(tab: "notes" | "terminal") {
     panes.toggleSide(pane.id, tab);
@@ -292,6 +318,18 @@ import { windows as windowStore } from "../stores/windows.svelte";
 {/snippet}
 
 {#snippet tools()}
+  {#if ondragpane}
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      icon={GripVertical}
+      title="Drag to another pane to swap them"
+      aria-label="Drag pane {number} to swap it with another"
+      draggable={true}
+      ondragstart={dragstart}
+      class="cursor-grab active:cursor-grabbing"
+    />
+  {/if}
   <Button
     variant="ghost"
     size="icon-sm"
@@ -320,6 +358,10 @@ import { windows as windowStore } from "../stores/windows.svelte";
     canClose={total > 1}
     {onsplit}
     onclose={onclosepane}
+    moves={moves ?? { left: false, right: false, up: false, down: false }}
+    {onmovepane}
+    layouts={layouts ?? { row: false, col: false, grid: false }}
+    {onarrange}
     oncloseSession={session ? closeSession : undefined}
     windows={windowsList}
     onmove={onmove}

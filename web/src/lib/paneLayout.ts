@@ -15,6 +15,12 @@
 import { leaves, type Dir, type Node } from "./panes";
 
 export type MoveDir = "left" | "right" | "up" | "down";
+
+/**
+ * What a drag of a pane carries, so a drop meant for the pane layout is never mistaken for a drop of
+ * a file, a link or a piece of text (dropping either on a pane must do what it always did: nothing).
+ */
+export const PANE_MIME = "application/x-mini-tui-pane";
 export type Shape = "row" | "col" | "grid";
 
 export interface Rect {
