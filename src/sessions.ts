@@ -65,7 +65,7 @@ export function openDb(path: string = DEFAULT_DB_PATH): Database {
       body TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
-    -- The task card agents fill for every session they run in : a title, an
+    -- The task card agents fill for every session they run in: a title, an
     -- AI-written description and the to-dos sorted into done / pending / what is left. Its own table
     -- for the same reason as notes: a session listing never reads it, and a remote session can have
     -- one before it has a row here.

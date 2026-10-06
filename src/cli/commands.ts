@@ -151,7 +151,7 @@ function taskTooBig(args: TasksArgs): string | null {
     ["--title", args.title ?? "", TASK_LIMITS.title],
     ["--description", args.description ?? "", TASK_LIMITS.description],
   ];
-  for (const key of ["done", "pending", "left"] as const) for (const item of args[key]) fields.push([`--${key === "left" ? "left" : key} item`, item, TASK_LIMITS.item]);
+  for (const key of ["done", "pending", "left"] as const) for (const item of args[key]) fields.push([`--${key} item`, item, TASK_LIMITS.item]);
   for (const [name, value, max] of fields) if (value.length > max) return `${name} is longer than ${max} characters`;
   for (const key of ["done", "pending", "left"] as const) if (args[key].length > TASK_LIMITS.items) return `more than ${TASK_LIMITS.items} --${key} items`;
   return null;
