@@ -543,7 +543,8 @@ const server = Bun.serve({
             const isShell = extname(file) === ".html";
             const body = Bun.file(file);
             const gz = !isShell && /gzip/.test(request.headers.get("accept-encoding") ?? "") && [".js", ".css", ".svg", ".json"].includes(extname(file));
-            return new Response(gz ? await gzipCached(file, body) : body, {
+            // The gzip copy is bytes and the plain copy a BunFile: both are a body, whatever the types say.
+            return new Response((gz ? await gzipCached(file, body) : body) as BodyInit, {
               headers: {
                 ...(gz ? { "content-encoding": "gzip", vary: "accept-encoding" } : {}),
                 "content-type": MIME[extname(file)] ?? "application/octet-stream",
