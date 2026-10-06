@@ -12,7 +12,8 @@ import { createSession, openDb, saveTranscript } from "../src/sessions";
 
 const dir = mkdtempSync(join(tmpdir(), "minitui-wstasks-"));
 const dbPath = join(dir, "sessions.db");
-const PORT = 4900 + Math.floor(Math.random() * 300);
+// A quiet range: 4600–4899 is web-socket.e2e, 5900+ is the browser e2e scripts, 5000–5200 is often busy dev boxes.
+const PORT = 5600 + Math.floor(Math.random() * 300);
 const base = `http://127.0.0.1:${PORT}`;
 const root = join(import.meta.dir, "..");
 let proc: ReturnType<typeof Bun.spawn>;
@@ -38,12 +39,16 @@ beforeAll(async () => {
   }
   db.close();
   proc = Bun.spawn({ cmd: ["bun", "src/web/serve.ts", "--port", String(PORT)], cwd: root, env: childEnv, stdout: "ignore", stderr: "ignore" });
-  for (let i = 0; i < 60; i++) {
+  let up = false;
+  for (let i = 0; i < 60 && !up; i++) {
     try {
-      if ((await fetch(`${base}/api/health`)).ok) break;
+      up = (await fetch(`${base}/api/health`)).ok;
     } catch {}
-    await Bun.sleep(100);
+    if (!up) await Bun.sleep(100);
   }
+  // Fail where the problem is (the server never started, e.g. the port was taken), not three
+  // timeout-riddled tests later.
+  if (!up) throw new Error(`the test server never came up on ${base} (port ${PORT})`);
 });
 afterAll(() => {
   proc?.kill();

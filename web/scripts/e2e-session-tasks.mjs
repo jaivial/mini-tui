@@ -14,7 +14,7 @@ import { Database } from "bun:sqlite";
 const root = join(import.meta.dir, "..", "..");
 const dir = mkdtempSync(join(tmpdir(), "minitui-e2e-tasks-"));
 const dbPath = join(dir, "sessions.db");
-const PORT = 5300 + Math.floor(Math.random() * 200);
+const PORT = 6300 + Math.floor(Math.random() * 200); // quiet range: 4600–4899 is e2e.mjs, 5900+ is e2e-notes-persist
 const base = `http://127.0.0.1:${PORT}`;
 const { createSession, openDb, saveTranscript } = await import(join(root, "src/sessions.ts"));
 const db = openDb(dbPath);
@@ -26,7 +26,9 @@ db.close();
 
 const env = { ...process.env, MINITUI_LAST_MODEL_PATH: join(dir, "last-model.json"), MINITUI_CONNECTIONS_PATH: join(dir, "providers.json"), MINITUI_SETTINGS_PATH: join(dir, "settings.json"), MINITUI_SKILLS_DIR: join(dir, "skills"), MINITUI_DB_PATH: dbPath, MINITUI_CONFIG_DIR: dir, MINITUI_RESUME_DIR: join(dir, "resume"), MINITUI_RUNS_DIR: join(dir, "runs"), MINITUI_WEB_SYNC_MS: "250" };
 const server = spawn("bun", ["src/web/serve.ts", "--port", String(PORT)], { cwd: root, stdio: "ignore", env });
-for (let i = 0; i < 80; i++) { try { if ((await fetch(`${base}/api/health`)).ok) break; } catch {} await Bun.sleep(100); }
+let up = false;
+for (let i = 0; i < 80 && !up; i++) { try { up = (await fetch(`${base}/api/health`)).ok; } catch {} if (!up) await Bun.sleep(100); }
+if (!up) { console.log(`FAIL  the test server never came up on ${base} (port ${PORT})`); server.kill(); rmSync(dir, { recursive: true, force: true }); process.exit(1); }
 for (const id of ["s-alpha", "s-beta"]) await fetch(`${base}/api/history/${id}`, { method: "POST" });
 
 function chrome() { const r = `${homedir()}/.cache/ms-playwright`; for (const d of readdirSync(r).filter((d) => d.startsWith("chromium-")).sort().reverse()) { const b = `${r}/${d}/chrome-linux64/chrome`; if (existsSync(b)) return b; } }
