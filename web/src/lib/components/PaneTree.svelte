@@ -94,7 +94,8 @@
 </script>
 
 {#if node.kind === "pane"}
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <!-- The pane is a drop zone while something is dragged over it; it keeps no role of its own. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions -->
   <div
     class="flex min-h-0 min-w-0 flex-1"
     class:drop-ready={hover}

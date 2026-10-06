@@ -86,6 +86,19 @@ import { windows as windowStore } from "../stores/windows.svelte";
   const focused = $derived(panes.focusedId === pane.id);
   const link = $derived(session ? (store.links[session.id] ?? "idle") : "idle");
 
+  /** The pane's left edge, in the same viewport pixels a pointer reports (the zoom included). */
+  let host = $state<HTMLElement | null>(null);
+  let paneLeft = $state(0);
+  $effect(() => {
+    if (!host) return;
+    const read = () => (paneLeft = host!.getBoundingClientRect().left);
+    read();
+    // A split dragged, a pane moved or the sidebar hidden all slide the pane's left edge.
+    const ro = new ResizeObserver(read);
+    ro.observe(host);
+    return () => ro.disconnect();
+  });
+
   let composer = $state<{ focus: () => void } | null>(null);
   let notes = $state<{ focus: () => void } | null>(null);
   let terminal = $state<{ focus: () => void } | null>(null);
@@ -373,6 +386,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
   Focus is shown by a brand hairline on the pane's edge (and `aria-current`), not by motion.
 -->
 <section
+  bind:this={host}
   class="pane relative flex min-h-0 min-w-0 flex-1 bg-canvas"
   class:is-focused={focused && total > 1}
   aria-label="Pane {number}{session ? `: ${session.title || 'Untitled'}` : ': new chat'}"
@@ -546,7 +560,15 @@ import { windows as windowStore } from "../stores/windows.svelte";
             <div class="m-3 rounded-md bg-err/10 px-3 py-2 text-[12px] text-err" role="alert">Could not load the terminal. Reload the page and try again.</div>
           {/await}
         {:else}
-          <NotesPanel bind:this={notes} noteId={session?.id ?? null} title={session?.title ?? ""} onclose={() => panes.toggleNotes(pane.id, false)} />
+          <NotesPanel
+            bind:this={notes}
+            noteId={session?.id ?? null}
+            title={session?.title ?? ""}
+            onclose={() => panes.toggleNotes(pane.id, false)}
+            width={pane.sideWidth}
+            onresize={(px) => panes.setSideWidth(pane.id, px)}
+            {paneLeft}
+          />
         {/if}
       </div>
     </div>

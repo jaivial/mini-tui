@@ -18,6 +18,7 @@ import type { Chip } from "../chips";
 import { PromptMemory } from "../promptMemory";
 import { legacy, windows } from "./windows.svelte";
 import { shallowEqual } from "../equal";
+import { clampSideWidth } from "../sidePanel";
 import { saveParts, startingDoc, workspace } from "../workspace";
 
 export interface Pane {
@@ -31,6 +32,8 @@ export interface Pane {
   notesOpen: boolean;
   /** Which tab the right sidebar shows while it is open. */
   sideTab: "notes" | "terminal";
+  /** The width the user dragged the side panel to (null: the panel's own default). */
+  sideWidth: number | null;
   /** ↑/↓ prompt recall. Not reactive state: it is read on a key press, never rendered. */
   memory: PromptMemory;
   /** The session the memory was seeded from, so it is reseeded when the pane shows another one. */
@@ -49,7 +52,7 @@ interface PanesDoc {
 
 const KEY = "minitui.panes";
 const uid = (p: string) => `${p}${Math.random().toString(36).slice(2, 9)}`;
-const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, sideTab: "notes", memory: new PromptMemory(), memoryOf: null, liveTurn: null, seenTurn: null });
+const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, sideTab: "notes", sideWidth: null, memory: new PromptMemory(), memoryOf: null, liveTurn: null, seenTurn: null });
 
 /** The first pane of a first visit. Any id works; it only has to be unique like every other one. */
 const FIRST = uid("p");
@@ -68,7 +71,7 @@ function renameLeaves(node: Node, to: Map<string, string>): Node {
 /** What is written to localStorage for one window: the tree, what each pane shows, where the focus was. */
 interface Saved {
   tree: Node;
-  panes: Record<string, { sessionId: string | null; notesOpen: boolean; sideTab: "notes" | "terminal"; liveTurn?: number | null; seenTurn?: number | null }>;
+  panes: Record<string, { sessionId: string | null; notesOpen: boolean; sideTab: "notes" | "terminal"; sideWidth?: number | null; liveTurn?: number | null; seenTurn?: number | null }>;
   focused: string;
 }
 
@@ -484,6 +487,19 @@ class PaneStore {
     this.#save();
   }
 
+  /**
+   * The width the user dragged the side panel to, kept for this pane. It is clamped before it is
+   * kept, so a width saved from a wide window cannot come back too wide in a narrow one; the panel
+   * still fits whatever the pane is now.
+   */
+  setSideWidth(paneId: string, px: number) {
+    const pane = this.panes[paneId];
+    const width = clampSideWidth(px);
+    if (!pane || width === null || pane.sideWidth === width) return;
+    pane.sideWidth = width;
+    this.#saveSoon(); // a drag fires this many times: write it once it settles
+  }
+
   // ------------------------------------------------------------ persistence
 
   #timer: ReturnType<typeof setTimeout> | undefined;
@@ -492,7 +508,7 @@ class PaneStore {
     this.#timer = setTimeout(() => this.#save(), 250);
   }
   #one(tree: Node, panes: Record<string, Pane>, focused: string): Saved {
-    return { tree: $state.snapshot(tree) as Node, panes: Object.fromEntries(Object.entries(panes).map(([id, p]) => [id, { sessionId: p.sessionId, notesOpen: p.notesOpen, sideTab: p.sideTab, liveTurn: p.liveTurn, seenTurn: p.seenTurn }])), focused };
+    return { tree: $state.snapshot(tree) as Node, panes: Object.fromEntries(Object.entries(panes).map(([id, p]) => [id, { sessionId: p.sessionId, notesOpen: p.notesOpen, sideTab: p.sideTab, sideWidth: p.sideWidth, liveTurn: p.liveTurn, seenTurn: p.seenTurn }])), focused };
   }
   #save() {
     if (this.#remote) return;
@@ -523,7 +539,7 @@ class PaneStore {
   #apply(value: unknown, mine: Map<string, Pane>) {
     try {
       const raw = value as
-        | { v?: number; byWindow?: Record<string, { tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown; sideTab?: unknown; liveTurn?: unknown; seenTurn?: unknown }>; focused?: unknown }>; tree?: unknown; panes?: unknown; focused?: unknown }
+        | { v?: number; byWindow?: Record<string, { tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown; sideTab?: unknown; sideWidth?: unknown; liveTurn?: unknown; seenTurn?: unknown }>; focused?: unknown }>; tree?: unknown; panes?: unknown; focused?: unknown }
         | null;
       if (!raw || (!raw.byWindow && raw.v !== 1)) return;
       if (raw.v === 1) raw.byWindow = { [windows.activeId]: { tree: raw.tree, panes: raw.panes as never, focused: raw.focused } }; // the old, one-window format
@@ -552,6 +568,7 @@ class PaneStore {
             sessionId,
             notesOpen: saved?.notesOpen === true,
             sideTab: saved?.sideTab === "terminal" ? "terminal" : "notes",
+            sideWidth: clampSideWidth(saved?.sideWidth),
             liveTurn: turn(saved?.liveTurn),
             seenTurn: turn(saved?.seenTurn),
           };
