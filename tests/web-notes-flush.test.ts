@@ -123,7 +123,24 @@ function editor(store: Store, noteId: string | null) {
     await pending;
     clearTimeout(timer); // the new effect run replaces the editor; the old debounce is gone
   };
-  return { type, load, flush, leave, setNote, keepMine, takeTheirs, tracked, get noteId() { return noteId; }, get body() { return body; }, get save() { return save; } };
+
+  /**
+   * A pane switching notes the way a Svelte $effect does: the previous run's cleanup (the leaving
+   * flush) runs *first*, then the new run's body resets the editor for the note on screen. The
+   * leaving flush therefore reads the tracked version before it is cleared for the new note — this
+   * test pins that order, because the other one (body first) would drop the version underneath it.
+   */
+  const switchNote = async (from: string, to: string) => {
+    const leaving = flush(from, true);  // the cleanup: flush the note being left
+    noteId = to;                        // the new run's body
+    save = { kind: "loading" };
+    body = savedBody = "";
+    base = 0;
+    landed.clear();                     // ...drops the old note's version, after the flush read it
+    await leaving;
+    clearTimeout(timer);
+  };
+  return { type, load, flush, leave, switchNote, setNote, keepMine, takeTheirs, tracked, get noteId() { return noteId; }, get body() { return body; }, get save() { return save; } };
 }
 
 describe("the notes editor's save queue", () => {
@@ -164,6 +181,21 @@ describe("the notes editor's save queue", () => {
     expect(store.saves.map((s) => s.body)).toEqual(["v1", "v2 typed during the save"]);
     expect(store.saves.map((s) => s.base)).toEqual([0, 1]);
     expect(store.version("s-alpha")).toBe(2);
+  });
+
+  test("switching notes the way a Svelte effect does keeps the old note's text", async () => {
+    // A save is in flight for s-alpha; the pane switches to s-beta. The new effect run clears the
+    // tracked version before the old note's leaving flush runs, so the flush must not depend on it.
+    const store = new Store();
+    store.delay = 5;
+    const e = editor(store, "s-alpha");
+    e.load("s-alpha");
+    e.type("alpha in flight");
+    const first = e.flush("s-alpha");
+    e.type("alpha typed during the save");
+    await e.switchNote("s-alpha", "s-beta");
+    await first;
+    expect(store.body("s-alpha")).toBe("alpha typed during the save");
   });
 
   test("a save still lands when the pane closes with the note unsaved", async () => {
