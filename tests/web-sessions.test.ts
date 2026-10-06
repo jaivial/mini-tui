@@ -293,7 +293,7 @@ describe("setModel", () => {
     await withManager(async (m) => {
       const s = await m.create({ target: "local", prompt: "hi", cwd: "/tmp" });
       m.setModel(s.id, "cliproxy/claude-opus-5-5");
-      const reopened = m.openHistory(s.id);
+      const reopened = await m.openHistory(s.id);
       expect(reopened.model).toBe("cliproxy/claude-opus-5-5");
     });
   });

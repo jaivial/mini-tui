@@ -5,6 +5,7 @@
  */
 
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -279,8 +280,14 @@ export interface ForeignRun {
   pid: number;
 }
 
-/** Is `pid` still the agent that writes `trajPath`? (A recycled pid must not pass for it.) */
-export function foreignRunAlive(run: ForeignRun): boolean {
+/**
+ * Is `pid` still the agent that writes `trajPath`? (A recycled pid must not pass for it.)
+ *
+ * `node:fs/promises` keeps the read off the event loop: a session manager that checks a hundred
+ * announced runs per tick would otherwise read a hundred `/proc/<pid>/cmdline` files in one
+ * synchronous stretch and stall every socket and timer on the server for that whole stretch.
+ */
+export async function foreignRunAlive(run: ForeignRun): Promise<boolean> {
   if (!run.pid || run.pid <= 0) return false;
   try {
     process.kill(run.pid, 0);
@@ -290,10 +297,20 @@ export function foreignRunAlive(run: ForeignRun): boolean {
   }
   try {
     // On Linux the command line names its trajectory (`-o <traj>`): a reused pid does not.
-    const cmdline = readFileSync(`/proc/${run.pid}/cmdline`, "utf8");
+    const cmdline = await readFile(`/proc/${run.pid}/cmdline`, "utf8");
     return cmdline.includes(run.trajPath);
   } catch {
-    return existsSync(run.trajPath) || existsSync(run.controlPath);
+    try {
+      await access(run.trajPath);
+      return true;
+    } catch {
+      try {
+        await access(run.controlPath);
+        return true;
+      } catch {
+        return false;
+      }
+    }
   }
 }
 
@@ -315,14 +332,22 @@ export function attachMini(foreign: ForeignRun, options: { pollMs?: number } = {
   let released = false;
   let resolveExit: (code: number | null) => void = () => {};
   const exited = new Promise<number | null>((resolve) => (resolveExit = resolve));
+  // One liveness check in flight at a time: a slow read must not queue a second one behind it and
+  // turn one poll into a pile-up (the interval keeps firing while the promise is pending).
+  let probing = false;
   const timer = setInterval(() => {
-    if (released || foreignRunAlive(foreign)) return;
-    clearInterval(timer);
-    resolveExit(0);
+    if (released || probing) return;
+    probing = true;
+    void foreignRunAlive(foreign).then((alive) => {
+      probing = false;
+      if (released || alive) return;
+      clearInterval(timer);
+      resolveExit(0);
+    });
   }, options.pollMs ?? 500);
   (timer as { unref?: () => void }).unref?.();
-  const signal = (sig: NodeJS.Signals) => {
-    if (!foreignRunAlive(foreign)) return;
+  const signal = async (sig: NodeJS.Signals): Promise<void> => {
+    if (!(await foreignRunAlive(foreign))) return;
     try {
       process.kill(foreign.pid, sig);
     } catch {
@@ -341,8 +366,8 @@ export function attachMini(foreign: ForeignRun, options: { pollMs?: number } = {
       clearInterval(timer);
     },
     interrupt() {
-      signal("SIGINT");
-      setTimeout(() => signal("SIGTERM"), 2000).unref?.();
+      void signal("SIGINT");
+      setTimeout(() => void signal("SIGTERM"), 2000).unref?.();
     },
     switchModel(model: string) {
       appendFileSync(foreign.controlPath, `MODEL ${model}\n`);

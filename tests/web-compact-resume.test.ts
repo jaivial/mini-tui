@@ -66,7 +66,10 @@ describe("/compact with no live agent", () => {
     // state "a session nothing is running for" comes back in.
     const saved = live.messages.length;
     manager.close(session.id);
-    const reopened = (manager as any).openHistory(session.id) as any;
+    // The compaction run has left: no live run may be announced for it, or the reopen would
+    // follow a ghost instead of the saved copy.
+    await Bun.sleep(120);
+    const reopened = await (manager as any).openHistory(session.id) as any;
     expect(reopened.messages.length).toBe(saved);
     manager.compact(session.id);
     for (let i = 0; i < 200; i++) {
@@ -89,7 +92,7 @@ describe("/compact with no live agent", () => {
   test("a second /compact goes to the held run, and interrupt stops it", async () => {
     const session = (manager as any).list()[0];
     (manager as any).close(session.id);
-    const reopened = (manager as any).openHistory(session.id);
+    const reopened = await (manager as any).openHistory(session.id);
     (manager as any).compact(reopened.id);
     // The compaction run holds the control file, so it looks live: a second command is handed to
     // that run instead of starting another agent on top of it.
@@ -100,14 +103,15 @@ describe("/compact with no live agent", () => {
     expect((manager as any).get(reopened.id).status).toBe("interrupted");
   });
 
-  test("refuses honestly when only the plain CLI is installed", () => {
+  test("refuses honestly when only the plain CLI is installed", async () => {
     spawn.setRunnerSupport("cli");
     const session = (manager as any).list()[0];
     expect((session as any).messages.length).toBeGreaterThan(2);
     // Nothing is running for it now (the previous test interrupted its compaction run): with only
     // the plain CLI there is no way to compact between turns, and the refusal says so.
     (manager as any).close(session.id);
-    const reopened = (manager as any).openHistory(session.id);
+    await Bun.sleep(120);
+    const reopened = await (manager as any).openHistory(session.id);
     expect(() => (manager as any).compact(reopened.id)).toThrow("integrated runner");
     spawn.setRunnerSupport("argv");
   });

@@ -42,7 +42,7 @@ import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 import { probeHost, startRemoteRun, type RemoteRun, type SshTarget } from "./ssh";
-import { SubagentSync, type SubagentView } from "../mini/subagents";
+import { SubagentSync, subagentIndexFresh, type SubagentView } from "../mini/subagents";
 
 /** One saved session in the history list: metadata only, no transcript. */
 export interface HistoryItem {
@@ -153,6 +153,8 @@ interface Internal {
   trajPath?: string;
   consumed: number;
   parseState: ReturnType<typeof createParseState>;
+  /** A liveness probe for this entry is in flight (never two for one entry at once). */
+  probing?: boolean;
   /** Newest `updated_at` of the saved row this copy already reflects (ours or another UI's save). */
   syncedAt?: number;
   /** The next trajectory snapshot rebuilds the transcript (just attached to another UI's agent). */
@@ -201,16 +203,39 @@ export class SessionManager {
   #db: ReturnType<typeof openDb> | null = null;
   #onChange: (session: LiveSession) => void;
 
-  #syncTimer?: ReturnType<typeof setInterval>;
+  #closed = false;
+  /** The pass in flight, so a caller that needs the result (a test) can wait for it. */
+  #pass?: Promise<void>;
+  #syncTimer?: ReturnType<typeof setTimeout>;
+  #syncEvery = 0;
+  #syncing = false;
   #subagents = new SubagentSync(() => this.db());
 
   constructor(onChange: (session: LiveSession) => void, options: { syncMs?: number } = {}) {
     this.#onChange = onChange;
-    const every = options.syncMs ?? SYNC_MS;
-    if (every > 0) {
-      this.#syncTimer = setInterval(() => this.syncExternal(), every);
-      (this.#syncTimer as { unref?: () => void }).unref?.();
-    }
+    this.#syncEvery = options.syncMs ?? SYNC_MS;
+    this.#scheduleSync();
+  }
+
+  /**
+   * Arm the next tick, and only then run it.
+   *
+   * `setInterval` fires every `every` ms no matter what the last tick did: one slow tick (a
+   * synchronous reload of a hundred held sessions, a database busy with another UI's save) delays
+   * the whole event loop and the next tick queues behind it, so ticks pile up and each one is
+   * slower than the last. Scheduling the next pass from the end of this one keeps at most one tick
+   * alive, and its latency is paid once per pass instead of once per overlapping interval.
+   */
+  #scheduleSync(): void {
+    if (this.#syncEvery <= 0 || this.#syncTimer) return;
+    this.#syncTimer = setTimeout(() => {
+      this.#syncTimer = undefined;
+      // A pass that rejects must not take the timer (or the process, on an unhandled rejection)
+      // with it: the next one is scheduled either way.
+      void this.syncExternal().catch(() => {});
+      this.#scheduleSync();
+    }, this.#syncEvery);
+    (this.#syncTimer as { unref?: () => void }).unref?.();
   }
 
   /**
@@ -221,9 +246,15 @@ export class SessionManager {
     for (const entry of this.#live.values()) {
       const traj = entry.trajPath;
       if (!traj) continue;
-      let views: SubagentView[];
+      // The roster of a run this server drives itself is current: its watcher already read the
+      // journal this tick, so re-reading the index would only repeat what just happened.
+      const internal = entry.run && !entry.exited && !entry.run.attached;
+      if (internal && subagentIndexFresh(traj)) continue;
+      let views: SubagentView[] = entry.session.subagents ?? [];
       try {
-        views = this.#subagents.sync(entry.session.id, traj);
+        const next = this.#subagents.sync(entry.session.id, traj);
+        if (internal && !next.length && !views.length) continue;
+        views = next;
       } catch {
         continue;
       }
@@ -238,8 +269,10 @@ export class SessionManager {
 
   /** Stop the background sync (tests, shutdown). */
   dispose(): void {
-    if (this.#syncTimer) clearInterval(this.#syncTimer);
+    this.#closed = true;
+    if (this.#syncTimer) clearTimeout(this.#syncTimer);
     this.#syncTimer = undefined;
+    this.#syncEvery = 0;
   }
 
   /**
@@ -250,22 +283,53 @@ export class SessionManager {
    * - A save another UI made since we last looked (a turn that ran while nothing was attached
    *   here) replaces the stale copy, so the next message continues the real conversation.
    */
-  syncExternal(): void {
+  syncExternal(): Promise<void> {
+    // A pass re-entered while it is still running (the timer fired, or a change callback poked the
+    // manager) would redo the whole pass against half-updated entries: let the one in flight finish.
+    if (this.#syncing) return this.#pass ?? Promise.resolve();
+    this.#syncing = true;
+    const pass = this.#syncExternal().finally(() => {
+      this.#syncing = false;
+      this.#pass = undefined;
+    });
+    this.#pass = pass;
+    return pass;
+  }
+
+  /**
+   * One pass over the held sessions.
+   *
+   * Asynchronous, and bounded in what it reads per pass: entries whose liveness probe is still in
+   * flight are left for the next pass, so a tick cannot stretch into a long blocking burst however
+   * many sessions this server holds.
+   */
+  async #syncExternal(): Promise<void> {
     this.#syncSubagents();
     const idle = [...this.#live.values()].filter(
-      (entry) => entry.session.target === "local" && !(entry.run && !entry.exited) && entry.session.status !== "running",
+      (entry) =>
+        entry.session.target === "local" && !(entry.run && !entry.exited) && entry.session.status !== "running" && !entry.probing,
     );
     if (!idle.length) return;
     let stamps: Map<string, number>;
     try {
+      // One query for the whole batch: `updated_at` is the cheap "did another UI save it" signal,
+      // and only the sessions whose stamp moved are read back in full below.
       stamps = sessionStamps(this.db(), idle.map((entry) => entry.session.id));
     } catch {
       return; // the database is busy: try again on the next tick
     }
-    for (const entry of idle) {
-      if (this.#attachExternal(entry)) continue;
-      const stamp = stamps.get(entry.session.id);
-      if (stamp !== undefined && stamp > (entry.syncedAt ?? 0)) this.#reloadFromDb(entry);
+    const settled = await Promise.all(idle.map((entry) => this.#attachExternal(entry)));
+    // An attach decides the session's content from the agent's own trajectory; a reload would
+    // overwrite it with an older copy, so only the ones that did not attach are refreshed.
+    for (let i = 0; i < idle.length; i++) {
+      if (settled[i]) continue;
+      const stamp = stamps.get(idle[i]!.session.id);
+      if (stamp === undefined || stamp <= (idle[i]!.syncedAt ?? 0)) continue;
+      this.#reloadFromDb(idle[i]!);
+      // Hand the event loop back between rows: a transcript some other UI saved can be tens of MB
+      // of JSON to read and parse, and yielding here keeps that burst from ever becoming one
+      // unbroken stall (every socket, timer and request waits for it) however many rows moved.
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
   }
 
@@ -654,8 +718,13 @@ export class SessionManager {
   /**
    * Follow the agent another UI (a terminal) is running for this session, if there is one.
    * Returns true when the session is now attached to it.
+   *
+   * Asynchronous on purpose: the liveness probe reads `/proc/<pid>/cmdline` off the event loop, and
+   * a tick that checks a hundred announced runs would otherwise read them back to back and block
+   * the server for the whole stretch. Two calls for one entry never overlap, so an entry a slow
+   * probe is still deciding about is left for the next tick instead of being attached twice.
    */
-  #attachExternal(entry: Internal): boolean {
+  async #attachExternal(entry: Internal): Promise<boolean> {
     if (entry.session.target !== "local") return false;
     if (entry.run && !entry.exited) return entry.run.attached === true;
     let record;
@@ -665,8 +734,21 @@ export class SessionManager {
       return false;
     }
     if (!record || this.#ownsTraj(record.traj_path)) return false;
+    if (entry.probing) return false;
     const foreign = { trajPath: record.traj_path, controlPath: record.control_path, pid: record.pid };
-    if (!foreignRunAlive(foreign)) return false;
+    entry.probing = true;
+    let alive: boolean;
+    try {
+      alive = await foreignRunAlive(foreign);
+    } finally {
+      entry.probing = false;
+    }
+    // The tick that asked for the probe has moved on (or the session was closed, or its own agent
+    // started) while we were reading: this pass must not attach over it.
+    if (!alive || entry.session.target !== "local" || (entry.run && !entry.exited) || this.#closed) {
+      if (!alive) this.#retireGhost(entry, record);
+      return false;
+    }
 
     const run = attachMini(foreign);
     entry.run = run;
@@ -711,6 +793,20 @@ export class SessionManager {
     return true;
   }
 
+  /**
+   * The announced run for this session is not alive any more (its process left without retiring
+   * itself, or a recycled pid answered for it): forget it, or every later reopen and every tick
+   * would probe the same ghost for ever.
+   */
+  #retireGhost(entry: Internal, record: { session_id: string; traj_path: string }): void {
+    try {
+      clearLiveRun(this.db(), record.session_id, record.traj_path);
+    } catch {
+      // a stale row is harmless
+    }
+    if (entry.trajPath === record.traj_path) entry.trajPath = undefined;
+  }
+
   #ownsTraj(trajPath: string): boolean {
     for (const entry of this.#live.values()) if (entry.run && !entry.run.attached && entry.run.session.trajPath === trajPath) return true;
     return false;
@@ -746,7 +842,7 @@ export class SessionManager {
   }
 
   /** Follow-up: continues the same conversation through the control channel. */
-  send(id: string, prompt: string): void {
+  async send(id: string, prompt: string): Promise<void> {
     const entry = this.#live.get(id);
     if (!entry) throw new Error("unknown session");
     const text = prompt.trim();
@@ -754,7 +850,7 @@ export class SessionManager {
     // A terminal may be running (or may have just continued) this conversation: talk to its agent,
     // or at least continue from its latest save, never from a stale copy that would fork it.
     if (!(entry.run && !entry.exited) && entry.session.target === "local") {
-      if (!this.#attachExternal(entry)) this.#refreshIfStale(entry);
+      if (!(await this.#attachExternal(entry))) this.#refreshIfStale(entry);
     }
     const running = !!entry.run && !entry.exited;
     if (!running && entry.session.target === "local" && entry.session.messages.length === 0) {
@@ -1126,12 +1222,12 @@ export class SessionManager {
    * the database would replace a live one (possibly mid-run, with events the database has not seen yet)
    * and leave two owners of one id.
    */
-  openHistory(id: string): LiveSession {
+  async openHistory(id: string): Promise<LiveSession> {
     const held = this.#live.get(id);
     if (held) {
       // Held but idle: a terminal may have moved on since (a newer save, or its agent is live now).
       if (!(held.run && !held.run.attached && !held.exited) && held.session.target === "local") {
-        if (!this.#attachExternal(held)) this.#refreshIfStale(held);
+        if (!(await this.#attachExternal(held))) this.#refreshIfStale(held);
       }
       return held.session;
     }
@@ -1146,7 +1242,7 @@ export class SessionManager {
     };
     this.#live.set(row.id, entry);
     // Opened while a terminal is running it: follow that agent live instead of a frozen copy.
-    this.#attachExternal(entry);
+    await this.#attachExternal(entry);
     return session;
   }
 

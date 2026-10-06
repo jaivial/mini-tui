@@ -698,14 +698,14 @@ export function App(props: AppProps) {
     }
     setStatus("done");
     setInputFocused(true);
-    attachToLiveRun(record.id);
+    void attachToLiveRun(record.id);
   };
 
   /**
    * The session may be running right now in the web app: follow that agent (its trajectory
    * streams here and prompts typed here reach it) instead of starting a second one beside it.
    */
-  const attachToLiveRun = (sessionId: string) => {
+  const attachToLiveRun = async (sessionId: string): Promise<void> => {
     let record;
     try {
       record = getLiveRun(db(), sessionId);
@@ -714,7 +714,7 @@ export function App(props: AppProps) {
     }
     if (!record) return;
     const foreign = { trajPath: record.traj_path, controlPath: record.control_path, pid: record.pid };
-    if (!foreignRunAlive(foreign)) return;
+    if (!(await foreignRunAlive(foreign))) return;
     live.current.watch?.stop();
     live.current.run?.kill();
     const run = attachMini(foreign);

@@ -98,10 +98,10 @@ describe("subagents as sessions", () => {
 
     const manager = new SessionManager(() => {}, { syncMs: 0 });
     try {
-      const parent = manager.openHistory("s-orch");
-      manager.syncExternal();
+      const parent = await manager.openHistory("s-orch");
+      await manager.syncExternal();
       expect(parent.subagents?.map((s) => s.name)).toEqual(["docs"]);
-      const child = manager.openHistory(parent.subagents![0]!.sessionId);
+      const child = await manager.openHistory(parent.subagents![0]!.sessionId);
       expect(child.parentId).toBe("s-orch");
       expect(child.events.some((e) => e.type === "assistant" && e.text === "answer of docs")).toBe(true);
     } finally {
