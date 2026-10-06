@@ -8,6 +8,7 @@
   import ResumeModal from "./lib/components/ResumeModal.svelte";
   import RemoteHostsModal from "./lib/components/RemoteHostsModal.svelte";
   import SettingsModal from "./lib/components/SettingsModal.svelte";
+  import TasksPanel from "./lib/components/TasksPanel.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
   import { history, sidebarHistory } from "./lib/stores/history.svelte";
   import { folderStore } from "./lib/stores/folders.svelte";
@@ -17,12 +18,16 @@
 import { windows } from "./lib/stores/windows.svelte";
   import { paneStatus, statusLabel } from "./lib/paneStatus";
   import { ui } from "./lib/stores/ui.svelte";
+  import { tasks } from "./lib/stores/tasks.svelte";
+  import { hub } from "./lib/hub";
   import { toasts } from "./lib/stores/toast.svelte";
   import { api } from "./lib/api";
   import { MAX_PANES, roomToSplit, type Dir } from "./lib/panes";
   import { paneAt, type MoveDir, type Shape } from "./lib/paneLayout";
   import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "./lib/scale";
   import type { HistoryItem } from "./lib/types";
+  import { boardRows, type TaskWhere } from "./lib/tasks";
+  import type { SessionTask } from "./lib/types";
   import { FinishWatcher, finishMessage } from "./lib/finish";
 
   /**
@@ -72,6 +77,11 @@ import { windows } from "./lib/stores/windows.svelte";
   });
 
   let hostsOpen = $state(false);
+  /** The window's task board (every session's task card), in its drawer on the right. */
+  let tasksOpen = $state(false);
+  /** The board as the hub last pushed it. The watch below keeps this reactive copy fresh. */
+  let taskCards = $state<SessionTask[]>([]);
+  let tasksLive = $state(false);
   let settingsOpen = $state(false);
   let settingsTab = $state("general");
   let helpOpen = $state(false);
@@ -94,6 +104,10 @@ import { windows } from "./lib/stores/windows.svelte";
   // window switch — it would drop every session socket and reload the list. Only the `createdId`
   // hand-off below wants to be reactive, and it is read under `untrack` with the rest.
   $effect(() => {
+    // The task board is watched for as long as the app is open: the window's button glances at it
+    // on hover and the panel opens it, and both must show what the agents last wrote, at once.
+    const unwatch = tasks.watch((list) => (taskCards = list));
+    const unhub = hub.onState((s) => (tasksLive = s === "live"));
     untrack(() => {
     store.connect();
     store
@@ -111,7 +125,11 @@ import { windows } from "./lib/stores/windows.svelte";
       .catch((error) => toasts.push("Could not reach the mini-tui server", { detail: (error as Error).message, tone: "err" }))
       .finally(() => (loading = false));
     });
-    return () => store.close();
+    return () => {
+      unwatch();
+      unhub();
+      store.close();
+    };
   });
 
   // Each pane streams its own session over its own socket; the focused one is also "active".
@@ -325,6 +343,19 @@ import { windows } from "./lib/stores/windows.svelte";
   };
   /** Where a pane can go: the other windows, and a new one. */
   const moveTargets = $derived(windows.list.filter((w) => w.id !== windows.activeId).map((w) => ({ id: w.id, label: windows.label(w.id, (wid) => panes.paneCount(wid)) })));
+  /**
+   * Where a session is on screen, for the task board: the pane showing it (its number in the
+   * reading order) and the window that pane lives in. Null when no pane shows the session.
+   */
+  const whereOf = (id: string): TaskWhere | null => {
+    const pane = panes.paneOf(id);
+    if (!pane) return null;
+    const w = panes.windowOf(id);
+    return { pane: panes.numberOf(pane.id), window: w ? windows.label(w, (wid) => panes.paneCount(wid)) : windows.label(windows.activeId, (wid) => panes.paneCount(wid)) };
+  };
+  /** The task board's rows: every session with a task card, with where it lives on screen. */
+  const taskRows = $derived(boardRows(taskCards, (id) => store.sessions[id]?.title ?? "", whereOf));
+
   /** The sidebar's window list: name or number, pane count, and which is on screen. */
   const windowRows = $derived(
     windows.list.map((w) => ({
@@ -462,6 +493,8 @@ import { windows } from "./lib/stores/windows.svelte";
           panes.dropWindow(id);
           windows.remove(id);
         }}
+        ontasks={() => (tasksOpen = true)}
+        {taskRows}
         inOtherWindow={(id) => {
           const w = panes.windowOf(id);
           return w && w !== windows.activeId ? windows.label(w, (wid) => panes.paneCount(wid)) : "";
@@ -570,6 +603,7 @@ import { windows } from "./lib/stores/windows.svelte";
   </div>
 </div>
 
+<TasksPanel open={tasksOpen} rows={taskRows} live={tasksLive} onclose={() => (tasksOpen = false)} />
 <RemoteHostsModal bind:open={hostsOpen} />
 <SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />
 <HelpModal bind:open={helpOpen} />

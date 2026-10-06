@@ -11,11 +11,13 @@
   import { groupByRecency, unresumableReason } from "../resume";
   import type { HistoryItem } from "../types";
   import Button from "./Button.svelte";
+  import TasksButton from "./TasksButton.svelte";
   import Badge from "./Badge.svelte";
   import Skeleton from "./Skeleton.svelte";
   import { store } from "../stores/sessions.svelte";
   import { baseName, relativeTime, cost } from "../format";
   import type { SessionState } from "../types";
+  import type { TaskRow } from "../tasks";
 
   let {
     onnew,
@@ -34,6 +36,8 @@
     onnewwindow,
     onrename,
     onclosewindow,
+    ontasks,
+    taskRows = [],
     paneOf = () => 0,
     focusedSession = null,
     loading = false,
@@ -74,6 +78,11 @@
     onrename?: (id: string, name: string) => void;
     /** Close a window. Only one with no panes can go; the button says so otherwise. */
     onclosewindow?: (id: string) => void;
+
+    /** Open the window's task board (the panel listing every session's task card). */
+    ontasks?: () => void;
+    /** The board's rows, for the button's quick glance; the click opens the panel. */
+    taskRows?: TaskRow[];
 
     /** The window holding a session that no pane on screen shows, or "" when one does. */
     inOtherWindow?: (id: string) => string;
@@ -316,7 +325,10 @@
     <div class="px-2.5 pb-2" role="group" aria-label="Windows">
       <div class="mb-0.5 flex items-center gap-1.5 px-1">
         <span class="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-ink-faint uppercase"><Layers size={10} strokeWidth={2} aria-hidden="true" />Windows</span>
-        <span class="tnum ml-auto text-[10px] text-ink-faint">{windows.length}</span>
+        <span class="ml-auto flex items-center gap-1.5">
+          <TasksButton rows={taskRows} onopen={() => ontasks?.()} />
+          <span class="tnum text-[10px] text-ink-faint">{windows.length}</span>
+        </span>
       </div>
       <div class="flex flex-col gap-0.5" role="radiogroup" aria-label="Window to show">
         {#each windows as w (w.id)}

@@ -14,7 +14,8 @@
     "e2e": "bun scripts/e2e.mjs",
     "e2e-notes": "bun scripts/e2e-notes-persist.mjs",
     "readme-shots": "bun scripts/readme-shots.mjs",
-    "windows-shots": "bun scripts/windows-shots.mjs"
+    "windows-shots": "bun scripts/windows-shots.mjs",
+    "e2e-tasks": "bun scripts/e2e-session-tasks.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
