@@ -16,11 +16,6 @@ import { leaves, type Dir, type Node } from "./panes";
 
 export type MoveDir = "left" | "right" | "up" | "down";
 
-/**
- * What a drag of a pane carries, so a drop meant for the pane layout is never mistaken for a drop of
- * a file, a link or a piece of text (dropping either on a pane must do what it always did: nothing).
- */
-export const PANE_MIME = "application/x-mini-tui-pane";
 export type Shape = "row" | "col" | "grid";
 
 export interface Rect {
@@ -163,4 +158,12 @@ export function preset(ids: string[], shape: Shape): Node {
   for (let i = 0; i < ids.length; i += cols) rows.push(ids.slice(i, i + cols).map((id) => ({ kind: "pane", id }) as Node));
   if (rows.length === 1) return build(rows[0]!, "row");
   return build(rows.map((row) => build(row, "row")), "col");
+}
+
+/** The id of the pane a point of a pointer event lands in, by the zones `data-pane-drop` marks. */
+export function paneAt(x: number, y: number, root: ParentNode): string {
+  const el = (root as HTMLElement).ownerDocument ?? (root as Document);
+  const hit = (el as Document).elementsFromPoint(x, y) as HTMLElement[];
+  const zone = hit.find((e) => e?.dataset?.paneDrop);
+  return zone?.dataset.paneDrop ?? "";
 }

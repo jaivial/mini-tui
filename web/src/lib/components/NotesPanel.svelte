@@ -19,6 +19,7 @@
     width = null,
     /** Every width a drag lands on. Omitted: the panel keeps its CSS size and cannot be resized. */
     onresize,
+    onreset,
     /** The left edge of the pane the panel sits in, in the same pixels as the pointer. */
     paneLeft = 0,
   }: {
@@ -27,6 +28,8 @@
     onclose: () => void;
     width?: number | null;
     onresize?: (px: number) => void;
+    /** A double-click on the divider: the width chosen for this pane is dropped. */
+    onreset?: () => void;
     paneLeft?: number;
   } = $props();
 
@@ -49,6 +52,9 @@
   // ---- free resize: the divider on the panel's left edge
   let edge = $state<HTMLElement | null>(null);
   let sizing = $state(false);
+  /** The last press on the divider, for a double-click (a `dblclick` event never arrives: see above). */
+  let lastDown = 0;
+  let lastX = 0;
 
   /**
    * A drag of the panel's left edge. The measures are viewport pixels on both sides (the pane's own
@@ -59,6 +65,16 @@
     if (event.button !== 0 || !onresize || !panel) return;
     event.preventDefault();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    // The `preventDefault` above stops the browser's own double-click detection from ever seeing the
+    // two presses, so a double-click is counted here: two presses, no drag between them, is one.
+    const now = event.timeStamp;
+    if (now - lastDown < 400 && Math.abs(lastX - event.clientX) < 4) {
+      lastDown = 0;
+      onreset?.();
+      return;
+    }
+    lastDown = now;
+    lastX = event.clientX;
     sizing = true;
   }
   function trackResize(event: PointerEvent) {
@@ -71,6 +87,8 @@
     if (!sizing) return;
     sizing = false;
     (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+    // A double-click fires two of these with the pointer still where it started: nothing was dragged,
+    // so `dblclick` arrives after the capture was taken back. Nothing to do here but let it come.
   }
 
   /** A step on the keys is 24px: enough to feel, small enough to land near where you wanted. */
@@ -251,8 +269,6 @@
 
   const tone = $derived(save.kind === "error" || save.kind === "conflict" ? "text-err" : save.kind === "dirty" || save.kind === "saving" ? "text-ink-muted" : "text-ink-faint");
 
-  /** Double-clicking the divider gives the pane's default back (the least, then the CSS clamp takes over). */
-  const SIDE_DEFAULT_RESET = SIDE_MAX;
 </script>
 
 <aside bind:this={panel} class="notes relative flex min-h-0 w-full flex-1 flex-col bg-surface" class:is-sizing={sizing} aria-labelledby="{uid}-title">
@@ -273,7 +289,7 @@
       onpointermove={trackResize}
       onpointerup={endResize}
       onpointercancel={endResize}
-      ondblclick={() => onresize?.(SIDE_DEFAULT_RESET)}
+      ondblclick={() => onreset?.()}
       onkeydown={keyResize}
     ></div>
   {/if}
@@ -337,3 +353,33 @@
     {/if}
   </footer>
 </aside>
+
+<style>
+  /* The grab area: invisible, centred on the 1px line, wider under a finger. */
+  .side-edge::before {
+    content: "";
+    position: absolute;
+    inset: 0 -5px;
+    touch-action: none;
+  }
+  @media (pointer: coarse) {
+    .side-edge::before {
+      inset: 0 -11px;
+    }
+  }
+  /* Hover, drag and keyboard focus all say "this moves", in colour, never by motion alone. */
+  .side-edge {
+    transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .side-edge:hover,
+  .side-edge.is-dragging,
+  .side-edge:focus-visible {
+    background: var(--color-brand);
+    box-shadow: 0 0 0 1px var(--color-brand);
+    outline: none;
+  }
+  /* While a drag is on, the notes are not a place to be selecting text by accident. */
+  aside.notes.is-sizing {
+    user-select: none;
+  }
+</style>

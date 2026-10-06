@@ -20,7 +20,7 @@ import { windows } from "./lib/stores/windows.svelte";
   import { toasts } from "./lib/stores/toast.svelte";
   import { api } from "./lib/api";
   import { MAX_PANES, roomToSplit, type Dir } from "./lib/panes";
-  import type { MoveDir, Shape } from "./lib/paneLayout";
+  import { paneAt, type MoveDir, type Shape } from "./lib/paneLayout";
   import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "./lib/scale";
   import type { HistoryItem } from "./lib/types";
   import { FinishWatcher, finishMessage } from "./lib/finish";
@@ -184,9 +184,33 @@ import { windows } from "./lib/stores/windows.svelte";
     if (!panes.arrange(shape)) toasts.push("Nothing to rearrange", { detail: shape === "grid" ? "A grid needs 4 panes." : "A second pane to lay out.", tone: "info" });
     else void tick().then(() => refs[panes.focusedId]?.focusComposer());
   }
-  /** Drag and drop: the pane let go over another one, so the two trade places. */
-  function dropPane(paneId: string, onto: string) {
-    if (!panes.drop(paneId, onto)) return;
+  /**
+   * Dragging a pane. Pointer events, not the HTML5 drag: they work the same under a finger, and they
+   * can be driven by a test. While the pointer is down and has left the grip, the pane it is over is
+   * the drop target; letting go trades the two, if it is another pane.
+   */
+  let dragFrom = $state("");
+  let dragTarget = $state("");
+
+  function dragStart(paneId: string, event: PointerEvent) {
+    if (event.button !== 0 || tabbed || panes.count < 2) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    dragFrom = paneId;
+    panes.focus(paneId);
+    trackDrag(event);
+  }
+  function trackDrag(event: PointerEvent) {
+    if (!dragFrom || !layout) return;
+    dragTarget = paneAt(event.clientX, event.clientY, layout);
+  }
+  function dragEnd(event: PointerEvent) {
+    if (!dragFrom) return;
+    const onto = dragTarget;
+    const from = dragFrom;
+    (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+    dragFrom = dragTarget = "";
+    if (!onto || onto === from || !panes.drop(from, onto)) return;
     void tick().then(() => refs[panes.focusedId]?.focusComposer());
   }
   /** A window is born with one pane, so a move into a fresh one is never at the pane limit. */
@@ -524,7 +548,10 @@ import { windows } from "./lib/stores/windows.svelte";
               onmove={(to, name) => movePane(id, to, name)}
               moves={paneMoves(id)}
               onmovepane={(dir) => movePaneDir(id, dir)}
-              ondragpane={!tabbed && panes.count > 1 ? () => {} : undefined}
+              ondragpane={!tabbed && panes.count > 1 ? (event) => dragStart(id, event) : undefined}
+              ondragmove={trackDrag}
+              ondragend={dragEnd}
+              dragging={dragFrom === id}
               layouts={paneLayouts}
               onarrange={arrange}
             />
@@ -537,7 +564,7 @@ import { windows } from "./lib/stores/windows.svelte";
           {@render paneView(panes.focused.id)}
         {/key}
       {:else}
-        <PaneTree node={panes.tree} pane={paneView} onresize={(sid, r) => panes.resize(sid, r)} label={paneLabel} ondrag={(from, onto) => dropPane(from, onto)} />
+        <PaneTree node={panes.tree} pane={paneView} onresize={(sid, r) => panes.resize(sid, r)} label={paneLabel} dropFrom={dragFrom} dropTarget={dragTarget} />
       {/if}
     </div>
   </div>

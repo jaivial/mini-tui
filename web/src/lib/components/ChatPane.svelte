@@ -24,7 +24,6 @@ import { windows as windowStore } from "../stores/windows.svelte";
   import { parseCommand } from "../completion";
   import { splitSent } from "../promptMemory";
   import { paneStatus } from "../paneStatus";
-  import { PANE_MIME } from "../paneLayout";
   import { sideWidthStyle } from "../sidePanel";
 
   /**
@@ -53,6 +52,10 @@ import { windows as windowStore } from "../stores/windows.svelte";
     layouts,
     onarrange,
     ondragpane,
+    /** The pointer left the grip: this pane is the one being dragged. */
+    ondragmove,
+    ondragend,
+    dragging = false,
   }: {
     pane: Pane;
     number: number;
@@ -77,8 +80,11 @@ import { windows as windowStore } from "../stores/windows.svelte";
     /** Which whole-layout shapes the panes here can take. */
     layouts?: { row: boolean; col: boolean; grid: boolean };
     onarrange?: (shape: "row" | "col" | "grid") => void;
-    /** Drag this pane onto another one: the two trade places. Omitted: nothing to trade with. */
-    ondragpane?: () => void;
+    /** Pointer down on the grip: this pane is being dragged. Omitted: nothing to drag it onto. */
+    ondragpane?: (event: PointerEvent) => void;
+    ondragmove?: (event: PointerEvent) => void;
+    ondragend?: (event: PointerEvent) => void;
+    dragging?: boolean;
   } = $props();
 
   const session = $derived(pane.sessionId ? (store.sessions[pane.sessionId] ?? null) : null);
@@ -294,18 +300,6 @@ import { windows as windowStore } from "../stores/windows.svelte";
     panes.show(pane.id, null);
   }
 
-  /**
-   * A drag of this pane. The pane's id rides along in a type of its own, so only a drop on another
-   * pane accepts it (a file or a link dropped on a chat keeps meaning what it meant: nothing). Some
-   * browsers strike the dragged element's own look; `setData` needs a value, hence the id twice.
-   */
-  function dragstart(event: DragEvent) {
-    if (!ondragpane) return;
-    panes.focus(pane.id);
-    event.dataTransfer?.setData(PANE_MIME, pane.id);
-    event.dataTransfer!.effectAllowed = "move";
-  }
-
   /** Opening moves focus into the panel (after it has rendered); closing leaves it on the button. */
   async function toggleSide(tab: "notes" | "terminal") {
     panes.toggleSide(pane.id, tab);
@@ -333,16 +327,28 @@ import { windows as windowStore } from "../stores/windows.svelte";
 
 {#snippet tools()}
   {#if ondragpane}
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      icon={GripVertical}
-      title="Drag to another pane to swap them"
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <span
+      role="button"
+      tabindex="0"
       aria-label="Drag pane {number} to swap it with another"
-      draggable={true}
-      ondragstart={dragstart}
-      class="cursor-grab active:cursor-grabbing"
-    />
+      aria-keyshortcuts="Enter"
+      title="Drag to another pane to swap them"
+      class="grid size-8 shrink-0 cursor-grab place-items-center rounded-sm text-ink-muted hover:bg-raised hover:text-ink active:cursor-grabbing pointer-coarse:size-11 pointer-coarse:rounded-md"
+      class:is-dragging={dragging}
+      data-dragging={dragging ? "true" : undefined}
+      onpointerdown={ondragpane}
+      onpointermove={ondragmove}
+      onpointerup={ondragend}
+      onpointercancel={ondragend}
+      onkeydown={(e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        onmovepane?.("right");
+      }}
+    >
+      <GripVertical size={14} strokeWidth={1.75} aria-hidden="true" />
+    </span>
   {/if}
   <Button
     variant="ghost"
@@ -572,6 +578,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
             onclose={() => panes.toggleNotes(pane.id, false)}
             width={pane.sideWidth}
             onresize={(px) => panes.setSideWidth(pane.id, px)}
+            onreset={() => panes.resetSideWidth(pane.id)}
             {paneLeft}
           />
         {/if}

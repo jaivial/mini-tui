@@ -1,8 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import PaneTree from "./PaneTree.svelte";
-  import { PANE_MIME } from "../paneLayout";
-  import { clampRatio, MIN_RATIO, type Node } from "../panes";
+    import { clampRatio, MIN_RATIO, type Node } from "../panes";
 
   /**
    * Renders the pane tree: a split is two flex children and a divider, a leaf is whatever `pane`
@@ -15,15 +14,18 @@
     pane,
     onresize,
     label,
-    ondrag,
+    dropFrom = "",
+    dropTarget = "",
   }: {
     node: Node;
     pane: Snippet<[string]>;
     onresize: (splitId: string, ratio: number) => void;
     /** Human name of a pane, for the divider's accessible name. */
     label: (paneId: string) => string;
-    /** A pane was dragged and let go over this one: the two trade places. Omitted: no dragging. */
-    ondrag?: (from: string, onto: string) => void;
+    /** The pane being dragged, or "" for none (its zone stops lighting up). */
+    dropFrom?: string;
+    /** The pane a drag is over now, or "" for none. */
+    dropTarget?: string;
   } = $props();
 
   let box = $state<HTMLElement | null>(null);
@@ -54,29 +56,6 @@
     (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   }
 
-  // ---- drag and drop: the leaf below is where another pane can be let go
-  let hover = $state(false);
-  const mine = node.kind === "pane" ? node.id : "";
-  const isPaneDrag = (event: DragEvent) => !!ondrag && !!event.dataTransfer && event.dataTransfer.types.includes(PANE_MIME);
-
-  function dragover(event: DragEvent) {
-    if (!isPaneDrag(event)) return;
-    // Saying we accept it is what allows the drop, and what turns the cursor into "move".
-    event.preventDefault();
-    event.dataTransfer!.dropEffect = "move";
-    hover = true;
-  }
-  function dragleave() {
-    hover = false;
-  }
-  function drop(event: DragEvent) {
-    const from = event.dataTransfer?.getData(PANE_MIME);
-    hover = false;
-    if (!isPaneDrag(event) || !from || from === mine) return;
-    event.preventDefault();
-    ondrag!(from, mine);
-  }
-
   function key(event: KeyboardEvent) {
     if (node.kind !== "split") return;
     const back = node.dir === "row" ? "ArrowLeft" : "ArrowUp";
@@ -94,16 +73,8 @@
 </script>
 
 {#if node.kind === "pane"}
-  <!-- The pane is a drop zone while something is dragged over it; it keeps no role of its own. -->
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions -->
-  <div
-    class="flex min-h-0 min-w-0 flex-1"
-    class:drop-ready={hover}
-    data-pane-drop={mine}
-    ondragover={dragover}
-    ondragleave={dragleave}
-    ondrop={drop}
-  >
+  <!-- A drop zone: found by hit-testing while a pane is dragged, so no role of its own. -->
+  <div class="flex min-h-0 min-w-0 flex-1" class:drop-ready={dropFrom !== "" && dropFrom !== node.id && dropTarget === node.id} data-pane-drop={node.id}>
     {@render pane(node.id)}
   </div>
 {:else}
@@ -170,6 +141,7 @@
   .drop-ready {
     outline: 2px dashed var(--color-brand);
     outline-offset: -2px;
+    background: color-mix(in oklab, var(--color-brand) 8%, transparent);
   }
   .divider:hover,
   .divider.is-dragging,

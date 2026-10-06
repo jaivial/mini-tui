@@ -500,6 +500,14 @@ class PaneStore {
     this.#saveSoon(); // a drag fires this many times: write it once it settles
   }
 
+  /** A double-click on the panel's divider: the width this pane kept is dropped. */
+  resetSideWidth(paneId: string) {
+    const pane = this.panes[paneId];
+    if (!pane || pane.sideWidth === null) return;
+    pane.sideWidth = null;
+    this.#save();
+  }
+
   // ------------------------------------------------------------ persistence
 
   #timer: ReturnType<typeof setTimeout> | undefined;
