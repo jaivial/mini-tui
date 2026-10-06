@@ -40,6 +40,11 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
       --context-file F   hand it context instead of making it re-discover (repeatable; capped)
       --brief            the task is a structured brief (goal, key paths, conventions,
                          searches done, decisions): validated and wrapped as <brief>
+      --fork [--fork-k N] [--from NAME]
+                         the child continues a compacted conversation instead of starting
+                         cold: this session's by default, or sibling NAME's with --from.
+                         Its context = the source's compaction summary + the last N messages
+                         (default 12, MINI_AGENT_FORK_K), replayed as its own history.
   agent send <name> <text...>            message it: mid-turn it lands before its next model call;
                                          a finished one continues with its full context.
       --steps N / --cost USD             extend its budget (automatic after LimitsExceeded)
@@ -178,6 +183,8 @@ impl Child {
 
 pub struct Hub {
     dir: PathBuf,
+    /// The parent's own journal: what `--fork` continues from when no sibling is named.
+    journal: PathBuf,
     /// The run tree's shared state on disk (`<run dir>/context/`): the whole tree writes and reads it.
     context_dir: PathBuf,
     runtime: PathBuf,
@@ -384,6 +391,50 @@ pub fn shared_context_note(dir: &Path) -> String {
     )
 }
 
+// ---- fork from a compacted conversation (F4 · plan Fase 5) ------------------------------
+
+/// The conversation a forked child starts from (`fork.json`, replayed as its own history): its
+/// source's system prompt, then a compacted summary of the source's work plus its last `k`
+/// messages slimmed to their text. Not a cold start: the child knows what its source knew.
+pub fn fork_messages(source: &str, msgs: &[Value], k: usize, cap: usize) -> Vec<Value> {
+    let summary = crate::compaction::compaction_summary(msgs)
+        .unwrap_or_else(|| crate::compaction::fallback_summary(msgs));
+    let summary = head_chars(&summary, cap / 2);
+    let mut recent: Vec<String> = Vec::new();
+    for m in msgs.iter().rev().take(k).rev() {
+        let role = m.get("role").and_then(Value::as_str).unwrap_or("");
+        if role == "system" {
+            continue;
+        }
+        let text = content_text(m);
+        if text.trim().is_empty() {
+            continue;
+        }
+        recent.push(format!("[{role}] {}", head_chars(&text, 2000)));
+    }
+    let block = |recent: &[String]| {
+        format!(
+            "[Context forked from {source}: its conversation, compacted. Continue that work from this summary and its last messages; do not redo what it already did.]\n\n<summary>\n{}\n</summary>\n\n<recent>\n{}\n</recent>",
+            summary.trim(),
+            recent.join("\n\n")
+        )
+    };
+    let mut body = block(&recent);
+    // The summary is dense but the tail can be long: drop the oldest whole messages first.
+    while body.chars().count() > cap && recent.len() > 1 {
+        recent.remove(0);
+        body = block(&recent);
+    }
+    let mut out: Vec<Value> = msgs
+        .iter()
+        .filter(|m| m.get("role").and_then(Value::as_str) == Some("system"))
+        .cloned()
+        .collect();
+    out.push(json!({"role": "user", "content": body}));
+    out.push(json!({"role": "assistant", "content": "(Continuing from the forked context above.)"}));
+    out
+}
+
 // ---- the hub -----------------------------------------------------------------------------
 
 /// Stops the children and removes the socket when the run ends.
@@ -453,6 +504,7 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
     let plan = load_plan(&dir);
     let hub = Hub {
         dir,
+        journal: crate::agent::journal_path(traj),
         context_dir,
         runtime,
         socket,
@@ -846,6 +898,29 @@ impl Hub {
         if raw_task.trim().is_empty() {
             return Err("spawn needs a task".into());
         }
+        // Fork (F4 · plan Fase 5): the child continues a compacted conversation -- this session's own, or a
+        // sibling's (`--from`) -- instead of starting cold and re-discovering what its source knew.
+        let fork = if req.get("fork").and_then(Value::as_bool).unwrap_or(false) {
+            let from = s(req, "from");
+            let (journal, label) = if from.is_empty() {
+                (self.journal.clone(), "this session".to_string())
+            } else {
+                let c = self.child(&from)?;
+                (c.journal.clone(), c.name.clone())
+            };
+            let msgs = read_messages(&journal);
+            if msgs.is_empty() {
+                return Err(format!("--fork: {label} has no conversation to fork yet ({})", journal.display()));
+            }
+            let k = match req.get("fork_k").and_then(Value::as_i64) {
+                Some(n) if n < 0 => return Err("--fork-k needs a number of messages (0 or more)".into()),
+                Some(n) => n as usize,
+                None => env_num::<usize>("MINI_AGENT_FORK_K", 12),
+            };
+            Some((msgs, label, k))
+        } else {
+            None
+        };
         // Context the child starts with instead of re-discovering it (Fase 1): files handed over
         // (`--context-file`), the parent's brief (`--brief`), and the shared state on disk note.
         let context_max: usize = env_num("MINI_AGENT_CONTEXT_MAX", 32 * 1024);
@@ -951,12 +1026,25 @@ impl Hub {
                 2 * context_max
             ));
         }
-        self.launcher().exec(&mut child, &full_task, None)?;
+        let fork_label = fork.as_ref().map(|(_, l, _)| l.clone());
+        let mut resume = None;
+        if let Some((msgs, label, k)) = fork {
+            // Like the `send` restart: the seeded history is replayed into the child's own journal,
+            // so every later turn continues it with everything in between.
+            let path = child.dir.join("fork.json");
+            let seeded = json!({ "messages": fork_messages(&label, &msgs, k, 2 * context_max) });
+            std::fs::write(&path, serde_json::to_string(&seeded).unwrap()).map_err(|e| format!("{}: {e}", path.display()))?;
+            child.replaying = true;
+            child.resume_task = full_task.clone();
+            resume = Some(path);
+        }
+        self.launcher().exec(&mut child, &full_task, resume.as_deref())?;
         let pid = child.pid;
         self.children.push(child);
         self.write_index();
         let skills_note = if used.is_empty() { String::new() } else { format!(" · skills: {}", used.join(", ")) };
-        Ok(format!("started subagent {name} (pid {pid}) in {cwd}{skills_note}{capped}\nYou will be told when it finishes; meanwhile keep working, or `agent wait {name}`."))
+        let fork_note = fork_label.map(|l| format!(" · forked from {l}")).unwrap_or_default();
+        Ok(format!("started subagent {name} (pid {pid}) in {cwd}{skills_note}{fork_note}{capped}\nYou will be told when it finishes; meanwhile keep working, or `agent wait {name}`."))
     }
 
     /// A short fingerprint of everything a UI shows about the children, `idle_s` left out (it moves
@@ -1923,6 +2011,12 @@ pub fn client(args: &[String]) -> i32 {
                     }
                 }
                 "--brief" => req["brief"] = json!(true),
+                "--fork" => req["fork"] = json!(true),
+                "--fork-k" => req["fork_k"] = json!(value(&mut i)?.parse::<i64>().map_err(|_| "--fork-k needs a number".to_string())?),
+                "--from" => {
+                    req["from"] = json!(value(&mut i)?);
+                    req["fork"] = json!(true); // naming a source implies the fork
+                }
                 "--prompt-file" | "--task-file" => {
                     let f = value(&mut i)?;
                     let text = if f == "-" {

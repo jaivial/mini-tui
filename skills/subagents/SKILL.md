@@ -21,6 +21,7 @@ mini-agent-rs agent spawn <name> [--cwd DIR] [-m MODEL] [--max-steps N] [--cost-
 mini-agent-rs agent spawn <name> --prompt-file task.md      # long tasks ('-' = stdin)
 mini-agent-rs agent spawn <name> --context-file notes.md ... # hand over what you know (repeatable)
 mini-agent-rs agent spawn <name> --brief --prompt-file brief.md   # a structured brief
+mini-agent-rs agent spawn <name> --fork [--fork-k N] [--from NAME] "task"   # continue a compacted conversation
 mini-agent-rs agent plan submit --file plan.json   # a whole DAG the hub runs for you
 mini-agent-rs agent resources [--json]     # free memory, avg subagent cost, max fan-out
 mini-agent-rs agent can-spawn N            # would N more fit right now?
@@ -77,7 +78,7 @@ whole context for `send`), `stopped`, `exited`. Exit codes: 0 ok, 1 refused (the
 ## Hand context over, do not make it re-discover
 
 A child starts cold: it knows only its task. Everything you already found out costs it steps and
-tokens again unless you hand it over. Three layers, cheapest first:
+tokens again unless you hand it over. Four layers, cheapest first:
 
 1. **`--brief` (a structured brief in the task).** Write the task as sections — `## Goal`,
    `## Key paths`, `## Conventions`, `## Searches done`, `## Decisions` (Spanish headings work too:
@@ -92,6 +93,13 @@ tokens again unless you hand it over. Three layers, cheapest first:
    (`context/<task-id>.md`, stamped with date and author) for findings and artifacts;
    `context/findings.md` and `context/search-cache.jsonl` are shared scratch. A child checks what
    prior tasks left there before searching, and leaves what it learned for the next one.
+
+4. **`--fork` (continue a compacted conversation).** The child starts from a source conversation's
+   compaction summary plus its last messages (default 12, `--fork-k N` or `MINI_AGENT_FORK_K`),
+   replayed as its own history: it knows what its source knew and `agent send` continues it like
+   any other child. `--from NAME` forks a sibling (Z2 continues Z1's work); without it, the fork is
+   of this session. The summary is capped and the tail drops oldest-first, so the fork is bounded;
+   its budget is the child's own (`--cost-limit`), like any spawn.
 
 A refused brief or an oversized context file is an error before the child starts: fix the brief or
 trim the file, the spawn does not silently drop your context.

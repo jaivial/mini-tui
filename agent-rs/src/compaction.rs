@@ -252,6 +252,22 @@ pub fn render_compaction(summary: &str, requests: &[String]) -> String {
     format!("{COMPACTION_HEAD}{}\n</summary>\n{block}\n{COMPACTION_TAIL}", summary.trim())
 }
 
+/// The `<summary>` body of the last compaction in `ms`, if this conversation was ever compacted.
+/// A fork (child or sibling) starts from it instead of re-reading everything its source read.
+pub fn compaction_summary(ms: &[Value]) -> Option<String> {
+    for m in ms.iter().rev() {
+        let text = text_of(m.get("content").unwrap_or(&Value::Null));
+        let Some(i) = text.find(COMPACTION_HEAD) else { continue };
+        let rest = &text[i + COMPACTION_HEAD.len()..];
+        let Some(end) = rest.find("\n</summary>") else { continue };
+        let body = rest[..end].trim();
+        if !body.is_empty() {
+            return Some(body.to_string());
+        }
+    }
+    None
+}
+
 pub fn fallback_summary(ms: &[Value]) -> String {
     let mut notes: Vec<String> = Vec::new();
     for m in ms.iter().rev() {

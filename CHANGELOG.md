@@ -2,6 +2,20 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.35.0 — 2026-10-06
+
+### Added
+
+- **Children fork from a compacted conversation (F4 of the execution order — Fase 5 of
+  [`docs/orchestration-plan.md`](docs/orchestration-plan.md))**: `agent spawn --fork [--fork-k N]
+  [--from NAME]` starts a child from a source conversation's compaction summary plus its last
+  messages (default 12, `MINI_AGENT_FORK_K`) instead of cold. The fork is replayed as the child's
+  own history (`fork.json`, the same mechanism `agent send` restarts with), so it knows what its
+  source knew and later `send` turns continue it with everything in between. `--from NAME` forks a
+  sibling (Z2 continues Z1's traj); without it, the fork is of the session itself. The summary is
+  capped and the tail drops oldest-first; the budget is the child's own, capped by what the session
+  has left, like any spawn.
+
 ## 0.34.0 — 2026-10-06
 
 ### Added
