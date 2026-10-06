@@ -660,6 +660,7 @@ bun run benchmark:tui -- 5000   # terminal-free long-run parser + item-index ben
 MINITUI_AGENT=python bun test   # the same suite on the Python agent (Rust when its binary is built)
 
 cd web && bun run e2e           # the web app in a real browser (see web/README.md for the others)
+cd web && bun run build && bun scripts/bundle-report.mjs   # chunk sizes, and what a cold visit downloads
 cd agent-rs && cargo test --release && sh tests/parity/run_all.sh   # Rust agent: unit + parity
 ```
 
