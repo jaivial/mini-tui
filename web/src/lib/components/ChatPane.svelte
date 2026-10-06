@@ -25,6 +25,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
   import { splitSent } from "../promptMemory";
   import { paneStatus } from "../paneStatus";
   import { PANE_MIME } from "../paneLayout";
+  import { sideWidthStyle } from "../sidePanel";
 
   /**
    * One pane: a chat (a session, or a new chat until its first message) with its own header, transcript,
@@ -525,7 +526,11 @@ import { windows as windowStore } from "../stores/windows.svelte";
       narrow one it covers the chat (the chat is still one tap away), since two squeezed columns are
       worse than one full one.
     -->
-    <div class="notes-slot flex min-h-0 shrink-0 flex-col border-l border-line/80 bg-surface" class:is-terminal={pane.sideTab === "terminal"}>
+    <div
+      class="notes-slot flex min-h-0 shrink-0 flex-col border-l border-line/80 bg-surface"
+      class:is-terminal={pane.sideTab === "terminal"}
+      style={sideWidthStyle(pane.sideWidth)}
+    >
       <!-- Two tabs, one panel: Notes and Terminal. Arrow keys move between them (roving tabindex). -->
       <div class="flex shrink-0 items-center gap-0.5 border-b border-line/80 px-1.5 pt-1" role="tablist" aria-label="Side panel">
         {#each [{ id: "notes", label: "Notes", icon: NotebookPen }, { id: "terminal", label: "Terminal", icon: SquareTerminal }] as tab (tab.id)}
@@ -590,7 +595,8 @@ import { windows as windowStore } from "../stores/windows.svelte";
     pointer-events: none;
   }
   .notes-slot {
-    width: clamp(16rem, 32%, 24rem);
+    /* The width the user dragged the panel to, else the panel's own default. */
+    width: var(--side-w, clamp(16rem, 32%, 24rem));
   }
   /* A terminal needs columns: the sidebar is wider while it shows one. */
   .notes-slot.is-terminal {

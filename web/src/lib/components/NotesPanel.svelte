@@ -4,7 +4,7 @@
   import Skeleton from "./Skeleton.svelte";
   import { notes } from "../stores/notes.svelte";
   import { SAVE_DELAY, counts, statusText, type SaveState } from "../notes";
-  import { sideWidthAt, sideWidthStyle, SIDE_MAX, SIDE_MIN } from "../sidePanel";
+  import { sideWidthAt, SIDE_MAX, SIDE_MIN } from "../sidePanel";
 
   /**
    * Notes beside a session: a plain text area that saves itself (see `lib/notes.ts` for the rules).
@@ -56,13 +56,13 @@
    * leaving the chat its share. Nothing is kept until the drag ends.
    */
   function startResize(event: PointerEvent) {
-    if (event.button !== 0 || !paneLeft || !panel) return;
+    if (event.button !== 0 || !onresize || !panel) return;
     event.preventDefault();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     sizing = true;
   }
   function trackResize(event: PointerEvent) {
-    if (!sizing || !paneLeft || !panel) return;
+    if (!sizing || !onresize || !panel) return;
     const box = panel.getBoundingClientRect();
     const width = sideWidthAt(event.clientX, box.right, paneLeft);
     if (width !== null) onresize?.(width);
@@ -255,13 +255,7 @@
   const SIDE_DEFAULT_RESET = SIDE_MAX;
 </script>
 
-<aside
-  bind:this={panel}
-  class="notes relative flex min-h-0 w-full flex-1 flex-col bg-surface"
-  class:is-sizing={sizing}
-  style={sideWidthStyle(width)}
-  aria-labelledby="{uid}-title"
->
+<aside bind:this={panel} class="notes relative flex min-h-0 w-full flex-1 flex-col bg-surface" class:is-sizing={sizing} aria-labelledby="{uid}-title">
   {#if onresize}
     <!-- A focusable separator is the ARIA pattern for a resizer ("window splitter"): it is interactive. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
