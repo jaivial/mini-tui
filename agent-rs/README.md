@@ -120,6 +120,15 @@ The bundled `$subagents` skill teaches the model this loop. The `orch` script of
 forwards `start` / `followup` / `ls` / `wait` / `result` / `stop` to it when it runs inside such a
 session. Detached headless runs remain for your own terminal and the Python agent.
 
+## Cold-start metrics (`mini-agent-rs metrics`)
+
+`mini-agent-rs metrics <traj.jsonl> [--json]` measures how much of a run went to **re-discovery**:
+every step is split into discovery (read-only commands: `ls`, `grep`, `cat`, `git log`…) and work
+(edits, builds, tests), with estimated tokens for each, the commands it ran, and what a brief
+handing the discoveries over would cost instead of re-discovering them. It only reads the journal
+(a child's `traj.jsonl` works the same): no behavior changes. The numbers feed Fase 0 of
+[`docs/orchestration-plan.md`](../docs/orchestration-plan.md).
+
 ## Parity with the Python agent
 
 `tests/parity/` runs the same scripted task through both agents and diffs everything mini-tui
