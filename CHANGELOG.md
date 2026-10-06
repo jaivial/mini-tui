@@ -2,6 +2,19 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.34.0 — 2026-10-06
+
+### Added
+
+- **The web task board draws the DAG (Fase 3 of
+  [`docs/orchestration-plan.md`](docs/orchestration-plan.md))**: a new `plan.watch` topic on the
+  socket hub streams every session's `subagents/plan.json` — nodes with live states, the edges
+  (deps), topological layers and a per-status summary on each card. The board shows a session's
+  plan above its card (`PlanDag`), pushed whenever a hub updates the plan; nothing is polled
+  while nobody watches. `web/src/lib/plan.ts` holds the drawing as pure functions (layers, edges,
+  counts, summary) with snapshots in `tests/web-plan-board.test.ts`, and
+  `tests/web-hub-plan.test.ts` covers the topic protocol (watch, push, dedupe, unwatch/leave).
+
 ## 0.33.0 — 2026-10-06
 
 ### Added

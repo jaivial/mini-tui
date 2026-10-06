@@ -42,6 +42,7 @@ import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 import { probeHost, startRemoteRun, type RemoteRun, type SshTarget } from "./ssh";
+import { readPlan, type SessionPlan } from "../mini/plans";
 import { SubagentSync, subagentIndexFresh, type SubagentView } from "../mini/subagents";
 
 /** One saved session in the history list: metadata only, no transcript. */
@@ -265,6 +266,22 @@ export class SessionManager {
       entry.session.subagents = views;
       this.#emit(entry);
     }
+  }
+
+  /** The DAG plans of the sessions this server follows (their hubs write them next to their runs). */
+  plans(): SessionPlan[] {
+    const out: SessionPlan[] = [];
+    for (const entry of this.#live.values()) {
+      const traj = entry.trajPath;
+      if (!traj) continue;
+      try {
+        const doc = readPlan(entry.session.id, traj);
+        if (doc) out.push(doc);
+      } catch {
+        // a busy disk is checked again on the next poll
+      }
+    }
+    return out;
   }
 
   /** Stop the background sync (tests, shutdown). */

@@ -1,7 +1,10 @@
 <script lang="ts">
   import { Check, ChevronRight, ListChecks, X } from "@lucide/svelte";
   import Button from "./Button.svelte";
+  import PlanDag from "./PlanDag.svelte";
   import { todoCounts, whereLabel, type TaskRow } from "../tasks";
+  import { planSummary } from "../plan";
+  import type { SessionPlan } from "../types";
 
   /**
    * The window's task board: every session with a task card (the agents fill them with
@@ -16,12 +19,17 @@
     onclose,
     rows,
     live = false,
+    plans = [],
   }: {
     open?: boolean;
     onclose: () => void;
     rows: TaskRow[];
     live?: boolean;
+    /** Every session running a DAG plan: drawn above its card while the hub updates it. */
+    plans?: SessionPlan[];
   } = $props();
+
+  const planOf = $derived(new Map(plans.map((p) => [p.session, p])));
 
   let dialog: HTMLDialogElement | undefined = $state();
 
@@ -105,13 +113,18 @@
                 <div class="flex items-baseline gap-2">
                   <span class="min-w-0 flex-1 truncate text-[12px] leading-5 text-ink-muted">{row.task.title || "(no title)"}</span>
                   <span class="tnum shrink-0 text-[10.5px] text-ink-faint">
-                    {c.done} done · {c.pending} pending · {c.left} left
+                    {#if planOf.has(row.task.id)}{planSummary(planOf.get(row.task.id)!)} · {/if}{c.done} done · {c.pending} pending · {c.left} left
                   </span>
                 </div>
               </div>
             </summary>
 
             <div class="mt-1.5 pl-5 text-[12px] leading-5">
+              {#if planOf.has(row.task.id)}
+                <div class="mb-2">
+                  <PlanDag plan={planOf.get(row.task.id)!} />
+                </div>
+              {/if}
               {#if row.task.description}
                 <p class="whitespace-pre-wrap text-ink-muted">{row.task.description}</p>
               {/if}
