@@ -12,8 +12,8 @@ import { createSession, openDb, saveTranscript } from "../src/sessions";
 
 const dir = mkdtempSync(join(tmpdir(), "minitui-wstasks-"));
 const dbPath = join(dir, "sessions.db");
-// A quiet range: 4600–4899 is web-socket.e2e, 5900+ is the browser e2e scripts, 5000–5200 is often busy dev boxes.
-const PORT = 5600 + Math.floor(Math.random() * 300);
+// A quiet band, its own: the other web e2e tests hold 7400-7899, the browser scripts 4300-7300.
+const PORT = 8200 + Math.floor(Math.random() * 200);
 const base = `http://127.0.0.1:${PORT}`;
 const root = join(import.meta.dir, "..");
 let proc: ReturnType<typeof Bun.spawn>;

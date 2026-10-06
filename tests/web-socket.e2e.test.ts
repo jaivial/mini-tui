@@ -11,7 +11,8 @@ import { createSession, openDb, saveTranscript } from "../src/sessions";
 
 const dir = mkdtempSync(join(tmpdir(), "minitui-ws-"));
 const dbPath = join(dir, "sessions.db");
-const PORT = 4600 + Math.floor(Math.random() * 300);
+// A quiet band: dev boxes are full of services around 4300-6500, and a taken port fails opaquely.
+const PORT = 7400 + Math.floor(Math.random() * 200);
 const base = `http://127.0.0.1:${PORT}`;
 let proc: ReturnType<typeof Bun.spawn>;
 
@@ -29,12 +30,15 @@ beforeAll(async () => {
     stdout: "ignore",
     stderr: "ignore",
   });
-  for (let i = 0; i < 60; i++) {
+  let up = false;
+  for (let i = 0; i < 60 && !up; i++) {
     try {
-      if ((await fetch(`${base}/api/health`)).ok) break;
+      up = (await fetch(`${base}/api/health`)).ok;
     } catch {}
-    await Bun.sleep(100);
+    if (!up) await Bun.sleep(100);
   }
+  // Fail where the problem is (the server never started, e.g. the port was taken), not tests later.
+  if (!up) throw new Error(`the test server never came up on ${base} (port ${PORT})`);
   for (const id of ["s-alpha", "s-beta"]) await fetch(`${base}/api/history/${id}`, { method: "POST" });
 });
 afterAll(() => {

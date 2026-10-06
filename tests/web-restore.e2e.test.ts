@@ -11,7 +11,8 @@ import { createSession, openDb, saveTranscript } from "../src/sessions";
 
 const dir = mkdtempSync(join(tmpdir(), "minitui-restore-"));
 const dbPath = join(dir, "sessions.db");
-const PORT = 4950 + Math.floor(Math.random() * 40);
+// A quiet band: dev boxes are full of services around 4300-6500, and a taken port fails opaquely.
+const PORT = 7800 + Math.floor(Math.random() * 100);
 const base = `http://127.0.0.1:${PORT}`;
 let proc: ReturnType<typeof Bun.spawn> | undefined;
 
