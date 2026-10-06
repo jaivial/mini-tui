@@ -120,7 +120,7 @@
                   <div class="mt-1.5">
                     <div class="text-[10px] font-semibold tracking-wider text-ink-faint uppercase">{kind}</div>
                     <ul class="mt-0.5 flex flex-col gap-0.5">
-                      {#each items as item (item)}
+                      {#each items as item}
                         <li class="flex items-start gap-1.5 {kind === 'done' ? 'text-ink-faint line-through' : 'text-ink'}">
                           {#if kind === "done"}
                             <Check size={12} strokeWidth={2.5} class="mt-1 shrink-0 text-ok" aria-hidden="true" />

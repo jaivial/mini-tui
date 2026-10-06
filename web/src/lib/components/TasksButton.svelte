@@ -71,7 +71,7 @@
       onmouseleave={leave}
     >
       <div class="px-1 pb-1 text-[10px] font-semibold tracking-wider text-ink-faint uppercase">Session tasks</div>
-      {#each glance as line (line.title + line.detail)}
+      {#each glance as line, i (i)}
         <div class="rounded-sm px-1 py-0.5">
           <div class="truncate text-[11.5px] leading-4 font-medium text-ink">{line.title}</div>
           <div class="truncate text-[10.5px] leading-4 text-ink-muted">{line.detail}</div>
