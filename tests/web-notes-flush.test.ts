@@ -4,7 +4,9 @@
  * a save that takes a turn to answer, because the bugs it guards against are all about what happens
  * between two saves — a timing the browser test can only hit by luck.
  *
- * This mirrors `flush()` in web/src/lib/components/NotesPanel.svelte.
+ * This mirrors `flush()` in web/src/lib/components/NotesPanel.svelte: when that function changes,
+ * this model and its tests must change with it, or they go on passing a version of the code that is
+ * no longer there.
  */
 import { describe, expect, test } from "bun:test";
 import { SAVE_DELAY } from "../web/src/lib/notes";
@@ -40,13 +42,14 @@ function editor(store: Store, noteId: string | null) {
   let body = "";
   let savedBody = "";
   let base = 0;
-  let save: { kind: string } = { kind: "loading" };
+  let save: { kind: string; theirs?: string; theirsAt?: number } = { kind: "loading" };
   let inFlight: Promise<void> | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const landed = new Map<string, number>();
 
   /** Load the note's current value, as the watch does when the panel opens. */
   const load = (id: string) => {
+    landed.clear(); // the pane now watches this note only
     body = savedBody = store.body(id);
     base = store.version(id);
     landed.set(id, base);
@@ -82,7 +85,7 @@ function editor(store: Store, noteId: string | null) {
         savedBody = text;
         save = { kind: "saved" };
       } else {
-        save = { kind: "conflict" };
+        save = { kind: "conflict", theirs: (result as any).conflict.body, theirsAt: (result as any).conflict.updatedAt };
       }
     })();
     inFlight = run;
@@ -92,6 +95,27 @@ function editor(store: Store, noteId: string | null) {
     if (current && !leaving && id === noteId && body !== wanted && body !== savedBody) timer = setTimeout(() => void flush(id), 0);
   }
 
+  /** Conflict: keep mine (overwrite theirs, deliberately). */
+  const keepMine = async () => {
+    if (save.kind !== "conflict" || !noteId) return;
+    const id = noteId;
+    base = save.theirsAt!;
+    savedBody = save.theirs ?? "";
+    landed.set(id, save.theirsAt!);
+    save = { kind: "dirty" };
+    await flush(id);
+  };
+  /** Conflict: take theirs. */
+  const takeTheirs = () => {
+    if (save.kind !== "conflict" || !noteId) return;
+    body = savedBody = save.theirs ?? "";
+    base = save.theirsAt!;
+    landed.set(noteId, save.theirsAt!);
+    save = { kind: "saved" };
+  };
+  /** How many notes this editor holds a version for. */
+  const tracked = () => landed.size;
+
   /** What the panel's effect does: flush what is pending, then the next run resets the editor. */
   const leave = async (id: string, to: string | null) => {
     const pending = flush(id, true);
@@ -99,7 +123,7 @@ function editor(store: Store, noteId: string | null) {
     await pending;
     clearTimeout(timer); // the new effect run replaces the editor; the old debounce is gone
   };
-  return { type, load, flush, leave, setNote, get noteId() { return noteId; }, get body() { return body; }, get save() { return save; } };
+  return { type, load, flush, leave, setNote, keepMine, takeTheirs, tracked, get noteId() { return noteId; }, get body() { return body; }, get save() { return save; } };
 }
 
 describe("the notes editor's save queue", () => {
@@ -180,6 +204,49 @@ describe("the notes editor's save queue", () => {
     await e.leave("s-a", "s-b");
     expect(store.body("s-a")).toBe("alpha words");
     expect(store.body("s-b")).toBe("beta words");
+  });
+
+  test("resolving a conflict by keeping my text saves it, not conflicts again", async () => {
+    // Another tab saved first, so our save is refused and the editor offers the choice. Choosing
+    // "keep mine" must overwrite deliberately from *their* version: from a stale one it would be
+    // refused again and the text would never land.
+    const store = new Store();
+    const e = editor(store, "s-1");
+    e.load("s-1");
+    store.save("s-1", "from another tab", 0);
+    e.type("mine");
+    await e.flush("s-1");
+    expect(e.save.kind).toBe("conflict");
+    await e.keepMine();
+    expect(store.body("s-1")).toBe("mine");
+    expect(e.save.kind).toBe("saved");
+  });
+
+  test("resolving a conflict by taking theirs needs no save at all", async () => {
+    const store = new Store();
+    const e = editor(store, "s-1");
+    e.load("s-1");
+    store.save("s-1", "from another tab", 0);
+    e.type("mine");
+    await e.flush("s-1");
+    e.takeTheirs();
+    expect(e.save.kind).toBe("saved");
+    expect(store.body("s-1")).toBe("from another tab"); // theirs was already on the server
+  });
+
+  test("a note's version is forgotten once the pane stops watching it", async () => {
+    // A long-lived pane that switches between many sessions must not hold a version for each of
+    // them forever: only the note on screen is tracked.
+    const store = new Store();
+    const e = editor(store, "s-1");
+    for (let i = 0; i < 40; i++) {
+      const id = `s-${i}`;
+      e.setNote(id);
+      e.load(id);
+      e.type(`words for ${id}`);
+      await e.flush(id);
+    }
+    expect(e.tracked()).toBe(1);
   });
 
   test("a save from a stale version is reported as a conflict, not silently applied", async () => {

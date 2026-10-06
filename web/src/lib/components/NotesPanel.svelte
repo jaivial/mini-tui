@@ -122,6 +122,8 @@
     save = { kind: "loading" };
     body = savedBody = "";
     base = 0;
+    // Only the note on screen is tracked: a pane that visits many sessions keeps no versions.
+    landed.clear();
     // Watch it through the hub: its value arrives now, and again whenever it changes anywhere.
     const release = notes.watch(id, (note) => {
       if (id !== noteId) return;
@@ -234,16 +236,21 @@
   /** Conflict: keep mine (overwrite theirs, deliberately) or take theirs (mine is copied first). */
   async function keepMine() {
     if (save.kind !== "conflict" || !noteId) return;
+    const id = noteId;
     base = save.theirsAt;
     savedBody = save.theirs;
+    // Theirs is now the version this note is at: the overwrite below must start from it, or it is
+    // refused as a conflict again and the text is never saved.
+    landed.set(id, save.theirsAt);
     save = { kind: "dirty" };
-    await flush(noteId);
+    await flush(id);
   }
   async function takeTheirs() {
-    if (save.kind !== "conflict") return;
+    if (save.kind !== "conflict" || !noteId) return;
     await copy(body); // what was typed here is on the clipboard, not gone
     body = savedBody = save.theirs;
     base = save.theirsAt;
+    landed.set(noteId, save.theirsAt);
     save = { kind: "saved", at: save.theirsAt };
   }
 
