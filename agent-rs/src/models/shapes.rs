@@ -45,6 +45,81 @@ pub fn anthropic_bash_tool() -> Value {
     })
 }
 
+/// The `cu` custom tool: one call runs one `cu` command against the persistent
+/// browser daemon (one Chrome always open, one leased tab or context per
+/// task). Executed as `cu <args>` through the same shell path as `bash`.
+pub fn cu_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "cu",
+            "description": "Drive the persistent cu browser (one Chrome always open, one leased tab or context per task). One call runs one cu command; the $cu skill has the full guide. Typical flow: tab open URL --lease 300 --label my-test (returns the tab id), page commands with --tab ID (or --context NAME for an isolated cookie jar), read snapshot (ref-addressable page) or text, act with click e3 / type e2 text / act JSON, close with tab close ID (a lease closes it anyway if the run dies). batch 'CMD' 'CMD' runs several commands at once.",
+            "parameters": {
+                "type": "object",
+                "properties": {"args": {"type": "string", "description": "cu arguments, e.g. snapshot --tab t3"}},
+                "required": ["args"],
+            },
+        },
+    })
+}
+
+pub fn cu_tool_responses() -> Value {
+    json!({
+        "type": "function",
+        "name": "cu",
+        "description": "Drive the persistent cu browser (one Chrome always open, one leased tab or context per task). One call runs one cu command; the $cu skill has the full guide. Typical flow: tab open URL --lease 300 --label my-test (returns the tab id), page commands with --tab ID (or --context NAME for an isolated cookie jar), read snapshot (ref-addressable page) or text, act with click e3 / type e2 text / act JSON, close with tab close ID (a lease closes it anyway if the run dies). batch 'CMD' 'CMD' runs several commands at once.",
+        "parameters": {
+            "type": "object",
+            "properties": {"args": {"type": "string", "description": "cu arguments, e.g. snapshot --tab t3"}},
+            "required": ["args"],
+        },
+    })
+}
+
+pub fn anthropic_cu_tool() -> Value {
+    json!({
+        "name": "cu",
+        "description": "Drive the persistent cu browser (one Chrome always open, one leased tab or context per task). One call runs one cu command; the $cu skill has the full guide. Typical flow: tab open URL --lease 300 --label my-test (returns the tab id), page commands with --tab ID (or --context NAME for an isolated cookie jar), read snapshot (ref-addressable page) or text, act with click e3 / type e2 text / act JSON, close with tab close ID (a lease closes it anyway if the run dies). batch 'CMD' 'CMD' runs several commands at once.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"args": {"type": "string", "description": "cu arguments, e.g. snapshot --tab t3"}},
+            "required": ["args"],
+        },
+    })
+}
+
+/// The command a parsed tool call runs: `bash` passes its `command` through,
+/// `cu` becomes `cu <args>`. Anything else is unknown. The error text is the
+/// same concatenation `actions_toolcall.py` produces (unknown tool and/or the
+/// missing argument, back to back).
+fn command_for(name: &str, args: &Value) -> Result<Value, String> {
+    let mut error = String::new();
+    if name != "bash" && name != "cu" {
+        error.push_str(&format!("Unknown tool '{name}'."));
+    }
+    let command = match name {
+        "cu" => match args.get("args").and_then(Value::as_str) {
+            Some(a) if !a.is_empty() => Some(Value::String(format!("cu {a}"))),
+            _ => {
+                error.push_str("Missing 'args' argument in cu tool call.");
+                None
+            }
+        },
+        _ => {
+            if args.as_object().is_some_and(|o| o.contains_key("command")) {
+                Some(args["command"].clone())
+            } else {
+                error.push_str("Missing 'command' argument in bash tool call.");
+                None
+            }
+        }
+    };
+    match command {
+        Some(command) if error.is_empty() => Ok(command),
+        _ => Err(error),
+    }
+}
+
 fn format_error_text(template: &str, error: &str, has_tool_calls: bool, finish_reason: &Value) -> Result<String, String> {
     // The model classes always pass `finish_reason` (possibly None), so it is always defined.
     let vars = json!({"error": error, "actions": [], "has_tool_calls": has_tool_calls, "finish_reason": finish_reason});
@@ -93,17 +168,18 @@ pub fn parse_toolcall_actions(tool_calls: &[Value], format_error_template: &str,
                 Value::Object(Obj::new())
             }
         };
-        if name != "bash" {
-            error.push_str(&format!("Unknown tool '{name}'."));
-        }
-        if !args.as_object().is_some_and(|o| o.contains_key("command")) {
-            error.push_str("Missing 'command' argument in bash tool call.");
-        }
+        let command = match command_for(name, &args) {
+            Ok(command) => command,
+            Err(e) => {
+                error.push_str(&e);
+                Value::Null
+            }
+        };
         if !error.is_empty() {
             let text = format_error_text(format_error_template, error.trim(), true, finish_reason).unwrap_or_else(|e| e);
             return Err(err(text));
         }
-        actions.push(json!({"command": args["command"], "tool_call_id": get(call, "id").cloned().unwrap_or(Value::Null)}));
+        actions.push(json!({"command": command, "tool_call_id": get(call, "id").cloned().unwrap_or(Value::Null)}));
     }
     Ok(actions)
 }
@@ -125,18 +201,19 @@ pub fn parse_response_actions(output: &[Value], format_error_template: &str, fin
             Value::Object(Obj::new())
         });
         let name = get_str(call, "name").unwrap_or("");
-        if name != "bash" {
-            error.push_str(&format!("Unknown tool '{name}'."));
-        }
-        if !args.as_object().is_some_and(|o| o.contains_key("command")) {
-            error.push_str("Missing 'command' argument in bash tool call.");
-        }
+        let command = match command_for(name, &args) {
+            Ok(command) => command,
+            Err(e) => {
+                error.push_str(&e);
+                Value::Null
+            }
+        };
         if !error.is_empty() {
             let text = format_error_text(format_error_template, error.trim(), true, finish_reason).unwrap_or_else(|e| e);
             return Err(err(text));
         }
         let id = get(call, "call_id").filter(|v| !v.is_null() && v.as_str() != Some("")).or_else(|| get(call, "id")).cloned().unwrap_or(Value::Null);
-        actions.push(json!({"command": args["command"], "tool_call_id": id}));
+        actions.push(json!({"command": command, "tool_call_id": id}));
     }
     Ok(actions)
 }
@@ -299,6 +376,21 @@ pub fn text_of(content: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cu_tool_calls_become_cu_commands() {
+        let calls = vec![json!({"id": "c1", "type": "function", "function": {"name": "cu", "arguments": "{\"args\": \"snapshot --tab t3\"}"}})];
+        let actions = parse_toolcall_actions(&calls, "fmt", &Value::Null).unwrap();
+        assert_eq!(actions[0]["command"], json!("cu snapshot --tab t3"));
+    }
+
+    #[test]
+    fn cu_tool_needs_args_and_unknown_still_errors() {
+        let no_args = vec![json!({"id": "c1", "function": {"name": "cu", "arguments": "{}"}})];
+        assert!(parse_toolcall_actions(&no_args, "fmt", &Value::Null).is_err());
+        let unknown = vec![json!({"id": "c1", "function": {"name": "grep", "arguments": "{}"}})];
+        assert!(parse_toolcall_actions(&unknown, "fmt", &Value::Null).is_err());
+    }
+
     use super::*;
 
     const TPL: &str = "{{error}}|{{has_tool_calls}}";

@@ -5,7 +5,7 @@
 use super::cache_control::set_cache_control;
 use super::http::{post_chat_stream, post_json, usage_of, with_retry};
 use super::prices;
-use super::shapes::{anthropic_bash_tool, bash_tool, bash_tool_responses, expand_multimodal, parse_response_actions, parse_toolcall_actions, response_observations, toolcall_observations};
+use super::shapes::{anthropic_bash_tool, anthropic_cu_tool, bash_tool, bash_tool_responses, cu_tool, cu_tool_responses, expand_multimodal, parse_response_actions, parse_toolcall_actions, response_observations, toolcall_observations};
 use super::{DeltaSink, Model, ModelError, Reply};
 use crate::util::{get, get_str, now, Obj};
 use serde_json::{json, Value};
@@ -137,7 +137,7 @@ impl WireModel {
     fn query_chat(&mut self, messages: &[Value], sink: &mut Option<DeltaSink>) -> Result<Value, ModelError> {
         let (params, mut headers) = self.params();
         headers.extend(self.auth_headers());
-        let mut body = json!({"model": self.wire_name, "messages": self.chat_messages(messages), "tools": [bash_tool()]});
+        let mut body = json!({"model": self.wire_name, "messages": self.chat_messages(messages), "tools": [bash_tool(), cu_tool()]});
         for (k, v) in params {
             body[k] = v;
         }
@@ -163,7 +163,7 @@ impl WireModel {
         headers.extend(self.auth_headers());
         let tool_choice = tool_choice(params.shift_remove("tool_choice"), params.shift_remove("parallel_tool_calls"));
         let max_tokens = params.shift_remove("max_tokens").unwrap_or_else(|| self.config.get("max_tokens").cloned().unwrap_or(json!(8192)));
-        let mut body = json!({"model": self.wire_name, "messages": wire, "tools": [anthropic_bash_tool()], "max_tokens": max_tokens});
+        let mut body = json!({"model": self.wire_name, "messages": wire, "tools": [anthropic_bash_tool(), anthropic_cu_tool()], "max_tokens": max_tokens});
         for (k, v) in params {
             body[k] = v;
         }
@@ -205,7 +205,7 @@ impl WireModel {
     fn query_responses(&mut self, messages: &[Value]) -> Result<Value, ModelError> {
         let (params, mut headers) = self.params();
         headers.extend(self.auth_headers());
-        let mut body = json!({"model": self.wire_name, "input": self.responses_input(messages), "tools": [bash_tool_responses()]});
+        let mut body = json!({"model": self.wire_name, "input": self.responses_input(messages), "tools": [bash_tool_responses(), cu_tool_responses()]});
         for (k, v) in params {
             body[k] = v;
         }
