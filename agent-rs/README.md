@@ -120,6 +120,13 @@ The bundled `$subagents` skill teaches the model this loop. The `orch` script of
 forwards `start` / `followup` / `ls` / `wait` / `result` / `stop` to it when it runs inside such a
 session. Detached headless runs remain for your own terminal and the Python agent.
 
+`spawn` can hand a child what the session already knows, so it does not pay the cold start:
+`--context-file F` (repeatable) arrives as `<context>` blocks capped at 32 KiB together
+(`MINI_AGENT_CONTEXT_MAX`), `--brief` validates and wraps a structured brief (goal, key paths,
+conventions, searches done, decisions), and every run tree owns a shared append-only
+`<run dir>/context/` folder (findings, artifacts, search caches) that each child is told about and
+that grandchildren share too.
+
 ## Cold-start metrics (`mini-agent-rs metrics`)
 
 `mini-agent-rs metrics <traj.jsonl> [--json]` measures how much of a run went to **re-discovery**:

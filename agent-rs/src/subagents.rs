@@ -36,6 +36,9 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
       --cost-limit USD   its budget per turn (default 2, capped by what this session has left)
       --skill NAME       inline a skill's SKILL.md (repeatable; `$name` in the task works too)
       --prompt-file F    read the task from a file ('-' = stdin)
+      --context-file F   hand it context instead of making it re-discover (repeatable; capped)
+      --brief            the task is a structured brief (goal, key paths, conventions,
+                         searches done, decisions): validated and wrapped as <brief>
   agent send <name> <text...>            message it: mid-turn it lands before its next model call;
                                          a finished one continues with its full context.
       --steps N / --cost USD             extend its budget (automatic after LimitsExceeded)
@@ -160,6 +163,8 @@ impl Child {
 
 pub struct Hub {
     dir: PathBuf,
+    /// The run tree's shared state on disk (`<run dir>/context/`): the whole tree writes and reads it.
+    context_dir: PathBuf,
     runtime: PathBuf,
     socket: PathBuf,
     exe: PathBuf,
@@ -314,6 +319,50 @@ pub fn expand_skills(text: &str, extra: &[String], already: &[String]) -> (Strin
     (format!("<skills>\n{}\n</skills>\n\n{REQUEST_HEADER}{text}", blocks.join("\n\n")), used, missing)
 }
 
+// ---- context inheritance (Fase 1) ----------------------------------------------------------
+
+/// The brief sections a parent's brief must cover (English or Spanish headings).
+const BRIEF_SECTIONS: &[(&str, &[&str])] = &[
+    ("goal", &["goal", "objetivo"]),
+    ("key paths", &["key paths", "key paths:", "rutas", "rutas clave"]),
+    ("conventions", &["conventions", "convenciones"]),
+    ("searches done", &["searches", "searches done", "busquedas", "búsquedas"]),
+    ("decisions", &["decisions", "decisiones"]),
+];
+
+/// Wrap the parent's brief in a `<brief>` block after checking it covers the sections that make a
+/// child stop re-discovering: what to do, where, the conventions, what was already searched, and
+/// the decisions taken. At least 3 of the 5 sections must be present (goal being one).
+pub fn wrap_brief(task: &str) -> Result<String, String> {
+    let lower = task.to_lowercase();
+    let present: Vec<&str> = BRIEF_SECTIONS
+        .iter()
+        .filter(|(_, heads)| heads.iter().any(|h| lower.contains(&format!("## {h}")) || lower.contains(&format!("{h}:"))))
+        .map(|(name, _)| *name)
+        .collect();
+    let missing: Vec<&str> = BRIEF_SECTIONS.iter().map(|(n, _)| *n).filter(|n| !present.contains(n)).collect();
+    if !present.contains(&"goal") || present.len() < 3 {
+        return Err(format!(
+            "`--brief` needs a structured brief with `## <section>` headings (or `section:` lines):\n  sections seen: {}\n  missing: {}\n  write: goal / key paths / conventions / searches done / decisions (or: objetivo / rutas clave / convenciones / búsquedas / decisiones)",
+            if present.is_empty() { "none".into() } else { present.join(", ") },
+            missing.join(", ")
+        ));
+    }
+    Ok(format!(
+        "<brief>\n{}\n\n(This is the parent\u{2019}s brief: it already contains the goal, the key paths, the\nconventions, the searches already done and the decisions taken. Work from it instead of\nre-discovering that; verify the claims that matter to your task.)\n</brief>",
+        task.trim()
+    ))
+}
+
+/// The note every child gets about the run tree's shared state on disk (append-only).
+pub fn shared_context_note(dir: &Path) -> String {
+    format!(
+        "<shared-context>\nShared state on disk: {} (append-only).\nBefore searching or reading something, check what prior tasks left there (findings.md,\nsearch-cache.jsonl, artifacts/); when you learn something reusable or write an artifact, leave\nit there under your own file (one file per task, e.g. {}), stamped with date and author.\n</shared-context>",
+        dir.display(),
+        format!("{}/<your-task-id>.md", dir.display())
+    )
+}
+
 // ---- the hub -----------------------------------------------------------------------------
 
 /// Stops the children and removes the socket when the run ends.
@@ -349,6 +398,12 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
         return None;
     }
     let dir = traj.parent().unwrap_or(Path::new(".")).join("subagents");
+    // The shared state of the whole run tree: the root's `context/`, or the one we were given.
+    let context_dir = match std::env::var("MINI_AGENT_CONTEXT_DIR").ok().filter(|v| !v.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => traj.parent().unwrap_or(Path::new(".")).join("context"),
+    };
+    let _ = std::fs::create_dir_all(&context_dir);
     let pid = std::process::id();
     let depth: u32 = env_num("MINI_AGENT_DEPTH", 0);
     // At the nesting limit a run can not start children: no hub, no socket, nothing to clean up.
@@ -376,6 +431,7 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
     std::env::set_var("PATH", format!("{}:{path}", bin.display()));
     let hub = Hub {
         dir,
+        context_dir,
         runtime,
         socket,
         exe,
@@ -747,6 +803,30 @@ impl Hub {
         if raw_task.trim().is_empty() {
             return Err("spawn needs a task".into());
         }
+        // Context the child starts with instead of re-discovering it (Fase 1): files handed over
+        // (`--context-file`), the parent's brief (`--brief`), and the shared state on disk note.
+        let context_max: usize = env_num("MINI_AGENT_CONTEXT_MAX", 32 * 1024);
+        let mut context_blocks = String::new();
+        for f in req.get("context_files").and_then(Value::as_array).cloned().unwrap_or_default() {
+            let path = f.as_str().unwrap_or("");
+            let body = std::fs::read_to_string(crate::config::expand_user(path)).map_err(|e| format!("--context-file {path}: {e}"))?;
+            if body.chars().count() > context_max {
+                return Err(format!("--context-file {path} is {} chars, over the {} char cap: trim it or leave the detail in the shared context/ folder", body.chars().count(), context_max));
+            }
+            context_blocks.push_str(&format!("<context name=\"{path}\">\n{}\n</context>\n\n", body.trim()));
+        }
+        if context_blocks.chars().count() > context_max {
+            return Err(format!("the --context-file blocks are {} chars together, over the {} char cap: pass fewer or shorter files", context_blocks.chars().count(), context_max));
+        }
+        let brief_block = if req.get("brief").and_then(Value::as_bool).unwrap_or(false) {
+            format!("{}\n\n", wrap_brief(&raw_task)?)
+        } else {
+            String::new()
+        };
+        if raw_task.chars().count() > context_max {
+            return Err(format!("the task is {} chars, over the {} char cap: put the detail in --context-file or the shared context/ folder, or `agent send` it in parts", raw_task.chars().count(), context_max));
+        }
+        let shared_note = shared_context_note(&self.context_dir);
         let skills: Vec<String> = req.get("skills").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
         let (task, used, missing) = expand_skills(&raw_task, &skills, &[]);
         if !missing.is_empty() {
@@ -819,7 +899,8 @@ impl Hub {
             mem_avg: 0,
             mem_peak: 0,
         };
-        self.launcher().exec(&mut child, &task, None)?;
+        let full_task = format!("{context_blocks}{brief_block}{task}\n\n{shared_note}");
+        self.launcher().exec(&mut child, &full_task, None)?;
         let pid = child.pid;
         self.children.push(child);
         self.write_index();
@@ -853,7 +934,7 @@ impl Hub {
     }
 
     fn launcher(&self) -> Launcher {
-        Launcher { exe: self.exe.clone(), configs: self.configs.clone(), socket: self.socket.clone(), depth: self.depth }
+        Launcher { exe: self.exe.clone(), configs: self.configs.clone(), socket: self.socket.clone(), depth: self.depth, context_dir: self.context_dir.clone() }
     }
 
     /// Live subagents: the ones a new spawn would have to share memory with.
@@ -889,6 +970,8 @@ struct Launcher {
     configs: Vec<String>,
     socket: PathBuf,
     depth: u32,
+    /// The run tree's shared state dir, passed down so grandchildren share it too.
+    context_dir: PathBuf,
 }
 
 impl Launcher {
@@ -928,6 +1011,7 @@ impl Launcher {
             .env("MINI_AGENT_PARENT_SOCKET", &self.socket)
             .env("MINI_AGENT_NAME", &c.name)
             .env("MINI_AGENT_DEPTH", (self.depth + 1).to_string())
+            .env("MINI_AGENT_CONTEXT_DIR", &self.context_dir)
             .env("PATH", path)
             .env_remove("MINI_AGENT_SOCKET")
             .current_dir(&c.cwd)
@@ -1397,6 +1481,15 @@ pub fn client(args: &[String]) -> i32 {
                 "--timeout" => req["timeout"] = json!(value(&mut i)?.parse::<f64>().map_err(|_| "--timeout needs seconds".to_string())?),
                 "-n" => req["n"] = json!(value(&mut i)?.parse::<u64>().map_err(|_| "-n needs a number".to_string())?),
                 "--skill" => skills.push(value(&mut i)?.trim_start_matches('$').to_string()),
+                "--context-file" => {
+                    let f = value(&mut i)?;
+                    let canon = std::fs::canonicalize(crate::config::expand_user(&f)).map(|p| p.display().to_string()).map_err(|e| format!("--context-file {f}: {e}"))?;
+                    match req.get("context_files").and_then(Value::as_array) {
+                        Some(a) => { let mut a = a.clone(); a.push(json!(canon)); req["context_files"] = json!(a); }
+                        None => req["context_files"] = json!([canon]),
+                    }
+                }
+                "--brief" => req["brief"] = json!(true),
                 "--prompt-file" => {
                     let f = value(&mut i)?;
                     let text = if f == "-" {
@@ -1516,6 +1609,18 @@ mod tests {
     #[test]
     fn skill_tokens() {
         assert_eq!(skill_refs("use $pr-body and $e2e, not a$b; ($x)"), vec!["pr-body", "e2e", "x"]);
+    }
+
+    #[test]
+    fn briefs_are_structured() {
+        let ok = wrap_brief("## Goal\nfix the bug\n## Key paths\nsrc/a.rs\n## Conventions\nno new deps\n## Searches done\ngrep auth: 3 hits\n## Decisions\nuse the hub").unwrap();
+        assert!(ok.starts_with("<brief>"));
+        assert!(ok.contains("fix the bug"));
+        // Spanish headings work too, and 3 sections with goal is the minimum.
+        assert!(wrap_brief("objetivo: x\nrutas clave: y\ndecisiones: z").is_ok());
+        let err = wrap_brief("just do the thing").unwrap_err();
+        assert!(err.contains("missing:"), "{err}");
+        assert!(wrap_brief("## Key paths\nonly paths\n## Conventions\nno\n## Decisions\nyes").is_err());
     }
 
     #[test]
