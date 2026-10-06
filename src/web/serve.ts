@@ -96,11 +96,14 @@ hub.workspace = { get: () => workspace.get(), save: (doc, base) => workspace.sav
 // processes this server does not own), so a light poll — only while someone is watching — is what
 // notices those writes and turns them into pushes.
 hub.tasks = { list: () => listTasks(sessions.db()) };
+// The DAG of every session running a plan (the hub writes subagents/plan.json; the board draws it).
+hub.plans = { plans: () => sessions.plans() };
 // `MINITUI_WEB_SYNC_MS` <= 0 means "no background sync" (the session sync's rule), never a spin.
 const tasksSyncMs = Number(process.env.MINITUI_WEB_SYNC_MS ?? 1000);
 if (tasksSyncMs > 0) {
   const tasksTimer = setInterval(() => {
     if (hub.taskWatchers) hub.tasksChanged();
+    if (hub.planWatchers) hub.plansChanged();
   }, tasksSyncMs);
   (tasksTimer as { unref?: () => void }).unref?.();
 }

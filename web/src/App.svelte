@@ -19,6 +19,7 @@ import { windows } from "./lib/stores/windows.svelte";
   import { paneStatus, statusLabel } from "./lib/paneStatus";
   import { ui } from "./lib/stores/ui.svelte";
   import { tasks } from "./lib/stores/tasks.svelte";
+  import { plans } from "./lib/stores/plans.svelte";
   import { hub } from "./lib/hub";
   import { toasts } from "./lib/stores/toast.svelte";
   import { api } from "./lib/api";
@@ -27,7 +28,7 @@ import { windows } from "./lib/stores/windows.svelte";
   import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "./lib/scale";
   import type { HistoryItem } from "./lib/types";
   import { boardRows, type TaskWhere } from "./lib/tasks";
-  import type { SessionTask } from "./lib/types";
+  import type { SessionPlan, SessionTask } from "./lib/types";
   import { FinishWatcher, finishMessage } from "./lib/finish";
 
   /**
@@ -81,6 +82,7 @@ import { windows } from "./lib/stores/windows.svelte";
   let tasksOpen = $state(false);
   /** The board as the hub last pushed it. The watch below keeps this reactive copy fresh. */
   let taskCards = $state<SessionTask[]>([]);
+  let planList = $state<SessionPlan[]>([]);
   let tasksLive = $state(false);
   let settingsOpen = $state(false);
   let settingsTab = $state("general");
@@ -107,6 +109,7 @@ import { windows } from "./lib/stores/windows.svelte";
     // The task board is watched for as long as the app is open: the window's button glances at it
     // on hover and the panel opens it, and both must show what the agents last wrote, at once.
     const unwatch = tasks.watch((list) => (taskCards = list));
+    const unplan = plans.watch((list) => (planList = list));
     const unhub = hub.onState((s) => (tasksLive = s === "live"));
     untrack(() => {
     store.connect();
@@ -127,6 +130,7 @@ import { windows } from "./lib/stores/windows.svelte";
     });
     return () => {
       unwatch();
+      unplan();
       unhub();
       store.close();
     };
@@ -603,7 +607,7 @@ import { windows } from "./lib/stores/windows.svelte";
   </div>
 </div>
 
-<TasksPanel open={tasksOpen} rows={taskRows} live={tasksLive} onclose={() => (tasksOpen = false)} />
+<TasksPanel open={tasksOpen} rows={taskRows} live={tasksLive} plans={planList} onclose={() => (tasksOpen = false)} />
 <RemoteHostsModal bind:open={hostsOpen} />
 <SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />
 <HelpModal bind:open={helpOpen} />

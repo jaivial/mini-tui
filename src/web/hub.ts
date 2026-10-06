@@ -10,6 +10,7 @@
  * Nothing here knows about sockets: a client is a `send` function, so the rules are testable without
  * a network (see tests/web-hub.test.ts).
  */
+import type { SessionPlan } from "../mini/plans";
 import type { Note, SaveNoteResult, SessionTask } from "../sessions";
 import type { OpenSpec, TermOut, Terminals } from "./terminals";
 import type { SaveWorkspaceResult, Workspace } from "./workspace";
@@ -22,6 +23,9 @@ export type HubIn =
   /** The task board (every session's task card, filled by the agents): watch it for live pushes. */
   | { t: "tasks.watch" }
   | { t: "tasks.unwatch" }
+  /** The DAG of every session running a plan (`subagents/plan.json`): watch it for live pushes. */
+  | { t: "plan.watch" }
+  | { t: "plan.unwatch" }
   /** The shared workspace (windows, panes, sidebar): watch it, or save a new version of it. */
   | { t: "ws.watch" }
   | { t: "ws.save"; doc: unknown; base: number; req: number }
@@ -43,6 +47,8 @@ export type HubOut =
   | { t: "note.conflict"; req: number; current: Note }
   /** The whole task board: sent on watch, and whenever an agent writes a card anywhere. */
   | { t: "tasks"; tasks: SessionTask[] }
+  /** Every session's DAG plan: sent on watch, and whenever a hub updates its plan.json. */
+  | { t: "plan"; plans: SessionPlan[] }
   /** The workspace's value: sent on watch, and whenever another tab or device changes it. */
   | { t: "ws"; workspace: Workspace }
   | { t: "ws.saved"; req: number; version: number }
@@ -65,6 +71,11 @@ export interface TaskSource {
   list(): SessionTask[];
 }
 
+export interface PlanSource {
+  /** Every session whose hub has a plan right now. */
+  plans(): SessionPlan[];
+}
+
 export interface WorkspaceSource {
   get(): Workspace;
   save(doc: unknown, base: number): SaveWorkspaceResult;
@@ -85,6 +96,11 @@ export class Hub {
   #taskSent = "";
   /** Where the task board is kept; absent in tests that only exercise notes. */
   tasks?: TaskSource;
+  /** Clients watching the DAG plans, and what they were last sent (a push carries changes only). */
+  #planWatch = new Set<HubClient>();
+  #planSent = "";
+  /** Where the DAG plans are kept; absent where nothing plans. */
+  plans?: PlanSource;
 
   constructor(
     private readonly notes: NoteStore,
@@ -104,6 +120,7 @@ export class Hub {
     this.terminals?.manager.detach(client as never);
     this.#ws.delete(client);
     this.#taskWatch.delete(client);
+    this.#planWatch.delete(client);
     for (const id of this.#of.get(client) ?? []) this.#unwatch(client, id);
     this.#of.delete(client);
   }
@@ -116,6 +133,11 @@ export class Hub {
   /** How many clients watch the task board (the server only polls the cards while anyone does). */
   get taskWatchers(): number {
     return this.#taskWatch.size;
+  }
+
+  /** How many clients watch the DAG plans (the server only reads plan.json while anyone does). */
+  get planWatchers(): number {
+    return this.#planWatch.size;
   }
 
   /** How many clients watch a note (tests, diagnostics). */
@@ -139,6 +161,7 @@ export class Hub {
     if (typeof msg.t === "string" && msg.t.startsWith("term.")) return this.#term(client, msg);
     if (msg.t === "ws.watch" || msg.t === "ws.save") return this.#workspace(client, msg);
     if (msg.t === "tasks.watch" || msg.t === "tasks.unwatch") return this.#taskBoard(client, msg.t === "tasks.watch");
+    if (msg.t === "plan.watch" || msg.t === "plan.unwatch") return this.#planBoard(client, msg.t === "plan.watch");
     if (msg.t === "note.watch" || msg.t === "note.unwatch" || msg.t === "note.save") {
       const req = msg.t === "note.save" && Number.isInteger(msg.req) ? msg.req : undefined;
       if (typeof msg.id !== "string" || !NOTE_ID.test(msg.id)) {
@@ -178,6 +201,40 @@ export class Hub {
     if (wire === this.#taskSent) return;
     this.#taskSent = wire;
     for (const c of this.#taskWatch) c.send({ t: "tasks", tasks });
+  }
+
+  /**
+   * The DAG plans changed outside the hub (a hub wrote its plan.json): push them to whoever is
+   * watching. Like the task board, the list is small and whole, and an unchanged one is not
+   * re-sent (the poll that noticed decides that).
+   */
+  plansChanged(): void {
+    const source = this.plans;
+    if (!source || !this.#planWatch.size) return;
+    let plans: SessionPlan[];
+    try {
+      plans = source.plans();
+    } catch {
+      return; // a busy disk is checked again on the next poll
+    }
+    const wire = JSON.stringify(plans);
+    if (wire === this.#planSent) return;
+    this.#planSent = wire;
+    for (const c of this.#planWatch) c.send({ t: "plan", plans });
+  }
+
+  #planBoard(client: HubClient, watch: boolean): void {
+    const source = this.plans;
+    if (!source) return void client.send({ t: "error", error: "no server session runs a plan" });
+    if (!watch) return void this.#planWatch.delete(client);
+    this.#planWatch.add(client);
+    try {
+      const plans = source.plans();
+      this.#planSent = JSON.stringify(plans);
+      client.send({ t: "plan", plans });
+    } catch (error) {
+      client.send({ t: "error", error: `could not read the plans: ${(error as Error).message}` });
+    }
   }
 
   #taskBoard(client: HubClient, watch: boolean): void {

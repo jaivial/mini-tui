@@ -53,6 +53,26 @@ export interface SessionTask {
   updatedAt: number;
 }
 
+/** One node of a session's DAG plan, as the hub socket sends it (subagents/plan.json). */
+export interface PlanTask {
+  id: string;
+  title: string;
+  /** pending | ready | running | review | done | failed | blocked */
+  status: string;
+  deps: string[];
+  group: string;
+  priority: number;
+  result?: string;
+  error?: string;
+}
+
+/** One session's whole plan: the DAG the task board draws when its session runs a plan. */
+export interface SessionPlan {
+  session: string;
+  tasks: PlanTask[];
+  updatedAt: number;
+}
+
 /** `GET /api/folders`: the subfolders of one folder, on this machine or a remote host. */
 export interface FolderEntry {
   name: string;
