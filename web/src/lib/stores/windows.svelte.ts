@@ -8,6 +8,7 @@
  * a switch (so a half-typed prompt survives moving a pane out and back). Everything is saved to
  * the shared workspace with the panes (`lib/workspace.ts`), so every device shows the same windows.
  */
+import { shallowEqual } from "../equal";
 import { savePart, startingDoc } from "../workspace";
 import { legacy } from "../legacy";
 export { legacy };
@@ -16,6 +17,13 @@ export interface Win {
   id: string;
   /** What you called it, or null for "Window 3". */
   name: string | null;
+}
+
+/** The shape this store writes into the shared workspace (and compares against before writing). */
+interface WindowSnapshot {
+  v: 1;
+  list: Win[];
+  active: string;
 }
 
 const KEY = "minitui.windows";
@@ -130,12 +138,19 @@ class WindowStore {
   }
 
   /** The value saved to the shared workspace (the pane store saves it together with the panes). */
-  snapshot() {
+  snapshot(): WindowSnapshot {
     return { v: 1, list: $state.snapshot(this.list), active: this.activeId };
   }
   save() {
-    savePart("windows", this.snapshot());
+    const next = this.snapshot();
+    // A window switch writes the panes and the windows as one version; the pane store has usually
+    // already sent this exact list, so do not make the client stringify it again to find that out.
+    if (this.#saved !== undefined && shallowEqual(next, this.#saved)) return;
+    this.#saved = next;
+    savePart("windows", next);
   }
+  /** The last value written, so a save that says the same thing stops here. */
+  #saved?: WindowSnapshot;
 
   /** Another device changed the windows: take its list, names and which one is on screen. */
   adoptRemote(raw: unknown): boolean {
@@ -146,7 +161,9 @@ class WindowStore {
       this.activeId = prev.active;
       return false;
     }
-    return JSON.stringify(this.snapshot()) !== before;
+    const changed = JSON.stringify(this.snapshot()) !== before;
+    if (changed) this.#saved = undefined; // the next save must go out, whatever it was
+    return changed;
   }
 }
 
