@@ -59,11 +59,13 @@ createSession(db2, { id: "s-foreign", cwd: dir, model: "m", task: "foreign", tit
 registerLiveRun(db2, { session_id: "s-foreign", traj_path: traj, control_path: join(dir, "run", "control"), pid: hold.pid, owner: "tui" });
 db2.close();
 
+// A pass is asynchronous now (the liveness probe reads /proc off the event loop), so a tick is only
+// over when the promise settles: timing the call alone would measure the hand-off, not the work.
 const worst: number[] = [];
 const tickStart = Date.now();
 for (let t = 0; t < TICKS; t++) {
   const s = Date.now();
-  manager.syncExternal();
+  await manager.syncExternal();
   worst.push(Date.now() - s);
 }
 const tickTotal = Date.now() - tickStart;
@@ -72,17 +74,18 @@ worst.sort((a, b) => b - a);
 console.log(`sessions=${N} seed=${seedMs}ms openAll=${openMs}ms (${(openMs / N).toFixed(2)}ms each)`);
 console.log(`ticks=${TICKS} total=${tickTotal}ms mean=${(tickTotal / TICKS).toFixed(2)}ms p50=${worst[Math.floor(TICKS / 2)]}ms max=${worst[0]}ms`);
 
-manager.dispose();
-hold.kill();
-rmSync(dir, { recursive: true, force: true });
-
-// Worst case: every row was saved by another UI since we opened it, so one tick reloads them all
-// (a full-row read plus a JSON parse of events/info/messages, synchronously, per session).
+// Worst case: every row was saved by another UI since we opened it, so one pass reloads them all
+// (a full-row read plus a JSON parse of events/info/messages, per session). Measured before the
+// cleanup below: the directory holds the database this pass has to read.
 if (process.env.MINITUI_WEB_LOAD_STALE === "1") {
   const db3 = openDb(process.env.MINITUI_DB_PATH!);
   db3.query("UPDATE sessions SET updated_at = ?").run(Date.now() + 5_000);
   db3.close();
   const s = Date.now();
-  manager.syncExternal();
-  console.log(`stale reload tick: ${Date.now() - s}ms for ${N} sessions`);
+  await manager.syncExternal();
+  console.log(`stale reload pass (awaited): ${Date.now() - s}ms for ${N} sessions`);
 }
+
+manager.dispose();
+hold.kill();
+rmSync(dir, { recursive: true, force: true });
