@@ -232,3 +232,33 @@ fn a_plan_is_validated_shown_and_reviewed() {
     let plan = plan_json(&dir);
     assert_eq!(status(&plan, "W1"), "review", "{plan}");
 }
+
+#[test]
+fn a_restart_recovers_a_plan_left_running() {
+    let dir = tmp("restart");
+    write(&dir.join("plan-file.json"), r#"{"tasks":[
+        {"id":"P1","title":"hangs","task":"hang around","deps":[]},
+        {"id":"P2","title":"after it","task":"continue","deps":["P1"]}
+    ]}"#);
+    write(&dir.join("child-P1.yaml"), &script("p1", &[("run", "sleep 30"), ("submit", "never")]));
+    write(&dir.join("child-P2.yaml"), &script("p2", &[("submit", "unused")]));
+    let parent = script("parent", &[
+        ("run", "mini-agent-rs agent plan submit --file plan-file.json"),
+        ("submit", "parent resting"),
+        ("submit", "buffer"), ("submit", "buffer"),
+    ]);
+    run_parent(&dir, &parent, "[plan] P1 launched");
+    // The session dies with P1 running; the next session finds plan.json and must not hang.
+    std::thread::sleep(Duration::from_millis(300));
+    let parent2 = script("parent2", &[
+        ("run", "mini-agent-rs agent plan show"),
+        ("submit", "parent done"),
+        ("submit", "buffer"),
+    ]);
+    let msgs = run_parent(&dir, &parent2, "its subagent is gone");
+    let all = msgs.iter().map(text).collect::<Vec<_>>().join("\n---\n");
+    assert!(all.contains("[plan] P1 failed"), "{all}");
+    let plan = plan_json(&dir);
+    assert_eq!(status(&plan, "P1"), "failed", "{plan}");
+    assert_eq!(status(&plan, "P2"), "blocked", "{plan}");
+}

@@ -1283,6 +1283,9 @@ impl Hub {
             let plan = self.plan.as_ref().unwrap();
             for t in plan.tasks.iter().filter(|t| t.status == "running") {
                 let Some(c) = self.children.iter().find(|c| c.name == t.id) else {
+                    // A running task without a child: the session restarted from a plan.json left
+                    // behind. Fail it (its dependents block) so `plan retry` can recover it.
+                    transitions.push((t.id.clone(), "failed".into(), "its subagent is gone (was the session restarted?)".into()));
                     continue;
                 };
                 if c.running() {
