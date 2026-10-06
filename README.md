@@ -164,7 +164,9 @@ The same agent, in a browser, with **every session running at once in panes and 
 
 - split the screen like tmux, up to **12 panes in a window**;
 - group panes into as many **windows** as you like, each with a working, done or idle dot per pane in the sidebar;
-- move any pane to another window from its menu;
+- move any pane to another window from its menu, **rearrange the panes** of a window (a menu step in
+  each direction, a row / column / grid layout, or drag one onto another to swap them);
+- **resize the notes** of a session freely inside its pane, the width kept per pane;
 - keep the same layout on **every device** (it lives on the server).
 
 Each session streams over **its own WebSocket**, and a remote mode keeps the agent **headless on a server

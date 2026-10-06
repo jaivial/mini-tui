@@ -16,6 +16,7 @@ cd web && bun run build && bun run shots   # desktop/tablet/phone screenshots (m
 cd web && bun scripts/audit.mjs            # touch-target + overflow audit at the three sizes
 cd web && bun run e2e                      # real browser + real server: sockets, model picker, reconnect
 cd web && bun scripts/e2e-windows.mjs      # windows: move a pane, switch, reload, rename, close
+cd web && bun scripts/e2e-pane-layout.mjs  # rearranging: move pane, drag to swap, layouts, notes width
 ```
 
 Open <http://127.0.0.1:4317>.
@@ -141,12 +142,16 @@ every window keep streaming while another is on screen.
 `Ctrl+Shift+\` (`/split down`), or use the pane menu in the header. Each new pane is a new chat, so its first
 message starts its own session, and every pane streams its session over its own socket while the others run.
 Drag a divider to resize it, or focus it and use the arrow keys (Home/End go to the limits, Enter evens it
-out). `Alt+1`…`Alt+9` and `Alt+0` jump to a pane, `Ctrl/⌘+Alt+arrows` cycle, and `Alt+X` closes one (its
-session keeps running). A session is shown in one pane at a time: picking one that another pane shows goes to
+out). A pane is **moved**, not only made: the pane menu trades it with its neighbour in each of the four
+directions (greyed out with the reason when nothing lies that way), **Layout** in the same menu lays the
+panes of the window out as a row, a column or a grid, keeping their order, and any pane can be **dragged**
+from the grip in its header and dropped on another to swap the two. All three only change where panes sit,
+never what they show, and they are saved with the rest of the layout. `Alt+1`…`Alt+9` and `Alt+0` jump to a
+pane, `Ctrl/⌘+Alt+arrows` cycle, and `Alt+X` closes one (its session keeps running). A session is shown in one pane at a time: picking one that another pane shows goes to
 that pane, or to the window holding it. A split that would leave a pane too small to use is refused with the
 reason. The layout, each pane's session and the windows are remembered in the browser. Below 760px (a phone,
 or a small tablet) the same panes show as tabs, one on screen at a time. The layout logic is `lib/panes.ts`,
-pure and tested; the windows are `lib/stores/windows.svelte.ts`.
+pure and tested, as is the rearranging in `lib/paneLayout.ts`; the windows are `lib/stores/windows.svelte.ts`.
 
 **One workspace everywhere.** The windows, panes, which session each pane shows, the status dots and the
 sidebar's view and folders are kept on the server (`~/.config/mini-tui/web-workspace.json`), not in the
@@ -159,7 +164,9 @@ its chips and the ↑/↓ memory stay in their tab, and so do the interface and 
 right with a plain text area for that session. It saves 600 ms after you stop typing, and also when the panel
 closes, on blur, on `Ctrl/⌘+S`, and when the page hides. Notes are stored in the shared database (a `notes`
 table, so a history listing never reads them) and deleted with their session. In a narrow pane the notes cover
-the chat instead of squeezing both.
+the chat instead of squeezing both. The panel's width is not fixed: a divider on its left edge drags (or
+the arrow keys step it, Home the widest, End the least, a double-click for the default), never taking the
+pane's last 16rem from the chat beside it, and the width chosen is kept per pane with the rest of the layout.
 
 **Terminal** (the terminal button in a pane's header, the **Terminal** tab beside Notes, `/terminal`, or
 `Ctrl+\``): an interactive shell for that session. It is a real PTY on the server (`src/web/terminals.ts`),
