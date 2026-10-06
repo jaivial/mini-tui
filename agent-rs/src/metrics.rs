@@ -10,29 +10,22 @@ use crate::compaction::{message_chars, DEFAULT_CHARS_PER_TOKEN};
 use serde_json::{json, Value};
 use std::path::Path;
 
-/// The significant words of a command part: the binary (skipping `sudo`/`env`) and, for tools
-/// where the subcommand decides (`git log` vs `git commit`), that subcommand.
-fn command_words(command: &str) -> Vec<String> {
-    command
-        .split(['|', ';', '&'])
-        .filter_map(|part| {
-            let mut it = part.trim().split_whitespace().peekable();
-            while matches!(it.peek(), Some(&"sudo") | Some(&"env") | Some(&"time")) {
-                it.next();
+/// The label of a command for the report: `git log`, `cargo test`, `grep`… (binary plus the
+/// subcommand where that is what decides, `git log` vs `git commit`).
+fn command_label(command: &str) -> String {
+    let mut it = command.trim().split_whitespace().peekable();
+    while matches!(it.peek(), Some(&"sudo") | Some(&"env") | Some(&"time")) {
+        it.next();
+    }
+    let Some(w) = it.next() else { return String::new() };
+    if matches!(w, "git" | "docker" | "cargo" | "bun" | "npm" | "systemctl" | "gh") {
+        if let Some(sub) = it.peek() {
+            if !sub.starts_with('-') {
+                return format!("{w} {}", sub.trim_start_matches('-'));
             }
-            let w = it.next()?.to_string();
-            let mut words = vec![w.clone()];
-            if matches!(w.as_str(), "git" | "docker" | "cargo" | "bun" | "npm" | "systemctl" | "gh") {
-                if let Some(sub) = it.peek() {
-                    if !sub.starts_with('-') {
-                        words.push(sub.trim_start_matches('-').to_string());
-                    }
-                }
-            }
-            Some(words)
-        })
-        .flatten()
-        .collect()
+        }
+    }
+    w.to_string()
 }
 
 /// Read-only by nature: listing, searching, reading, counting.
@@ -58,7 +51,8 @@ fn is_discovery(command: &str) -> bool {
             "git" => it.peek().map(|s| GIT_READS.contains(s)).unwrap_or(false),
             "sed" => !part.split_whitespace().any(|t| t == "-i"),
             "find" => !part.split_whitespace().any(|t| matches!(t, "-delete" | "-exec" | "-fls" | "-fprint")),
-            "xargs" => true, // reads its input and runs a reader (over-simplification kept small)
+            // `xargs` runs whatever follows: classify that (`find . | xargs grep x` reads).
+            "xargs" => is_discovery(part.trim().strip_prefix("xargs").unwrap_or("")),
             w => READERS.contains(&w),
         }
     })
@@ -116,10 +110,10 @@ pub fn measure(journal: &Path) -> Result<Value, String> {
                 }
                 out["output_tokens"] = json!(out["output_tokens"].as_i64().unwrap_or(0) + step_tokens);
                 for c in commands_here {
-                    let word = command_words(&c).into_iter().next().unwrap_or_default();
-                    match commands.iter_mut().find(|(w, _)| *w == word) {
+                    let label = command_label(&c);
+                    match commands.iter_mut().find(|(w, _)| *w == label) {
                         Some((_, n)) => *n += 1,
-                        None => commands.push((word, 1)),
+                        None => commands.push((label, 1)),
                     }
                 }
             }
@@ -210,6 +204,8 @@ mod tests {
         assert!(!is_discovery("cargo test"));
         assert!(!is_discovery("echo hi > f"));
         assert!(!is_discovery("rg foo && cargo build"));
+        assert!(is_discovery("find . | xargs grep foo"));
+        assert!(!is_discovery("find . | xargs rm -rf x"));
     }
 
     #[test]
@@ -232,6 +228,7 @@ mod tests {
         assert_eq!(v["work_steps"].as_i64().unwrap(), 1);
         assert!(v["discovery_tokens"].as_i64().unwrap() > 0);
         assert_eq!(v["task_tokens"].as_i64().unwrap() > 0, true);
-        assert_eq!(v["commands"][0]["command"].as_str().unwrap(), "cargo");
+        assert_eq!(v["commands"][0]["command"].as_str().unwrap(), "cargo test");
+        assert_eq!(command_label("git log --oneline -5"), "git log");
     }
 }
