@@ -21,6 +21,7 @@ mini-agent-rs agent spawn <name> [--cwd DIR] [-m MODEL] [--max-steps N] [--cost-
 mini-agent-rs agent spawn <name> --prompt-file task.md      # long tasks ('-' = stdin)
 mini-agent-rs agent spawn <name> --context-file notes.md ... # hand over what you know (repeatable)
 mini-agent-rs agent spawn <name> --brief --prompt-file brief.md   # a structured brief
+mini-agent-rs agent plan submit --file plan.json   # a whole DAG the hub runs for you
 mini-agent-rs agent resources [--json]     # free memory, avg subagent cost, max fan-out
 mini-agent-rs agent can-spawn N            # would N more fit right now?
 mini-agent-rs agent ls                     # NAME STATE STEPS COST IDLE LAST
@@ -94,6 +95,34 @@ tokens again unless you hand it over. Three layers, cheapest first:
 
 A refused brief or an oversized context file is an error before the child starts: fix the brief or
 trim the file, the spawn does not silently drop your context.
+
+## Plan the whole DAG and let the hub run it
+
+When the work is a graph (A1 then A2; Z1 -> Z2 -> Z3; side quests in parallel), do not chain the
+spawns yourself: hand the hub a plan and become the reviewer.
+
+```bash
+mini-agent-rs agent plan submit --file plan.json    # validated: ids, deps, no cycles
+mini-agent-rs agent plan show                       # states + the ready queue
+mini-agent-rs agent plan review <id> ok             # accept what you verified
+mini-agent-rs agent plan review <id> fail "<why>"   # reject: dependents stop
+mini-agent-rs agent plan retry <id>                 # relaunch a failed task
+```
+
+```json
+{ "tasks": [
+  { "id": "A1", "title": "map the spawn path", "task": "…", "deps": [],
+    "group": "repo-a", "priority": 1, "budget": {"steps": 60, "cost": 0.5},
+    "artifacts": ["context/spawn-map.md"] }
+] }
+```
+
+Each task launches itself the moment its deps are satisfied (memory and cost permitting; a
+`group` serializes tasks that share files). Its `artifacts` and result arrive to the successor
+automatically as a `<handoff>` block — write those files (under `context/`) and the handoff does
+the rest. `[plan]` notes tell you what launched, finished, failed or got blocked; your job stays
+what it was: **review each result** (`agent plan review`), re-plan when reality disagrees
+(`agent plan add/rm/dep`), and keep the boxes honest.
 
 ## Inside a subagent
 

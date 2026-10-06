@@ -120,6 +120,19 @@ The bundled `$subagents` skill teaches the model this loop. The `orch` script of
 forwards `start` / `followup` / `ls` / `wait` / `result` / `stop` to it when it runs inside such a
 session. Detached headless runs remain for your own terminal and the Python agent.
 
+### DAG plans (`mini-agent-rs agent plan`)
+
+A session can hand its hub a whole DAG and stop being the launcher: `agent plan submit --file
+plan.json` validates the plan (unique ids, deps that exist, no cycles) and the hub's scheduler
+launches each task the moment its deps are satisfied — even while the parent is in another turn —
+within the memory/cost caps and one task per `group` at a time. Tasks carry `budget`
+(steps/cost) and `artifacts` they commit to leave on disk; a successor is born with a `<handoff>`
+block holding its deps' results and artifact contents. States: `pending -> running -> review`
+(review satisfies successors; `plan review ok` marks `done`) `-> failed / blocked`. Re-plan in
+flight with `plan add/rm/dep`, inspect with `plan show [--json]` / `plan graph`, relaunch with
+`plan retry`; `[plan]` notes report everything. The plan lives in `subagents/plan.json` next to
+`index.json`, so the UIs can draw it.
+
 `spawn` can hand a child what the session already knows, so it does not pay the cold start:
 `--context-file F` (repeatable) arrives as `<context>` blocks capped at 32 KiB together
 (`MINI_AGENT_CONTEXT_MAX`), `--brief` validates and wraps a structured brief (goal, key paths,

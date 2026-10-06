@@ -15,6 +15,7 @@
 //! - `<traj dir>/subagents/index.json` lists the children (paths, pid, state) so mini-tui can show
 //!   them as sessions under their parent and follow any of them live.
 
+use crate::plan::{Plan, Task, SATISFIED};
 use crate::util::now;
 use crate::resources::{self, Tracker};
 use serde_json::{json, Value};
@@ -56,6 +57,20 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
   agent tail <name> [-n N]               its last steps
   agent stop <name...>|--all             interrupt (it saves); `send` continues it later
   agent ask <text...>                    (inside a subagent) message the session that started it
+
+  agent plan submit --file plan.json     hand over a whole DAG plan (validated: ids, deps, no cycles)
+  agent plan add <id> [--deps a,b] [--group G] [--priority N] [--steps N] [--cost C]
+                 [--artifact F]... [--title T] <task...>    re-plan in flight
+  agent plan rm <id...>                  drop tasks that are not running
+  agent plan dep <id> <dep...> [--rm]    change dependencies (re-validated)
+  agent plan show [--json]               task states + the ready queue
+  agent plan graph                       edges and states (the task board draws this)
+  agent plan review <id> ok|fail [why]   accept a finished task (review -> done) or fail it
+  agent plan retry <id>                  relaunch a failed/blocked task
+
+Plan tasks launch themselves: the moment a task's deps are satisfied the hub starts it (subject to
+memory, cost and its group), hands over its deps' results and artifacts, and reports [plan] notes.
+A task ends pending -> running -> review (done enough for successors) -> done when you review it.
 
 States: starting, running, waiting (turn done; holds its context for `send`), stopped, exited.
 Notes about subagents arrive as user messages that start with [subagent <name>].";
@@ -184,10 +199,16 @@ pub struct Hub {
     tick: u64,
     /// Fingerprint of the roster the last `index.json` write held (see `roster_key`).
     index_key: String,
+    /// The DAG plan this hub executes (`<traj dir>/subagents/plan.json`), if any.
+    plan: Option<Plan>,
 }
 
 fn round4(x: f64) -> f64 {
     (x * 10000.0).round() / 10000.0
+}
+
+pub fn first_line_pub(text: &str, width: usize) -> String {
+    first_line(text, width)
 }
 
 fn first_line(text: &str, width: usize) -> String {
@@ -429,6 +450,7 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
     std::env::set_var("MINI_AGENT_BIN", &exe);
     let path = std::env::var("PATH").unwrap_or_default();
     std::env::set_var("PATH", format!("{}:{path}", bin.display()));
+    let plan = load_plan(&dir);
     let hub = Hub {
         dir,
         context_dir,
@@ -445,6 +467,7 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
         usage: Tracker::default(),
         tick: 0,
         index_key: String::new(),
+        plan,
     };
     let hub = Arc::new(Mutex::new(hub));
     let _ = HUB.set(hub.clone());
@@ -737,6 +760,7 @@ impl Hub {
         self.notes.extend(notes);
         let total: f64 = self.children.iter().map(Child::total_cost).sum();
         CHILD_COST.store(total.to_bits(), Ordering::SeqCst);
+        self.tick_plan();
         self.write_index();
     }
 
@@ -756,6 +780,9 @@ impl Hub {
             "socket": self.socket.display().to_string(),
             "children": self.children.iter().map(Child::summary).collect::<Vec<_>>(),
         });
+        if let Some(plan) = &self.plan {
+            v["plan"] = json!({ "tasks": plan.tasks.iter().map(|t| t.to_value()).collect::<Vec<_>>() });
+        }
         v["updated_at"] = json!(now());
         let _ = std::fs::create_dir_all(&self.dir);
         let path = self.dir.join("index.json");
@@ -791,11 +818,27 @@ impl Hub {
             ));
         }
         if let Some(i) = self.children.iter().position(|c| c.name == name) {
-            if self.children[i].proc.is_some() {
+            if self.children[i].running() {
                 return Err(format!("a subagent named {name} already exists ({}): `agent send {name} …` continues it", self.children[i].state));
             }
             if !req.get("force").and_then(Value::as_bool).unwrap_or(false) {
                 return Err(format!("{name} was used before ({}): `agent send {name} …` continues it, or pick another name", self.children[i].state));
+            }
+            // A finished child holds its process (and its context) at its exit: forced reuse of
+            // the name lets that process go first, so nothing keeps running behind the new child.
+            let old_child = &mut self.children[i];
+            if old_child.proc.is_some() {
+                if old_child.pid > 0 {
+                    unsafe {
+                        libc::killpg(old_child.pid, libc::SIGINT);
+                    }
+                }
+                let deadline = now() + 2.0;
+                while old_child.proc.as_mut().map(|p| matches!(p.try_wait(), Ok(None))).unwrap_or(false) && now() < deadline {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                old_child.proc = None;
+                crate::e2e::worker::unregister(old_child.pid);
             }
             self.children.remove(i);
         }
@@ -920,6 +963,12 @@ impl Hub {
     /// every tick). Two identical keys mean the roster on disk is already current.
     fn roster_key(&self) -> String {
         let mut key = String::with_capacity(64 * self.children.len());
+        if let Some(plan) = &self.plan {
+            for t in &plan.tasks {
+                use std::fmt::Write as _;
+                let _ = write!(key, "{}|{}|", t.id, t.status);
+            }
+        }
         for c in self.children.iter() {
             use std::fmt::Write as _;
             let _ = write!(
@@ -1197,6 +1246,368 @@ fn read_messages(journal: &Path) -> Vec<Value> {
     msgs
 }
 
+// ---- the plan scheduler (Fase 2) ----------------------------------------------------------
+
+/// The plan of a previous run of this session (`<traj dir>/subagents/plan.json`), if valid.
+fn load_plan(dir: &Path) -> Option<Plan> {
+    let text = std::fs::read_to_string(dir.join("plan.json")).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    Plan::parse(&v).ok()
+}
+
+impl Hub {
+    fn write_plan(&mut self) {
+        let Some(plan) = &self.plan else { return };
+        let v = json!({
+            "tasks": plan.tasks.iter().map(|t| t.to_value()).collect::<Vec<_>>(),
+            "updated_at": now(),
+        });
+        let _ = std::fs::create_dir_all(&self.dir);
+        let tmp = self.dir.join("plan.json.tmp");
+        if std::fs::write(&tmp, serde_json::to_string_pretty(&v).unwrap()).is_ok() {
+            let _ = std::fs::rename(&tmp, self.dir.join("plan.json"));
+        }
+    }
+
+    /// The scheduler: advance task states from what the children did, then launch whatever is
+    /// ready. It runs on every monitor tick, so a successor starts the moment its deps are
+    /// satisfied — even while the parent is in another turn or asleep.
+    fn tick_plan(&mut self) {
+        if self.plan.is_none() {
+            return;
+        }
+        let mut notes: Vec<String> = vec![];
+        // 1. A running task whose child ended: review (a finished turn) or failed.
+        let mut transitions: Vec<(String, String, String)> = vec![];
+        {
+            let plan = self.plan.as_ref().unwrap();
+            for t in plan.tasks.iter().filter(|t| t.status == "running") {
+                let Some(c) = self.children.iter().find(|c| c.name == t.id) else {
+                    // A running task without a child: the session restarted from a plan.json left
+                    // behind. Fail it (its dependents block) so `plan retry` can recover it.
+                    transitions.push((t.id.clone(), "failed".into(), "its subagent is gone (was the session restarted?)".into()));
+                    continue;
+                };
+                if c.running() {
+                    continue;
+                }
+                if c.turns < 1 {
+                    if c.state == "exited" || c.state == "stopped" {
+                        transitions.push((t.id.clone(), "failed".into(), "it ended before finishing a turn".into()));
+                    }
+                    continue;
+                }
+                let answer = if !c.submission.trim().is_empty() {
+                    c.submission.clone()
+                } else if !c.exit_text.trim().is_empty() {
+                    c.exit_text.clone()
+                } else {
+                    c.last_text.clone()
+                };
+                match (c.state.as_str(), c.exit_status.as_str()) {
+                    ("waiting", "Submitted") => transitions.push((t.id.clone(), "review".into(), answer)),
+                    ("waiting", status) => transitions.push((t.id.clone(), "failed".into(), format!("{status}: {answer}"))),
+                    ("stopped", _) => transitions.push((t.id.clone(), "failed".into(), "stopped by the session".into())),
+                    _ => transitions.push((t.id.clone(), "failed".into(), "its process ended unexpectedly".into())),
+                }
+            }
+        }
+        for (id, status, result) in transitions {
+            let succ = self.plan.as_ref().unwrap().successors(&id);
+            if let Some(t) = self.plan.as_mut().unwrap().get_mut(&id) {
+                t.status = status.clone();
+                t.result = result.clone();
+                if status == "failed" {
+                    t.error = result.clone();
+                }
+            }
+            if status == "review" {
+                let next = if succ.is_empty() { String::new() } else { format!(" -> launching {}", succ.join(", ")) };
+                notes.push(format!("[plan] {id} finished (review){next} · {}", head_chars(&result, 400)));
+            } else {
+                notes.push(format!("[plan] {id} failed: {} · its dependents are blocked. `agent plan retry {id}` or re-plan (`agent plan add`).", head_chars(&result, 400)));
+            }
+        }
+        // 2. A pending task whose dep failed or is blocked goes blocked (once).
+        let mut blocked: Vec<String> = vec![];
+        {
+            let plan = self.plan.as_ref().unwrap();
+            for t in plan.tasks.iter().filter(|t| t.status == "pending") {
+                let dead = |d: &str| plan.get(d).map(|x| matches!(x.status.as_str(), "failed" | "blocked")).unwrap_or(false);
+                if t.deps.iter().any(|d| dead(d)) {
+                    blocked.push(t.id.clone());
+                }
+            }
+        }
+        for id in &blocked {
+            if let Some(t) = self.plan.as_mut().unwrap().get_mut(id) {
+                t.status = "blocked".into();
+                t.error = "a dependency failed".into();
+            }
+        }
+        // 3. Launch every ready task while there is room: the queue waits, it is not a failure.
+        loop {
+            let ready = self.plan.as_ref().unwrap().ready();
+            let Some(id) = ready.first().cloned() else { break };
+            if self.children.iter().any(|c| c.name == id && c.running()) {
+                break; // a child of that name is still working on a turn; retry next tick
+            }
+            let max_live = env_num("MINI_AGENT_MAX_SUBAGENTS", 100).min(100);
+            let live = self.children.iter().filter(|c| c.proc.is_some()).count();
+            if live >= max_live || self.fanout_left() == 0 {
+                break; // no room now: the ready queue keeps them, retried on the next tick
+            }
+            let t = self.plan.as_ref().unwrap().get(&id).cloned().unwrap();
+            let req = self.plan_spawn_req(&t);
+            match self.launch(&req) {
+                Ok(_) => {
+                    if let Some(t) = self.plan.as_mut().unwrap().get_mut(&id) {
+                        t.status = "running".into();
+                    }
+                    let why = if t.deps.is_empty() { String::new() } else { format!(" (deps satisfied: {})", t.deps.join(", ")) };
+                    notes.push(format!("[plan] {id} launched{why}"));
+                }
+                Err(e) => {
+                    // Room problems stay in the queue; anything else is the task's own error.
+                    if e.contains("refusing subagent") || e.contains("already alive") || e.contains("cost limit") {
+                        break;
+                    }
+                    if let Some(t) = self.plan.as_mut().unwrap().get_mut(&id) {
+                        t.status = "failed".into();
+                        t.error = e.clone();
+                    }
+                    notes.push(format!("[plan] {id} could not start: {e}"));
+                }
+            }
+        }
+        self.notes.extend(notes.into_iter().map(|t| (String::new(), 0, t)));
+        if self.plan.is_some() {
+            self.write_plan();
+        }
+    }
+
+    /// The spawn request of a plan task: its text plus the handoff of its deps (results and the
+    /// artifacts they committed to), under the task's own budget.
+    fn plan_spawn_req(&self, t: &Task) -> Value {
+        let cap: usize = env_num("MINI_AGENT_CONTEXT_MAX", 32 * 1024);
+        let mut handoff = String::new();
+        for d in &t.deps {
+            let Some(dep) = self.plan.as_ref().and_then(|p| p.get(d)) else { continue };
+            handoff.push_str(&format!("<handoff from=\"{d}\" status=\"{}\">\n", dep.status));
+            if !dep.result.is_empty() {
+                handoff.push_str(&format!("{}\u{2019}s result:\n{}\n", d, head_chars(&dep.result, 2000)));
+            }
+            for a in &dep.artifacts {
+                let raw = Path::new(a);
+                let path = if raw.is_absolute() { raw.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(raw) };
+                match std::fs::read_to_string(&path) {
+                    Ok(body) => handoff.push_str(&format!("artifact {a}:\n<file>\n{}\n</file>\n", head_chars(&body, cap))),
+                    Err(e) => handoff.push_str(&format!("artifact {a}: not readable ({e})\n")),
+                }
+            }
+            handoff.push_str("</handoff>\n\n");
+        }
+        let task = if handoff.is_empty() { t.task.clone() } else { format!("{handoff}{}", t.task) };
+        let mut req = json!({"cmd": "spawn", "name": t.id, "task": task, "force": true});
+        if t.steps > 0 {
+            req["max_steps"] = json!(t.steps);
+        }
+        if t.cost > 0.0 {
+            req["cost_limit"] = json!(t.cost);
+        }
+        req
+    }
+
+    /// `agent plan …`: submit a DAG, re-plan in flight, inspect, review, retry.
+    fn plan_cmd(&mut self, req: &Value) -> Result<Value, String> {
+        let action = s(req, "action");
+        let mut changed = false;
+        let out = match action.as_str() {
+            "submit" => {
+                let v = req.get("plan").cloned().ok_or("plan submit needs --file plan.json")?;
+                let plan = Plan::parse(&v)?;
+                if let Some(cur) = &self.plan {
+                    if cur.tasks.iter().any(|t| matches!(t.status.as_str(), "pending" | "running" | "review")) {
+                        return Err("a plan is already active (`agent plan show`); `agent plan rm` what is left or let it finish".into());
+                    }
+                }
+                let n = plan.tasks.len();
+                self.plan = Some(plan);
+                changed = true;
+                ok(format!("plan accepted: {n} tasks. The hub launches each one the moment its deps are satisfied; you review the results (`agent plan review`)."), json!(null))
+            }
+            "add" => {
+                let id = s(req, "id");
+                if id.is_empty() {
+                    return Err("plan add needs a task id".into());
+                }
+                let task = s(req, "task");
+                if task.trim().is_empty() {
+                    return Err(format!("plan add {id}: needs a task (text or --task-file)"));
+                }
+                let mut item = json!({"id": id, "task": task});
+                let title = s(req, "title");
+                if !title.is_empty() {
+                    item["title"] = json!(title);
+                }
+                let group = s(req, "group");
+                if !group.is_empty() {
+                    item["group"] = json!(group);
+                }
+                if let Some(p) = req.get("priority").and_then(Value::as_i64) {
+                    item["priority"] = json!(p);
+                }
+                let mut budget = json!({});
+                if let Some(n) = req.get("steps").and_then(Value::as_i64) {
+                    budget["steps"] = json!(n);
+                }
+                if let Some(c) = req.get("cost").and_then(Value::as_f64) {
+                    budget["cost"] = json!(c);
+                }
+                if budget.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+                    item["budget"] = budget;
+                }
+                if let Some(a) = req.get("artifacts").and_then(Value::as_array) {
+                    item["artifacts"] = json!(a);
+                }
+                item["deps"] = json!(csv_list(&s(req, "deps")));
+                let mut tasks: Vec<Value> = self.plan.as_ref().map(|p| p.tasks.iter().map(|t| t.to_value()).collect()).unwrap_or_default();
+                if tasks.iter().any(|t| t["id"] == item["id"]) {
+                    return Err(format!("a task named {id} already exists (`agent plan rm {id}` first)"));
+                }
+                tasks.push(item);
+                self.plan = Some(Plan::parse(&json!({"tasks": tasks}))?);
+                changed = true;
+                ok(format!("task {id} added"), json!(null))
+            }
+            "rm" => {
+                let ids: Vec<String> = req.get("ids").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+                if ids.is_empty() {
+                    return Err("plan rm needs task ids".into());
+                }
+                let plan = self.plan.as_mut().ok_or("there is no plan")?;
+                for id in &ids {
+                    let t = plan.get(id).ok_or(format!("no task {id}"))?;
+                    if t.status == "running" {
+                        return Err(format!("{id} is running (`agent stop {id}` first)"));
+                    }
+                    let dependents = plan.successors(id);
+                    if !dependents.is_empty() {
+                        return Err(format!("cannot rm {id}: {} depends on it (rm those first, or `agent plan dep <id> {id} --rm`)", dependents.join(", ")));
+                    }
+                }
+                plan.tasks.retain(|t| !ids.contains(&t.id));
+                if plan.tasks.is_empty() {
+                    self.plan = None;
+                    let _ = std::fs::remove_file(self.dir.join("plan.json"));
+                } else {
+                    self.plan = Some(plan.clone());
+                }
+                changed = self.plan.is_some();
+                ok(format!("removed {}", ids.join(", ")), json!(null))
+            }
+            "dep" => {
+                let id = s(req, "id");
+                let deps: Vec<String> = req.get("deps").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+                let mut tasks: Vec<Value> = self.plan.as_ref().map(|p| p.tasks.iter().map(|t| t.to_value()).collect()).ok_or("there is no plan")?;
+                for item in tasks.iter_mut() {
+                    if item["id"] != id {
+                        continue;
+                    }
+                    let mut have: Vec<String> = item["deps"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+                    if req.get("rm").and_then(Value::as_bool).unwrap_or(false) {
+                        have.retain(|d| !deps.contains(d));
+                    } else {
+                        for d in &deps {
+                            if !have.contains(d) {
+                                have.push(d.clone());
+                            }
+                        }
+                    }
+                    item["deps"] = json!(have);
+                }
+                if !tasks.iter().any(|t| t["id"] == id) {
+                    return Err(format!("no task {id}"));
+                }
+                self.plan = Some(Plan::parse(&json!({"tasks": tasks}))?);
+                changed = true;
+                ok(format!("dependencies of {id} updated"), json!(null))
+            }
+            "review" => {
+                let id = s(req, "id");
+                let verdict = s(req, "verdict");
+                let reason = s(req, "reason");
+                let plan = self.plan.as_mut().ok_or("there is no plan")?;
+                let t = plan.get_mut(&id).ok_or(format!("no task {id}"))?;
+                match verdict.as_str() {
+                    "ok" => {
+                        if !SATISFIED.contains(&t.status.as_str()) {
+                            return Err(format!("{id} is {status}: only a finished task can be reviewed (`agent plan show`)", status = t.status));
+                        }
+                        t.status = "done".into();
+                        changed = true;
+                        ok(format!("{id}: done"), json!(null))
+                    }
+                    "fail" => {
+                        if t.status == "running" {
+                            return Err(format!("{id} is running: `agent stop {id}` first, then review fail"));
+                        }
+                        t.status = "failed".into();
+                        t.error = if reason.is_empty() { "the review rejected it".into() } else { reason };
+                        changed = true;
+                        ok(format!("{id}: failed, dependents are blocked"), json!(null))
+                    }
+                    other => return Err(format!("plan review needs ok or fail (got {other:?})")),
+                }
+            }
+            "retry" => {
+                let id = s(req, "id");
+                let plan = self.plan.as_mut().ok_or("there is no plan")?;
+                let t = plan.get_mut(&id).ok_or(format!("no task {id}"))?;
+                if !matches!(t.status.as_str(), "failed" | "blocked") {
+                    return Err(format!("{id} is {} (only failed/blocked tasks can be retried)", t.status));
+                }
+                t.status = "pending".into();
+                t.error.clear();
+                t.result.clear();
+                changed = true;
+                ok(format!("{id}: back to pending; it launches when its deps allow"), json!(null))
+            }
+            "show" => {
+                let plan = self.plan.as_ref().ok_or("there is no plan (`agent plan submit --file plan.json`")?;
+                let ready = plan.ready();
+                let mut out = String::new();
+                for t in &plan.tasks {
+                    out.push_str(&format!("{:<10} {:<9} deps={} · {}\n", t.id, t.status, if t.deps.is_empty() { "-".into() } else { t.deps.join(",") }, first_line(&t.title, 60)));
+                    if !t.result.is_empty() {
+                        out.push_str(&format!("    result: {}\n", first_line(&t.result, 120)));
+                    }
+                    if !t.error.is_empty() {
+                        out.push_str(&format!("    error: {}\n", first_line(&t.error, 120)));
+                    }
+                }
+                out.push_str(&format!("ready queue: {}\n", if ready.is_empty() { "(empty)".into() } else { ready.join(", ") }));
+                let v = json!({"tasks": plan.tasks.iter().map(|t| t.to_value()).collect::<Vec<_>>(), "ready": ready});
+                ok(out, v)
+            }
+            "graph" => {
+                let plan = self.plan.as_ref().ok_or("there is no plan")?;
+                ok(plan.graph(), json!({"edges": plan.tasks.iter().flat_map(|t| t.deps.iter().map(|d| json!({"from": d, "to": t.id})).collect::<Vec<_>>()).collect::<Vec<_>>()}))
+            }
+            other => return Err(format!("plan {other:?}: submit/add/rm/dep/show/graph/review/retry")),
+        };
+        if changed {
+            self.write_plan();
+        }
+        Ok(out)
+    }
+}
+
+/// `"a, b ,c"` -> `["a","b","c"]`.
+fn csv_list(s: &str) -> Vec<String> {
+    s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+}
+
 // ---- the socket ------------------------------------------------------------------------
 
 fn serve(hub: Arc<Mutex<Hub>>, stream: UnixStream) {
@@ -1227,6 +1638,7 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
     h.monitor();
     let r: Result<Value, String> = match cmd.as_str() {
         "spawn" => h.launch(req).map(|o| ok(o, json!(null))),
+        "plan" => h.plan_cmd(req),
         "send" => h.send(req).map(|o| ok(o, json!(null))),
         "model" => {
             let model = s(req, "model");
@@ -1489,6 +1901,19 @@ pub fn client(args: &[String]) -> i32 {
                 "--timeout" => req["timeout"] = json!(value(&mut i)?.parse::<f64>().map_err(|_| "--timeout needs seconds".to_string())?),
                 "-n" => req["n"] = json!(value(&mut i)?.parse::<u64>().map_err(|_| "-n needs a number".to_string())?),
                 "--skill" => skills.push(value(&mut i)?.trim_start_matches('$').to_string()),
+                "--file" => req["file"] = json!(value(&mut i)?),
+                "--deps" => req["deps"] = json!(value(&mut i)?),
+                "--group" => req["group"] = json!(value(&mut i)?),
+                "--title" => req["title"] = json!(value(&mut i)?),
+                "--priority" => req["priority"] = json!(value(&mut i)?.parse::<i64>().map_err(|_| "--priority needs a number".to_string())?),
+                "--artifact" => {
+                    let a = value(&mut i)?;
+                    match req.get("artifacts").and_then(Value::as_array) {
+                        Some(v) => { let mut v = v.clone(); v.push(json!(a)); req["artifacts"] = json!(v); }
+                        None => req["artifacts"] = json!([a]),
+                    }
+                }
+                "--rm" => req["rm"] = json!(true),
                 "--context-file" => {
                     let f = value(&mut i)?;
                     let canon = std::fs::canonicalize(crate::config::expand_user(&f)).map(|p| p.display().to_string()).map_err(|e| format!("--context-file {f}: {e}"))?;
@@ -1498,7 +1923,7 @@ pub fn client(args: &[String]) -> i32 {
                     }
                 }
                 "--brief" => req["brief"] = json!(true),
-                "--prompt-file" => {
+                "--prompt-file" | "--task-file" => {
                     let f = value(&mut i)?;
                     let text = if f == "-" {
                         let mut s = String::new();
@@ -1546,6 +1971,40 @@ pub fn client(args: &[String]) -> i32 {
                 req["model"] = json!(positional.get(1).cloned().or_else(|| req.get("model_opt").and_then(Value::as_str).map(String::from)).ok_or("model needs a model name")?);
             }
             "status" | "result" | "tail" => req["name"] = json!(need_name(cmd)?),
+            "plan" => {
+                let action = positional.first().cloned().ok_or("plan needs an action: submit/add/rm/dep/show/graph/review/retry")?;
+                req["action"] = json!(action.clone());
+                match action.as_str() {
+                    "submit" => {
+                        let f = req.get("file").and_then(Value::as_str).map(String::from).ok_or("plan submit needs --file plan.json (or '-' for stdin)")?;
+                        let text = if f == "-" {
+                            let mut t = String::new();
+                            std::io::stdin().read_to_string(&mut t).map_err(|e| e.to_string())?;
+                            t
+                        } else {
+                            std::fs::read_to_string(crate::config::expand_user(&f)).map_err(|e| format!("{f}: {e}"))?
+                        };
+                        req["plan"] = serde_json::from_str(&text).map_err(|e| format!("{f}: {e}"))?;
+                    }
+                    "add" => {
+                        req["id"] = json!(positional.get(1).cloned().ok_or("plan add needs a task id")?);
+                        req["task"] = json!(file_text.clone().unwrap_or_else(|| positional.get(2..).map(|p| p.join(" ")).unwrap_or_default()));
+                    }
+                    "rm" => req["ids"] = json!(positional.get(1..).map(|p| p.to_vec()).unwrap_or_default()),
+                    "retry" => req["id"] = json!(positional.get(1).cloned().ok_or("plan retry needs a task id")?),
+                    "dep" => {
+                        req["id"] = json!(positional.get(1).cloned().ok_or("plan dep needs a task id")?);
+                        req["deps"] = json!(positional.get(2..).map(|p| p.to_vec()).unwrap_or_default());
+                    }
+                    "review" => {
+                        req["id"] = json!(positional.get(1).cloned().ok_or("plan review needs a task id")?);
+                        req["verdict"] = json!(positional.get(2).cloned().unwrap_or_default());
+                        req["reason"] = json!(positional.get(3..).map(|p| p.join(" ")).unwrap_or_default());
+                    }
+                    "show" | "graph" => {}
+                    other => return Err(format!("plan {other:?}: submit/add/rm/dep/show/graph/review/retry")),
+                }
+            }
             "wait" | "stop" => req["names"] = json!(positional),
             "ask" => {
                 req["cmd"] = json!("note");
