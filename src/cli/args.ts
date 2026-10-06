@@ -90,6 +90,26 @@ export interface SettingsArgs {
   json: boolean;
 }
 
+/**
+ * `mini-tui tasks`: the task card an agent fills for the session it runs in — a title, an
+ * AI-written description and its to-dos in three buckets. `set` replaces the whole card.
+ */
+export interface TasksArgs {
+  command: "tasks";
+  action: "set" | "show" | "clear";
+  /** The session the card belongs to; empty means "this session" (see resolveTaskSession). */
+  session?: string;
+  title?: string;
+  description?: string;
+  /** To-dos already done. */
+  done: string[];
+  /** To-dos started but not finished. */
+  pending: string[];
+  /** What is left to do. */
+  left: string[];
+  json: boolean;
+}
+
 export interface HelpArgs {
   command: "help";
 }
@@ -105,6 +125,7 @@ export type CliArgs =
   | ModelsArgs
   | ModelArgs
   | SkillsArgs
+  | TasksArgs
   | DoctorArgs
   | SettingsArgs
   | HelpArgs
@@ -112,7 +133,7 @@ export type CliArgs =
 
 export class UsageError extends Error {}
 
-const SUBCOMMANDS = new Set(["run", "view", "sessions", "session", "models", "model", "skills", "settings", "doctor", "help", "version"]);
+const SUBCOMMANDS = new Set(["run", "view", "sessions", "session", "models", "model", "skills", "tasks", "settings", "doctor", "help", "version"]);
 
 function takeValue(argv: string[], i: number, flag: string): string {
   const value = argv[i + 1];
@@ -174,6 +195,7 @@ export function parseArgs(rawArgv: string[]): CliArgs {
     const model = at >= 0 ? takeValue(rest, at, rest[at]!) : undefined;
     return { command: "doctor", model, json: rest.includes("--json") };
   }
+  if (command === "tasks") return parseTasks(rest);
   if (command === "settings") return parseSettings(rest);
   if (command === "run" || command === "view") return parseTui(command, rest);
   if (!SUBCOMMANDS.has(command!) && !command!.startsWith("-")) {
@@ -333,6 +355,33 @@ function parseSettings(rest: string[]): SettingsArgs {
   const [key, value] = positional;
   if (key && value === undefined) throw new UsageError(`settings ${key} needs a value`);
   return { command: "settings", key, value, json };
+}
+
+function parseTasks(rest: string[]): TasksArgs {
+  const args: TasksArgs = { command: "tasks", action: "show", done: [], pending: [], left: [], json: false };
+  const positional: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--json") args.json = true;
+    else if (arg === "--session" || arg === "-s") args.session = takeValue(rest, i++, arg);
+    else if (arg === "--title") args.title = takeValue(rest, i++, arg);
+    else if (arg === "--description" || arg === "--desc") args.description = takeValue(rest, i++, arg);
+    else if (arg === "--done") args.done.push(takeValue(rest, i++, arg));
+    else if (arg === "--pending") args.pending.push(takeValue(rest, i++, arg));
+    else if (arg === "--left" || arg === "--remaining") args.left.push(takeValue(rest, i++, arg));
+    else if (arg.startsWith("-")) throw new UsageError(`unknown option for tasks: ${arg}`);
+    else positional.push(arg);
+  }
+  const [action, id] = positional;
+  if (action === undefined || action === "show" || action === "set" || action === "clear") {
+    if (action) args.action = action;
+    if (id) args.session = id;
+    if (args.action !== "set" && (args.title !== undefined || args.description !== undefined || args.done.length || args.pending.length || args.left.length))
+      throw new UsageError("task fields are only written by `mini-tui tasks set`");
+    return args;
+  }
+  // `mini-tui tasks <id>` shows that session's card
+  return { ...args, action: "show", session: action };
 }
 
 /**

@@ -46,6 +46,11 @@ Scripting commands (add --json for machine-readable output):
   models                              list models (/model catalog + /connect providers)
   model [<id>]                        print / set the default model of new sessions
   skills                              list $skills
+  tasks set [--session <id>] [--title <t>] [--description <text>]
+            [--done <item>]... [--pending <item>]... [--left <item>]...
+                                write this session's task card (replaces it whole)
+  tasks show [<id>]              print the task card (title, description, to-dos)
+  tasks clear [<id>]             remove the task card
   settings [output-mode|theme <v>]    print / change /settings
   doctor [-m <model>]                 probe a cliproxy/ model end to end and name the first
                                       thing that is wrong (gateway, key, upstream login, id)
@@ -113,6 +118,9 @@ if (parsed.command !== "run" && parsed.command !== "view") {
       break;
     case "skills":
       code = commands.skillsCommand(cmd, out);
+      break;
+    case "tasks":
+      code = commands.tasksCommand(cmd, out);
       break;
     case "settings":
       code = commands.settingsCommand(cmd, out);

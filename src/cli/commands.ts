@@ -12,12 +12,12 @@ import { defaultDoctorModel, formatDoctor, runDoctor } from "../cliproxyDoctor";
 import { loadLastModel, saveLastModel } from "../lastModel";
 import { MODELS } from "../models";
 import { connectionModelOptions, loadConnections } from "../providers";
-import { DEFAULT_DB_PATH, deleteSession, findSession, listAllSessions, openDb, type SessionRecord } from "../sessions";
+import { DEFAULT_DB_PATH, TASK_LIMITS, deleteSession, deleteTask, findLiveRunByControl, findSession, getTask, listAllSessions, openDb, saveTask, type SessionRecord, type SessionTask } from "../sessions";
 import { OUTPUT_MODES, loadSettings, saveSettings, type OutputMode } from "../settings";
 import { SKILLS_DIR, listSkills } from "../skills";
 import type { RunEvent } from "../traj/schema";
 import { THEMES } from "../ui/theme";
-import type { DoctorArgs, ModelArgs, ModelsArgs, SessionsArgs, SettingsArgs, SkillsArgs } from "./args";
+import type { DoctorArgs, ModelArgs, ModelsArgs, SessionsArgs, SettingsArgs, SkillsArgs, TasksArgs } from "./args";
 import { finalAnswer, formatEventText, type HeadlessIO } from "./headless";
 
 type Out = Pick<HeadlessIO, "stdout" | "stderr">;
@@ -120,6 +120,90 @@ export function skillsCommand(args: SkillsArgs, out: Out): number {
   if (!skills.length) out.stderr(`no skills in ${SKILLS_DIR}\n`);
   for (const skill of skills) out.stdout(`$${skill.name}${skill.description ? `  ${skill.description}` : ""}\n`);
   return 0;
+}
+
+/** A card's to-dos as one line per bucket, for `tasks show`. */
+function todoLines(task: SessionTask): string[] {
+  const rows: string[] = [];
+  for (const [key, label] of [["done", "done   "], ["pending", "pending"], ["left", "left   "]] as const) {
+    for (const [i, item] of task.todos[key].entries()) rows.push(`  ${i ? "       " : label}  ${item}`);
+    if (!task.todos[key].length) rows.push(`  ${label}  -`);
+  }
+  return rows;
+}
+
+/**
+ * The session a `tasks` call is filling a card for. Named by `--session`, else the session the
+ * calling agent runs in: `$MINITUI_SESSION_ID` when its spawner set one, else the session that
+ * registered the control file every agent has in `$MSWEA_CONTROL_FILE`.
+ */
+export function resolveTaskSession(explicit: string | undefined, env: NodeJS.ProcessEnv = process.env, byControl?: (control: string) => string | null): string | null {
+  const named = explicit?.trim() || env.MINITUI_SESSION_ID?.trim();
+  if (named) return named;
+  const control = env.MSWEA_CONTROL_FILE?.trim();
+  if (control && byControl) return byControl(control);
+  return null;
+}
+
+/** Keep a card inside its limits with one clear error, instead of silently trimming the agent's words. */
+function taskTooBig(args: TasksArgs): string | null {
+  const fields: [string, string, number][] = [
+    ["--title", args.title ?? "", TASK_LIMITS.title],
+    ["--description", args.description ?? "", TASK_LIMITS.description],
+  ];
+  for (const key of ["done", "pending", "left"] as const) for (const item of args[key]) fields.push([`--${key === "left" ? "left" : key} item`, item, TASK_LIMITS.item]);
+  for (const [name, value, max] of fields) if (value.length > max) return `${name} is longer than ${max} characters`;
+  for (const key of ["done", "pending", "left"] as const) if (args[key].length > TASK_LIMITS.items) return `more than ${TASK_LIMITS.items} --${key} items`;
+  return null;
+}
+
+/**
+ * `mini-tui tasks set|show|clear`: the task card every agent fills for its session — a title, an
+ * AI-written description of what was done, and the to-dos as done / pending / what is left. `set`
+ * replaces the whole card. The web app shows the cards live (over its hub socket).
+ */
+export function tasksCommand(args: TasksArgs, out: Out, dbPath: string = DEFAULT_DB_PATH): number {
+  const db = openDb(dbPath);
+  try {
+    const id = resolveTaskSession(args.session, process.env, (control) => findLiveRunByControl(db, control)?.session_id ?? null);
+    if (!id) {
+      out.stderr("error: cannot tell which session this card is for: pass --session <id>, or run inside a mini-tui session\n");
+      return 2;
+    }
+    if (args.action === "set") {
+      const tooBig = taskTooBig(args);
+      if (tooBig) {
+        out.stderr(`error: ${tooBig}\n`);
+        return 2;
+      }
+      if (!args.title?.trim() && !args.description?.trim() && !args.done.length && !args.pending.length && !args.left.length) {
+        out.stderr("error: a task card needs something: --title, --description, --done, --pending or --left\n");
+        return 2;
+      }
+      const task = saveTask(db, id, { title: args.title ?? "", description: args.description ?? "", todos: { done: args.done, pending: args.pending, left: args.left } });
+      if (args.json) return json(out, task), 0;
+      out.stdout(`task card saved for ${id}: ${task.title || "(no title)"} (${task.todos.done.length} done, ${task.todos.pending.length} pending, ${task.todos.left.length} left)\n`);
+      return 0;
+    }
+    if (args.action === "clear") {
+      deleteTask(db, id);
+      if (args.json) return json(out, { id, cleared: true }), 0;
+      out.stdout(`task card cleared for ${id}\n`);
+      return 0;
+    }
+    const task = getTask(db, id);
+    if (args.json) return json(out, task), 0;
+    if (!task.updatedAt) {
+      out.stdout(`no task card for ${id}\n`);
+      return 0;
+    }
+    out.stdout(`${id}  ${task.title || "(no title)"}\n`);
+    if (task.description) out.stdout(`${task.description}\n`);
+    out.stdout(`${todoLines(task).join("\n")}\n`);
+    return 0;
+  } finally {
+    db.close();
+  }
 }
 
 export function settingsCommand(args: SettingsArgs, out: Out): number {
