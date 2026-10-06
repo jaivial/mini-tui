@@ -376,24 +376,40 @@ pub fn text_of(content: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    const TPL: &str = "{{error}}|{{has_tool_calls}}";
+
     #[test]
     fn cu_tool_calls_become_cu_commands() {
         let calls = vec![json!({"id": "c1", "type": "function", "function": {"name": "cu", "arguments": "{\"args\": \"snapshot --tab t3\"}"}})];
-        let actions = parse_toolcall_actions(&calls, "fmt", &Value::Null).unwrap();
+        let actions = parse_toolcall_actions(&calls, TPL, &Value::Null).unwrap();
         assert_eq!(actions[0]["command"], json!("cu snapshot --tab t3"));
+        assert_eq!(actions[0]["tool_call_id"], json!("c1"));
+    }
+
+    #[test]
+    fn cu_tool_in_responses_shape() {
+        let out = vec![json!({"type": "function_call", "call_id": "c1", "name": "cu", "arguments": "{\"args\": \"tab open https://example.com\"}"})];
+        let actions = parse_response_actions(&out, TPL, &Value::Null).unwrap();
+        assert_eq!(actions[0]["command"], json!("cu tab open https://example.com"));
+        assert_eq!(actions[0]["tool_call_id"], json!("c1"));
     }
 
     #[test]
     fn cu_tool_needs_args_and_unknown_still_errors() {
-        let no_args = vec![json!({"id": "c1", "function": {"name": "cu", "arguments": "{}"}})];
-        assert!(parse_toolcall_actions(&no_args, "fmt", &Value::Null).is_err());
+        for args in ["{}", "{\"args\": \"\"}", "{\"args\": 5}"] {
+            let calls = vec![json!({"id": "c1", "function": {"name": "cu", "arguments": args}})];
+            let e = parse_toolcall_actions(&calls, TPL, &Value::Null).unwrap_err();
+            assert_eq!(e["content"], "Missing 'args' argument in cu tool call.|True", "{args}");
+        }
+        let no_args = vec![json!({"type": "function_call", "call_id": "c1", "name": "cu", "arguments": "{}"})];
+        let e = parse_response_actions(&no_args, TPL, &Value::Null).unwrap_err();
+        assert_eq!(e["content"][0]["text"], "Missing 'args' argument in cu tool call.|True");
         let unknown = vec![json!({"id": "c1", "function": {"name": "grep", "arguments": "{}"}})];
-        assert!(parse_toolcall_actions(&unknown, "fmt", &Value::Null).is_err());
+        let e = parse_toolcall_actions(&unknown, TPL, &Value::Null).unwrap_err();
+        assert_eq!(e["content"], "Unknown tool 'grep'.Missing 'command' argument in bash tool call.|True");
     }
-
-    use super::*;
-
-    const TPL: &str = "{{error}}|{{has_tool_calls}}";
 
     #[test]
     fn parses_bash_calls() {
