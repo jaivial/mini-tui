@@ -58,6 +58,26 @@ class TestParseToolcallActions:
         assert result[0] == {"command": "cmd0", "tool_call_id": "call_0"}
         assert result[2] == {"command": "cmd2", "tool_call_id": "call_2"}
 
+    def test_cu_tool_call_maps_to_cu_command(self):
+        tool_call = MagicMock()
+        tool_call.function.name = "cu"
+        tool_call.function.arguments = '{"args": "snapshot --tab t3"}'
+        tool_call.id = "call_1"
+        assert parse_toolcall_actions([tool_call], format_error_template="{{ error }}") == [
+            {"command": "cu snapshot --tab t3", "tool_call_id": "call_1"}
+        ]
+
+    def test_cu_missing_args_error_text_matches_rust(self):
+        # The wording is the parity contract with agent-rs/src/models/shapes.rs `command_for`.
+        for arguments in ('{}', '{"args": ""}', '{"args": 5}'):
+            tool_call = MagicMock()
+            tool_call.function.name = "cu"
+            tool_call.function.arguments = arguments
+            tool_call.id = "call_1"
+            with pytest.raises(FormatError) as exc_info:
+                parse_toolcall_actions([tool_call], format_error_template="{{ error }}")
+            assert exc_info.value.messages[0]["content"] == "Missing 'args' argument in cu tool call."
+
     def test_unknown_tool_raises_format_error(self):
         tool_call = MagicMock()
         tool_call.function.name = "unknown_tool"

@@ -14,6 +14,7 @@ from minisweagent.models import GLOBAL_MODEL_STATS
 from minisweagent.models.openai_compat_model import _wrap, OpenaiCompatModel, _LITELLM_ONLY_KWARGS
 from minisweagent.models.utils.actions_toolcall_response import (
     BASH_TOOL_RESPONSE_API,
+    CU_TOOL_RESPONSE_API,
     finish_reason_from_responses_api,
     format_toolcall_observation_messages,
     parse_toolcall_actions_response,
@@ -44,7 +45,7 @@ class ResponsesCompatModel(OpenaiCompatModel):
     def _query(self, messages: list[dict], **kwargs):
         params = {k: v for k, v in (self.config.model_kwargs | kwargs).items() if k not in _LITELLM_ONLY_KWARGS}
         headers = params.pop("extra_headers", None) or {}
-        body = {"model": self._wire_model_name(), "input": messages, "tools": [BASH_TOOL_RESPONSE_API], **params}
+        body = {"model": self._wire_model_name(), "input": messages, "tools": [BASH_TOOL_RESPONSE_API, CU_TOOL_RESPONSE_API], **params}
         data = self._post("/responses", body, headers=headers)
         return _wrap(data)
 

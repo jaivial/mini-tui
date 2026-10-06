@@ -12,6 +12,7 @@ from minisweagent.exceptions import FormatError
 from minisweagent.models import GLOBAL_MODEL_STATS
 from minisweagent.models.utils.actions_toolcall import (
     BASH_TOOL,
+    CU_TOOL,
     format_toolcall_observation_messages,
     parse_toolcall_actions,
 )
@@ -92,7 +93,7 @@ class PortkeyModel:
         return self.client.chat.completions.create(
             model=self.config.model_name,
             messages=messages,
-            tools=[BASH_TOOL],
+            tools=[BASH_TOOL, CU_TOOL],
             **(self.config.model_kwargs | kwargs),
         )
 

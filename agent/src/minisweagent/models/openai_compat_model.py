@@ -30,6 +30,7 @@ from minisweagent.models.errors import (  # noqa: F401 (historical names, re-exp
 )
 from minisweagent.models.utils.actions_toolcall import (
     BASH_TOOL,
+    CU_TOOL,
     format_toolcall_observation_messages,
     parse_toolcall_actions,
 )
@@ -349,7 +350,7 @@ class OpenaiCompatModel:
     def _query(self, messages: list[dict], **kwargs) -> _Obj:
         params = {k: v for k, v in (self.config.model_kwargs | kwargs).items() if k not in _LITELLM_ONLY_KWARGS}
         headers = params.pop("extra_headers", None) or {}
-        body = {"model": self._wire_model_name(), "messages": messages, "tools": [BASH_TOOL], **params}
+        body = {"model": self._wire_model_name(), "messages": messages, "tools": [BASH_TOOL, CU_TOOL], **params}
         data = self._post_stream("/chat/completions", body, headers=headers, on_delta=self._on_delta)
         if not data.get("choices"):
             raise OpenaiCompatError(f"response without choices from {self.config.api_base}: {str(data)[:300]}")

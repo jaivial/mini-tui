@@ -15,6 +15,7 @@ from minisweagent.models.openrouter_model import (
 )
 from minisweagent.models.utils.actions_toolcall_response import (
     BASH_TOOL_RESPONSE_API,
+    CU_TOOL_RESPONSE_API,
     finish_reason_from_responses_api,
     format_toolcall_observation_messages,
     parse_toolcall_actions_response,
@@ -49,7 +50,7 @@ class OpenRouterResponseModel(OpenRouterModel):
         payload = {
             "model": self.config.model_name,
             "input": messages,
-            "tools": [BASH_TOOL_RESPONSE_API],
+            "tools": [BASH_TOOL_RESPONSE_API, CU_TOOL_RESPONSE_API],
             **(self.config.model_kwargs | kwargs),
         }
         try:

@@ -26,7 +26,7 @@ from minisweagent.models.openai_compat_model import (
     OpenaiCompatModel,
     OpenaiCompatModelConfig,
 )
-from minisweagent.models.utils.actions_toolcall import BASH_TOOL
+from minisweagent.models.utils.actions_toolcall import BASH_TOOL, CU_TOOL
 from minisweagent.models.utils.anthropic_utils import _is_anthropic_thinking_block
 
 DEFAULT_API_BASE = "https://api.anthropic.com/v1"
@@ -36,6 +36,8 @@ DEFAULT_API_VERSION = "2023-06-01"
 #: Same tool as the chat clients, in the Messages API's flat schema form.
 _fn = BASH_TOOL["function"]
 ANTHROPIC_BASH_TOOL = {"name": _fn["name"], "description": _fn["description"], "input_schema": _fn["parameters"]}
+_cfn = CU_TOOL["function"]
+ANTHROPIC_CU_TOOL = {"name": _cfn["name"], "description": _cfn["description"], "input_schema": _cfn["parameters"]}
 
 _THINKING_TYPES = ("thinking", "redacted_thinking")
 
@@ -187,7 +189,7 @@ class AnthropicCompatModel(OpenaiCompatModel):
         body = {
             "model": self._wire_model_name(),
             "messages": wire["messages"],
-            "tools": [ANTHROPIC_BASH_TOOL],
+            "tools": [ANTHROPIC_BASH_TOOL, ANTHROPIC_CU_TOOL],
             "max_tokens": params.pop("max_tokens", self.config.max_tokens),
             **params,
         }
