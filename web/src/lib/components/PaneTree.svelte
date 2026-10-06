@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import PaneTree from "./PaneTree.svelte";
-  import { clampRatio, MIN_RATIO, type Node } from "../panes";
+    import { clampRatio, MIN_RATIO, type Node } from "../panes";
 
   /**
    * Renders the pane tree: a split is two flex children and a divider, a leaf is whatever `pane`
@@ -14,12 +14,18 @@
     pane,
     onresize,
     label,
+    dropFrom = "",
+    dropTarget = "",
   }: {
     node: Node;
     pane: Snippet<[string]>;
     onresize: (splitId: string, ratio: number) => void;
     /** Human name of a pane, for the divider's accessible name. */
     label: (paneId: string) => string;
+    /** The pane being dragged, or "" for none (its zone stops lighting up). */
+    dropFrom?: string;
+    /** The pane a drag is over now, or "" for none. */
+    dropTarget?: string;
   } = $props();
 
   let box = $state<HTMLElement | null>(null);
@@ -67,7 +73,10 @@
 </script>
 
 {#if node.kind === "pane"}
-  {@render pane(node.id)}
+  <!-- A drop zone: found by hit-testing while a pane is dragged, so no role of its own. -->
+  <div class="flex min-h-0 min-w-0 flex-1" class:drop-ready={dropFrom !== "" && dropFrom !== node.id && dropTarget === node.id} data-pane-drop={node.id}>
+    {@render pane(node.id)}
+  </div>
 {:else}
   <div bind:this={box} class="flex min-h-0 min-w-0 flex-1 {node.dir === 'row' ? 'flex-row' : 'flex-col'}" class:select-none={dragging}>
     <div class="flex min-h-0 min-w-0" style="flex: {node.ratio} 1 0px">
@@ -127,6 +136,12 @@
     transition-property: background-color, box-shadow;
     transition-duration: 150ms;
     transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  /* The pane another pane is being dragged over: the drop would land here. */
+  .drop-ready {
+    outline: 2px dashed var(--color-brand);
+    outline-offset: -2px;
+    background: color-mix(in oklab, var(--color-brand) 8%, transparent);
   }
   .divider:hover,
   .divider.is-dragging,

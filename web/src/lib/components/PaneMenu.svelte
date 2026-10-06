@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { AppWindow, AppWindowMac, Columns2, Rows2, SquareSplitHorizontal, Trash2, X } from "@lucide/svelte";
+  import { AppWindow, AppWindowMac, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Columns2, LayoutGrid, Rows2, SquareSplitHorizontal, Trash2, X } from "@lucide/svelte";
   import Button from "./Button.svelte";
 
   /**
@@ -18,6 +18,11 @@
     onsplit,
     onclose,
     oncloseSession,
+    /** Whether a pane can be traded with a neighbour in each direction (nothing that way otherwise). */
+    moves = { left: false, right: false, up: false, down: false },
+    onmovepane,
+    layouts = { row: false, col: false, grid: false },
+    onarrange,
   }: {
     /** Offered in the menu too: in a very narrow pane the header's own button is hidden. */
     oncloseSession?: () => void;
@@ -32,6 +37,10 @@
     onmove?: (to: string | "new", name?: string) => void;
     onsplit: (dir: "row" | "col") => void;
     onclose: () => void;
+    moves?: { left: boolean; right: boolean; up: boolean; down: boolean };
+    onmovepane?: (dir: "left" | "right" | "up" | "down") => void;
+    layouts?: { row: boolean; col: boolean; grid: boolean };
+    onarrange?: (shape: "row" | "col" | "grid") => void;
   } = $props();
 
   const uid = $props.id();
@@ -48,6 +57,31 @@
             { id: "right", label: "Split right", hint: "Ctrl \\", icon: Columns2, disabled: limitReached ? "At most 12 panes" : canRight ? "" : "Too narrow to split", run: () => onsplit("row") },
             { id: "down", label: "Split down", hint: "Ctrl Shift \\", icon: Rows2, disabled: limitReached ? "At most 12 panes" : canDown ? "" : "Too short to split", run: () => onsplit("col") },
           ]),
+      // Rearranging the panes this window already has: trade places with a neighbour, one step at a time.
+      ...(onmovepane
+        ? ([
+            ["left", "Move pane left", "pane left of this one", ArrowLeft],
+            ["right", "Move pane right", "pane right of this one", ArrowRight],
+            ["up", "Move pane up", "pane above this one", ArrowUp],
+            ["down", "Move pane down", "pane below this one", ArrowDown],
+          ] as const).map(([dir, label, why, icon]) => ({
+            id: `pane-${dir}`,
+            label,
+            hint: "",
+            icon,
+            disabled: moves[dir] ? "" : `No ${why}`,
+            group: "Move pane",
+            run: () => onmovepane(dir),
+          }))
+        : []),
+      // A whole new shape for the panes there are, keeping their order.
+      ...(onarrange
+        ? [
+            { id: "lay-row", label: "Lay out in a row", hint: "", icon: Columns2, disabled: layouts.row ? "" : "Needs 2 panes", group: "Layout", run: () => onarrange("row") },
+            { id: "lay-col", label: "Lay out in a column", hint: "", icon: Rows2, disabled: layouts.col ? "" : "Needs 2 panes", group: "Layout", run: () => onarrange("col") },
+            { id: "lay-grid", label: "Lay out in a grid", hint: "", icon: LayoutGrid, disabled: layouts.grid ? "" : "Needs 4 panes", group: "Layout", run: () => onarrange("grid") },
+          ]
+        : []),
       // Moving a pane: to any other window, or to a new one. Both keep its session running.
       ...windows.map((w) => ({ id: `move-${w.id}`, label: w.label, hint: "", icon: AppWindow, disabled: "", group: "Move to window", run: () => onmove?.(w.id) })),
       ...(onmove ? [{ id: "move-new", label: "New window", hint: "", icon: AppWindowMac, disabled: "", group: windows.length ? "Move to window" : "Move to a new window", run: () => onmove("new") }] : []),

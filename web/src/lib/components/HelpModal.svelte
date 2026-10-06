@@ -18,6 +18,7 @@
     ["Ctrl + \\", "Split the pane right (a new chat)"],
     ["Ctrl + Shift + \\", "Split the pane down"],
     ["Alt + 1…6", "Go to pane 1 to 6"],
+    ["Drag the pane's grip", "Swap it with the pane you drop it on"],
     ["Ctrl/⌘ + Alt + arrows", "Next or previous pane"],
     ["Alt + X", "Close the pane (the session keeps running)"],
     ["Ctrl/⌘ + Shift + .", "Open or close notes"],

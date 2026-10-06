@@ -13,10 +13,12 @@
  * unique across windows, so the components need not know about windows at all.
  */
 import { MAX_PANES, count, leaves, neighbour, remove, restore, setRatio, split, type Dir, type Node } from "../panes";
+import { canMove, has, move as moveInTree, preset as presetTree, swap as swapInTree, type MoveDir, type Shape } from "../paneLayout";
 import type { Chip } from "../chips";
 import { PromptMemory } from "../promptMemory";
 import { legacy, windows } from "./windows.svelte";
 import { shallowEqual } from "../equal";
+import { clampSideWidth } from "../sidePanel";
 import { saveParts, startingDoc, workspace } from "../workspace";
 
 export interface Pane {
@@ -30,6 +32,8 @@ export interface Pane {
   notesOpen: boolean;
   /** Which tab the right sidebar shows while it is open. */
   sideTab: "notes" | "terminal";
+  /** The width the user dragged the side panel to (null: the panel's own default). */
+  sideWidth: number | null;
   /** ↑/↓ prompt recall. Not reactive state: it is read on a key press, never rendered. */
   memory: PromptMemory;
   /** The session the memory was seeded from, so it is reseeded when the pane shows another one. */
@@ -48,7 +52,7 @@ interface PanesDoc {
 
 const KEY = "minitui.panes";
 const uid = (p: string) => `${p}${Math.random().toString(36).slice(2, 9)}`;
-const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, sideTab: "notes", memory: new PromptMemory(), memoryOf: null, liveTurn: null, seenTurn: null });
+const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, sideTab: "notes", sideWidth: null, memory: new PromptMemory(), memoryOf: null, liveTurn: null, seenTurn: null });
 
 /** The first pane of a first visit. Any id works; it only has to be unique like every other one. */
 const FIRST = uid("p");
@@ -67,7 +71,7 @@ function renameLeaves(node: Node, to: Map<string, string>): Node {
 /** What is written to localStorage for one window: the tree, what each pane shows, where the focus was. */
 interface Saved {
   tree: Node;
-  panes: Record<string, { sessionId: string | null; notesOpen: boolean; sideTab: "notes" | "terminal"; liveTurn?: number | null; seenTurn?: number | null }>;
+  panes: Record<string, { sessionId: string | null; notesOpen: boolean; sideTab: "notes" | "terminal"; sideWidth?: number | null; liveTurn?: number | null; seenTurn?: number | null }>;
   focused: string;
 }
 
@@ -352,6 +356,72 @@ class PaneStore {
     this.#saveSoon();
   }
 
+  // ------------------------------------------------------------ moving panes around
+
+  /**
+   * The size the layout is judged by. Moving a pane, like splitting one, is refused when there is
+   * nothing in the direction: the caller passes what the layout is drawn at, so a pane at the edge of
+   * a narrow window stays where it is rather than trading places with a pane it cannot see.
+   */
+  canMove(paneId: string, dir: MoveDir, w: number, h: number): boolean {
+    return canMove(this.tree, paneId, dir, w, h);
+  }
+
+  /**
+   * Trade a pane with its neighbour in `dir`. The pane keeps its session, its prompt and its notes;
+   * only its place changes. False when the pane is not here or nothing lies that way.
+   */
+  move(paneId: string, dir: MoveDir, w: number, h: number): boolean {
+    if (!this.panes[paneId] || !this.canMove(paneId, dir, w, h)) return false;
+    const next = moveInTree(this.tree, paneId, dir, w, h);
+    if (next === this.tree) return false;
+    this.tree = next;
+    this.#save();
+    return true;
+  }
+
+  /** True when both panes are in this window and are not the same one: what a drop needs. */
+  canDrop(paneId: string, onto: string): boolean {
+    return paneId !== onto && !!this.panes[paneId] && has(this.tree, onto);
+  }
+
+  /**
+   * A drag and drop: `paneId` was let go over `onto`, so the two trade places. False (and nothing
+   * changed) when the drop is not one: the same pane, one that is not here, or a target not in the tree.
+   */
+  drop(paneId: string, onto: string): boolean {
+    if (!this.canDrop(paneId, onto)) return false;
+    const next = swapInTree(this.tree, paneId, onto);
+    if (next === this.tree) return false;
+    this.tree = next;
+    this.focusedId = paneId; // the pane you were dragging is the one you were using
+    this.#save();
+    return true;
+  }
+
+  /** Whether the panes there are now can be laid out as `shape` (one pane is already every shape). */
+  canArrange(shape: Shape): boolean {
+    return shape === "grid" ? this.count >= 4 : this.count >= 2;
+  }
+
+  /**
+   * Lay every pane in this window out as `shape` (a row, a column or a grid), keeping the reading
+   * order they already have and replacing the ratios with even ones. False when there is nothing to
+   * rearrange; the focus is left wherever it was.
+   */
+  arrange(shape: Shape): boolean {
+    if (!this.canArrange(shape)) return false;
+    const order = this.order;
+    this.tree = presetTree(order, shape);
+    this.#save();
+    return true;
+  }
+
+  /** The pane a layout action left holding the focus, if it still exists. */
+  focusIfLost() {
+    if (!this.panes[this.focusedId] && this.order[0]) this.focusedId = this.order[0];
+  }
+
   /**
    * Show a session in a pane. A session is shown in one pane at most: if another pane already shows
    * it, that pane is focused instead (two prompt bars for one conversation would race each other).
@@ -417,6 +487,27 @@ class PaneStore {
     this.#save();
   }
 
+  /**
+   * The width the user dragged the side panel to, kept for this pane. It is clamped before it is
+   * kept, so a width saved from a wide window cannot come back too wide in a narrow one; the panel
+   * still fits whatever the pane is now.
+   */
+  setSideWidth(paneId: string, px: number) {
+    const pane = this.panes[paneId];
+    const width = clampSideWidth(px);
+    if (!pane || width === null || pane.sideWidth === width) return;
+    pane.sideWidth = width;
+    this.#saveSoon(); // a drag fires this many times: write it once it settles
+  }
+
+  /** A double-click on the panel's divider: the width this pane kept is dropped. */
+  resetSideWidth(paneId: string) {
+    const pane = this.panes[paneId];
+    if (!pane || pane.sideWidth === null) return;
+    pane.sideWidth = null;
+    this.#save();
+  }
+
   // ------------------------------------------------------------ persistence
 
   #timer: ReturnType<typeof setTimeout> | undefined;
@@ -425,7 +516,7 @@ class PaneStore {
     this.#timer = setTimeout(() => this.#save(), 250);
   }
   #one(tree: Node, panes: Record<string, Pane>, focused: string): Saved {
-    return { tree: $state.snapshot(tree) as Node, panes: Object.fromEntries(Object.entries(panes).map(([id, p]) => [id, { sessionId: p.sessionId, notesOpen: p.notesOpen, sideTab: p.sideTab, liveTurn: p.liveTurn, seenTurn: p.seenTurn }])), focused };
+    return { tree: $state.snapshot(tree) as Node, panes: Object.fromEntries(Object.entries(panes).map(([id, p]) => [id, { sessionId: p.sessionId, notesOpen: p.notesOpen, sideTab: p.sideTab, sideWidth: p.sideWidth, liveTurn: p.liveTurn, seenTurn: p.seenTurn }])), focused };
   }
   #save() {
     if (this.#remote) return;
@@ -456,7 +547,7 @@ class PaneStore {
   #apply(value: unknown, mine: Map<string, Pane>) {
     try {
       const raw = value as
-        | { v?: number; byWindow?: Record<string, { tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown; sideTab?: unknown; liveTurn?: unknown; seenTurn?: unknown }>; focused?: unknown }>; tree?: unknown; panes?: unknown; focused?: unknown }
+        | { v?: number; byWindow?: Record<string, { tree?: unknown; panes?: Record<string, { sessionId?: unknown; notesOpen?: unknown; sideTab?: unknown; sideWidth?: unknown; liveTurn?: unknown; seenTurn?: unknown }>; focused?: unknown }>; tree?: unknown; panes?: unknown; focused?: unknown }
         | null;
       if (!raw || (!raw.byWindow && raw.v !== 1)) return;
       if (raw.v === 1) raw.byWindow = { [windows.activeId]: { tree: raw.tree, panes: raw.panes as never, focused: raw.focused } }; // the old, one-window format
@@ -485,6 +576,7 @@ class PaneStore {
             sessionId,
             notesOpen: saved?.notesOpen === true,
             sideTab: saved?.sideTab === "terminal" ? "terminal" : "notes",
+            sideWidth: clampSideWidth(saved?.sideWidth),
             liveTurn: turn(saved?.liveTurn),
             seenTurn: turn(saved?.seenTurn),
           };

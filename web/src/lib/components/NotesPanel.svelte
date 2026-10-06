@@ -4,6 +4,7 @@
   import Skeleton from "./Skeleton.svelte";
   import { notes } from "../stores/notes.svelte";
   import { SAVE_DELAY, counts, statusText, type SaveState } from "../notes";
+  import { sideWidthAt, SIDE_MAX, SIDE_MIN } from "../sidePanel";
 
   /**
    * Notes beside a session: a plain text area that saves itself (see `lib/notes.ts` for the rules).
@@ -14,11 +15,26 @@
     noteId,
     title = "",
     onclose,
+    /** The width to draw the panel at, or null for the panel's own default. */
+    width = null,
+    /** Every width a drag lands on. Omitted: the panel keeps its CSS size and cannot be resized. */
+    onresize,
+    onreset,
+    /** The left edge of the pane the panel sits in, in the same pixels as the pointer. */
+    paneLeft = 0,
   }: {
     noteId: string | null;
     title?: string;
     onclose: () => void;
+    width?: number | null;
+    onresize?: (px: number) => void;
+    /** A double-click on the divider: the width chosen for this pane is dropped. */
+    onreset?: () => void;
+    paneLeft?: number;
   } = $props();
+
+  /** The panel itself, for the measures a drag needs. */
+  let panel = $state<HTMLElement | null>(null);
 
   const uid = $props.id();
   let body = $state("");
@@ -32,6 +48,62 @@
   let inFlight: Promise<void> | null = null;
   let now = $state(Date.now());
   const c = $derived(counts(body));
+
+  // ---- free resize: the divider on the panel's left edge
+  let edge = $state<HTMLElement | null>(null);
+  let sizing = $state(false);
+  /** The last press on the divider, for a double-click (a `dblclick` event never arrives: see above). */
+  let lastDown = 0;
+  let lastX = 0;
+
+  /**
+   * A drag of the panel's left edge. The measures are viewport pixels on both sides (the pane's own
+   * zoom included), so the width comes out exact at any interface size; `sideWidthAt` then clamps it,
+   * leaving the chat its share. Nothing is kept until the drag ends.
+   */
+  function startResize(event: PointerEvent) {
+    if (event.button !== 0 || !onresize || !panel) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    // The `preventDefault` above stops the browser's own double-click detection from ever seeing the
+    // two presses, so a double-click is counted here: two presses, no drag between them, is one.
+    const now = event.timeStamp;
+    if (now - lastDown < 400 && Math.abs(lastX - event.clientX) < 4) {
+      lastDown = 0;
+      onreset?.();
+      return;
+    }
+    lastDown = now;
+    lastX = event.clientX;
+    sizing = true;
+  }
+  function trackResize(event: PointerEvent) {
+    if (!sizing || !onresize || !panel) return;
+    const box = panel.getBoundingClientRect();
+    const width = sideWidthAt(event.clientX, box.right, paneLeft);
+    if (width !== null) onresize?.(width);
+  }
+  function endResize(event: PointerEvent) {
+    if (!sizing) return;
+    sizing = false;
+    (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+    // A double-click fires two of these with the pointer still where it started: nothing was dragged,
+    // so `dblclick` arrives after the capture was taken back. Nothing to do here but let it come.
+  }
+
+  /** A step on the keys is 24px: enough to feel, small enough to land near where you wanted. */
+  const STEP = 24;
+  function keyResize(event: KeyboardEvent) {
+    const current = width ?? 320;
+    let next: number | null = null;
+    if (event.key === "ArrowLeft") next = current + STEP;
+    else if (event.key === "ArrowRight") next = current - STEP;
+    else if (event.key === "Home") next = SIDE_MAX;
+    else if (event.key === "End") next = SIDE_MIN;
+    if (next === null) return;
+    event.preventDefault();
+    onresize?.(next);
+  }
 
   // Load when the note changes (the pane switched sessions). An unsaved edit to the previous note is
   // flushed first, against that note's id, so switching never drops text.
@@ -196,9 +268,31 @@
   });
 
   const tone = $derived(save.kind === "error" || save.kind === "conflict" ? "text-err" : save.kind === "dirty" || save.kind === "saving" ? "text-ink-muted" : "text-ink-faint");
+
 </script>
 
-<aside class="notes flex min-h-0 w-full flex-1 flex-col bg-surface" aria-labelledby="{uid}-title">
+<aside bind:this={panel} class="notes relative flex min-h-0 w-full flex-1 flex-col bg-surface" class:is-sizing={sizing} aria-labelledby="{uid}-title">
+  {#if onresize}
+    <!-- A focusable separator is the ARIA pattern for a resizer ("window splitter"): it is interactive. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div
+      bind:this={edge}
+      role="separator"
+      tabindex="0"
+      aria-orientation="vertical"
+      aria-label="Resize notes"
+      aria-valuetext={width ? `${width} pixels wide` : "default width"}
+      title="Drag to resize. Double-click for the default width."
+      class="side-edge absolute inset-y-0 left-0 z-10 w-px cursor-col-resize"
+      class:is-dragging={sizing}
+      onpointerdown={startResize}
+      onpointermove={trackResize}
+      onpointerup={endResize}
+      onpointercancel={endResize}
+      ondblclick={() => onreset?.()}
+      onkeydown={keyResize}
+    ></div>
+  {/if}
   <header class="flex min-h-11 shrink-0 items-center gap-1 border-b border-line/80 py-1 pr-1.5 pl-3.5">
     <div class="min-w-0 flex-1">
       <h2 id="{uid}-title" class="text-[13px] leading-4 font-medium text-ink">Notes</h2>
@@ -259,3 +353,33 @@
     {/if}
   </footer>
 </aside>
+
+<style>
+  /* The grab area: invisible, centred on the 1px line, wider under a finger. */
+  .side-edge::before {
+    content: "";
+    position: absolute;
+    inset: 0 -5px;
+    touch-action: none;
+  }
+  @media (pointer: coarse) {
+    .side-edge::before {
+      inset: 0 -11px;
+    }
+  }
+  /* Hover, drag and keyboard focus all say "this moves", in colour, never by motion alone. */
+  .side-edge {
+    transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .side-edge:hover,
+  .side-edge.is-dragging,
+  .side-edge:focus-visible {
+    background: var(--color-brand);
+    box-shadow: 0 0 0 1px var(--color-brand);
+    outline: none;
+  }
+  /* While a drag is on, the notes are not a place to be selecting text by accident. */
+  aside.notes.is-sizing {
+    user-select: none;
+  }
+</style>

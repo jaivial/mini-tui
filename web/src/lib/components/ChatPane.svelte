@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Settings as SettingsIcon } from "@lucide/svelte";
+  import { GripVertical, PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Settings as SettingsIcon } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import SubagentStrip from "./SubagentStrip.svelte";
@@ -24,6 +24,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
   import { parseCommand } from "../completion";
   import { splitSent } from "../promptMemory";
   import { paneStatus } from "../paneStatus";
+  import { sideWidthStyle } from "../sidePanel";
 
   /**
    * One pane: a chat (a session, or a new chat until its first message) with its own header, transcript,
@@ -46,6 +47,15 @@ import { windows as windowStore } from "../stores/windows.svelte";
     onclosepane,
     windows = [],
     onmove,
+    moves,
+    onmovepane,
+    layouts,
+    onarrange,
+    ondragpane,
+    /** The pointer left the grip: this pane is the one being dragged. */
+    ondragmove,
+    ondragend,
+    dragging = false,
   }: {
     pane: Pane;
     number: number;
@@ -64,6 +74,17 @@ import { windows as windowStore } from "../stores/windows.svelte";
     /** The other windows, for "Move to window…". */
     windows?: { id: string; label: string }[];
     onmove?: (to: string | "new", name?: string) => void;
+    /** Which directions have a neighbour to trade places with. */
+    moves?: { left: boolean; right: boolean; up: boolean; down: boolean };
+    onmovepane?: (dir: "left" | "right" | "up" | "down") => void;
+    /** Which whole-layout shapes the panes here can take. */
+    layouts?: { row: boolean; col: boolean; grid: boolean };
+    onarrange?: (shape: "row" | "col" | "grid") => void;
+    /** Pointer down on the grip: this pane is being dragged. Omitted: nothing to drag it onto. */
+    ondragpane?: (event: PointerEvent) => void;
+    ondragmove?: (event: PointerEvent) => void;
+    ondragend?: (event: PointerEvent) => void;
+    dragging?: boolean;
   } = $props();
 
   const session = $derived(pane.sessionId ? (store.sessions[pane.sessionId] ?? null) : null);
@@ -71,6 +92,19 @@ import { windows as windowStore } from "../stores/windows.svelte";
   const windowsList = $derived((windows ?? []).map((w) => ({ ...w })));
   const focused = $derived(panes.focusedId === pane.id);
   const link = $derived(session ? (store.links[session.id] ?? "idle") : "idle");
+
+  /** The pane's left edge, in the same viewport pixels a pointer reports (the zoom included). */
+  let host = $state<HTMLElement | null>(null);
+  let paneLeft = $state(0);
+  $effect(() => {
+    if (!host) return;
+    const read = () => (paneLeft = host!.getBoundingClientRect().left);
+    read();
+    // A split dragged, a pane moved or the sidebar hidden all slide the pane's left edge.
+    const ro = new ResizeObserver(read);
+    ro.observe(host);
+    return () => ro.disconnect();
+  });
 
   let composer = $state<{ focus: () => void } | null>(null);
   let notes = $state<{ focus: () => void } | null>(null);
@@ -292,6 +326,30 @@ import { windows as windowStore } from "../stores/windows.svelte";
 {/snippet}
 
 {#snippet tools()}
+  {#if ondragpane}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <span
+      role="button"
+      tabindex="0"
+      aria-label="Drag pane {number} to swap it with another"
+      aria-keyshortcuts="Enter"
+      title="Drag to another pane to swap them"
+      class="grid size-8 shrink-0 cursor-grab place-items-center rounded-sm text-ink-muted hover:bg-raised hover:text-ink active:cursor-grabbing pointer-coarse:size-11 pointer-coarse:rounded-md"
+      class:is-dragging={dragging}
+      data-dragging={dragging ? "true" : undefined}
+      onpointerdown={ondragpane}
+      onpointermove={ondragmove}
+      onpointerup={ondragend}
+      onpointercancel={ondragend}
+      onkeydown={(e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        onmovepane?.("right");
+      }}
+    >
+      <GripVertical size={14} strokeWidth={1.75} aria-hidden="true" />
+    </span>
+  {/if}
   <Button
     variant="ghost"
     size="icon-sm"
@@ -320,6 +378,10 @@ import { windows as windowStore } from "../stores/windows.svelte";
     canClose={total > 1}
     {onsplit}
     onclose={onclosepane}
+    moves={moves ?? { left: false, right: false, up: false, down: false }}
+    {onmovepane}
+    layouts={layouts ?? { row: false, col: false, grid: false }}
+    {onarrange}
     oncloseSession={session ? closeSession : undefined}
     windows={windowsList}
     onmove={onmove}
@@ -331,6 +393,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
   Focus is shown by a brand hairline on the pane's edge (and `aria-current`), not by motion.
 -->
 <section
+  bind:this={host}
   class="pane relative flex min-h-0 min-w-0 flex-1 bg-canvas"
   class:is-focused={focused && total > 1}
   aria-label="Pane {number}{session ? `: ${session.title || 'Untitled'}` : ': new chat'}"
@@ -469,7 +532,11 @@ import { windows as windowStore } from "../stores/windows.svelte";
       narrow one it covers the chat (the chat is still one tap away), since two squeezed columns are
       worse than one full one.
     -->
-    <div class="notes-slot flex min-h-0 shrink-0 flex-col border-l border-line/80 bg-surface" class:is-terminal={pane.sideTab === "terminal"}>
+    <div
+      class="notes-slot flex min-h-0 shrink-0 flex-col border-l border-line/80 bg-surface"
+      class:is-terminal={pane.sideTab === "terminal"}
+      style={sideWidthStyle(pane.sideWidth)}
+    >
       <!-- Two tabs, one panel: Notes and Terminal. Arrow keys move between them (roving tabindex). -->
       <div class="flex shrink-0 items-center gap-0.5 border-b border-line/80 px-1.5 pt-1" role="tablist" aria-label="Side panel">
         {#each [{ id: "notes", label: "Notes", icon: NotebookPen }, { id: "terminal", label: "Terminal", icon: SquareTerminal }] as tab (tab.id)}
@@ -504,7 +571,16 @@ import { windows as windowStore } from "../stores/windows.svelte";
             <div class="m-3 rounded-md bg-err/10 px-3 py-2 text-[12px] text-err" role="alert">Could not load the terminal. Reload the page and try again.</div>
           {/await}
         {:else}
-          <NotesPanel bind:this={notes} noteId={session?.id ?? null} title={session?.title ?? ""} onclose={() => panes.toggleNotes(pane.id, false)} />
+          <NotesPanel
+            bind:this={notes}
+            noteId={session?.id ?? null}
+            title={session?.title ?? ""}
+            onclose={() => panes.toggleNotes(pane.id, false)}
+            width={pane.sideWidth}
+            onresize={(px) => panes.setSideWidth(pane.id, px)}
+            onreset={() => panes.resetSideWidth(pane.id)}
+            {paneLeft}
+          />
         {/if}
       </div>
     </div>
@@ -526,7 +602,8 @@ import { windows as windowStore } from "../stores/windows.svelte";
     pointer-events: none;
   }
   .notes-slot {
-    width: clamp(16rem, 32%, 24rem);
+    /* The width the user dragged the panel to, else the panel's own default. */
+    width: var(--side-w, clamp(16rem, 32%, 24rem));
   }
   /* A terminal needs columns: the sidebar is wider while it shows one. */
   .notes-slot.is-terminal {

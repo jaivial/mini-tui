@@ -20,6 +20,7 @@ import { windows } from "./lib/stores/windows.svelte";
   import { toasts } from "./lib/stores/toast.svelte";
   import { api } from "./lib/api";
   import { MAX_PANES, roomToSplit, type Dir } from "./lib/panes";
+  import { paneAt, type MoveDir, type Shape } from "./lib/paneLayout";
   import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "./lib/scale";
   import type { HistoryItem } from "./lib/types";
   import { FinishWatcher, finishMessage } from "./lib/finish";
@@ -165,6 +166,53 @@ import { windows } from "./lib/stores/windows.svelte";
   }
 
   const canSplit = (paneId: string, dir: Dir) => panes.canSplit && (tabbed || roomToSplit(panes.tree, paneId, dir, layoutW, layoutH, MIN_PANE));
+  /**
+   * Rearranging panes is judged by the space the layout is really drawn at: a pane at the left edge of
+   * a narrow window has nothing to trade places with, and the menu row then says so. In the tabbed
+   * layout (below 760px) one pane is on screen at a time, so there is nothing to rearrange.
+   */
+  const canMovePane = (paneId: string, dir: MoveDir) => !tabbed && panes.canMove(paneId, dir, layoutW, layoutH);
+  const paneMoves = (paneId: string): Record<MoveDir, boolean> => ({ left: canMovePane(paneId, "left"), right: canMovePane(paneId, "right"), up: canMovePane(paneId, "up"), down: canMovePane(paneId, "down") });
+  const paneLayouts = $derived<Record<Shape, boolean>>({ row: panes.canArrange("row"), col: panes.canArrange("col"), grid: panes.canArrange("grid") });
+  /** Move a pane one place, then keep the keyboard where the pane it became is. */
+  function movePaneDir(paneId: string, dir: MoveDir) {
+    if (!panes.move(paneId, dir, layoutW, layoutH)) return;
+    void tick().then(() => refs[panes.focusedId]?.focusComposer());
+  }
+  /** A whole new shape for the panes of this window, with the reason when it cannot happen. */
+  function arrange(shape: Shape) {
+    if (!panes.arrange(shape)) toasts.push("Nothing to rearrange", { detail: shape === "grid" ? "A grid needs 4 panes." : "A second pane to lay out.", tone: "info" });
+    else void tick().then(() => refs[panes.focusedId]?.focusComposer());
+  }
+  /**
+   * Dragging a pane. Pointer events, not the HTML5 drag: they work the same under a finger, and they
+   * can be driven by a test. While the pointer is down and has left the grip, the pane it is over is
+   * the drop target; letting go trades the two, if it is another pane.
+   */
+  let dragFrom = $state("");
+  let dragTarget = $state("");
+
+  function dragStart(paneId: string, event: PointerEvent) {
+    if (event.button !== 0 || tabbed || panes.count < 2) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    dragFrom = paneId;
+    panes.focus(paneId);
+    trackDrag(event);
+  }
+  function trackDrag(event: PointerEvent) {
+    if (!dragFrom || !layout) return;
+    dragTarget = paneAt(event.clientX, event.clientY, layout);
+  }
+  function dragEnd(event: PointerEvent) {
+    if (!dragFrom) return;
+    const onto = dragTarget;
+    const from = dragFrom;
+    (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+    dragFrom = dragTarget = "";
+    if (!onto || onto === from || !panes.drop(from, onto)) return;
+    void tick().then(() => refs[panes.focusedId]?.focusComposer());
+  }
   /** A window is born with one pane, so a move into a fresh one is never at the pane limit. */
   const movePane = (paneId: string, to: string | "new", name?: string) => {
     const went = panes.sendTo(paneId, to, name);
@@ -498,6 +546,14 @@ import { windows } from "./lib/stores/windows.svelte";
               onclosepane={() => closePane(id)}
               windows={moveTargets}
               onmove={(to, name) => movePane(id, to, name)}
+              moves={paneMoves(id)}
+              onmovepane={(dir) => movePaneDir(id, dir)}
+              ondragpane={!tabbed && panes.count > 1 ? (event) => dragStart(id, event) : undefined}
+              ondragmove={trackDrag}
+              ondragend={dragEnd}
+              dragging={dragFrom === id}
+              layouts={paneLayouts}
+              onarrange={arrange}
             />
           </div>
         {/if}
@@ -508,7 +564,7 @@ import { windows } from "./lib/stores/windows.svelte";
           {@render paneView(panes.focused.id)}
         {/key}
       {:else}
-        <PaneTree node={panes.tree} pane={paneView} onresize={(sid, r) => panes.resize(sid, r)} label={paneLabel} />
+        <PaneTree node={panes.tree} pane={paneView} onresize={(sid, r) => panes.resize(sid, r)} label={paneLabel} dropFrom={dragFrom} dropTarget={dragTarget} />
       {/if}
     </div>
   </div>
