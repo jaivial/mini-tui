@@ -465,7 +465,9 @@ export class SessionManager {
     const run = spawnMini({
       task: expanded.task,
       model: effective || undefined,
-      env: modelEnv(effective),
+      // The agent fills this session's task card (`mini-tui tasks set`): it must know which session
+      // it is, and this is the one place that knows.
+      env: { ...modelEnv(effective), MINITUI_SESSION_ID: id },
       cwd,
       // The control channel stays on: follow-ups continue the same conversation.
       control: true,
@@ -910,7 +912,7 @@ export class SessionManager {
     const run = spawnMini({
       task: "",
       model: model || undefined,
-      env: modelEnv(model),
+      env: { ...modelEnv(model), MINITUI_SESSION_ID: session.id },
       cwd,
       resumePath,
       compactOnly: true,
@@ -969,7 +971,7 @@ export class SessionManager {
     const run = spawnMini({
       task,
       model: model || undefined,
-      env: modelEnv(model),
+      env: { ...modelEnv(model), MINITUI_SESSION_ID: session.id },
       cwd,
       resumePath,
       control: true,

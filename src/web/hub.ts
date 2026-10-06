@@ -10,7 +10,7 @@
  * Nothing here knows about sockets: a client is a `send` function, so the rules are testable without
  * a network (see tests/web-hub.test.ts).
  */
-import type { Note, SaveNoteResult } from "../sessions";
+import type { Note, SaveNoteResult, SessionTask } from "../sessions";
 import type { OpenSpec, TermOut, Terminals } from "./terminals";
 import type { SaveWorkspaceResult, Workspace } from "./workspace";
 
@@ -19,6 +19,9 @@ export type HubIn =
   | { t: "note.watch"; id: string }
   | { t: "note.unwatch"; id: string }
   | { t: "note.save"; id: string; body: string; base?: number; req: number }
+  /** The task board (every session's task card, filled by the agents): watch it for live pushes. */
+  | { t: "tasks.watch" }
+  | { t: "tasks.unwatch" }
   /** The shared workspace (windows, panes, sidebar): watch it, or save a new version of it. */
   | { t: "ws.watch" }
   | { t: "ws.save"; doc: unknown; base: number; req: number }
@@ -38,6 +41,8 @@ export type HubOut =
   | { t: "note"; note: Note }
   | { t: "note.saved"; req: number; note: Note }
   | { t: "note.conflict"; req: number; current: Note }
+  /** The whole task board: sent on watch, and whenever an agent writes a card anywhere. */
+  | { t: "tasks"; tasks: SessionTask[] }
   /** The workspace's value: sent on watch, and whenever another tab or device changes it. */
   | { t: "ws"; workspace: Workspace }
   | { t: "ws.saved"; req: number; version: number }
@@ -55,6 +60,11 @@ export interface NoteStore {
   save(id: string, body: string, base?: number): SaveNoteResult;
 }
 
+export interface TaskSource {
+  /** Every session that has a task card, newest first. */
+  list(): SessionTask[];
+}
+
 export interface WorkspaceSource {
   get(): Workspace;
   save(doc: unknown, base: number): SaveWorkspaceResult;
@@ -70,6 +80,11 @@ export class Hub {
   #ws = new Set<HubClient>();
   /** Where the shared workspace is kept; absent in tests that only exercise notes. */
   workspace?: WorkspaceSource;
+  /** Clients watching the task board, and the board they were last sent (a push carries changes only). */
+  #taskWatch = new Set<HubClient>();
+  #taskSent = "";
+  /** Where the task board is kept; absent in tests that only exercise notes. */
+  tasks?: TaskSource;
 
   constructor(
     private readonly notes: NoteStore,
@@ -88,6 +103,7 @@ export class Hub {
   leave(client: HubClient): void {
     this.terminals?.manager.detach(client as never);
     this.#ws.delete(client);
+    this.#taskWatch.delete(client);
     for (const id of this.#of.get(client) ?? []) this.#unwatch(client, id);
     this.#of.delete(client);
   }
@@ -95,6 +111,11 @@ export class Hub {
   /** Connected clients (the health endpoint reports it). */
   get clients(): number {
     return this.#of.size;
+  }
+
+  /** How many clients watch the task board (the server only polls the cards while anyone does). */
+  get taskWatchers(): number {
+    return this.#taskWatch.size;
   }
 
   /** How many clients watch a note (tests, diagnostics). */
@@ -117,6 +138,7 @@ export class Hub {
     }
     if (typeof msg.t === "string" && msg.t.startsWith("term.")) return this.#term(client, msg);
     if (msg.t === "ws.watch" || msg.t === "ws.save") return this.#workspace(client, msg);
+    if (msg.t === "tasks.watch" || msg.t === "tasks.unwatch") return this.#taskBoard(client, msg.t === "tasks.watch");
     if (msg.t === "note.watch" || msg.t === "note.unwatch" || msg.t === "note.save") {
       const req = msg.t === "note.save" && Number.isInteger(msg.req) ? msg.req : undefined;
       if (typeof msg.id !== "string" || !NOTE_ID.test(msg.id)) {
@@ -136,6 +158,40 @@ export class Hub {
    */
   noteChanged(note: Note, except?: HubClient): void {
     for (const c of this.#watch.get(note.id) ?? []) if (c !== except) c.send({ t: "note", note });
+  }
+
+  /**
+   * The task board changed outside the hub (an agent ran `mini-tui tasks set`, a session was
+   * deleted): push it to whoever is watching. The board is small and whole: every push carries
+   * all of it, and an unchanged board is not re-sent (the poll that noticed decides that).
+   */
+  tasksChanged(): void {
+    const source = this.tasks;
+    if (!source || !this.#taskWatch.size) return;
+    let tasks: SessionTask[];
+    try {
+      tasks = source.list();
+    } catch {
+      return; // a busy database is checked again on the next poll
+    }
+    const wire = JSON.stringify(tasks);
+    if (wire === this.#taskSent) return;
+    this.#taskSent = wire;
+    for (const c of this.#taskWatch) c.send({ t: "tasks", tasks });
+  }
+
+  #taskBoard(client: HubClient, watch: boolean): void {
+    const source = this.tasks;
+    if (!source) return void client.send({ t: "error", error: "the task board is not available on this server" });
+    if (!watch) return void this.#taskWatch.delete(client);
+    this.#taskWatch.add(client);
+    try {
+      const tasks = source.list();
+      this.#taskSent = JSON.stringify(tasks);
+      client.send({ t: "tasks", tasks });
+    } catch (error) {
+      client.send({ t: "error", error: `could not read the task board: ${(error as Error).message}` });
+    }
   }
 
   #workspace(client: HubClient, msg: Extract<HubIn, { t: "ws.watch" | "ws.save" }>): void {
