@@ -95,7 +95,7 @@ describe("a session a terminal is running", () => {
   test("opening it in the web app follows the terminal's agent live", async () => {
     const changes: string[] = [];
     const manager = new SessionManager((s) => changes.push(s.id), { syncMs: 0 });
-    const session = manager.openHistory("s-tui");
+    const session = await manager.openHistory("s-tui");
     await until(() => session.events.some((e) => e.type === "assistant" && e.text === "first answer"));
     expect(session.status).toBe("done"); // the agent holds at its exit, waiting for a prompt
     expect(session.events.some((e) => e.type === "notice" && /following the agent/.test(e.text))).toBe(true);
@@ -126,7 +126,7 @@ describe("a session a terminal is running", () => {
 
   test("the agent ending in the terminal ends the web session's turn", async () => {
     const manager = new SessionManager(() => {}, { syncMs: 0 });
-    const session = manager.openHistory("s-tui");
+    const session = await manager.openHistory("s-tui");
     await until(() => session.events.some((e) => e.type === "assistant"));
     agent.proc.kill();
     await agent.proc.exited;
@@ -136,9 +136,9 @@ describe("a session a terminal is running", () => {
 });
 
 describe("rows written by other UIs never fail an open", () => {
-  test("broken or empty JSON columns restore as an empty, usable session", () => {
+  test("broken or empty JSON columns restore as an empty, usable session", async () => {
     const manager = new SessionManager(() => {}, { syncMs: 0 });
-    const session = manager.openHistory("s-bare");
+    const session = await manager.openHistory("s-bare");
     expect(session.events).toEqual([]);
     expect(session.info).toEqual({ cost: 0, apiCalls: 0 });
     expect(session.title).toBe("s-bare");
@@ -158,7 +158,7 @@ describe("rows written by other UIs never fail an open", () => {
     expect(session.status).toBe("done");
   });
 
-  test("a terminal holding the database does not fail the web app's open", () => {
+  test("a terminal holding the database does not fail the web app's open", async () => {
     const manager = new SessionManager(() => {}, { syncMs: 0 });
     manager.db();
     const writer = new Database(process.env.MINITUI_DB_PATH!);
@@ -166,7 +166,7 @@ describe("rows written by other UIs never fail an open", () => {
     writer.query("UPDATE sessions SET title = title WHERE id = 's-bare'").run();
     // WAL: readers are never blocked by a writer, so the open succeeds mid-save.
     manager.close("s-bare");
-    expect(() => manager.openHistory("s-bare")).not.toThrow();
+    await expect(manager.openHistory("s-bare")).resolves.toBeDefined();
     expect(() => manager.history({ limit: 5 })).not.toThrow();
     writer.exec("COMMIT");
     writer.close();
@@ -181,14 +181,14 @@ describe("a terminal continuing a session the web app holds", () => {
     saveTranscript(db, "s-shared", [{ type: "task", text: "a" }, { type: "assistant", text: "A" }], { cost: 0, apiCalls: 1, exitStatus: "Submitted" },
       [{ role: "system", content: "s" }, { role: "user", content: "a" }, { role: "assistant", content: "A" }]);
     const manager = new SessionManager(() => {}, { syncMs: 0 });
-    const session = manager.openHistory("s-shared");
+    const session = await manager.openHistory("s-shared");
     expect(session.events.length).toBe(2);
     await Bun.sleep(5);
     // The terminal ran another turn and saved it (no agent left running).
     saveTranscript(db, "s-shared", [{ type: "task", text: "a" }, { type: "assistant", text: "A" }, { type: "task", text: "b" }, { type: "assistant", text: "B" }],
       { cost: 0, apiCalls: 2, exitStatus: "Submitted" },
       [{ role: "system", content: "s" }, { role: "user", content: "a" }, { role: "assistant", content: "A" }, { role: "user", content: "b" }, { role: "assistant", content: "B" }]);
-    manager.syncExternal();
+    await manager.syncExternal();
     expect(session.events.map((e) => (e as { text?: string }).text)).toEqual(["a", "A", "b", "B"]);
     expect(session.messages.length).toBe(5);
     db.close();

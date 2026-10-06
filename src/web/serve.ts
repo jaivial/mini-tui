@@ -105,11 +105,11 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
  * them must get them back on its next socket or fetch, not a 404 that turns its panes into new chats.
  * Undefined only when the id is nowhere, not even in the database.
  */
-function held(id: string) {
+async function held(id: string) {
   const live = sessions.get(id);
   if (live) return live;
   try {
-    const restored = sessions.openHistory(id);
+    const restored = await sessions.openHistory(id);
     broadcast({ type: "session", session: summarize(restored) });
     return restored;
   } catch (error) {
@@ -122,9 +122,9 @@ function held(id: string) {
 }
 
 /** 404 for an id that is nowhere, 503 (retry) for anything else that stopped us reading it. */
-function heldOrError(id: string): { session: ReturnType<typeof held>; error?: Response } {
+async function heldOrError(id: string): Promise<{ session: Awaited<ReturnType<typeof held>>; error?: Response }> {
   try {
-    const session = held(id);
+    const session = await held(id);
     return session ? { session } : { session, error: json({ error: "unknown session" }, 404) };
   } catch (error) {
     return { session: undefined, error: json({ error: `could not open the session: ${(error as Error).message}` }, 503) };
@@ -217,7 +217,7 @@ const server = Bun.serve({
     maxPayloadLength: NOTE_MAX * 6 + 4096,
     idleTimeout: 120,
     sendPings: true,
-    open(ws: import("bun").ServerWebSocket<SocketData>) {
+    async open(ws: import("bun").ServerWebSocket<SocketData>) {
       if (ws.data.kind === "hub") {
         const client: HubClient = { send: (msg) => ws.send(JSON.stringify(msg)) !== 0 };
         ws.data.client = client;
@@ -226,7 +226,7 @@ const server = Bun.serve({
       }
       let session;
       try {
-        session = held(ws.data.id);
+        session = await held(ws.data.id);
       } catch {
         ws.close(1013, "try again"); // transient: the client reconnects
         return;
@@ -337,7 +337,7 @@ const server = Bun.serve({
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "expected a websocket upgrade" }, 426);
         if (!sameOrigin(request.headers)) return json({ error: "cross-origin websocket refused" }, 403);
         const id = decodeURIComponent(socketMatch[1] as string);
-        const found = heldOrError(id);
+        const found = await heldOrError(id);
         if (found.error) return found.error;
         if (srv.upgrade(request, { data: { kind: "session", id } satisfies SocketData })) return undefined as unknown as Response;
         return json({ error: "websocket upgrade failed" }, 400);
@@ -368,7 +368,7 @@ const server = Bun.serve({
         if (action === "/prompt" && request.method === "POST") {
           const body = await readJson(request);
           try {
-            sessions.send(id, String(body.prompt ?? ""));
+            await sessions.send(id, String(body.prompt ?? ""));
           } catch (error) {
             // e.g. a saved session with no conversation to continue from: the reason is the answer.
             return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 409);
@@ -401,7 +401,7 @@ const server = Bun.serve({
           return json({ ok: true });
         }
         if (!action && request.method === "GET") {
-          const found = heldOrError(id);
+          const found = await heldOrError(id);
           return found.error ?? json(toWire(found.session!));
         }
       }
@@ -422,7 +422,7 @@ const server = Bun.serve({
         const id = decodeURIComponent(historyMatch[1] as string);
         if (request.method === "POST") {
           try {
-            return json(toWire(sessions.openHistory(id)));
+            return json(toWire(await sessions.openHistory(id)));
           } catch (error) {
             return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 503);
           }

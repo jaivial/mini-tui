@@ -102,9 +102,9 @@ describe("history listing", () => {
     expect(m.history({ limit: 0 }).length).toBeGreaterThan(0);
     expect(m.history({ limit: 1e9 }).length).toBe(5);
   });
-  test("sessions already open in this server are flagged, so the UI does not offer them twice", () => {
+  test("sessions already open in this server are flagged, so the UI does not offer them twice", async () => {
     const m = fresh();
-    m.openHistory("s-b");
+    await m.openHistory("s-b");
     const rows = m.history();
     expect(rows.find((r) => r.id === "s-b")!.open).toBe(true);
     expect(rows.find((r) => r.id === "s-a")!.open).toBe(false);
@@ -112,32 +112,32 @@ describe("history listing", () => {
 });
 
 describe("opening a saved session", () => {
-  test("restores the transcript and settles as finished, without starting anything", () => {
+  test("restores the transcript and settles as finished, without starting anything", async () => {
     const before = agent.calls().length;
-    const s = fresh().openHistory("s-a");
+    const s = await fresh().openHistory("s-a");
     expect(s.status).toBe("done");
     expect(s.events.map((e) => e.type)).toEqual(["task", "assistant"]);
     expect(s.model).toBe("deepseek/deepseek-chat");
     expect(s.cwd).toBe("/work/api");
     expect(agent.calls().length).toBe(before);
   });
-  test("opening it twice returns the live copy instead of a second, diverging one", () => {
+  test("opening it twice returns the live copy instead of a second, diverging one", async () => {
     const m = fresh();
-    const a = m.openHistory("s-a");
+    const a = await m.openHistory("s-a");
     a.events.push({ type: "notice", text: "edited live" });
-    const b = m.openHistory("s-a");
+    const b = await m.openHistory("s-a");
     expect(b.events.at(-1)).toMatchObject({ text: "edited live" });
     expect(m.list().filter((s) => s.id === "s-a")).toHaveLength(1);
   });
-  test("an unknown id is an error, not an empty session", () => {
-    expect(() => fresh().openHistory("s-nope")).toThrow(/unknown session/);
+  test("an unknown id is an error, not an empty session", async () => {
+    await expect(fresh().openHistory("s-nope")).rejects.toThrow(/unknown session/);
   });
 });
 
 describe("continuing a resumed session", () => {
   test("the follow-up runs locally with the whole saved conversation as context", async () => {
     const m = fresh();
-    m.openHistory("s-a");
+    await m.openHistory("s-a");
     const before = agent.calls().length;
     m.send("s-a", "now add a test for it");
     await Bun.sleep(600);
@@ -150,7 +150,7 @@ describe("continuing a resumed session", () => {
   });
   test("it runs in the session's own folder and on its own model", async () => {
     const m = fresh();
-    m.openHistory("s-b");
+    await m.openHistory("s-b");
     const before = agent.calls().length;
     m.send("s-b", "and the reconnect backoff?");
     await Bun.sleep(600);
@@ -161,7 +161,7 @@ describe("continuing a resumed session", () => {
   });
   test("the transcript shows the old turn, the new prompt once, and the new reply", async () => {
     const m = fresh();
-    m.openHistory("s-c");
+    await m.openHistory("s-c");
     m.send("s-c", "make it shorter");
     await Bun.sleep(700);
     const s = m.get("s-c")!;
@@ -171,14 +171,14 @@ describe("continuing a resumed session", () => {
   });
   test("no remote-host error for a local session (the bug this replaces)", async () => {
     const m = fresh();
-    m.openHistory("s-a");
+    await m.openHistory("s-a");
     m.send("s-a", "hello again");
     await Bun.sleep(500);
     expect(m.get("s-a")!.events.some((e: any) => /remote host/.test(e.text ?? ""))).toBe(false);
   });
   test("what finishes is saved back to the same history row, transcript included", async () => {
     const m = fresh();
-    m.openHistory("s-a");
+    await m.openHistory("s-a");
     m.send("s-a", "one more thing");
     await Bun.sleep(800);
     const db = openDb(process.env.MINITUI_DB_PATH!);
@@ -188,21 +188,21 @@ describe("continuing a resumed session", () => {
     expect(events.filter((e) => e.type === "task").map((e) => e.text)).toContain("one more thing");
     expect(JSON.parse(row.messages_json).length).toBeGreaterThan(OLD_MESSAGES.length);
   });
-  test("a row that claims calls but saved no messages is listed, and sending to it still refuses cleanly", () => {
+  test("a row that claims calls but saved no messages is listed, and sending to it still refuses cleanly", async () => {
     const m = fresh();
     expect(m.history().find((r) => r.id === "s-odd")!.resumable).toBe(true); // the inference cannot see the blob
-    m.openHistory("s-odd");
+    await m.openHistory("s-odd");
     const before = m.get("s-odd")!.events.length;
     const calls = agent.calls().length;
-    expect(() => m.send("s-odd", "continue?")).toThrow(/no saved conversation/);
+    await expect(m.send("s-odd", "continue?")).rejects.toThrow(/no saved conversation/);
     expect(m.get("s-odd")!.events.length).toBe(before); // nothing was echoed
     expect(m.get("s-odd")!.status).not.toBe("running");
     expect(agent.calls().length).toBe(calls); // and no agent was started
   });
-  test("a session with no saved messages refuses to continue, and says why", () => {
+  test("a session with no saved messages refuses to continue, and says why", async () => {
     const m = fresh();
-    m.openHistory("s-ro");
-    expect(() => m.send("s-ro", "continue?")).toThrow(/no saved conversation|cannot be continued/i);
+    await m.openHistory("s-ro");
+    await expect(m.send("s-ro", "continue?")).rejects.toThrow(/no saved conversation|cannot be continued/i);
     expect(m.get("s-ro")!.status).not.toBe("running");
   });
 });
@@ -221,22 +221,22 @@ describe("closing versus deleting", () => {
     db.close();
   };
 
-  test("closing a session leaves it in the history, so it can be resumed later", () => {
+  test("closing a session leaves it in the history, so it can be resumed later", async () => {
     seedOne("s-close");
     const m = fresh();
-    m.openHistory("s-close");
+    await m.openHistory("s-close");
     m.close("s-close");
     expect(m.get("s-close")).toBeUndefined();
     expect(rowExists("s-close")).toBe(true);
     expect(m.history().find((r) => r.id === "s-close")).toMatchObject({ open: false, resumable: true });
-    expect(m.openHistory("s-close").events).toHaveLength(2); // and it comes back whole
+    expect((await m.openHistory("s-close")).events).toHaveLength(2); // and it comes back whole
   });
 
   test("closing saves what the session has so far, so nothing since the last save is lost", async () => {
     seedOne("s-save");
     const m = fresh();
-    m.openHistory("s-save");
-    m.send("s-save", "a follow-up that is mid-flight");
+    await m.openHistory("s-save");
+    await m.send("s-save", "a follow-up that is mid-flight");
     await Bun.sleep(600);
     m.close("s-save");
     const db = openDb(process.env.MINITUI_DB_PATH!);
@@ -245,11 +245,11 @@ describe("closing versus deleting", () => {
     expect(events.some((e) => e.type === "task" && e.text === "a follow-up that is mid-flight")).toBe(true);
   });
 
-  test("deleting removes the row for good, whether or not the session is open", () => {
+  test("deleting removes the row for good, whether or not the session is open", async () => {
     seedOne("s-del-open");
     seedOne("s-del-shut");
     const m = fresh();
-    m.openHistory("s-del-open");
+    await m.openHistory("s-del-open");
     expect(m.deleteHistory("s-del-open")).toBe(true); // open: stopped, dropped and deleted
     expect(m.get("s-del-open")).toBeUndefined();
     expect(rowExists("s-del-open")).toBe(false);
