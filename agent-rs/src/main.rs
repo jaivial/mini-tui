@@ -10,6 +10,7 @@ mod compaction;
 mod config;
 mod e2e;
 mod environment;
+mod metrics;
 mod models;
 mod subagents;
 mod templates;
@@ -369,9 +370,15 @@ fn main() {
         std::process::exit(e2e::server::client(&argv[1..]));
     }
     // One-shot helpers mini-tui runs besides the agent itself.
-    if let Some(cmd) = argv.first().map(String::as_str).filter(|c| *c == "title" || *c == "test-model") {
+    if let Some(cmd) = argv.first().map(String::as_str).filter(|c| *c == "title" || *c == "test-model" || *c == "metrics") {
         config::load_dotenv();
-        let code = if cmd == "title" { cmd_title(&argv[1..]) } else { cmd_test_model(&argv[1..]) };
+        let code = if cmd == "title" {
+            cmd_title(&argv[1..])
+        } else if cmd == "metrics" {
+            metrics::client(&argv[1..])
+        } else {
+            cmd_test_model(&argv[1..])
+        };
         std::process::exit(code);
     }
     let parsed = match parse_args(&argv) {

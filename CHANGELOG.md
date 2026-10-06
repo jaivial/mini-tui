@@ -2,6 +2,16 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.31.0 — 2026-10-06
+
+### Added
+
+- **Cold-start metrics (`mini-agent-rs metrics`)**: read a run's journal and split every step into
+  discovery (read-only listing/searching/reading — what a subagent re-does from a cold start) and
+  work, with estimated tokens for each, the commands it ran, and what a brief handing the
+  discoveries over would cost instead. Measurement only (Fase 0 of
+  [`docs/orchestration-plan.md`](docs/orchestration-plan.md)); `--json` for tooling.
+
 ## 0.30.0 — 2026-10-05
 
 ### Added
