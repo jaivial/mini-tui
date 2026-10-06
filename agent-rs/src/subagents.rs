@@ -324,7 +324,7 @@ pub fn expand_skills(text: &str, extra: &[String], already: &[String]) -> (Strin
 /// The brief sections a parent's brief must cover (English or Spanish headings).
 const BRIEF_SECTIONS: &[(&str, &[&str])] = &[
     ("goal", &["goal", "objetivo"]),
-    ("key paths", &["key paths", "key paths:", "rutas", "rutas clave"]),
+    ("key paths", &["key paths", "rutas", "rutas clave"]),
     ("conventions", &["conventions", "convenciones"]),
     ("searches done", &["searches", "searches done", "busquedas", "búsquedas"]),
     ("decisions", &["decisions", "decisiones"]),
@@ -900,6 +900,14 @@ impl Hub {
             mem_peak: 0,
         };
         let full_task = format!("{context_blocks}{brief_block}{task}\n\n{shared_note}");
+        // The assembled message has a cap of its own: pieces capped one by one could still add up.
+        if full_task.chars().count() > 2 * context_max {
+            return Err(format!(
+                "the child's message is {} chars together, over the {} char cap (2 x MINI_AGENT_CONTEXT_MAX): trim the context files or the task",
+                full_task.chars().count(),
+                2 * context_max
+            ));
+        }
         self.launcher().exec(&mut child, &full_task, None)?;
         let pid = child.pid;
         self.children.push(child);

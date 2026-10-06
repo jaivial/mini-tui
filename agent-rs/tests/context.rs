@@ -127,9 +127,12 @@ fn a_child_starts_with_the_context_the_parent_hands_over() {
 fn oversize_context_and_shapeless_briefs_are_refused() {
     let dir = tmp("limits");
     write(&dir.join("big.md"), &"x".repeat(40_000));
+    write(&dir.join("medium.md"), &"y".repeat(32_700));
+    write(&dir.join("long-task.md"), &"z".repeat(32_700));
     let parent = script("parent", &[
         ("run", "mini-agent-rs agent spawn big --context-file big.md 'do the job' > out1.txt 2>&1; echo rc1=$? >> out1.txt; cat out1.txt"),
         ("run", "mini-agent-rs agent spawn brief1 --brief 'just do the thing' > out2.txt 2>&1; echo rc2=$? >> out2.txt; cat out2.txt"),
+        ("run", "mini-agent-rs agent spawn both --context-file medium.md --prompt-file long-task.md > out3.txt 2>&1; echo rc3=$? >> out3.txt; cat out3.txt"),
         ("submit", "parent done"),
     ]);
     let child = script("child", &[("submit", "unused")]);
@@ -139,4 +142,7 @@ fn oversize_context_and_shapeless_briefs_are_refused() {
     assert!(joined.contains("over the"), "{joined}");
     assert!(joined.contains("rc2=1"), "{joined}");
     assert!(joined.contains("missing:"), "{joined}");
+    // Each piece fits its own cap but together they blow the assembled-message cap.
+    assert!(joined.contains("rc3=1"), "{joined}");
+    assert!(joined.contains("together"), "{joined}");
 }
