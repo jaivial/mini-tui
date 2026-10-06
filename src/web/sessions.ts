@@ -321,11 +321,16 @@ export class SessionManager {
     const settled = await Promise.all(idle.map((entry) => this.#attachExternal(entry)));
     // An attach decides the session's content from the agent's own trajectory; a reload would
     // overwrite it with an older copy, so only the ones that did not attach are refreshed.
-    idle.forEach((entry, i) => {
-      if (settled[i]) return;
-      const stamp = stamps.get(entry.session.id);
-      if (stamp !== undefined && stamp > (entry.syncedAt ?? 0)) this.#reloadFromDb(entry);
-    });
+    for (let i = 0; i < idle.length; i++) {
+      if (settled[i]) continue;
+      const stamp = stamps.get(idle[i]!.session.id);
+      if (stamp === undefined || stamp <= (idle[i]!.syncedAt ?? 0)) continue;
+      this.#reloadFromDb(idle[i]!);
+      // Hand the event loop back between rows: a transcript some other UI saved can be tens of MB
+      // of JSON to read and parse, and yielding here keeps that burst from ever becoming one
+      // unbroken stall (every socket, timer and request waits for it) however many rows moved.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   }
 
   db() {
