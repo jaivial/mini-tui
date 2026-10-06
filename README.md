@@ -588,6 +588,34 @@ compares every scenario byte for byte. `$orchestration`'s `orch` forwards its co
 session's subagents when it runs inside a Rust session. Its detached headless runs remain for your
 own terminal and the Python agent. Full reference: [`agent-rs/README.md`](agent-rs/README.md#subagents-mini-agent-rs-agent).
 
+### The RLM harness (`mini-agent-rs rlm`)
+
+The Rust binary also carries a small **RLM (Recursive Language Model) harness** in pure Rust —
+experimental, behind its own opt-in subcommand (nothing else in the binary couples to it): an
+execution framework that treats long-horizon context as program variables and sub-agents as
+function calls, inside a persistent REPL. A script (or the `rlm>` prompt) binds what matters with
+`let`, and `call` runs a whole sub-agent to completion and hands its answer back as a value —
+recursively, up to a depth cap:
+
+```sh
+mini-agent-rs rlm                       # interactive; variables and functions auto-persist
+mini-agent-rs rlm script.rlm            # or run a script (exit 1 on the first error)
+```
+
+```text
+let repo = mini-tui              # context is variables; {{repo}} interpolates (strict Jinja)
+def worker(q)                    # a sub-agent is a function call
+let r = ask {{q}}                #   one turn: model + bash tool until it answers
+return {{r}}                     #   the answer is the call's value
+end
+let out = call worker(check the tool)
+```
+
+`ask` is one model turn on the current conversation, `run` is shell, `set` writes globals from
+inside a function, and the state (`rlm.json`) survives restarts. No Python, no framework: the
+same model layer the agent uses. Full reference:
+[`agent-rs/README.md`](agent-rs/README.md#the-rlm-harness-mini-agent-rs-rlm).
+
 ## Bundled mini-swe-agent
 
 `agent/` vendors [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) (v2.4.6 base via

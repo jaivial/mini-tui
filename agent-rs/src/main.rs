@@ -13,6 +13,7 @@ mod environment;
 mod metrics;
 mod models;
 mod plan;
+mod rlm;
 mod subagents;
 mod templates;
 mod util;
@@ -369,6 +370,13 @@ fn main() {
     }
     if argv.first().map(String::as_str) == Some("browser") {
         std::process::exit(e2e::server::client(&argv[1..]));
+    }
+    // The RLM harness (experimental, behind its own subcommand): a persistent REPL with context
+    // as variables and sub-agents as calls. Nothing else in the binary couples to it.
+    if argv.first().map(String::as_str) == Some("rlm") {
+        config::load_dotenv();
+        install_signals();
+        std::process::exit(rlm::client(&argv[1..]));
     }
     // One-shot helpers mini-tui runs besides the agent itself.
     if let Some(cmd) = argv.first().map(String::as_str).filter(|c| *c == "title" || *c == "test-model" || *c == "metrics") {

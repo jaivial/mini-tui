@@ -2,6 +2,22 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.37.0 — 2026-10-06
+
+### Added
+
+- **The RLM harness (`mini-agent-rs rlm`), experimental (F6 of the execution order — Fase 6 of
+  [`docs/orchestration-plan.md`](docs/orchestration-plan.md))**: a Recursive Language Model
+  execution framework in pure Rust inside `agent-rs/`, behind its own opt-in subcommand (nothing
+  else in the binary couples to it): a persistent REPL where long-horizon context lives in program
+  variables (`let` / `set`, `{{var}}` interpolation) and sub-agents are function calls
+  (`def` / `call`) that run their own conversation with the model and the bash tool until they
+  answer — recursively, up to `--max-depth`. `ask` is one model turn, `run` is shell, and the
+  state (variables and functions, `rlm.json`) auto-persists across restarts (`save` / `load`).
+  Scripts run non-interactively (exit 1 on the first error), `-e` runs single statements, and
+  scripted `deterministic` models drive `agent-rs/tests/rlm.rs` (shipped as-is from the
+  prototype; not executed in this change). No Python and no new dependencies.
+
 ## 0.36.0 — 2026-10-06
 
 ### Added

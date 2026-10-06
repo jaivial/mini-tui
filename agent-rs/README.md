@@ -149,6 +149,58 @@ handing the discoveries over would cost instead of re-discovering them. It only 
 (a child's `traj.jsonl` works the same): no behavior changes. The numbers feed Fase 0 of
 [`docs/orchestration-plan.md`](../docs/orchestration-plan.md).
 
+## The RLM harness (`mini-agent-rs rlm`)
+
+`rlm` is a Recursive Language Model harness in pure Rust: an execution framework that treats
+long-horizon context as program variables and sub-agents as function calls, inside a persistent
+REPL. The program is yours (a script or the interactive prompt); `ask` is one model turn and
+`call` runs a whole sub-agent to completion and gives its answer back as a value, recursively.
+It is experimental and lives behind this opt-in subcommand only — the orchestrator above does
+not use it (the plan's Fase 6 gate: measure before adopting).
+
+```sh
+mini-agent-rs rlm                       # interactive (rlm>), state auto-saved at exit
+mini-agent-rs rlm script.rlm            # run a script (exit 1 on the first error)
+mini-agent-rs rlm -e 'let x = 1' -e 'show x'
+printf 'let x = 2\nshow x\n' | mini-agent-rs rlm
+```
+
+```text
+let repo = mini-tui              # context is variables; {{repo}} interpolates (strict Jinja)
+def worker(q)                    # a sub-agent is a function call
+let r = ask {{q}}                #   one turn: model + bash tool until it answers
+return {{r}}                     #   the answer is the call's value
+end
+let out = call worker(check the tool)
+let files = run ls               # shell in the session environment
+```
+
+One statement per line (`#` comments). An expression is text with `{{var}}` interpolation
+(unknown variables are errors; `{{_}}` is the last value), or `ask …`, `call …`, `run …`
+(prefix a literal with `\` to force it). `let` binds locally to the running function (or the
+REPL), `set` binds a global; each `call` gets its own conversation and its parameters, so
+functions recurse safely up to `--max-depth` (default 8, `MINI_RLM_MAX_DEPTH`).
+
+| Statement | Meaning |
+| --- | --- |
+| `let NAME = EXPR` / `set NAME = EXPR` | bind a variable (local / global) |
+| `ask TEXT` | one sub-agent turn on the current conversation (steps: `--step-limit`, 25) |
+| `call NAME(args…)` | run a function: a whole sub-agent as a function call |
+| `run SHELL` | run a shell command; its output is the value |
+| `return EXPR` | end the current call with a value |
+| `def NAME(p1, p2)` … `end` | define a function (a sub-agent program) |
+| `vars` `show` `unset` `fns` `fn` | inspect the state |
+| `model` `cost` `clear` `system` | the session: model, spend, conversation, prompt |
+| `save` `load` | persist the state (variables + functions) to `--state`, or a path |
+| `help` `quit` `exit` | — |
+
+The state (`$MSWEA_GLOBAL_CONFIG_DIR/rlm.json`, or `--state`/`MINI_RLM_STATE`) auto-loads at
+start and auto-saves at exit, so the REPL continues where it left off. `-c` YAML configs work
+like a run's (`model`, `environment`), `-m` picks the model, and scripted `deterministic*`
+models drive the tests. Recursion is capped (`max recursion depth`), a function that never
+returns answers with its last value, and a sub-agent that never answers stops at the step
+limit (`LimitsExceeded`).
+
 ## Parity with the Python agent
 
 `tests/parity/` runs the same scripted task through both agents and diffs everything mini-tui
