@@ -193,6 +193,18 @@ try {
   // a broken skills folder must never block the server
 }
 
+
+// Gzip hashed assets once and keep the result: the files are immutable, so this costs one pass per file.
+const gzipMemo = new Map<string, Promise<Uint8Array>>();
+function gzipCached(file: string, body: ReturnType<typeof Bun.file>): Promise<Uint8Array> {
+  let hit = gzipMemo.get(file);
+  if (!hit) {
+    hit = body.arrayBuffer().then((buf) => Bun.gzipSync(new Uint8Array(buf)));
+    gzipMemo.set(file, hit);
+  }
+  return hit;
+}
+
 const server = Bun.serve({
   port: PORT,
   hostname: HOST,
@@ -529,8 +541,11 @@ const server = Bun.serve({
           // Containment check: never serve anything outside dist (../ traversal).
           if (file.startsWith(dist) && existsSync(file) && statSync(file).isFile()) {
             const isShell = extname(file) === ".html";
-            return new Response(readFileSync(file), {
+            const body = Bun.file(file);
+            const gz = !isShell && /gzip/.test(request.headers.get("accept-encoding") ?? "") && [".js", ".css", ".svg", ".json"].includes(extname(file));
+            return new Response(gz ? await gzipCached(file, body) : body, {
               headers: {
+                ...(gz ? { "content-encoding": "gzip", vary: "accept-encoding" } : {}),
                 "content-type": MIME[extname(file)] ?? "application/octet-stream",
                 // The app shell must always be revalidated: it names the current hashed bundles, and a
                 // stale copy asks for files a rebuild has deleted. Hashed assets never change.
@@ -551,7 +566,7 @@ const server = Bun.serve({
             });
           }
           // SPA fallback: any other unknown path renders the app shell.
-          return new Response(readFileSync(join(dist, "index.html")), {
+          return new Response(Bun.file(join(dist, "index.html")), {
             headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache, no-store, must-revalidate" },
           });
         }
