@@ -39,7 +39,7 @@
     onclose();
   }
 
-  /** Escape closes the drawer; a press that reaches a field inside it (e.g. search) is left alone. */
+  /** Escape closes the drawer. */
   function onkey(event: KeyboardEvent) {
     if (open && event.key === "Escape") {
       event.preventDefault();
