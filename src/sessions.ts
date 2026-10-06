@@ -65,6 +65,17 @@ export function openDb(path: string = DEFAULT_DB_PATH): Database {
       body TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    -- The task card agents fill for every session they run in: a title, an
+    -- AI-written description and the to-dos sorted into done / pending / what is left. Its own table
+    -- for the same reason as notes: a session listing never reads it, and a remote session can have
+    -- one before it has a row here.
+    CREATE TABLE IF NOT EXISTS session_tasks (
+      session_id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      todos TEXT NOT NULL DEFAULT '{"done":[],"pending":[],"left":[]}',
+      updated_at INTEGER NOT NULL
+    );
   `);
   try {
     db.exec("ALTER TABLE sessions ADD COLUMN messages_json TEXT NOT NULL DEFAULT '[]'");
@@ -202,6 +213,15 @@ export function clearLiveRun(db: Database, sessionId: string, trajPath: string):
 
 export function getLiveRun(db: Database, sessionId: string): LiveRunRecord | null {
   return (db.query("SELECT * FROM live_runs WHERE session_id = ?").get(sessionId) as LiveRunRecord | undefined) ?? null;
+}
+
+/**
+ * The session whose agent owns this control file. It is how `mini-tui tasks set` finds out which
+ * session it is filling a card for when nothing named one: every agent runs with its control file
+ * in the environment (`MSWEA_CONTROL_FILE`), and every UI registers it here while the agent lives.
+ */
+export function findLiveRunByControl(db: Database, controlPath: string): LiveRunRecord | null {
+  return (db.query("SELECT * FROM live_runs WHERE control_path = ?").get(controlPath) as LiveRunRecord | undefined) ?? null;
 }
 
 /**
@@ -369,6 +389,7 @@ export function listAllSessions(db: Database, options: { cwd?: string; query?: s
 export function deleteSession(db: Database, id: string): boolean {
   const result = db.query("DELETE FROM sessions WHERE id = ?").run(id);
   db.query("DELETE FROM notes WHERE session_id = ?").run(id); // a deleted session leaves no orphaned notes
+  db.query("DELETE FROM session_tasks WHERE session_id = ?").run(id); // nor a task card
   try {
     const dir = process.env.MINITUI_RESUME_DIR ?? join(homedir(), ".config", "mini-tui", "resume");
     rmSync(join(dir, `${id}.json`), { force: true });
@@ -419,4 +440,107 @@ export function saveNote(db: Database, id: string, body: string, baseUpdatedAt?:
     ).run(id, body, updatedAt);
     return { ok: true, note: { id, body, updatedAt } };
   })();
+}
+
+// ------------------------------------------------------------ session tasks
+
+/**
+ * The task card an agent fills for the session it runs in : what the task is,
+ * what was done (an AI-written description) and the to-dos in their three buckets — done, pending
+ * and what is left. The web app shows one per session; the panes change sessions, the card does not.
+ *
+ * A card is always replaced whole, never merged: the agent re-states all three buckets every time,
+ * so the card can never hold two views of the same work. `listTasks` is the board the hub pushes.
+ */
+export interface TaskTodos {
+  done: string[];
+  pending: string[];
+  left: string[];
+}
+
+export interface SessionTask {
+  id: string;
+  title: string;
+  description: string;
+  todos: TaskTodos;
+  /** 0 when the session has no task card yet. */
+  updatedAt: number;
+}
+
+/** How much a card may hold: enough for a session's story, small enough that the board stays cheap. */
+export const TASK_LIMITS = {
+  title: 200,
+  description: 4000,
+  item: 300,
+  items: 50,
+} as const;
+
+const EMPTY_TODOS: TaskTodos = { done: [], pending: [], left: [] };
+
+/** The three buckets of a card, from whatever the caller passed: junk entries dropped, the rest trimmed. */
+export function normalizeTodos(value: unknown): TaskTodos {
+  const todos = value as Partial<Record<keyof TaskTodos, unknown>> | null;
+  const list = (key: keyof TaskTodos): string[] => {
+    const raw = Array.isArray(todos?.[key]) ? (todos![key] as unknown[]) : [];
+    const out: string[] = [];
+    for (const item of raw) {
+      if (typeof item !== "string") continue;
+      const text = item.replace(/\s+/g, " ").trim().slice(0, TASK_LIMITS.item);
+      if (text && out.length < TASK_LIMITS.items) out.push(text);
+    }
+    return out;
+  };
+  return { done: list("done"), pending: list("pending"), left: list("left") };
+}
+
+function rowToTask(row: { session_id: string; title: string; description: string; todos: string; updated_at: number } | null): SessionTask {
+  let todos: TaskTodos = EMPTY_TODOS;
+  try {
+    if (row) todos = normalizeTodos(JSON.parse(row.todos));
+  } catch {
+    // an unreadable card is an empty one, never a broken board
+  }
+  return {
+    id: row?.session_id ?? "",
+    title: row?.title ?? "",
+    description: row?.description ?? "",
+    todos,
+    updatedAt: row?.updated_at ?? 0,
+  };
+}
+
+export function getTask(db: Database, id: string): SessionTask {
+  const row = db.query("SELECT session_id, title, description, todos, updated_at FROM session_tasks WHERE session_id = ?").get(id) as Parameters<typeof rowToTask>[0];
+  return { ...rowToTask(row), id };
+}
+
+/** Every session that has a task card, most recently updated first: the board the web app shows. */
+export function listTasks(db: Database): SessionTask[] {
+  const rows = db.query("SELECT session_id, title, description, todos, updated_at FROM session_tasks ORDER BY updated_at DESC").all() as Parameters<typeof rowToTask>[0][];
+  return rows.map((row) => rowToTask(row));
+}
+
+/**
+ * Replace a session's whole task card. `updated_at` always moves forward (like a note's), so two
+ * writes in the same millisecond can never hide a change from the hub's push.
+ */
+export function saveTask(db: Database, id: string, card: { title: string; description: string; todos: unknown }): SessionTask {
+  return db.transaction((): SessionTask => {
+    const current = getTask(db, id);
+    const task: SessionTask = {
+      id,
+      title: String(card.title ?? "").replace(/\s+/g, " ").trim().slice(0, TASK_LIMITS.title),
+      description: String(card.description ?? "").trim().slice(0, TASK_LIMITS.description),
+      todos: normalizeTodos(card.todos),
+      updatedAt: Math.max(Date.now(), current.updatedAt + 1),
+    };
+    db.query(
+      "INSERT INTO session_tasks (session_id, title, description, todos, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET title = excluded.title, description = excluded.description, todos = excluded.todos, updated_at = excluded.updated_at",
+    ).run(id, task.title, task.description, JSON.stringify(task.todos), task.updatedAt);
+    return task;
+  })();
+}
+
+export function deleteTask(db: Database, id: string): void {
+  db.query("DELETE FROM session_tasks WHERE session_id = ?").run(id);
 }

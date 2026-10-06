@@ -11,7 +11,8 @@ import { createSession, openDb, saveTranscript } from "../src/sessions";
 
 const dir = mkdtempSync(join(tmpdir(), "minitui-restore-"));
 const dbPath = join(dir, "sessions.db");
-const PORT = 4950 + Math.floor(Math.random() * 40);
+// A quiet band: dev boxes are full of services around 4300-6500, and a taken port fails opaquely.
+const PORT = 7800 + Math.floor(Math.random() * 100);
 const base = `http://127.0.0.1:${PORT}`;
 let proc: ReturnType<typeof Bun.spawn> | undefined;
 
@@ -81,7 +82,9 @@ test("before and after a restart, a socket for a saved session gets its transcri
   expect(JSON.stringify(after.frame.session.events)).toContain("the saved answer");
   // It is held again: it shows up in the session list for every tab.
   expect((await (await fetch(`${base}/api/sessions`)).json()).map((s: { id: string }) => s.id)).toContain("s-saved");
-});
+  // Two server starts (health can take up to 8s each on a loaded box) and a 4s socket wait: bun's
+  // 5s default kills this test under full-suite load before its own budget (below) runs out.
+}, 30_000);
 
 test("after a restart, GET /api/sessions/:id restores a saved session instead of a 404", async () => {
   await stop();
@@ -89,7 +92,8 @@ test("after a restart, GET /api/sessions/:id restores a saved session instead of
   const res = await fetch(`${base}/api/sessions/s-saved`);
   expect(res.status).toBe(200);
   expect((await res.json()).id).toBe("s-saved");
-});
+}, 20_000); // a server restart, same as above
+
 
 test("an id that is nowhere, not even saved, is still a 404 (the pane really is gone)", async () => {
   expect((await fetch(`${base}/api/sessions/s-nowhere`)).status).toBe(404);

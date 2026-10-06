@@ -17,6 +17,7 @@ cd web && bun scripts/audit.mjs            # touch-target + overflow audit at th
 cd web && bun run e2e                      # real browser + real server: sockets, model picker, reconnect
 cd web && bun scripts/e2e-windows.mjs      # windows: move a pane, switch, reload, rename, close
 cd web && bun scripts/e2e-pane-layout.mjs  # rearranging: move pane, drag to swap, layouts, notes width
+cd web && bun run e2e-tasks                   # the task board: button, live cards, panes, hover glance
 ```
 
 Open <http://127.0.0.1:4317>.
@@ -167,6 +168,16 @@ table, so a history listing never reads them) and deleted with their session. In
 the chat instead of squeezing both. The panel's width is not fixed: a divider on its left edge drags (or
 the arrow keys step it, Home the widest, End the least, a double-click for the default), never taking the
 pane's last 16rem from the chat beside it, and the width chosen is kept per pane with the rest of the layout.
+
+**Task cards** (the checklist button in the sidebar's **Windows** header): every agent fills a card
+for the session it runs in — a task title, an AI-written description and its to-dos as done / pending /
+what is left — with `mini-tui tasks set` (`tasks show` / `tasks clear` to read and remove). The button's
+hover shows a quick glance; its click opens a drawer on the window's right edge listing every session
+with a card in an accordion (title always, description and to-dos on open) and naming the pane showing
+each session (`Pane 2 · Window 1`, or `Not open in a pane`). Cards live in a `session_tasks` table beside
+the notes and are deleted with their session. The drawer is not modal and stays live: the board travels
+over the hub socket (`tasks.watch`), and the server turns the agents' database writes into pushes with a
+light poll only while somebody is watching.
 
 **Terminal** (the terminal button in a pane's header, the **Terminal** tab beside Notes, `/terminal`, or
 `Ctrl+\``): an interactive shell for that session. It is a real PTY on the server (`src/web/terminals.ts`),

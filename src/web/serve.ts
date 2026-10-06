@@ -13,7 +13,7 @@ import { extname, join, normalize, resolve } from "node:path";
 
 import { SessionManager, loadHosts, saveHosts, probeHost, type RemoteHostRecord } from "./sessions";
 import { SessionFeed, sameOrigin, summarize, toWire } from "./feed";
-import { NOTE_MAX, getNote, saveNote } from "../sessions";
+import { NOTE_MAX, getNote, listTasks, saveNote } from "../sessions";
 import { FolderError, listLocal, listRemote } from "./folders";
 import { Hub, type HubClient } from "./hub";
 import { Terminals } from "./terminals";
@@ -91,6 +91,19 @@ hub = new Hub({ get: (id) => getNote(sessions.db(), id), save: (id, body, base) 
 // The shared workspace (windows, panes, sidebar): one file, so every device shows the same layout.
 const workspace = new WorkspaceStore(join(process.env.MINITUI_CONFIG_DIR ?? join(homedir(), ".config", "mini-tui"), "web-workspace.json"));
 hub.workspace = { get: () => workspace.get(), save: (doc, base) => workspace.save(doc, base), max: WORKSPACE_MAX };
+// The task board (one card per session, filled by the agents): watched over the same hub, pushed
+// as it changes. Cards are written straight to the database (`mini-tui tasks set` runs in agent
+// processes this server does not own), so a light poll — only while someone is watching — is what
+// notices those writes and turns them into pushes.
+hub.tasks = { list: () => listTasks(sessions.db()) };
+// `MINITUI_WEB_SYNC_MS` <= 0 means "no background sync" (the session sync's rule), never a spin.
+const tasksSyncMs = Number(process.env.MINITUI_WEB_SYNC_MS ?? 1000);
+if (tasksSyncMs > 0) {
+  const tasksTimer = setInterval(() => {
+    if (hub.taskWatchers) hub.tasksChanged();
+  }, tasksSyncMs);
+  (tasksTimer as { unref?: () => void }).unref?.();
+}
 // No shell outlives the server (a restart, a deploy, Ctrl+C in a dev shell).
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.once(sig, () => {
@@ -433,6 +446,8 @@ const server = Bun.serve({
           feed.gone(id);
           // Its note went with it: anyone watching it sees it empty, instead of keeping stale text.
           hub.noteChanged({ id, body: "", updatedAt: 0 });
+          // So did its task card (deleteSession drops the row): the board loses that session now.
+          hub.tasksChanged();
           broadcast({ type: "session-gone", id });
           return existed ? json({ ok: true }) : json({ error: "unknown session" }, 404);
         }
@@ -543,7 +558,8 @@ const server = Bun.serve({
             const isShell = extname(file) === ".html";
             const body = Bun.file(file);
             const gz = !isShell && /gzip/.test(request.headers.get("accept-encoding") ?? "") && [".js", ".css", ".svg", ".json"].includes(extname(file));
-            return new Response(gz ? await gzipCached(file, body) : body, {
+            // The gzip copy is bytes and the plain copy a BunFile: both are a body, whatever the types say.
+            return new Response((gz ? await gzipCached(file, body) : body) as BodyInit, {
               headers: {
                 ...(gz ? { "content-encoding": "gzip", vary: "accept-encoding" } : {}),
                 "content-type": MIME[extname(file)] ?? "application/octet-stream",

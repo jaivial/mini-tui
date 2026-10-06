@@ -15,6 +15,17 @@ agent:
     </format_example>
 
     Failure to follow these rules will cause your response to be rejected.
+    <session_tasks_rule>
+    Every session keeps a task card beside it (the mini-tui web sidebar shows it live), and every agent must fill it for the session it runs in. From your bash tool run:
+
+        mini-tui tasks set --title "<short task title>" --description "<what this session is doing and what it did, written for a human reader>" --done "<finished to-do>" --pending "<started to-do>" --left "<to-do still to do>"
+
+    --done, --pending and --left are repeatable, one to-do each: done = finished, pending = in progress, left = what remains. Each run replaces the whole card, so restate all three buckets every time. Keep it current:
+    - write the first card as soon as you see what the task is (early beats perfect);
+    - update it whenever the picture changes (work finished, new work found);
+    - update it one last time just before your final answer, so a reader sees the end state without reading the transcript.
+    If the command answers that it cannot tell which session this is, pass --session <id>.
+    </session_tasks_rule>
   instance_template: |
     Please solve this issue: {{task}}
 

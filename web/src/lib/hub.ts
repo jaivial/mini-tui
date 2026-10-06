@@ -121,7 +121,7 @@ export class HubConnection {
       const queued = this.#queue;
       this.#queue = [];
       for (const fn of this.#onOpen) fn();
-      for (const raw of queued) if (!raw.includes('"t":"note.watch"')) ws.send(raw);
+      for (const raw of queued) if (!raw.includes('"t":"note.watch"') && !raw.includes('"t":"tasks.watch"')) ws.send(raw);
       this.#beat = setInterval(() => this.#tick(), this.#o.heartbeat);
     };
     ws.onmessage = (ev) => {

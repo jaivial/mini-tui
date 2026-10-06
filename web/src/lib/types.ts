@@ -33,6 +33,26 @@ export interface Note {
   updatedAt: number;
 }
 
+/** The to-dos of a session's task card, in their three buckets. */
+export interface TaskTodos {
+  /** Finished. */
+  done: string[];
+  /** Started but not finished. */
+  pending: string[];
+  /** What is left to do. */
+  left: string[];
+}
+
+/** A session's task card, as the hub socket sends it: what its agents fill with `mini-tui tasks set`. */
+export interface SessionTask {
+  id: string;
+  title: string;
+  description: string;
+  todos: TaskTodos;
+  /** 0 when the session has no task card yet. */
+  updatedAt: number;
+}
+
 /** `GET /api/folders`: the subfolders of one folder, on this machine or a remote host. */
 export interface FolderEntry {
   name: string;
