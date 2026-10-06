@@ -46,6 +46,12 @@
   let area = $state<HTMLTextAreaElement | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let inFlight: Promise<void> | null = null;
+  /**
+   * The version each note of this pane is at, as the server last confirmed it. A save names the
+   * version it starts from; this is what a save made while another is in flight must start from,
+   * or the server refuses it as a conflict and the text it carried is lost.
+   */
+  const landed = new Map<string, number>();
   let now = $state(Date.now());
   const c = $derived(counts(body));
 
@@ -122,6 +128,7 @@
       if (save.kind === "loading") {
         body = savedBody = note.body;
         base = note.updatedAt;
+        landed.set(id, note.updatedAt);
         save = { kind: "saved", at: note.updatedAt };
         return;
       }
@@ -131,6 +138,7 @@
         const at = area?.selectionStart ?? 0;
         body = savedBody = note.body;
         base = note.updatedAt;
+        landed.set(id, note.updatedAt);
         save = { kind: "saved", at: note.updatedAt };
         queueMicrotask(() => area?.setSelectionRange(Math.min(at, body.length), Math.min(at, body.length)));
       } else {
@@ -178,21 +186,31 @@
    * the wrong note's text (or nothing). A save for a note that is no longer on screen uses the values
    * captured here; one for the current note re-reads them after waiting its turn, so a save that was
    * in flight has already moved the version on.
+   *
+   * The version it names is the one the *last* save of this note established (`landed`), never the
+   * one captured above: typing while a save is in flight leaves the snapshot a version behind, and a
+   * save sent from it is refused as a conflict, silently dropping the text it carried. `leaving`
+   * says the pane has already moved on, so `body` no longer belongs to this note and only the
+   * snapshot can be sent.
    */
-  async function flush(id: string, _leaving = false): Promise<void> {
+  async function flush(id: string, leaving = false): Promise<void> {
     clearTimeout(timer);
     const snap = { text: body, saved: savedBody, base, kind: save.kind };
+    const wanted = snap.text;
     if (inFlight) await inFlight;
-    const current = id === noteId;
+    const current = id === noteId && !leaving;
     const text = current ? body : snap.text;
     const saved = current ? savedBody : snap.saved;
-    const from = current ? base : snap.base;
     const kind = current ? save.kind : snap.kind;
+    // An older save of this same note moved the version on while we waited: start from where it landed.
+    const from = landed.get(id) ?? snap.base;
     if (text === saved || kind === "conflict" || kind === "loading") return;
     if (current) save = { kind: "saving" };
-    inFlight = (async () => {
+    const run = (async () => {
       try {
         const result = await notes.save(id, text, from);
+        // The note is saved on the server either way; remember its new version for the next save.
+        if (result.ok) landed.set(id, result.note.updatedAt);
         if (id !== noteId) return; // switched away while it was saving: it landed, nothing to show
         if (result.ok) {
           base = result.note.updatedAt;
@@ -203,12 +221,14 @@
           save = { kind: "conflict", theirs: result.conflict.body, theirsAt: result.conflict.updatedAt };
         }
       } catch (error) {
-        if (id === noteId) save = { kind: "error", message: (error as Error).message };
+        if (id === noteId && !leaving) save = { kind: "error", message: (error as Error).message };
       }
     })();
-    const mine = inFlight;
-    await mine;
-    if (inFlight === mine) inFlight = null;
+    inFlight = run;
+    await run;
+    if (inFlight === run) inFlight = null;
+    // Still showing this note, and it moved on while this flush waited its turn: save it again.
+    if (current && !leaving && id === noteId && body !== wanted && body !== savedBody) timer = setTimeout(() => void flush(id), 0);
   }
 
   /** Conflict: keep mine (overwrite theirs, deliberately) or take theirs (mine is copied first). */

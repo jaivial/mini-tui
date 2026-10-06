@@ -12,6 +12,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "shots": "bun scripts/screenshots.mjs",
     "e2e": "bun scripts/e2e.mjs",
+    "e2e-notes": "bun scripts/e2e-notes-persist.mjs",
     "readme-shots": "bun scripts/readme-shots.mjs",
     "windows-shots": "bun scripts/windows-shots.mjs"
   },
