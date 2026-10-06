@@ -2,6 +2,28 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.33.0 — 2026-10-06
+
+### Added
+
+- **The hub runs DAG plans with a dynamic scheduler (Fase 2 of
+  [`docs/orchestration-plan.md`](docs/orchestration-plan.md))**: `agent plan submit --file plan.json`
+  hands the hub a validated DAG (unique ids, existing deps, no cycles) and each task launches
+  itself the moment its deps are satisfied — while the parent is in another turn or asleep —
+  limited only by the real memory/cost caps and per-group serialization. `agent plan
+  add/rm/dep` re-plan in flight, `plan show/graph` inspect (states + ready queue, edges for the
+  task board), `plan review <id> ok|fail` accepts or rejects a finished task, `plan retry`
+  relaunches a failed one. Successors are born with a **handoff**: their deps' results and
+  committed `artifacts` arrive in a `<handoff>` block, and `[plan]` notes report every launch,
+  finish, failure and blocked dependent. Everything persists in `subagents/plan.json` next to
+  `index.json` (which now carries the plan too).
+
+### Fixed
+
+- A forced spawn (`--force`, or a plan task relaunching a name) now lets the old child's holding
+  process go before reusing the name; before, a finished child's process could keep running
+  behind the replacement and a relaunch was skipped as "busy".
+
 ## 0.32.0 — 2026-10-06
 
 ### Added

@@ -12,6 +12,7 @@ mod e2e;
 mod environment;
 mod metrics;
 mod models;
+mod plan;
 mod subagents;
 mod templates;
 mod util;
