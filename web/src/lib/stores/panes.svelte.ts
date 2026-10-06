@@ -13,6 +13,7 @@
  * unique across windows, so the components need not know about windows at all.
  */
 import { MAX_PANES, count, leaves, neighbour, remove, restore, setRatio, split, type Dir, type Node } from "../panes";
+import { canMove, has, move as moveInTree, preset as presetTree, swap as swapInTree, type MoveDir, type Shape } from "../paneLayout";
 import type { Chip } from "../chips";
 import { PromptMemory } from "../promptMemory";
 import { legacy, windows } from "./windows.svelte";
@@ -350,6 +351,72 @@ class PaneStore {
   resize(splitId: string, ratio: number) {
     this.tree = setRatio(this.tree, splitId, ratio);
     this.#saveSoon();
+  }
+
+  // ------------------------------------------------------------ moving panes around
+
+  /**
+   * The size the layout is judged by. Moving a pane, like splitting one, is refused when there is
+   * nothing in the direction: the caller passes what the layout is drawn at, so a pane at the edge of
+   * a narrow window stays where it is rather than trading places with a pane it cannot see.
+   */
+  canMove(paneId: string, dir: MoveDir, w: number, h: number): boolean {
+    return canMove(this.tree, paneId, dir, w, h);
+  }
+
+  /**
+   * Trade a pane with its neighbour in `dir`. The pane keeps its session, its prompt and its notes;
+   * only its place changes. False when the pane is not here or nothing lies that way.
+   */
+  move(paneId: string, dir: MoveDir, w: number, h: number): boolean {
+    if (!this.panes[paneId] || !this.canMove(paneId, dir, w, h)) return false;
+    const next = moveInTree(this.tree, paneId, dir, w, h);
+    if (next === this.tree) return false;
+    this.tree = next;
+    this.#save();
+    return true;
+  }
+
+  /** True when both panes are in this window and are not the same one: what a drop needs. */
+  canDrop(paneId: string, onto: string): boolean {
+    return paneId !== onto && !!this.panes[paneId] && has(this.tree, onto);
+  }
+
+  /**
+   * A drag and drop: `paneId` was let go over `onto`, so the two trade places. False (and nothing
+   * changed) when the drop is not one: the same pane, one that is not here, or a target not in the tree.
+   */
+  drop(paneId: string, onto: string): boolean {
+    if (!this.canDrop(paneId, onto)) return false;
+    const next = swapInTree(this.tree, paneId, onto);
+    if (next === this.tree) return false;
+    this.tree = next;
+    this.focusedId = paneId; // the pane you were dragging is the one you were using
+    this.#save();
+    return true;
+  }
+
+  /** Whether the panes there are now can be laid out as `shape` (one pane is already every shape). */
+  canArrange(shape: Shape): boolean {
+    return shape === "grid" ? this.count >= 4 : this.count >= 2;
+  }
+
+  /**
+   * Lay every pane in this window out as `shape` (a row, a column or a grid), keeping the reading
+   * order they already have and replacing the ratios with even ones. False when there is nothing to
+   * rearrange; the focus is left wherever it was.
+   */
+  arrange(shape: Shape): boolean {
+    if (!this.canArrange(shape)) return false;
+    const order = this.order;
+    this.tree = presetTree(order, shape);
+    this.#save();
+    return true;
+  }
+
+  /** The pane a layout action left holding the focus, if it still exists. */
+  focusIfLost() {
+    if (!this.panes[this.focusedId] && this.order[0]) this.focusedId = this.order[0];
   }
 
   /**
