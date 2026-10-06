@@ -1,26 +1,22 @@
 <script lang="ts">
-  import MarkdownIt from "markdown-it";
   import { boundedText } from "../format";
+  import { markdown } from "../markdown";
 
   let { text, class: klass = "" }: { text: string; class?: string } = $props();
 
-  const md = new MarkdownIt({
-    html: false, // never trust agent output with raw HTML
-    linkify: true,
-    breaks: true,
+  // The engine arrives with the first message. Until it does the same text shows as plain
+  // lines, so nothing shifts when the HTML replaces it a moment later.
+  let html = $state("");
+  $effect(() => {
+    const source = boundedText(text, 400, 20_000);
+    let live = true;
+    void markdown.render(source).then((value) => {
+      if (live) html = value;
+    });
+    return () => {
+      live = false;
+    };
   });
-
-  // External links open in a new tab, and the rel is set here.
-  const defaultLinkOpen =
-    md.renderer.rules.link_open ??
-    ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts));
-  md.renderer.rules.link_open = (tokens, idx, opts, env, self) => {
-    tokens[idx]!.attrSet("target", "_blank");
-    tokens[idx]!.attrSet("rel", "noopener noreferrer");
-    return defaultLinkOpen(tokens, idx, opts, env, self);
-  };
-
-  const html = $derived(md.render(boundedText(text, 400, 20_000)));
 </script>
 
 <div class="prose-mini {klass}">{@html html}</div>

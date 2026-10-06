@@ -11,6 +11,7 @@ bun run web          # build the UI and serve everything on :4317
 bun run web:serve    # API only (no build needed)
 bun run web:dev      # Vite dev server on :4318, proxying /api to :4317
 bun run web:check    # svelte-check
+bun scripts/bundle-report.mjs   # chunk sizes and what a cold visit downloads (after a build)
 cd web && bun run build && bun run shots   # desktop/tablet/phone screenshots (mocked API) -> /tmp/minitui-shots
 cd web && bun scripts/audit.mjs            # touch-target + overflow audit at the three sizes
 cd web && bun run e2e                      # real browser + real server: sockets, model picker, reconnect
@@ -163,7 +164,9 @@ the chat instead of squeezing both.
 **Terminal** (the terminal button in a pane's header, the **Terminal** tab beside Notes, `/terminal`, or
 `Ctrl+\``): an interactive shell for that session. It is a real PTY on the server (`src/web/terminals.ts`),
 started in the session's folder, or an `ssh -tt` login shell on the session's remote host, in its folder.
-xterm.js draws it, loaded only when the first terminal opens. It streams over the hub socket like notes:
+xterm.js draws it, loaded only when the first terminal opens (the whole chunk is ~290 KB, so it
+never sits in the boot path; `bun scripts/bundle-report.mjs` shows what does). The markdown engine
+is loaded the same way, with the first transcript. It streams over the hub socket like notes:
 keys go up as `term.input`, output comes down as `term.data` (coalesced, and a flood is cut to its tail).
 Hiding the panel, switching to Notes or reloading the page keeps the shell running, and coming back replays
 its recent output. **Restart** ends it and starts a fresh one; a shell nobody watches ends after 10 minutes,

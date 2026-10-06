@@ -16,6 +16,7 @@ import { MAX_PANES, count, leaves, neighbour, remove, restore, setRatio, split, 
 import type { Chip } from "../chips";
 import { PromptMemory } from "../promptMemory";
 import { legacy, windows } from "./windows.svelte";
+import { shallowEqual } from "../equal";
 import { saveParts, startingDoc, workspace } from "../workspace";
 
 export interface Pane {
@@ -36,6 +37,13 @@ export interface Pane {
   /** The last turn (`startedAt`) this pane saw running, and the last one it acknowledged (a click). See `paneStatus`. */
   liveTurn: number | null;
   seenTurn: number | null;
+}
+
+/** What this store writes into the shared workspace (and what it compares against, above). */
+interface PanesDoc {
+  v: 2;
+  byWindow: Record<string, Saved>;
+  focused: string;
 }
 
 const KEY = "minitui.panes";
@@ -363,6 +371,9 @@ class PaneStore {
     }
     const pane = this.panes[paneId];
     if (!pane) return paneId;
+    // Already showing it (and already focused: `focus` would only write the layout back): nothing
+    // to change. Every sidebar click lands here, and most of them change nothing at all.
+    if (pane.sessionId === sessionId && this.focusedId === paneId) return paneId;
     if (pane.sessionId !== sessionId) {
       pane.sessionId = sessionId;
       pane.prompt = "";
@@ -422,12 +433,21 @@ class PaneStore {
       const byWindow: Record<string, Saved> = {};
       for (const [id, set] of Object.entries(this.#kept)) byWindow[id] = this.#one(set.tree, set.panes, set.focused);
       byWindow[this.#wid] = this.#one(this.tree, this.panes, this.focusedId);
+      // The client drops a save that says what the server already holds, but building it still
+      // cost a deep snapshot of every pane: skip the whole thing when nothing moved.
+      const doc: { panes: PanesDoc; windows: unknown } = { panes: { v: 2, byWindow, focused: this.focusedId }, windows: windows.snapshot() };
+      if (this.#saved !== undefined && shallowEqual(doc, { panes: this.#saved, windows: this.#savedWindows })) return;
+      this.#saved = doc.panes;
+      this.#savedWindows = doc.windows;
       // One version for both: the pane ids mean nothing without the list of windows they belong to.
-      saveParts({ panes: { v: 2, byWindow, focused: this.focusedId }, windows: windows.snapshot() });
+      saveParts(doc);
     } catch {
       /* private mode, or storage full: panes still work, they just are not remembered */
     }
   }
+  /** The layout as it was last written, so a save that says the same thing is not sent. */
+  #saved?: PanesDoc;
+  #savedWindows?: unknown;
   #load() {
     this.#apply(startingDoc().panes ?? legacy(KEY), new Map());
   }

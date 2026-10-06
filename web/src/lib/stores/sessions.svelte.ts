@@ -12,6 +12,7 @@
  */
 import { api } from "../api";
 import { SessionSocket, type SocketState } from "../session-socket";
+import { shallowEqual } from "../equal";
 import type { Frame, RemoteHost, SessionMeta, SessionState, WireSession } from "../types";
 
 export type Link = "idle" | "connecting" | "live" | "reconnecting" | "gone";
@@ -55,7 +56,13 @@ class SessionStore {
   async load() {
     const [sessions, hosts] = await Promise.all([api.sessions(), api.hosts()]);
     const map: Record<string, SessionState> = {};
-    for (const meta of sessions) map[meta.id] = this.#merge(this.sessions[meta.id], meta);
+    for (const meta of sessions) {
+      const prev = this.sessions[meta.id];
+      const next = this.#merge(prev, meta);
+      // Unchanged metadata keeps the previous object: a reload that found nothing new must not
+      // hand every reader of `store.sessions` (the sidebar, the header, the tabs) a new one.
+      map[meta.id] = prev && shallowEqual(prev, next) ? prev : next;
+    }
     this.sessions = map;
     this.hosts = hosts;
     // Which session is on screen is the pane layer's decision (App.svelte), not the list's.
@@ -95,7 +102,12 @@ class SessionStore {
         return;
       }
       if (payload.type === "session" && payload.session) {
-        this.sessions[payload.session.id] = this.#merge(this.sessions[payload.session.id], payload.session);
+        const prev = this.sessions[payload.session.id];
+        const next = this.#merge(prev, payload.session);
+        // A stream that repeats itself (a sync tick announcing an unchanged row, a burst of frames
+        // for the same turn) must not redraw every row that shows the session.
+        if (prev && shallowEqual(prev, next)) return;
+        this.sessions[next.id] = next;
         this.#reconcileSoon();
       } else if (payload.type === "session-gone" && payload.id) {
         this.#drop(payload.id);

@@ -70,6 +70,11 @@ export class SessionSocket {
   #lastSeen = 0;
   #gotSnapshot = false;
   #state: SocketState = "idle";
+  /** The tab-wide wake hooks, shared by every socket: identical listeners, added at most once. */
+  static #waking = new Set<SessionSocket>();
+  /** The one listener pair on `window`/`document`, kept so it can be taken off again. */
+  static #lastWake: (() => void) | null = null;
+  static #listening = false;
   #wake = () => {
     if (typeof document !== "undefined" && document?.visibilityState === "hidden") return;
     this.#poke();
@@ -114,15 +119,32 @@ export class SessionSocket {
   }
 
   /**
-   * Wake-up hooks (network back, tab visible). Feature-detected method by method rather than by
-   * `typeof window`: a test runner or an embedded webview can define a partial `window`.
+   * Wake-up hooks (network back, tab visible). Every socket wants the same two listeners, so they
+   * are added once for the class and fan out to the sockets that are open, rather than the page
+   * piling up hundreds of them (one pair per socket, again on every reconnect).
    */
   #listen(on: boolean): void {
     const w = typeof window !== "undefined" ? window : undefined;
     const d = typeof document !== "undefined" ? document : undefined;
-    const method = on ? "addEventListener" : "removeEventListener";
-    if (typeof w?.[method] === "function") w[method]("online", this.#wake);
-    if (typeof d?.[method] === "function") d[method]("visibilitychange", this.#wake);
+    if (on) {
+      SessionSocket.#waking.add(this);
+      if (SessionSocket.#listening || typeof w === "undefined") return;
+      SessionSocket.#listening = true;
+      const wake = (SessionSocket.#lastWake = () => {
+        for (const socket of SessionSocket.#waking) socket.#wake();
+      });
+      if (typeof w.addEventListener === "function") w.addEventListener("online", wake);
+      if (typeof d?.addEventListener === "function") d.addEventListener("visibilitychange", wake);
+      return;
+    }
+    SessionSocket.#waking.delete(this);
+    const wake = SessionSocket.#lastWake;
+    if (!SessionSocket.#waking.size && SessionSocket.#listening && wake) {
+      SessionSocket.#listening = false;
+      SessionSocket.#lastWake = null;
+      if (typeof w?.removeEventListener === "function") w.removeEventListener("online", wake);
+      if (typeof d?.removeEventListener === "function") d.removeEventListener("visibilitychange", wake);
+    }
   }
 
   #set(state: SocketState): void {
