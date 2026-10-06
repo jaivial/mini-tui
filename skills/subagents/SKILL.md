@@ -19,6 +19,8 @@ spend counts toward its cost limit, and every one is saved as a session under th
 ```bash
 mini-agent-rs agent spawn <name> [--cwd DIR] [-m MODEL] [--max-steps N] [--cost-limit USD] [--skill NAME] "<task>"
 mini-agent-rs agent spawn <name> --prompt-file task.md      # long tasks ('-' = stdin)
+mini-agent-rs agent spawn <name> --context-file notes.md ... # hand over what you know (repeatable)
+mini-agent-rs agent spawn <name> --brief --prompt-file brief.md   # a structured brief
 mini-agent-rs agent resources [--json]     # free memory, avg subagent cost, max fan-out
 mini-agent-rs agent can-spawn N            # would N more fit right now?
 mini-agent-rs agent ls                     # NAME STATE STEPS COST IDLE LAST
@@ -39,7 +41,8 @@ whole context for `send`), `stopped`, `exited`. Exit codes: 0 ok, 1 refused (the
 1. **Plan the split.** One self-contained task per subagent: the folder (`--cwd`), the files, what
    "done" means, and that it must end with a short summary. Subagents share nothing but the
    filesystem: never give two of them the same files. For parallel edits in one repo, give each its
-   own `git worktree`.
+   own `git worktree`. **Hand over what you already know** (see "Hand context over" below): a child
+   that re-discovers your searches pays for them again.
 2. **Spawn** them one after another (each call returns in a moment). Name them by job (`api-tests`,
    `fix-auth`). Reference the skills they must follow with `$name` in their task (or `--skill`):
    the skill is inlined for them, once.
@@ -69,6 +72,28 @@ whole context for `send`), `stopped`, `exited`. Exit codes: 0 ok, 1 refused (the
 7. **Report** a short table to the user: subagent, state, steps, cost, review rounds, one-line
    result (verified by you). They can open any subagent in the web app (the strip above the
    transcript) or with `/resume` in the TUI.
+
+## Hand context over, do not make it re-discover
+
+A child starts cold: it knows only its task. Everything you already found out costs it steps and
+tokens again unless you hand it over. Three layers, cheapest first:
+
+1. **`--brief` (a structured brief in the task).** Write the task as sections — `## Goal`,
+   `## Key paths`, `## Conventions`, `## Searches done`, `## Decisions` (Spanish headings work too:
+   objetivo / rutas clave / convenciones / búsquedas / decisiones). `--brief` validates the shape
+   (goal plus 3 sections minimum) and wraps it in `<brief>` so the child knows it is your summary,
+   not ground truth. Put the detail in `--context-file`, keep the brief short.
+2. **`--context-file F` (what you read, handed over verbatim).** Notes, spec excerpts, the map of
+   the code you already made: each file arrives as a `<context>` block before the task (capped at
+   32 KiB together, `MINI_AGENT_CONTEXT_MAX`), so the child reads instead of re-searching.
+3. **The shared state on disk (`<run dir>/context/`).** Every session of the run tree gets a
+   `<shared-context>` note pointing at one append-only folder. Convention: one file per task
+   (`context/<task-id>.md`, stamped with date and author) for findings and artifacts;
+   `context/findings.md` and `context/search-cache.jsonl` are shared scratch. A child checks what
+   prior tasks left there before searching, and leaves what it learned for the next one.
+
+A refused brief or an oversized context file is an error before the child starts: fix the brief or
+trim the file, the spawn does not silently drop your context.
 
 ## Inside a subagent
 

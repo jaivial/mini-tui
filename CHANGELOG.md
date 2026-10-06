@@ -2,6 +2,19 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.32.0 — 2026-10-06
+
+### Added
+
+- **Subagents inherit context (Fase 1 of [`docs/orchestration-plan.md`](docs/orchestration-plan.md))**:
+  `agent spawn --context-file F` hands a child what the parent already read (each file arrives as a
+  capped `<context>` block), `--brief` turns the task into a validated structured brief (goal, key
+  paths, conventions, searches done, decisions — `wrap_brief`), and every run tree gets a shared
+  append-only `<run dir>/context/` folder (one file per task for findings/artifacts) that each child
+  is told about through a `<shared-context>` note and that grandchildren share too. The cold-start
+  re-discovery `mini-agent-rs metrics` measures is what this removes. `skills/subagents/SKILL.md`
+  teaches the three layers.
+
 ## 0.31.0 — 2026-10-06
 
 ### Added

@@ -198,7 +198,7 @@ fn a_stopped_subagent_continues_from_its_saved_conversation() {
     let child_msgs = messages(&dir.join("subagents/w/traj.jsonl"));
     let roles: Vec<String> = child_msgs.iter().map(|m| format!("{}:{}", m["role"].as_str().unwrap(), text(m))).collect();
     assert_eq!(child_msgs.iter().filter(|m| m["role"] == "system").count(), 1, "{roles:?}");
-    let first = roles.iter().position(|r| r == "user:first").expect("the first task");
+    let first = roles.iter().position(|r| r.starts_with("user:first")).expect("the first task");
     let again = roles.iter().position(|r| r.ends_with("new task: again")).expect("the new task");
     assert!(first < again, "{roles:?}");
     // the replayed history is not counted as a new turn: two turns in all
