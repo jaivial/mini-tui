@@ -96,10 +96,14 @@ hub.workspace = { get: () => workspace.get(), save: (doc, base) => workspace.sav
 // processes this server does not own), so a light poll — only while someone is watching — is what
 // notices those writes and turns them into pushes.
 hub.tasks = { list: () => listTasks(sessions.db()) };
-const tasksTimer = setInterval(() => {
-  if (hub.taskWatchers) hub.tasksChanged();
-}, Number(process.env.MINITUI_WEB_SYNC_MS ?? 1000));
-(tasksTimer as { unref?: () => void }).unref?.();
+// `MINITUI_WEB_SYNC_MS` <= 0 means "no background sync" (the session sync's rule), never a spin.
+const tasksSyncMs = Number(process.env.MINITUI_WEB_SYNC_MS ?? 1000);
+if (tasksSyncMs > 0) {
+  const tasksTimer = setInterval(() => {
+    if (hub.taskWatchers) hub.tasksChanged();
+  }, tasksSyncMs);
+  (tasksTimer as { unref?: () => void }).unref?.();
+}
 // No shell outlives the server (a restart, a deploy, Ctrl+C in a dev shell).
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.once(sig, () => {
