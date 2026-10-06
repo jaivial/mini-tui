@@ -3,6 +3,7 @@
 import json
 import time
 
+from minisweagent.models.utils.actions_toolcall import command_for
 from minisweagent.models.utils.templates import render as render_template
 
 from minisweagent.exceptions import FormatError
@@ -21,6 +22,23 @@ BASH_TOOL_RESPONSE_API = {
             }
         },
         "required": ["command"],
+    },
+}
+
+
+CU_TOOL_RESPONSE_API = {
+    "type": "function",
+    "name": "cu",
+    "description": "Drive the persistent cu browser (one Chrome always open, one leased tab or context per task). One call runs one cu command; the $cu skill has the full guide. Typical flow: tab open URL --lease 300 --label my-test (returns the tab id), page commands with --tab ID (or --context NAME for an isolated cookie jar), read snapshot (ref-addressable page) or text, act with click e3 / type e2 text / act JSON, close with tab close ID (a lease closes it anyway if the run dies). batch 'CMD' 'CMD' runs several commands at once.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "args": {
+                "type": "string",
+                "description": "cu arguments, e.g. snapshot --tab t3",
+            }
+        },
+        "required": ["args"],
     },
 }
 
@@ -91,16 +109,14 @@ def parse_toolcall_actions_response(
             args = json.loads(tool_call.get("arguments", "{}"))
         except Exception as e:
             error_msg = f"Error parsing tool call arguments: {e}."
-        if tool_call.get("name") != "bash":
-            error_msg += f"Unknown tool '{tool_call.get('name')}'."
-        if not isinstance(args, dict) or "command" not in args:
-            error_msg += "Missing 'command' argument in bash tool call."
+        command, tool_error = command_for(tool_call.get("name"), args)
+        error_msg += tool_error
         if error_msg:
             error_text = render_template(format_error_template,
                 error=error_msg.strip(), actions=[], has_tool_calls=True, **template_kwargs
             )
             raise FormatError(_format_error_message(error_text))
-        actions.append({"command": args["command"], "tool_call_id": tool_call.get("call_id") or tool_call.get("id")})
+        actions.append({"command": command, "tool_call_id": tool_call.get("call_id") or tool_call.get("id")})
     return actions
 
 

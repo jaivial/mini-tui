@@ -12,6 +12,7 @@ from minisweagent.exceptions import FormatError
 from minisweagent.models import GLOBAL_MODEL_STATS
 from minisweagent.models.utils.actions_toolcall_response import (
     BASH_TOOL_RESPONSE_API,
+    CU_TOOL_RESPONSE_API,
     finish_reason_from_responses_api,
     format_toolcall_observation_messages,
     parse_toolcall_actions_response,
@@ -75,7 +76,7 @@ class PortkeyResponseAPIModel:
         return self.client.responses.create(
             model=self.config.model_name,
             input=messages,
-            tools=[BASH_TOOL_RESPONSE_API],
+            tools=[BASH_TOOL_RESPONSE_API, CU_TOOL_RESPONSE_API],
             **(self.config.model_kwargs | kwargs),
         )
 

@@ -27,6 +27,47 @@ BASH_TOOL = {
 }
 
 
+CU_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "cu",
+        "description": "Drive the persistent cu browser (one Chrome always open, one leased tab or context per task). One call runs one cu command; the $cu skill has the full guide. Typical flow: tab open URL --lease 300 --label my-test (returns the tab id), page commands with --tab ID (or --context NAME for an isolated cookie jar), read snapshot (ref-addressable page) or text, act with click e3 / type e2 text / act JSON, close with tab close ID (a lease closes it anyway if the run dies). batch 'CMD' 'CMD' runs several commands at once.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "args": {
+                    "type": "string",
+                    "description": "cu arguments, e.g. snapshot --tab t3",
+                }
+            },
+            "required": ["args"],
+        },
+    },
+}
+
+
+def command_for(name, args):
+    """The command a parsed tool call runs: `bash` passes its `command` through, `cu` becomes
+    `cu <args>`. Anything else is unknown. The error text is the same concatenation the Rust
+    `command_for` (agent-rs/src/models/shapes.rs) produces (unknown tool and/or the missing
+    argument, back to back)."""
+    error = ""
+    if name not in ("bash", "cu"):
+        error += f"Unknown tool '{name}'."
+    command = None
+    if name == "cu":
+        a = args.get("args") if isinstance(args, dict) else None
+        if isinstance(a, str) and a:
+            command = f"cu {a}"
+        else:
+            error += "Missing 'args' argument in cu tool call."
+    elif isinstance(args, dict) and "command" in args:
+        command = args["command"]
+    else:
+        error += "Missing 'command' argument in bash tool call."
+    return (command, "") if not error else (None, error)
+
+
 def parse_toolcall_actions(
     tool_calls: list, *, format_error_template: str, template_kwargs: dict | None = None
 ) -> list[dict]:
@@ -58,10 +99,8 @@ def parse_toolcall_actions(
             args = json.loads(tool_call.function.arguments)
         except Exception as e:
             error_msg = f"Error parsing tool call arguments: {e}."
-        if tool_call.function.name != "bash":
-            error_msg += f"Unknown tool '{tool_call.function.name}'."
-        if not isinstance(args, dict) or "command" not in args:
-            error_msg += "Missing 'command' argument in bash tool call."
+        command, tool_error = command_for(tool_call.function.name, args)
+        error_msg += tool_error
         if error_msg:
             raise FormatError(
                 {
@@ -72,7 +111,7 @@ def parse_toolcall_actions(
                     "extra": {"interrupt_type": "FormatError"},
                 }
             )
-        actions.append({"command": args["command"], "tool_call_id": tool_call.id})
+        actions.append({"command": command, "tool_call_id": tool_call.id})
     return actions
 
 
