@@ -45,6 +45,10 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
                          cold: this session's by default, or sibling NAME's with --from.
                          Its context = the source's compaction summary + the last N messages
                          (default 12, MINI_AGENT_FORK_K), replayed as its own history.
+      --batch FILE       spawn several children at once from a JSON list of spawn requests
+                         ('-' = stdin): each entry its own name/task/budget, entries without a
+                         budget split what the session has left. Task texts interpolate
+                         {{tasks.ID.result}}, {{artifacts.NAME}}, {{context.KEY}}.
   agent send <name> <text...>            message it: mid-turn it lands before its next model call;
                                          a finished one continues with its full context.
       --steps N / --cost USD             extend its budget (automatic after LimitsExceeded)
@@ -58,10 +62,16 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
                                          block until they finish their turn (default 20 s: the bash
                                          tool times out at 30). You are also told when each one
                                          finishes, before your next step, so you rarely need it.
-  agent result <name>                    its final answer (or its last reply)
+  agent result <name> [--json]           its final answer (or its last reply); --json is the
+                                         structured result (status, error, steps, cost, artifacts)
   agent tail <name> [-n N]               its last steps
   agent stop <name...>|--all             interrupt (it saves); `send` continues it later
   agent ask <text...>                    (inside a subagent) message the session that started it
+
+  agent state ls [--json]                the shared state of the run tree (<run dir>/context/)
+  agent state get <key>                  one shared value (key = file name there)
+  agent state put <key> <text...>        write it (--prompt-file F for long text); the whole
+                                         tree reads it as {{context.<key-stem>}} in tasks
 
   agent plan submit --file plan.json     hand over a whole DAG plan (validated: ids, deps, no cycles)
   agent plan add <id> [--deps a,b] [--group G] [--priority N] [--steps N] [--cost C]
@@ -433,6 +443,46 @@ pub fn fork_messages(source: &str, msgs: &[Value], k: usize, cap: usize) -> Vec<
     out.push(json!({"role": "user", "content": body}));
     out.push(json!({"role": "assistant", "content": "(Continuing from the forked context above.)"}));
     out
+}
+
+// ---- shared state + {{var}} interpolation + batch (F5 · plan Fase 4) ----------------------
+
+/// The RLM-lite interpolation: `{{dotted.key}}` over `vars` — what is known is replaced
+/// (`{{tasks.A1.result}}`, `{{artifacts.spawn_map}}`, `{{context.findings}}`), what is not stays
+/// as written, so a task still reads sensibly when a var never landed. Applied when a task
+/// materializes (spawn, plan launch, batch), never to `send` messages.
+pub fn interpolate(text: &str, vars: &BTreeMap<String, String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("{{") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 2..];
+        let Some(j) = after.find("}}") else {
+            out.push_str(&rest[i..]);
+            return out;
+        };
+        let key = after[..j].trim();
+        match vars.get(key) {
+            Some(v) => out.push_str(v),
+            None => {
+                out.push_str("{{");
+                out.push_str(&after[..j + 2]);
+            }
+        }
+        rest = &after[j + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A state key names one file of the shared `context/` folder: ASCII letters, digits, `.`, `_`
+/// or `-`, never a path. It is the variable name too: key `findings.md` is `{{context.findings}}`.
+fn state_key(key: &str) -> Result<String, String> {
+    let k = key.trim();
+    if k.is_empty() || k.starts_with('.') || !k.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
+        return Err(format!("state key {key:?}: letters, digits, '.', '_' or '-' (it names a file in the shared context/)"));
+    }
+    Ok(k.to_string())
 }
 
 // ---- the hub -----------------------------------------------------------------------------
@@ -894,7 +944,9 @@ impl Hub {
             }
             self.children.remove(i);
         }
-        let raw_task = s(req, "task");
+        // F5: a task materializes against the shared state -- {{tasks.A1.result}},
+        // {{artifacts.spawn_map}}, {{context.findings}} -- unknown vars stay as written.
+        let raw_task = interpolate(&s(req, "task"), &self.vars());
         if raw_task.trim().is_empty() {
             return Err("spawn needs a task".into());
         }
@@ -1080,6 +1132,130 @@ impl Hub {
 
     fn launcher(&self) -> Launcher {
         Launcher { exe: self.exe.clone(), configs: self.configs.clone(), socket: self.socket.clone(), depth: self.depth, context_dir: self.context_dir.clone() }
+    }
+
+    /// The `{{var}}` map a task materializes against (F5): the plan's task fields, the artifacts
+    /// its tasks committed to (their file stems), and the shared state in `context/` (one var per
+    /// file stem). Values are capped: a var is a hint in a prompt, not a file transfer.
+    fn vars(&self) -> BTreeMap<String, String> {
+        let mut vars = BTreeMap::new();
+        if let Some(plan) = &self.plan {
+            for t in &plan.tasks {
+                vars.insert(format!("tasks.{}.title", t.id), t.title.clone());
+                vars.insert(format!("tasks.{}.status", t.id), t.status.clone());
+                vars.insert(format!("tasks.{}.result", t.id), t.result.clone());
+                vars.insert(format!("tasks.{}.error", t.id), t.error.clone());
+                for a in &t.artifacts {
+                    let raw = Path::new(a);
+                    let Some(stem) = raw.file_stem().map(|st| st.to_string_lossy().to_string()).filter(|st| !st.is_empty()) else { continue };
+                    let path = if raw.is_absolute() { raw.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(raw) };
+                    let body = std::fs::read_to_string(&path).unwrap_or_default();
+                    vars.insert(format!("artifacts.{stem}"), head_chars(&body, 8 * 1024));
+                }
+            }
+        }
+        if let Ok(rd) = std::fs::read_dir(&self.context_dir) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().starts_with('.') || !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    continue;
+                }
+                let Some(stem) = e.path().file_stem().map(|st| st.to_string_lossy().to_string()).filter(|st| !st.is_empty()) else { continue };
+                let body = std::fs::read_to_string(e.path()).unwrap_or_default();
+                vars.insert(format!("context.{stem}"), head_chars(&body, 8 * 1024));
+            }
+        }
+        vars
+    }
+
+    /// `agent state ls|get|put`: the shared state of the run tree (`<run dir>/context/`), one key
+    /// per file. The whole tree reads it (it is the `{{context.*}}` vars too); `put` replaces the
+    /// key's own file, atomically, and never touches another key's.
+    fn state_cmd(&mut self, req: &Value) -> Result<Value, String> {
+        match s(req, "action").as_str() {
+            "ls" => {
+                let mut rows: Vec<Value> = vec![];
+                if let Ok(rd) = std::fs::read_dir(&self.context_dir) {
+                    for e in rd.flatten() {
+                        let key = e.file_name().to_string_lossy().to_string();
+                        if key.starts_with('.') || !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                            continue; // hidden: the atomic-replace temp of `put`, never a key
+                        }
+                        rows.push(json!({"key": key, "size": e.metadata().map(|m| m.len()).unwrap_or(0)}));
+                    }
+                }
+                rows.sort_by_key(|v| s(v, "key"));
+                let mut out = String::new();
+                for r in &rows {
+                    out.push_str(&format!("{} ({} B)\n", s(r, "key"), r["size"]));
+                }
+                if out.is_empty() {
+                    out.push_str(&format!("(the shared state is empty: {})\n", self.context_dir.display()));
+                }
+                Ok(ok(out, Value::Array(rows)))
+            }
+            "get" => {
+                let key = state_key(&s(req, "key"))?;
+                let body = std::fs::read_to_string(self.context_dir.join(&key)).map_err(|e| format!("state {key}: {e}"))?;
+                Ok(ok(body.clone(), json!({"key": key, "value": body})))
+            }
+            "put" => {
+                let key = state_key(&s(req, "key"))?;
+                let value = s(req, "text");
+                if value.is_empty() {
+                    return Err(format!("state put {key} needs a value (text, or --prompt-file F)"));
+                }
+                let _ = std::fs::create_dir_all(&self.context_dir);
+                let tmp = self.context_dir.join(format!(".{key}.tmp"));
+                std::fs::write(&tmp, &value)
+                    .and_then(|_| std::fs::rename(&tmp, self.context_dir.join(&key)))
+                    .map_err(|e| format!("state put {key}: {e}"))?;
+                Ok(ok(format!("state {key} = {} B", value.len()), json!({"key": key, "value": value})))
+            }
+            other => Err(format!("state {other:?}: ls, get or put")),
+        }
+    }
+
+    /// `agent spawn --batch`: many children in one command (F5), each entry its own spawn request
+    /// (name, task, options). Entries that ask for no budget of their own split what the session
+    /// has left evenly, so a batch is planned as one piece instead of starving the last entry.
+    fn spawn_batch(&mut self, req: &Value) -> Result<Value, String> {
+        let entries = req.get("spawns").and_then(Value::as_array).cloned().ok_or("spawn --batch needs a JSON list of spawns")?;
+        if entries.is_empty() {
+            return Err("the batch is empty".into());
+        }
+        let with_own = entries.iter().filter(|e| e.get("cost_limit").and_then(Value::as_f64).is_some()).count();
+        let share = if entries.len() > with_own && self.parent_limit > 0.0 {
+            let left = (self.parent_limit - self.parent_cost - self.children.iter().map(Child::total_cost).sum::<f64>()).max(0.0);
+            Some(left / (entries.len() - with_own) as f64)
+        } else {
+            None
+        };
+        let mut started: Vec<String> = vec![];
+        let mut outs: Vec<String> = vec![];
+        for e in &entries {
+            let mut r = e.clone();
+            r["cmd"] = json!("spawn");
+            let name = s(&r, "name");
+            if name.is_empty() {
+                return Err(format!("{}batch entry needs a name", report(&outs)));
+            }
+            if r.get("cost_limit").and_then(Value::as_f64).is_none() {
+                if let Some(x) = share {
+                    r["cost_limit"] = json!(x);
+                }
+            }
+            match self.launch(&r) {
+                Ok(o) => {
+                    started.push(name);
+                    outs.push(o);
+                }
+                Err(e) => return Err(format!("{}batch stopped: {name}: {e}", report(&outs))),
+            }
+        }
+        Ok(ok(
+            format!("{}batch done: {} subagents started", report(&outs), started.len()),
+            json!({"started": started}),
+        ))
     }
 
     /// Live subagents: the ones a new spawn would have to share memory with.
@@ -1692,6 +1868,14 @@ impl Hub {
 }
 
 /// `"a, b ,c"` -> `["a","b","c"]`.
+/// The outputs of the batch entries launched so far, one per line (an error prepends them).
+fn report(outs: &[String]) -> String {
+    if outs.is_empty() {
+        return String::new();
+    }
+    format!("{}\n", outs.join("\n"))
+}
+
 fn csv_list(s: &str) -> Vec<String> {
     s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
 }
@@ -1726,6 +1910,8 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
     h.monitor();
     let r: Result<Value, String> = match cmd.as_str() {
         "spawn" => h.launch(req).map(|o| ok(o, json!(null))),
+        "spawn_batch" => h.spawn_batch(req),
+        "state" => h.state_cmd(req),
         "plan" => h.plan_cmd(req),
         "send" => h.send(req).map(|o| ok(o, json!(null))),
         "model" => {
@@ -1775,12 +1961,27 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
         }),
         "result" => {
             let name = s(req, "name");
+            // The artifacts a plan task committed to travel with its result (F5): a successor's
+            // handoff and `agent result --json` read the same structured value.
+            let artifacts: Vec<String> = h.plan.as_ref().and_then(|p| p.get(&name)).map(|t| t.artifacts.clone()).unwrap_or_default();
             let r = h.child(&name).and_then(|c| {
                 if c.turns == 0 {
                     return Err(format!("{} has not finished a turn yet ({}): `agent wait {}`", c.name, c.state, c.name));
                 }
                 let answer = if !c.submission.trim().is_empty() { c.submission.clone() } else if !c.exit_text.trim().is_empty() && c.exit_status != "Submitted" { format!("{}: {}", c.exit_status, c.exit_text) } else { c.last_text.clone() };
-                Ok(ok(answer, json!({"exit_status": c.exit_status, "state": c.state})))
+                let error = if c.exit_status.is_empty() || c.exit_status == "Submitted" { String::new() } else { c.exit_text.clone() };
+                let data = json!({
+                    "name": c.name,
+                    "state": c.state,
+                    "exit_status": c.exit_status,
+                    "result": answer,
+                    "error": error,
+                    "steps": c.steps,
+                    "turns": c.turns,
+                    "cost": round4(c.total_cost()),
+                    "artifacts": artifacts,
+                });
+                Ok(ok(s(&data, "result"), data))
             });
             if r.is_ok() && !h.child(&name).map(|c| c.running()).unwrap_or(true) {
                 h.mark_seen(&[name]);
@@ -2011,6 +2212,7 @@ pub fn client(args: &[String]) -> i32 {
                     }
                 }
                 "--brief" => req["brief"] = json!(true),
+                "--batch" => req["batch"] = json!(value(&mut i)?),
                 "--fork" => req["fork"] = json!(true),
                 "--fork-k" => req["fork_k"] = json!(value(&mut i)?.parse::<i64>().map_err(|_| "--fork-k needs a number".to_string())?),
                 "--from" => {
@@ -2049,11 +2251,51 @@ pub fn client(args: &[String]) -> i32 {
     let built: Result<(), String> = (|| {
         match cmd {
             "spawn" => {
-                req["name"] = json!(need_name("spawn")?);
-                req["task"] = json!(joined(1));
-                req["skills"] = json!(skills);
-                if let Some(m) = req.get("model_opt").cloned() {
-                    req["model"] = m;
+                if let Some(f) = req.get("batch").and_then(Value::as_str).map(String::from) {
+                    // `spawn --batch FILE`: a JSON list of spawn requests ('-' = stdin), launched
+                    // in order under one shared budget (see Hub::spawn_batch).
+                    let text = if f == "-" {
+                        let mut t = String::new();
+                        std::io::stdin().read_to_string(&mut t).map_err(|e| e.to_string())?;
+                        t
+                    } else {
+                        std::fs::read_to_string(crate::config::expand_user(&f)).map_err(|e| format!("--batch {f}: {e}"))?
+                    };
+                    let v: Value = serde_json::from_str(&text).map_err(|e| format!("--batch {f}: {e}"))?;
+                    let list = match &v {
+                        Value::Array(a) => a.clone(),
+                        o if o.get("spawns").and_then(Value::as_array).is_some() => o["spawns"].as_array().unwrap().clone(),
+                        _ => return Err(format!("--batch {f}: a JSON array of spawns, or {{\"spawns\": [...]}}")),
+                    };
+                    let mut list = list;
+                    if !skills.is_empty() {
+                        for e in list.iter_mut() {
+                            if e.get("skills").and_then(Value::as_array).map(|a| a.is_empty()).unwrap_or(true) {
+                                e["skills"] = json!(skills);
+                            }
+                        }
+                    }
+                    req["cmd"] = json!("spawn_batch");
+                    req["spawns"] = json!(list);
+                } else {
+                    req["name"] = json!(need_name("spawn")?);
+                    req["task"] = json!(joined(1));
+                    req["skills"] = json!(skills);
+                    if let Some(m) = req.get("model_opt").cloned() {
+                        req["model"] = m;
+                    }
+                }
+            }
+            "state" => {
+                let action = positional.first().cloned().ok_or("state needs an action: ls, get or put")?;
+                req["action"] = json!(action.clone());
+                match action.as_str() {
+                    "get" => req["key"] = json!(positional.get(1).cloned().ok_or("state get needs a key")?),
+                    "put" => {
+                        req["key"] = json!(positional.get(1).cloned().ok_or("state put needs a key")?);
+                        req["text"] = json!(file_text.clone().unwrap_or_else(|| positional.get(2..).map(|p| p.join(" ")).unwrap_or_default()));
+                    }
+                    _ => {}
                 }
             }
             "send" => {
