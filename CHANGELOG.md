@@ -2,6 +2,40 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.39.0 — 2026-10-07
+
+Claude Haiku 5.5 is in the curated model picker, and `agent dispatch` can end the parent's turn
+on the wave itself (`--join`), with each child confined to its lane.
+
+### Added
+
+- **`cliproxy/claude-haiku-5-5`.** The cli-proxy gateway advertises Anthropic's new
+  Claude Haiku 5.5, and mini-tui lists it in the `/model` catalog next to
+  `cliproxy/claude-opus-5-5` and `cliproxy/claude-sonnet-5-5`. It runs over the same Claude
+  subscription credential and gets the 1M-token context window (automatic compaction),
+  in both the Python agent and `agent-rs`.
+- **`agent dispatch --join`** (#89). The parent's turn ends on the dispatch; when the last
+  child finishes the hub runs `--verify` once and answers with every child's result, so the
+  parent spends one step after the wave instead of 41–103 s re-checking it.
+- **Enforced lanes** (#89). A plan task's `files` (and optional `lane`) are the only paths its
+  child can write: the bash tool runs under bubblewrap with the work tree read-only outside
+  the lane (unchanged behaviour where `bwrap` is missing).
+
+### Changed
+
+- **Dispatch shard sizing and wave admission** (#89). Shards are sized in lines, the wave warns
+  when the heaviest is over 1.5x the lightest and starts it first; a wave is admitted as a
+  whole on memory, and its children are no longer re-gated one by one on CPU load.
+- **Child task header** (#89) states `## Where` (the work tree) and `## Scope` (the gate is
+  the proof; no test-harness side quests).
+
+### Fixed
+
+- **Headless agents wrote task cards into other sessions** (#89). The session-tasks rule told
+  every agent to run `mini-tui tasks set`; a headless run could not find its own session and
+  overwrote a live one. The rule now renders only when `MSWEA_CONTROL_FILE` is set, and never
+  for lane children.
+
 ## 0.38.2 — 2026-10-07
 
 ### Fixed
