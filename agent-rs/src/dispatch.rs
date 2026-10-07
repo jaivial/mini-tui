@@ -207,6 +207,13 @@ fn verify_preamble(cmd: &str, baseline: &str) -> String {
     }
 }
 
+/// Executor mode (`--executor`): the coordinator researched the change and wrote the exact edit
+/// for every file. The child is a hands, not a head: no search, no wider reading.
+pub const EXECUTOR_PREAMBLE: &str = "## You are an EXECUTOR, not a researcher\n\
+     The coordinator already read the code and wrote the exact edit for each file below. Go straight to\n\
+     each file and apply its edit. Do NOT search, grep, explore, or read files that are not in your edit list.\n\
+     Do not run builds or tests: the coordinator runs the gate once after the wave.\n";
+
 /// One child of the wave: its name, the task, the repos, and the flags the parent chose.
 pub struct Job<'a> {
     pub id: &'a str,
@@ -241,6 +248,7 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
     let default_fork_k = opts.get("fork_k").and_then(Value::as_i64).map(|n| n as usize);
     let root = std::path::PathBuf::from(opts.get("root").and_then(Value::as_str).unwrap_or("."));
     let join = opts.get("join").and_then(Value::as_bool).unwrap_or(false);
+    let executor = opts.get("executor").and_then(Value::as_bool).unwrap_or(false);
 
     let mut wave = Wave { join, ..Wave::default() };
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -285,6 +293,40 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
         }
         let discover = t.get("discover").and_then(Value::as_bool).unwrap_or(false);
         let mut body = task.clone();
+        if executor {
+            // The coordinator did the research: the child only applies the spec it was handed.
+            let cwd_txt = t.get("cwd").and_then(Value::as_str).map(String::from).unwrap_or_else(|| root.display().to_string());
+            let mut r = json!({"cmd": "spawn", "name": id, "task": format!(
+                "## Where\nWork tree: `{cwd_txt}`. Paths below are relative to it.\n\n{EXECUTOR_PREAMBLE}\n## The exact edits\n{task}\n\n## Scope\nApply these edits and nothing else. Answer with one line per file: `path ok` or `path failed: why`.\n"
+            ), "force": true});
+            if !repos.is_empty() {
+                r["repos"] = json!(repos);
+            }
+            if let Some(c) = t.get("cwd").and_then(Value::as_str) {
+                r["cwd"] = json!(c);
+            }
+            if let Some(b) = t.get("budget") {
+                r["budget"] = b.clone();
+            }
+            let lane = lane_of_task(t);
+            if !lane.is_empty() {
+                let cwd = t.get("cwd").and_then(Value::as_str).map(std::path::PathBuf::from).unwrap_or_else(|| root.clone());
+                let files: Vec<String> = match t.get("files") {
+                    Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(String::from).collect(),
+                    _ => vec![],
+                };
+                if !files.is_empty() {
+                    wave.weights.push((id.clone(), shard_lines(&files, &cwd)));
+                }
+                r["lane"] = json!(lane);
+                r["task"] = json!(format!("{}\n\n{}", s_of(&r, "task"), lane_preamble(&lane)));
+            }
+            if !model.is_empty() {
+                r["model"] = json!(model);
+            }
+            wave.spawns.push(r);
+            continue;
+        }
         if discover {
             let repo = repos.first().cloned().unwrap_or_else(|| id.clone());
             body = format!("{}\n## The task itself\n{task}", discover_preamble(&repo));
