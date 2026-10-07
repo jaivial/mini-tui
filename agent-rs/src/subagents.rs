@@ -67,6 +67,12 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
                                          child compares instead of proving it by hand. Without it a
                                          gate that cannot pass sends the parent back to manual
                                          verification, serially, which is the cost this removes.
+      --join                             end THIS turn on the dispatch: when the last child is
+                                         done the hub runs --verify once and answers for you
+                                         (no polling, no model step after the wave)
+      plan task fields `files` / `lane`  the paths that child may WRITE (enforced: the rest of
+                                         the tree is read-only for it); `files` also sizes the
+                                         shard (lines) and the wave warns past 1.5x imbalance
       -m, --model M                      model for this wave's children
       --no-fork                         start cold (default is to fork this session's conversation)
       --fork-k N                         messages of the forked context (default 12)

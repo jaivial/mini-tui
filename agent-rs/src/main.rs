@@ -15,6 +15,7 @@ mod environment;
 mod metrics;
 mod models;
 mod plan;
+mod repl;
 mod rlm;
 mod subagents;
 mod templates;
@@ -375,6 +376,12 @@ fn main() {
     }
     // The RLM harness (experimental, behind its own subcommand): a persistent REPL with context
     // as variables and sub-agents as calls. Nothing else in the binary couples to it.
+    // The REPL harness (RLM-style): context in a sandboxed Rhai REPL, sub-calls as functions.
+    if argv.first().map(String::as_str) == Some("repl") {
+        config::load_dotenv();
+        install_signals();
+        std::process::exit(repl::client(&argv[1..]));
+    }
     if argv.first().map(String::as_str) == Some("rlm") {
         config::load_dotenv();
         install_signals();

@@ -17,6 +17,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 ureq = { version = "2", default-features = false, features = ["tls", "native-certs"] }
 regex = "1"
+# `repl`: the sandboxed REPL harness (pure Rust: no fs/net/process unless the host registers it)
+rhai = { version = "1.23", features = ["sync", "serde"] }
 libc = "0.2"
 rand = "0.8"
 # e2e: DevTools-protocol websocket (local only, no TLS), TOTP and screenshots
