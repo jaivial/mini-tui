@@ -622,7 +622,9 @@ fn is_identifier(t: &str) -> bool {
 pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &Path, cap: usize) -> (String, Vec<Check>) {
     let mut checks = vec![];
     let files = claimed_files(handshake);
-    let repos: Vec<String> = if repo.is_empty() { vec![] } else { vec![repo.to_string()] };
+    // `repo` may name SEVERAL repos: the hub passes every repo a child was spawned for, joined, so
+    // a child given two slices is checked against the contract clauses of both.
+    let repos: Vec<String> = repo.split_whitespace().map(|r| r.to_string()).collect();
     let readable = |f: &str| -> Option<String> {
         let p = Path::new(f);
         let direct = if p.is_absolute() { p.to_path_buf() } else { root.join(f) };

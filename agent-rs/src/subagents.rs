@@ -127,6 +127,12 @@ pub struct Child {
     pub name: String,
     pub task: String,
     pub cwd: String,
+    /// The repos this child was resolved to when it was spawned (`--repo`, else guessed from its
+    /// cwd and name). Stored rather than re-derived, because the end-of-turn contract-check used
+    /// to take the LAST SEGMENT of the cwd as the repo: for a child at
+    /// `.../backend/.worktrees/be-x` that is `be-x`, a name nothing in the tree mentions, so the
+    /// check silently matched no clause of the contract and passed over nothing.
+    pub repos: Vec<String>,
     pub model: String,
     pub skills: Vec<String>,
     dir: PathBuf,
@@ -1013,7 +1019,14 @@ impl Hub {
     /// `agent contract-check`, run for the child whose turn just ended: does what it claims to have
     /// touched satisfy the contract, in the tree itself? Mechanical, no model.
     fn contract_check(&self, c: &Child) -> String {
-        let repo = c.cwd.rsplit('/').find(|s| !s.is_empty()).unwrap_or("").to_string();
+        // Every repo the child works in, so a child given two slices is checked against the
+        // clauses of both. Empty falls back to the cwd's own name, which is what a repo-less
+        // check (`--repo` omitted) asks for anyway.
+        let repo = if c.repos.is_empty() {
+            c.cwd.rsplit('/').find(|s| !s.is_empty()).unwrap_or("").to_string()
+        } else {
+            c.repos.join(" ")
+        };
         // The child's own handshake, or - when it wrote its own handoff under another key instead
         // of the three tags - any stored handshake that names a file of its repo. Without this the
         // check ran over an empty corpus and passed, which is how a real integration gap got
@@ -1251,6 +1264,7 @@ impl Hub {
             name: name.clone(),
             task: raw_task.clone(),
             cwd: cwd.clone(),
+            repos: repos_of(req, &cwd, &name),
             model: model.clone(),
             skills: used.clone(),
             traj: dir.join("traj.json"),
