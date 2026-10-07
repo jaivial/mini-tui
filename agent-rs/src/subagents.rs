@@ -1525,6 +1525,35 @@ impl Hub {
         };
         let plan: Value = serde_json::from_str(&text).map_err(|e| format!("{file}: {e}"))?;
         let wave = crate::dispatch::build(&plan, req)?;
+        // Idempotency. `launch` force-replaces a live child, so re-running the same plan KILLS
+        // every child of the first run and starts them again from zero: the wave's wall-clock is
+        // paid twice and nothing is finished. That is not a retry, it is a reset, and it was
+        // measured (an orchestrator dispatched the same 4-child plan three times). Refuse it and
+        // say what is already running, so the parent continues the wave instead of restarting it.
+        let fp = crate::dispatch::fingerprint(&file, &wave);
+        if let Some((_, names)) = crate::dispatch::load_runs(&self.dir).into_iter().find(|(id, _)| *id == fp) {
+            let running_now: Vec<String> = self
+                .children
+                .iter()
+                .filter(|c| c.running() && names.iter().any(|n| n == &c.name))
+                .map(|c| c.name.clone())
+                .collect();
+            let live: Vec<String> = names.iter().filter(|n| running_now.contains(n)).cloned().collect();
+            let finished: Vec<String> = names.iter().filter(|n| !live.contains(n)).cloned().collect();
+            let mut msg = format!(
+                "this plan is ALREADY dispatched in this run ({}): re-running it would kill the {} child(ren) that are still working and restart the whole wave from zero.\n",
+                fp,
+                live.len()
+            );
+            if !live.is_empty() {
+                msg.push_str(&format!("  still running: {}\n", live.join(", ")));
+            }
+            if !finished.is_empty() {
+                msg.push_str(&format!("  already finished: {} -- `agent result <name>` has their answers, or `agent send <name> \"...\"` continues them.\n", finished.join(", ")));
+            }
+            msg.push_str("If you really want a fresh wave, use `agent stop` on them first (or change the plan).");
+            return Ok(ok(msg, json!({"started": [], "already": names, "fingerprint": fp})));
+        }
         let mut started: Vec<String> = vec![];
         let mut outs: Vec<String> = vec![];
         for r in &wave.spawns {
@@ -1548,6 +1577,7 @@ impl Hub {
                 Err(e) => return Err(format!("dispatch stopped at {name}: {e}\n{}", crate::subagents::report(&outs))),
             }
         }
+        crate::dispatch::record_run(&self.dir, &fp, &started);
         let summary = format!("{}\n{}", report(&outs), crate::dispatch::report(&wave));
         Ok(ok(summary, json!({"started": started, "discoverers": wave.discoverers, "repos": wave.repos, "warnings": wave.warnings})))
     }

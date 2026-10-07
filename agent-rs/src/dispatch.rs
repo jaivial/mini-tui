@@ -252,6 +252,51 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
     Ok(wave)
 }
 
+/// A stable fingerprint of a wave's identity: the plan file it came from and the names it starts.
+/// Two dispatches with the same fingerprint are the same dispatch, and the second one is the bug
+/// that costs a wave its progress: `launch` force-replaces a live child (killing its process), so
+/// re-running the plan restarts every child from zero. Measured on 2026-10-07: an orchestrator
+/// that ran `agent dispatch` three times burned three waves of wall-clock and finished slower than
+/// the single agent it was trying to beat.
+pub fn fingerprint(plan_name: &str, wave: &Wave) -> String {
+    let mut names: Vec<&str> = wave.spawns.iter().map(|s| s["name"].as_str().unwrap_or("?")).collect();
+    names.sort_unstable();
+    format!("{plan_name}#{}", names.join(","))
+}
+
+/// What `dispatch` already started in this run, newest first, as `(fingerprint, child names)`.
+pub fn load_runs(dir: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    let path = dir.join("dispatched.json");
+    let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else { return vec![] };
+    v.get("runs")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| {
+                    let fp = e.get("id")?.as_str()?.to_string();
+                    let names: Vec<String> = e.get("names")?.as_array()?.iter().filter_map(|n| n.as_str().map(String::from)).collect();
+                    Some((fp, names))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Append this dispatch to the run's history (one small file, atomically replaced).
+pub fn record_run(dir: &std::path::Path, fp: &str, names: &[String]) {
+    let path = dir.join("dispatched.json");
+    let mut runs = load_runs(dir);
+    runs.retain(|(id, _)| id != fp);
+    runs.insert(0, (fp.to_string(), names.to_vec()));
+    runs.truncate(20);
+    let v = json!({ "runs": runs.iter().map(|(id, n)| json!({"id": id, "names": n})).collect::<Vec<_>>() });
+    let tmp = dir.join(".dispatched.json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string_pretty(&v).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
 /// The text the parent's step prints: what started, in one look, without a second `agent` step.
 pub fn report(wave: &Wave) -> String {
     let mut out = String::new();
