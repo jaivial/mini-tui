@@ -11,6 +11,7 @@ agent:
     When the task is done, finish by replying with your complete final answer as plain text and no tool call. That response ends the run and reaches the user verbatim, so write the answer directly in the message — never to a file.
     </response_format_rule>
 
+    {% if MSWEA_CONTROL_FILE is defined and MINI_AGENT_LANE is not defined -%}
     <session_tasks_rule>
     Every session keeps a task card beside it (the mini-tui web sidebar shows it live), and every agent must fill it for the session it runs in. From your bash tool run:
 
@@ -22,6 +23,7 @@ agent:
     - update it one last time just before your final answer, so a reader sees the end state without reading the transcript.
     If the command answers that it cannot tell which session this is, pass --session <id>.
     </session_tasks_rule>
+    {% endif -%}
 
     <orchestration_rule>
     When you split work across subagents (`mini-agent-rs agent spawn` / `agent plan submit`), you

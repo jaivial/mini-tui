@@ -151,6 +151,9 @@ pub struct Child {
     /// `.../backend/.worktrees/be-x` that is `be-x`, a name nothing in the tree mentions, so the
     /// check silently matched no clause of the contract and passed over nothing.
     pub repos: Vec<String>,
+    /// The paths this child may write (`lane` / `files` of its dispatch task), absolute. Empty =
+    /// no lane. Enforced by the bash tool (see `environment::lane_argv`).
+    pub lane: Vec<String>,
     pub model: String,
     pub skills: Vec<String>,
     dir: PathBuf,
@@ -273,6 +276,17 @@ pub struct Hub {
     index_key: String,
     /// The DAG plan this hub executes (`<traj dir>/subagents/plan.json`), if any.
     plan: Option<Plan>,
+    /// `agent dispatch --join`: the wave the session handed its turn to.
+    join: Option<Join>,
+}
+
+/// A joined wave: the hub, not the model, closes the session's turn when the last child ends.
+#[derive(Clone)]
+struct Join {
+    names: Vec<String>,
+    verify: String,
+    root: String,
+    started: f64,
 }
 
 fn round4(x: f64) -> f64 {
@@ -724,6 +738,7 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
         tick: 0,
         index_key: String::new(),
         plan,
+        join: None,
     };
     let hub = Arc::new(Mutex::new(hub));
     let _ = HUB.set(hub.clone());
@@ -776,6 +791,50 @@ pub fn has_notes() -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+/// `agent dispatch --join`: the session ended its turn on the dispatch itself. Block until every
+/// child of the joined wave has finished its turn, run the gate ONCE, and return the session's
+/// answer -- all without a model step. Measured 2026-10-07 on the 25-file fixture: the parent
+/// spent 41-103 s AFTER the last child ended (re-reading diffs, re-running the gate, editing),
+/// 20-40% of the whole run's wall-clock, serial. `None` when there is no joined wave.
+pub fn join_wave() -> Option<String> {
+    let hub = HUB.get()?;
+    let join = hub.lock().ok()?.join.clone()?;
+    loop {
+        if crate::agent::STOP.load(Ordering::SeqCst) {
+            return None;
+        }
+        {
+            let mut h = hub.lock().ok()?;
+            h.monitor();
+            let done = join.names.iter().all(|n| h.children.iter().find(|c| &c.name == n).map(|c| !c.running() && c.turns > 0).unwrap_or(true));
+            if done {
+                let mut out = format!("[join] wave of {} finished in {:.1}s; answers below (the hub joined it, no model step).\n", join.names.len(), now() - join.started);
+                for n in &join.names {
+                    if let Some(c) = h.children.iter().find(|c| &c.name == n) {
+                        let answer = if !c.submission.trim().is_empty() { c.submission.clone() } else if !c.exit_text.trim().is_empty() { format!("{}: {}", c.exit_status, c.exit_text) } else { c.last_text.clone() };
+                        out.push_str(&format!("\n## {} ({} steps, {})\n{}\n", c.name, c.steps, if c.exit_status.is_empty() { c.state.clone() } else { c.exit_status.clone() }, head_chars(answer.trim(), 3000)));
+                    }
+                }
+                let names = join.names.clone();
+                h.mark_seen(&names);
+                h.join = None;
+                drop(h);
+                if !join.verify.is_empty() {
+                    let t0 = now();
+                    let r = Command::new("/bin/sh").arg("-c").arg(&join.verify).current_dir(if join.root.is_empty() { "." } else { &join.root }).output();
+                    let (ok, text) = match r {
+                        Ok(o) => (o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))),
+                        Err(e) => (false, e.to_string()),
+                    };
+                    out.push_str(&format!("\n## gate ({:.1}s): {}\n$ {}\n{}\n", now() - t0, if ok { "PASS" } else { "FAIL" }, join.verify, head_chars(text.trim(), 2000)));
+                }
+                return Some(out);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// Children still working on a turn (a finished one holds at its exit and does not count).
@@ -1133,7 +1192,18 @@ impl Hub {
         }
         // The OOM guard: the same calculus `agent resources` reports, enforced at the gate. A batch
         // that would not fit is refused here, and the session keeps running (exit 1, a message).
-        let fits = self.fanout_left();
+        // A dispatch wave was admitted as a whole (memory-checked once, for all of it): its
+        // children are not re-gated on CPU one by one. Measured 2026-10-07: under a transient
+        // load spike (23 on 9 CPUs, a build next door) the per-spawn CPU guard refused the wave
+        // after it had been decided, the parent spent ~5 minutes polling `uptime` and re-trying,
+        // and it finished at 400 s against 108 s for one agent. A model-bound child barely uses
+        // a CPU; memory is the guard that prevents an OOM, and it still applies.
+        let fits = if req.get("admitted").and_then(Value::as_bool).unwrap_or(false) {
+            let r = self.resources_report();
+            r.budget.by_memory().min(r.budget.cap)
+        } else {
+            self.fanout_left()
+        };
         if live as u64 >= fits {
             let r = self.resources_report();
             let b = &r.budget;
@@ -1300,6 +1370,10 @@ impl Hub {
             task: raw_task.clone(),
             cwd: cwd.clone(),
             repos: repos_of(req, &cwd, &name),
+            lane: req.get("lane").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(|l| {
+                let p = Path::new(l);
+                if p.is_absolute() { l.to_string() } else { Path::new(&cwd).join(p).display().to_string() }
+            }).collect()).unwrap_or_default(),
             model: model.clone(),
             skills: used.clone(),
             traj: dir.join("traj.json"),
@@ -1576,6 +1650,20 @@ impl Hub {
             msg.push_str("If you really want a fresh wave, use `agent stop` on them first (or change the plan).");
             return Ok(ok(msg, json!({"started": [], "already": names, "fingerprint": fp})));
         }
+        // All or nothing: a wave that does not fit in memory is refused BEFORE any child starts,
+        // so the parent never has to reason about a half-started wave.
+        {
+            let r = self.resources_report();
+            let room = r.budget.by_memory().min(r.budget.cap.saturating_sub(r.budget.live));
+            if (wave.spawns.len() as u64) > room {
+                return Err(format!(
+                    "dispatch refused as a whole: {} children, memory has room for {room} ({} free, {} each). Nothing was started; shrink the wave or free memory.",
+                    wave.spawns.len(),
+                    crate::resources::gb_g(r.budget.available_mb),
+                    crate::resources::gb_g(r.budget.per_child_mb())
+                ));
+            }
+        }
         let mut started: Vec<String> = vec![];
         let mut outs: Vec<String> = vec![];
         for r in &wave.spawns {
@@ -1594,13 +1682,22 @@ impl Hub {
             }
             r.as_object_mut().map(|o| { o.remove("budget"); });
             r["cmd"] = json!("spawn");
+            r["admitted"] = json!(true);
             match self.launch(&r) {
                 Ok(o) => { started.push(name); outs.push(o); }
                 Err(e) => return Err(format!("dispatch stopped at {name}: {e}\n{}", crate::subagents::report(&outs))),
             }
         }
         crate::dispatch::record_run(&self.dir, &fp, &started);
-        let summary = format!("{}\n{}", report(&outs), crate::dispatch::report(&wave));
+        if wave.join {
+            self.join = Some(Join { names: started.clone(), verify: s(req, "verify"), root: s(req, "root"), started: now() });
+        }
+        let mut summary = format!("{}\n{}", report(&outs), crate::dispatch::report(&wave));
+        if wave.join {
+            // The bash tool ends the turn on this marker: zero model steps between the wave
+            // starting and the hub joining it.
+            summary = format!("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n{summary}");
+        }
         Ok(ok(summary, json!({"started": started, "discoverers": wave.discoverers, "repos": wave.repos, "warnings": wave.warnings})))
     }
 
@@ -1681,11 +1778,16 @@ impl Launcher {
             .env("MINI_AGENT_CONTEXT_DIR", &self.context_dir)
             .env("PATH", path)
             .env_remove("MINI_AGENT_SOCKET")
+            .env_remove("MINI_AGENT_LANE")
+            .env_remove("MINI_AGENT_LANE_ROOT")
             .current_dir(&c.cwd)
             .stdin(Stdio::null())
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
             .stderr(log)
             .process_group(0);
+        if !c.lane.is_empty() {
+            cmd.env("MINI_AGENT_LANE", c.lane.join("\n")).env("MINI_AGENT_LANE_ROOT", &c.cwd);
+        }
         let proc = cmd.spawn().map_err(|e| format!("could not start the subagent: {e}"))?;
         c.pid = proc.id() as i32;
         crate::e2e::worker::register(c.pid);
@@ -2607,6 +2709,10 @@ pub fn client(args: &[String]) -> i32 {
     let rest = &args[1..];
     let mut json_out = false;
     let mut req = json!({"cmd": cmd});
+    // `dispatch` sizes shards and resolves lanes against the caller's directory, not the hub's.
+    if cmd == "dispatch" {
+        req["root"] = json!(std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default());
+    }
     let mut positional: Vec<String> = vec![];
     let mut skills: Vec<String> = vec![];
     let mut i = 0;
@@ -2662,6 +2768,7 @@ pub fn client(args: &[String]) -> i32 {
                 "--max-concurrency" => req["max_concurrency"] = json!(value(&mut i)?.parse::<u64>().map_err(|_| "--max-concurrency needs a number")?),
                 "--verify" => req["verify"] = json!(value(&mut i)?),
                 "--verify-baseline" => req["verify_baseline"] = json!(value(&mut i)?),
+                "--join" => req["join"] = json!(true),
                 "--brief" => req["brief"] = json!(true),
                 "--batch" => req["batch"] = json!(value(&mut i)?),
                 "--fork" => req["fork"] = json!(true),

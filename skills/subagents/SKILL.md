@@ -90,6 +90,36 @@ What it does, in one `agent` step:
 - **defers tasks that depend on another task in the same plan** and tells you so: they launch on
   the next `dispatch`, when their predecessor's map is in the store.
 
+### The fast shape: owned files, the contract in the plan, `--join` (measured 2026-10-07)
+
+```bash
+mini-agent-rs agent dispatch --file plan.json --join --no-fork --verify "go build ./..."
+```
+
+```json
+{ "tasks": [
+  { "id": "go-menu", "files": ["backend/internal/menu.go", "backend/internal/errors.go"],
+    "task": "CONTRACT: Group{id,name,closed} at GET /api/menu/groups ... <what to change>" },
+  { "id": "ts-menu", "files": ["frontend/src/types.ts", "frontend/src/components/MenuList.tsx"],
+    "task": "CONTRACT: (the same text) ... <what to change>" }
+] }
+```
+
+- **`files` sizes the shard and is its lane.** `dispatch` counts their lines, warns when the
+  heaviest shard is over 1.5x the lightest (the wave lasts as long as the heaviest), and starts
+  the heaviest first. The child may WRITE only its `files` (and any `lane` paths): the bash tool
+  runs in a bubblewrap mount namespace where the rest of the work tree is read-only. Reading
+  stays free. A child that hits `Read-only file system` has left its lane.
+- **Put the contract in every task's text** instead of a `discover` child. Discoverers start at
+  the same moment as the editors, so editors can never use their map inside the same wave; they
+  were 13-30% of the wave's tokens for nothing.
+- **`--join` ends your turn on the dispatch itself.** When the last child finishes, the hub runs
+  `--verify` once and answers for you with every child's result: no polling, no re-reading
+  diffs, zero model steps after the wave. Measured: the parent's tail after the last child was
+  41-103 s (20-40% of the run) without it.
+- **`--no-fork`** when the plan carries the contract: a fork hands the child your whole system
+  prompt and conversation (the other shards' tasks included), which it then reads.
+
 Two waves therefore beat one big wave when the second depends on the first's map:
 
 ```bash

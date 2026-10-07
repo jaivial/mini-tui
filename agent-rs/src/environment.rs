@@ -182,6 +182,37 @@ fn result_value(r: Result<(String, i64), (String, String, String)>) -> Value {
     }
 }
 
+/// The argv of one bash-tool command. A dispatched child with a lane (`MINI_AGENT_LANE`, one
+/// path per line, set by the hub) runs it in a bubblewrap mount namespace where the lane root
+/// (`MINI_AGENT_LANE_ROOT`, its work tree) is READ-ONLY except the lane paths, which stay
+/// writable. Everything outside the work tree is untouched (`--dev-bind / /`): /tmp, the shared
+/// store, the toolchains. Measured 2026-10-07: children issued 5-19 commands each into the
+/// sibling's repo; a lane turns the expensive version of that (editing a sibling's file, which
+/// the sibling then has to re-read or fight) into an immediate `Read-only file system`.
+/// No bwrap on PATH, or no lane: the command runs as before.
+pub fn lane_argv(command: &str) -> Vec<String> {
+    let plain = vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()];
+    let lane = std::env::var("MINI_AGENT_LANE").unwrap_or_default();
+    let root = std::env::var("MINI_AGENT_LANE_ROOT").unwrap_or_default();
+    if lane.trim().is_empty() || root.is_empty() {
+        return plain;
+    }
+    let bwrap = ["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"].into_iter().find(|p| std::path::Path::new(p).exists());
+    let Some(bwrap) = bwrap else { return plain };
+    let mut argv: Vec<String> = vec![bwrap.into(), "--dev-bind".into(), "/".into(), "/".into(), "--ro-bind".into(), root.clone(), root.clone()];
+    for l in lane.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let p = std::path::Path::new(l);
+        // A lane file that does not exist yet is a file the child will create: open its folder.
+        let target = if p.exists() { p.to_path_buf() } else { p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| p.to_path_buf()) };
+        if target.exists() && target.starts_with(&root) {
+            let t = target.display().to_string();
+            argv.extend(["--bind".into(), t.clone(), t]);
+        }
+    }
+    argv.extend(["--".into(), "/bin/sh".into(), "-c".into(), command.to_string()]);
+    argv
+}
+
 /// `_check_finished`: the first line of the output (after leading whitespace) is the marker.
 fn check_finished(output: &Value) -> Option<String> {
     let text = get(output, "output").and_then(Value::as_str).unwrap_or("");
@@ -240,7 +271,7 @@ impl Environment for LocalEnvironment {
         let mut env: BTreeMap<String, String> = std::env::vars().collect();
         env.extend(self.env.clone());
         // subprocess.Popen(shell=True) runs `/bin/sh -c`.
-        let argv = vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()];
+        let argv = lane_argv(command);
         let r = run(&argv, Some(&cwd), Some(&env), self.timeout, command);
         if is_stopped(&r) {
             return Outcome::Stopped;

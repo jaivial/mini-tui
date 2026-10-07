@@ -53,6 +53,37 @@ pub struct Wave {
     pub notes: Vec<String>,
     /// Anything the wave will not do, and why (capped children, empty plan...).
     pub warnings: Vec<String>,
+    /// `(child, lines)` for every task that declared its `files`: the shard sizes the wave is
+    /// planned around. A wave costs MAX(shard), not SUM(shard).
+    pub weights: Vec<(String, usize)>,
+    /// `--join`: the session ends its turn now and the hub answers for it when the wave is over.
+    pub join: bool,
+}
+
+/// The size of a shard, in lines of the files it owns (missing files count as 0: a new file).
+/// Lines, not bytes or files, because the 2026-10-07 runs showed child time tracking the code
+/// it had to read and rewrite: the 38-43 step child owned the most lines of the wave.
+fn shard_lines(files: &[String], root: &std::path::Path) -> usize {
+    files
+        .iter()
+        .map(|f| std::fs::read_to_string(root.join(f)).map(|t| t.lines().count()).unwrap_or(0))
+        .sum()
+}
+
+/// A plan task's `lane`: the paths (dirs or files, relative to its cwd) it may WRITE. Its
+/// `files` are in its lane too: a shard owns what it is sized by.
+fn lane_of_task(t: &Value) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for key in ["lane", "files"] {
+        match t.get(key) {
+            Some(Value::String(s)) => out.push(s.trim().to_string()),
+            Some(Value::Array(a)) => out.extend(a.iter().filter_map(Value::as_str).map(|s| s.trim().to_string())),
+            _ => {}
+        }
+    }
+    out.retain(|s| !s.is_empty());
+    out.dedup();
+    out
 }
 
 /// The wave size: the flag, else the env, else the default, always clamped to [`MAX_FANOUT`].
@@ -116,6 +147,24 @@ fn discover_preamble(repo: &str) -> String {
             spelling on both sides). Only write facts you actually read in the code.\n\
          4. Then STOP, with a summary of what you mapped. Do not edit any file: editing is another\n\
             child's job and two children must never own the same file.\n"
+    )
+}
+
+fn s_of(v: &Value, k: &str) -> String {
+    v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+/// What a child is told about its lane. The lane is ENFORCED (the bash tool runs in a mount
+/// namespace where everything else under the work tree is read-only), so this is not a request:
+/// it saves the child the step of discovering it by hitting `Read-only file system`.
+fn lane_preamble(lane: &[String]) -> String {
+    format!(
+        "## Your lane (enforced)\n\
+         You may WRITE only: {}. Everything else in the work tree is READ-ONLY for you (writes fail\n\
+         with `Read-only file system`); other children own it and are editing it right now. Read\n\
+         other files only when your task needs a fact from them, and never wait for or re-check a\n\
+         sibling's work: the contract in your task is the agreement, code to it.\n",
+        lane.iter().map(|l| format!("`{l}`")).collect::<Vec<_>>().join(", ")
     )
 }
 
@@ -190,8 +239,10 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
     let cap = fanout(opts.get("max_concurrency").and_then(Value::as_u64).map(|n| n as usize));
     let model = opts.get("model_opt").and_then(Value::as_str).unwrap_or("").to_string();
     let default_fork_k = opts.get("fork_k").and_then(Value::as_i64).map(|n| n as usize);
+    let root = std::path::PathBuf::from(opts.get("root").and_then(Value::as_str).unwrap_or("."));
+    let join = opts.get("join").and_then(Value::as_bool).unwrap_or(false);
 
-    let mut wave = Wave::default();
+    let mut wave = Wave { join, ..Wave::default() };
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut total = tasks.len();
     // Only the tasks of the FIRST wave are launched here: a task with deps waits for its
@@ -242,6 +293,14 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
         if !verify_cmd.is_empty() && !discover {
             body = format!("{body}\n\n{}", verify_preamble(&verify_cmd, &verify_baseline));
         }
+        // Where, and what "done" is, stated once. Measured 2026-10-07: a --no-fork child was never
+        // told its work tree and opened with `find / -name menu.go`; others wrote JSDOM and
+        // `_test.go` harnesses nobody asked for (13-20 of 30-36 steps) -- the gate is the proof.
+        let cwd_txt = t.get("cwd").and_then(Value::as_str).map(String::from).unwrap_or_else(|| root.display().to_string());
+        let body = format!(
+            "## Where\nYour work tree is `{cwd_txt}` and your shell already starts there; paths in the task are relative to it.\n\n{body}\n\n## Scope\nDo exactly the change above, in your own files. Do not write tests, harnesses or scratch copies to check behaviour: {}. Then answer in a few lines: files changed and the contract you coded to.\n",
+            if verify_cmd.is_empty() { "reading your diff once is enough" } else { "the gate command is the proof, and the session that started you re-runs it once for the whole wave" }
+        );
         let mut r = json!({"cmd": "spawn", "name": id, "task": body, "force": true});
         if !repos.is_empty() {
             r["repos"] = json!(repos);
@@ -251,6 +310,20 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
         }
         if let Some(b) = t.get("budget") {
             r["budget"] = b.clone();
+        }
+        let lane = lane_of_task(t);
+        if !lane.is_empty() {
+            let cwd = t.get("cwd").and_then(Value::as_str).map(std::path::PathBuf::from).unwrap_or_else(|| root.clone());
+            let files: Vec<String> = match t.get("files") {
+                Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(String::from).collect(),
+                Some(Value::String(f)) => vec![f.clone()],
+                _ => vec![],
+            };
+            if !files.is_empty() {
+                wave.weights.push((id.clone(), shard_lines(&files, &cwd)));
+            }
+            r["lane"] = json!(lane);
+            r["task"] = json!(format!("{}\n\n{}", s_of(&r, "task"), lane_preamble(&lane)));
         }
         if fork {
             r["fork"] = json!(true);
@@ -270,6 +343,27 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
     }
     if !deferred.is_empty() {
         wave.warnings.push(format!("waiting on a task in this plan (launch them with `agent dispatch` once their predecessor's handshake is in the store): {}", deferred.join("; ")));
+    }
+    // Balance: the wave ends when its LONGEST shard ends. Measured 2026-10-07: shards of
+    // 0:55 / 0:49 / 1:56 / 2:06 -- three children sat idle for a minute behind the fourth.
+    if wave.weights.len() >= 2 {
+        let max = wave.weights.iter().map(|w| w.1).max().unwrap_or(0);
+        let min = wave.weights.iter().map(|w| w.1).min().unwrap_or(0).max(1);
+        if max as f64 > 1.5 * min as f64 {
+            let heavy = wave.weights.iter().find(|w| w.1 == max).map(|w| w.0.clone()).unwrap_or_default();
+            wave.warnings.push(format!(
+                "unbalanced wave: the heaviest shard ({heavy}, {max} lines) is {:.1}x the lightest ({min} lines). The wave lasts as long as {heavy}: split it, or move files to the light shards.",
+                max as f64 / min as f64
+            ));
+        }
+        // Heaviest first: the long pole gets the earliest start.
+        let order: Vec<String> = {
+            let mut w = wave.weights.clone();
+            w.sort_by(|a, b| b.1.cmp(&a.1));
+            w.into_iter().map(|w| w.0).collect()
+        };
+        let rank = |s: &Value| order.iter().position(|n| Some(n.as_str()) == s["name"].as_str()).unwrap_or(usize::MAX);
+        wave.spawns.sort_by_key(|s| rank(s));
     }
     if wave.discoverers.is_empty() && fork {
         wave.notes.push("no task is marked `discover`: the children start with no map of their repo and will read it themselves. That is the cost this command exists to avoid.".into());
@@ -359,11 +453,19 @@ pub fn report(wave: &Wave) -> String {
         out.push_str(&l);
         out.push('\n');
     }
+    if !wave.weights.is_empty() {
+        let w: Vec<String> = wave.weights.iter().map(|(n, l)| format!("{n}={l}")).collect();
+        out.push_str(&format!("  · shard sizes (lines): {}\n", w.join(" ")));
+    }
     for n in &wave.notes {
         out.push_str(&format!("  · {n}\n"));
     }
     for w in &wave.warnings {
         out.push_str(&format!("  ! {w}\n"));
+    }
+    if wave.join {
+        out.push_str("\n--join: this session's turn ENDS NOW. When the last child finishes, the hub runs the gate once and answers for this session with every child's result. Do not poll, do not verify: finish your turn.\n");
+        return out;
     }
     out.push_str("\nNothing else to do while they run: do NOT explore the repos yourself and do NOT re-read their diffs (that is the serial cost this command removes). Each one reports when it finishes; read the report, read `agent result <name>`, and trust the `--verify` command it ran.\n");
     out
