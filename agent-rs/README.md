@@ -120,6 +120,49 @@ The bundled `$subagents` skill teaches the model this loop. The `orch` script of
 forwards `start` / `followup` / `ls` / `wait` / `result` / `stop` to it when it runs inside such a
 session. Detached headless runs remain for your own terminal and the Python agent.
 
+### The shared context (`ContextStore`)
+
+The hub carries a **shared context** across a run, so the exploration that has to happen anyway
+happens once. It lives in `<traj dir>/context/` as markdown with a schema, and is filled and
+consulted through the same socket as the rest of the hub:
+
+```sh
+mini-agent-rs agent state put findings.md --prompt-file f.md      # symbols, files, lines
+mini-agent-rs agent state put contracts.md --prompt-file c.md     # fields + producers/consumers
+mini-agent-rs agent state put decisions.md --prompt-file d.md     # what was decided and why
+mini-agent-rs agent state put surface.backend.md --prompt-file s.md
+mini-agent-rs agent state ls | get <key>
+
+mini-agent-rs agent surface <symbol>          # callers, types and contract of one symbol
+mini-agent-rs agent surface ls                 # what is indexed
+mini-agent-rs agent contract-check --repo R    # check the claims the children made
+```
+
+- **Handover is on by default** (`MINI_AGENT_CONTEXT=0` off) and needs no cooperation from the
+  parent. On `spawn`, `Hub::spawn` injects every document that names a repo the child works in,
+  as `<context name="…">` blocks, scoped per repo: `findings.md` keeps only its `## backend`
+  sections for a backend child. Repos come from `--repo R` (repeatable), else from the last
+  meaningful segment of the child's `--cwd`. The budget degrades (`head_chars`, then a note
+  saying how much was trimmed) instead of refusing the spawn.
+- **The handshake goes back.** When a child's turn ends, `record_handshake()` parses its final
+  answer into `## surface`, `## contract` and `## surprise` and writes `<child>.md`. A surprise is
+  the point: it is the only place a child can say "the brief is wrong" without stopping, so a
+  contract mismatch is reported by the child that found it rather than discovered later by the
+  parent reading diffs. A line that is still the template (a bracketed placeholder) is dropped
+  rather than stored as a claim.
+- **`contract_check` is mechanical.** For a repo: every file a child claims to touch exists and
+  is under the repo root; every field the contract assigns to that repo appears in the files the
+  child touched; a `no <invariant>` line is checked literally against those files. No model in
+  the loop, so it cannot be talked out of a failure. It runs on its own at the end of a child's
+  turn and is available by hand for a parent that has just edited something.
+- **The RLM harness seeds it.** `rlm.rs` points the store at its context directory on startup and
+  exposes it as `{{context.<key>}}` variables, so a scripted orchestration sees the same documents
+  a chat one does.
+
+The design and the measurements that motivated it are in
+[`docs/orchestration-plan.md`](docs/orchestration-plan.md) and in the top-level
+[README](../README.md#the-shared-context-contextstore).
+
 ### DAG plans (`mini-agent-rs agent plan`)
 
 A session can hand its hub a whole DAG and stop being the launcher: `agent plan submit --file

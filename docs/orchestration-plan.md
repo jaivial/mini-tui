@@ -296,9 +296,26 @@ Instrumentar cuántos pasos/tokens dedica un hijo al re-descubrimiento (comandos
 en el journal) y cuánto costaría un brief. Sin cambios de comportamiento.
 *Riesgos*: ninguno. *Tests*: n/a (solo medición).
 
-**Fase 1 — Brief + contexto compartido** (2–4 días)
+**Fase 1 — Brief + contexto compartido** (2–4 días) — **HECHA en 0.38.0 (7-oct-2026)**
 `agent spawn --context-file F` / plantilla `--brief`; convención `<run dir>/context/`;
 actualizar `skills/subagents/SKILL.md`.
+
+> **Cómo se resolvió (y en qué se apartó del plan).** En vez de una plantilla que el padre pueda
+> olvidar, la entrega es **automática y por defecto**: `context_store.rs` + `Hub::spawn` inyectan
+> a cada hijo los documentos que nombran los repos en los que trabaja, **recortados por repo**
+> (`## backend` y no `## frontend`), con el repositorio tomado de `--repo R` o del `--cwd` del
+> propio hijo. `MINI_AGENT_CONTEXT=0` lo apaga; `--context-file` explícito sigue soportado. El
+> otro riesgo del plan —"que el modelo lo ignore"— se atacó en el prompt del sistema
+> (`<orchestration_rule>` en `mini.yaml`), no en un skill, porque el prompt no es opcional.
+> Añadidos sobre el plan: `agent surface` (consulta barata de callers/tipos), el **handshake**
+> (`## surface` / `## contract` / `## surprise` de vuelta al orquestador) y `agent contract-check`
+> mecánico al final del turno del hijo. Sin `--brief` como plantilla: el handshake hace ese papel
+> mejor, porque lo escribe quien hizo el trabajo. **Medido en la web UI con subagents reales**
+> (2 repos, orquestador + 2 hijos, 3 runs A/B): descubrimiento del hijo ~3.197 → ~1.456 tokens
+> (**-54%**), tokens del orquestador ~26.699 → ~12.093 (**-55%**), y 1 bug de integración
+> detectado por el hijo que el padre habría mergeado. Lecturas duplicadas **no** bajan (y no
+> deberían: un hijo lee el fichero que va a editar). Fase 2 (plan.json + scheduler) sigue
+> pendiente.
 *Riesgos*: tareas más grandes (medir en Fase 0); convención ignorada (hacerla explícita y
 automática, no dependiente del buen hacer del modelo). *Tests*: e2e con modelos deterministas al
 estilo `agent-rs/tests/subagents.rs` (sin red): el hijo recibe el contexto; `expand_skills` sigue
