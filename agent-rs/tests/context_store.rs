@@ -237,3 +237,33 @@ fn a_big_store_degrades_the_handover_instead_of_failing_the_spawn() {
     assert!(all.contains("started subagent be-worker"), "the spawn must not fail on a big store:\n{all}");
     assert!(!all.contains("over the"), "no cap failure:\n{all}");
 }
+
+/// Review 3: the DEFAULT (no --repo) must reach the repo a child works in, from its cwd alone --
+/// the point of the default is that the parent does not have to remember it. It took the first
+/// path segments, so `/home/jaime/work/newvillacarmen/backend` truncated the repo name away.
+#[test]
+fn a_child_gets_its_surface_doc_without_being_told_which_repo_it_is() {
+    let dir = tmp("default-repo");
+    // A findings doc with a per-repo section and a per-repo surface doc, as the orchestrator writes.
+    write(&dir.join("findings.md"), "# backend\n`internal/api/handler.go:20 handleToggle`\n\n# preact\n`src/lib/Reservas.tsx:900 row`\n");
+    write(&dir.join("surface.backend.md"), "# backend\n`internal/api/router.go:9 handleToggle <- server`\n");
+    // The child works deep inside a worktree of the backend repo, and is told nothing.
+    let deep = dir.join("work/backend/.worktrees/be-worker");
+    std::fs::create_dir_all(&deep).unwrap();
+    let parent = script(
+        "parent",
+        &[
+            ("run", &format!("mini-agent-rs agent state put findings.md --prompt-file {} > /dev/null 2>&1; mini-agent-rs agent state put surface.backend.md --prompt-file {} > /dev/null 2>&1; mini-agent-rs agent spawn be-worker --cwd {} 'do it' > out1.txt 2>&1; cat out1.txt", dir.join("findings.md").display(), dir.join("surface.backend.md").display(), deep.display())),
+            ("submit", "parent done"),
+        ],
+    );
+    let child = script("child", &[("submit", "Done.\nsurface: none\ncontract: none\nsurprise: none")]);
+    let msgs = run_parent(&dir, &parent, &child, "parent done");
+    let all = msgs.iter().map(text).collect::<Vec<_>>().join("\n---\n");
+    assert!(all.contains("handed"), "the store was not handed over at all:\n{all}");
+    // The child's own task message is where it lands: read the child's journal.
+    let cj = messages(&dir.join("subagents/be-worker/traj.jsonl"));
+    let ctext = cj.iter().map(text).collect::<Vec<_>>().join("\n");
+    assert!(ctext.contains("surface.backend.md") || ctext.contains("handleToggle"), "the backend child did not get its own surface:\n{ctext}");
+    assert!(!ctext.contains("Reservas.tsx"), "it must not be billed for the preact repo's surface:\n{ctext}");
+}

@@ -530,16 +530,44 @@ pub fn repos_of(req: &Value, cwd: &str, name: &str) -> Vec<String> {
         add(&mut out, one);
     }
     if out.is_empty() {
-        // Path segments of the cwd and of the child's own name: `.../backend/.worktrees/x` and
-        // `be-special-group` both name `backend`/`be`. Word-ish segments only, to avoid noise.
-        for seg in cwd.split(['/', '\\']).chain(name.split(['-', '_', '.'])) {
+        // Nothing explicit: guess from the cwd and the child's name, because the whole point is
+        // that the parent does not have to say it. Two rules, in this order:
+        //
+        // 1. the LAST meaningful segment of the cwd (`.../newvillacarmen/backend/.worktrees/be-x`
+        //    names `backend`; the worktree is not the repo), and
+        // 2. the child's own name, split on `-`/`_` (a child called `be-special-group` also names
+        //    `be`, so `surface.be.md` is reachable too).
+        //
+        // Taking the FIRST few segments of the path instead (the obvious reading) put `home`,
+        // `jaime` and the project root in front and truncated the repo name away, so the default
+        // silently delivered no surface doc to the very child it was meant to.
+        let skip = |seg: &str| seg.is_empty() || seg.starts_with('.') || seg == "worktrees" || seg == "worktree" || seg == "src" || seg == "tmp";
+        let mut cwd_segs: Vec<String> = cwd
+            .split(['/', '\\'])
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !skip(s) && s.len() >= 2 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .collect();
+        // Nearest last: if the cwd ends in the child name, the name is not a separate repo.
+        // `backend/.worktrees/be-special-group` filtered down to `be-special-group` (the dot
+        // dir was skipped): that IS the child name, not a repo, so drop it before taking the last.
+        let nlow = name.to_lowercase();
+        if cwd_segs.last().map(|s| s.as_str()) == Some(nlow.as_str()) {
+            cwd_segs.pop();
+        }
+        let last = cwd_segs.last().cloned();
+        if let Some(l) = &last {
+            add(&mut out, l);
+        }
+        for seg in name.split(['-', '_', '.']) {
             let seg = seg.trim().to_lowercase();
             if seg.len() >= 2 && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
                 add(&mut out, &seg);
             }
         }
-        // Keep it to the meaningful few: the last path segment and the name's first token.
-        out.truncate(4);
+        // A second-to-last path segment only when the last one IS the child name (`backend/be-x`).
+        if cwd_segs.len() >= 2 && name.split(['-', '_', '.']).any(|p| p.eq_ignore_ascii_case(last.as_deref().unwrap_or("~"))) {
+            add(&mut out, &cwd_segs[cwd_segs.len() - 2]);
+        }
     }
     out
 }
@@ -2669,5 +2697,24 @@ mod tests {
         assert!(valid_name("fix-auth.2"));
         assert!(!valid_name("../x"));
         assert!(!valid_name(""));
+    }
+
+    /// Review 3: the default (no --repo) took the FIRST few path segments, so for a cwd like
+    /// /home/jaime/work/newvillacarmen/backend the repo name was truncated away and the child got
+    /// no surface doc at all -- the default silently disabled the feature it was meant to enable.
+    #[test]
+    fn the_default_repos_are_the_repo_itself_not_the_path_to_it() {
+        let repos = repos_of(&serde_json::json!({}), "/home/jaime/work/newvillacarmen/backend", "be-special-group");
+        assert!(repos.iter().any(|r| r == "backend"), "the repo itself must be named: {repos:?}");
+        assert!(!repos.iter().any(|r| r == "home" || r == "jaime"), "the path to it is not a repo: {repos:?}");
+        // A worktree is not a repo: .../backend/.worktrees/be-x is still `backend`.
+        let wt = repos_of(&serde_json::json!({}), "/home/jaime/work/newvillacarmen/backend/.worktrees/be-special-group", "be-special-group");
+        assert_eq!(wt, vec!["backend", "be", "special", "group"], "{wt:?}");
+        // A cwd whose last segment IS the child name still gets the repo above it.
+        let nested = repos_of(&serde_json::json!({}), "/srv/backend/be-worker", "be-worker");
+        assert!(nested.iter().any(|r| r == "backend"), "{nested:?}");
+        // Explicit --repo wins outright.
+        let explicit = repos_of(&serde_json::json!({"repos": ["go-api"]}), "/home/jaime/backend", "be-worker");
+        assert_eq!(explicit, vec!["go-api"], "{explicit:?}");
     }
 }
