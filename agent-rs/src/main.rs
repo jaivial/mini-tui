@@ -7,6 +7,7 @@
 mod agent;
 mod resources;
 mod compaction;
+mod context_store;
 mod config;
 mod e2e;
 mod environment;

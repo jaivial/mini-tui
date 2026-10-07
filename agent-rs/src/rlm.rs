@@ -32,7 +32,8 @@ pub const HELP: &str = "mini-agent-rs rlm - the RLM harness: context as variable
   ask TEXT                   one sub-agent turn: model + bash tool until it answers
   call NAME(args...)         run a function: a whole sub-agent as a function call
   run SHELL                  run a shell command in the session environment
-  vars | show NAME | unset NAME
+  vars | show NAME | unset NAME     {{findings}}, {{contracts}}, {{decisions}} and {{surface.<repo>}}
+                                     are seeded from the shared context/ of the run at startup
   fns | fn NAME
   model [NAME]               show / switch the model     cost  the spend so far
   clear                      start the conversation over  system [TEXT]  the system prompt
@@ -74,6 +75,9 @@ struct FnDef {
 }
 
 struct Repl {
+    /// The shared context of the run tree, if there is one: seeded into the globals at startup so
+    /// the program starts from a paid-for exploration instead of from nothing (Fase 7).
+    context_dir: PathBuf,
     model: Box<dyn Model>,
     model_cfg: Obj,
     env: Box<dyn Environment>,
@@ -157,7 +161,9 @@ impl Repl {
         step_limit: usize,
         max_depth: usize,
     ) -> Self {
+        let context_dir = std::env::var("MINI_AGENT_CONTEXT_DIR").ok().filter(|s| !s.is_empty()).map(PathBuf::from).unwrap_or_default();
         Repl {
+            context_dir,
             model,
             model_cfg,
             env,
@@ -172,6 +178,27 @@ impl Repl {
             step_limit,
             max_depth,
         }
+    }
+
+    /// Bind the shared context into the globals when the REPL opens: `{{findings}}`, `{{contracts}}`,
+    /// `{{decisions}}` and `{{surface.<repo>}}`. The RLM needs no new mechanism to share context
+    /// between sub-agents -- variables ARE the context and `call` IS a sub-agent -- what it lacked
+    /// was a seed, and this is it. Nothing to seed: no-op.
+    fn seed_context(&mut self) -> usize {
+        if self.context_dir.as_os_str().is_empty() {
+            return 0;
+        }
+        let store = crate::context_store::ContextStore::new(self.context_dir.clone());
+        let mut n = 0;
+        for (k, v) in store.vars(8 * 1024) {
+            let Some(stem) = k.strip_prefix("context.") else { continue };
+            if v.trim().is_empty() || self.vars.contains_key(stem) {
+                continue; // an explicit `let` of the same name wins over the seed
+            }
+            self.vars.insert(stem.to_string(), v);
+            n += 1;
+        }
+        n
     }
 
     /// Interpolate `{{var}}` with the globals, then the frame's locals and `{{_}}` on top.
@@ -503,6 +530,7 @@ impl Repl {
             "vars": self.vars,
             "fns": fns,
             "system": self.system,
+            "context_dir": self.context_dir,
         });
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -534,6 +562,12 @@ impl Repl {
                     ))
                 })
                 .collect();
+        }
+        if let Some(d) = v.get("context_dir").and_then(Value::as_str).filter(|d| !d.is_empty()) {
+            // A restart under a different MINI_AGENT_CONTEXT_DIR keeps the store it was seeded from.
+            if self.context_dir.as_os_str().is_empty() {
+                self.context_dir = PathBuf::from(d);
+            }
         }
         if let Some(s) = v.get("system").and_then(Value::as_str) {
             self.system = s.to_string();
@@ -679,6 +713,7 @@ pub fn client(args: &[String]) -> i32 {
     if repl.state_path.is_some() {
         let _ = repl.load_state("");
     }
+    repl.seed_context();
     repl.run(o)
 }
 

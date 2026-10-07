@@ -37,6 +37,11 @@ const GIT_READS: &[&str] = &["status", "log", "diff", "show", "branch", "blame",
 /// Is this command discovery (read-only inspection) or work? A whole pipeline is discovery only
 /// when every part is; anything that redirects, edits (`sed -i`) or builds counts as work.
 fn is_discovery(command: &str) -> bool {
+    // `cd X && grep ...` / `cd X; grep ...`: the `cd` only moves, it reads nothing and writes
+    // nothing. Without this the first token of such a segment is `cd`, which is not a reader, and
+    // almost every real exploration (`cd repo && grep -rn foo internal/`) counted as WORK. On the
+    // measured 2026-10-07 run that misclassification reported 903 discovery tokens where the truth
+    // is 122,039: the metric was unusable for deciding anything.
     command.split(['|', ';', '&']).filter(|p| !p.trim().is_empty()).all(|part| {
         // A redirection writes somewhere: not discovery (except `2>` error discards).
         if part.split_whitespace().any(|t| t.contains('>') && !t.starts_with("2>")) {
@@ -46,7 +51,26 @@ fn is_discovery(command: &str) -> bool {
         while matches!(it.peek(), Some(&"sudo") | Some(&"env") | Some(&"time")) {
             it.next();
         }
-        let Some(w) = it.next() else { return false };
+        // Directory changes and environment assignments are neither reads nor writes: classify the
+        // rest of the segment, not the `cd`.
+        loop {
+            match it.peek().copied() {
+                Some("cd") | Some("pushd") => {
+                    it.next();
+                    if matches!(it.peek(), Some(w) if !w.starts_with('-')) {
+                        it.next();
+                    }
+                }
+                Some("export") => {
+                    // `export A=1` only sets a shell variable: neutral, classify as discovery.
+                    // `export foo` (no `=`) prints the value: a read. Either way this segment adds
+                    // no work of its own.
+                    return true;
+                }
+                _ => break,
+            }
+        }
+        let Some(w) = it.next() else { return true };
         match w {
             "git" => it.peek().map(|s| GIT_READS.contains(s)).unwrap_or(false),
             "sed" => !part.split_whitespace().any(|t| t == "-i"),
@@ -195,6 +219,13 @@ mod tests {
     #[test]
     fn discovery_vs_work() {
         assert!(is_discovery("ls -la"));
+        // The bug the 2026-10-07 measurement found: a `cd` in front of a read is not work.
+        assert!(is_discovery("cd internal/api && grep -rn SpecialMenu ."));
+        assert!(is_discovery("cd /var/www/x/backoffice && sed -n '640,660p' internal/api/server.go"));
+        assert!(is_discovery("cd a && cd b && wc -l f.go"));
+        assert!(is_discovery("cd repo && export X=1 && grep -rn foo ."));
+        assert!(!is_discovery("cd repo && sed -i 's/a/b/' f"));
+        assert!(!is_discovery("cd repo && git commit -m x"));
         assert!(is_discovery("grep -rn foo src"));
         assert!(is_discovery("cat a.rs | wc -l"));
         assert!(is_discovery("sed -n '1,5p' x"));
