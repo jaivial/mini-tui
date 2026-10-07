@@ -592,7 +592,18 @@ impl Agent {
             let command = action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default();
             match self.env.execute(&command) {
                 Outcome::Output(o) => outputs.push(o),
-                Outcome::Submitted(s) => return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", &s, &s)])),
+                Outcome::Submitted(s) => {
+                    // `agent dispatch --join` submitted on the dispatch itself: the hub joins the
+                    // wave and the answer is the wave's, with no model step in between.
+                    let s = match crate::subagents::join_wave() {
+                        Some(joined) => {
+                            let _ = crate::subagents::take_notes();
+                            format!("{s}\n{joined}")
+                        }
+                        None => s,
+                    };
+                    return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", &s, &s)]));
+                }
                 Outcome::Stopped => return Err(Flow::Interrupt(vec![])),
             }
         }
