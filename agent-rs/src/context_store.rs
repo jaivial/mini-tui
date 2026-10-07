@@ -740,7 +740,7 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         ok: broken.is_empty(),
         detail: if broken.is_empty() { "no invariant of the contract is contradicted".into() } else { broken.join("; ") },
     });
-    // 4. COVERAGE. The three checks above can all be true about nothing at all: with no file
+    // 4. COVERAGE. The checks above can all be true about nothing at all: with no file
     //    claimed, an empty corpus satisfies every clause and no invariant can be contradicted.
     //    Measured in the browser on 2026-10-07 a child finished with 1,765 chars of perfectly
     //    good prose naming two real files, but without a `surface:` tag, so nothing was claimed
@@ -755,7 +755,7 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         } else if handshake.trim().is_empty() {
             "NOTHING was checked: there is no handshake for this child, so this is not a pass.\n       End the child's answer with `surface:` / `contract:` / `surprise:` lines, or run\n       `agent contract-check --repo <repo> --prompt-file <the answer>`.".into()
         } else {
-            "NOTHING was checked: the answer names no file (`surface: file:line sym -> who`) and\n       no clause of contracts.md names this repo, so the 3 checks above passed over an\n       empty corpus. This is NOT a pass.".into()
+            "NOTHING was checked: the answer names no file (`surface: file:line sym -> who`) and\n       no clause of contracts.md names this repo, so the earlier checks passed over an\n       empty corpus. This is NOT a pass.".into()
         },
     });
     let passed = checks.iter().filter(|c| c.ok).count();
@@ -852,8 +852,13 @@ pub fn any_handshake(store: &ContextStore, repo: &str) -> Option<String> {
             continue;
         }
         // Prefer the most specific document: one that names a file of the repo beats a general
-        // one. `best_score` avoids re-parsing the incumbent on every candidate.
-        let score = files.iter().filter(|f| f.to_lowercase().contains(&want)).count();
+        // one. `best_score` avoids re-parsing the incumbent on every candidate. With no repo to
+        // narrow by there is nothing to be more specific ABOUT, so the first real handshake stands.
+        let score = if want.is_empty() {
+            1
+        } else {
+            files.iter().filter(|f| f.to_lowercase().contains(&want)).count()
+        };
         if score > best_score {
             best_score = score;
             best = Some(body);
