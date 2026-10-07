@@ -1014,7 +1014,16 @@ impl Hub {
     /// touched satisfy the contract, in the tree itself? Mechanical, no model.
     fn contract_check(&self, c: &Child) -> String {
         let repo = c.cwd.rsplit('/').find(|s| !s.is_empty()).unwrap_or("").to_string();
-        let handshake = self.store.get(&format!("{}.md", c.name)).unwrap_or_default();
+        // The child's own handshake, or - when it wrote its own handoff under another key instead
+        // of the three tags - any stored handshake that names a file of its repo. Without this the
+        // check ran over an empty corpus and passed, which is how a real integration gap got
+        // reported as "3/3 pass" in the browser on 2026-10-07.
+        let handshake = self
+            .store
+            .get(&format!("{}.md", c.name))
+            .filter(|t| !context_store::claimed_files(t).is_empty())
+            .or_else(|| context_store::any_handshake(&self.store, &repo))
+            .unwrap_or_default();
         let (out, checks) = context_store::contract_check(&self.store, &repo, &handshake, Path::new(&c.cwd), 2000);
         if checks.iter().all(|k| k.ok) {
             return String::new(); // green: no noise in the parent's notes
@@ -2158,6 +2167,8 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
                     };
                     name.and_then(|n| context_store::state_key(&format!("{n}.md")).ok())
                         .and_then(|k| h.store.get(&k))
+                        .filter(|t| !context_store::claimed_files(t).is_empty())
+                        .or_else(|| context_store::any_handshake(&h.store, &repo))
                         .unwrap_or_default()
                 }
             };

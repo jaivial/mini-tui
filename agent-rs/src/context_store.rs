@@ -621,6 +621,24 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         ok: broken.is_empty(),
         detail: if broken.is_empty() { "no invariant of the contract is contradicted".into() } else { broken.join("; ") },
     });
+    // 4. COVERAGE. The three checks above can all be true about nothing at all: with no file
+    //    claimed, an empty corpus satisfies every clause and no invariant can be contradicted.
+    //    Measured in the browser on 2026-10-07 a child finished with 1,765 chars of perfectly
+    //    good prose naming two real files, but without a `surface:` tag, so nothing was claimed
+    //    and the check reported "3/3 pass" over an empty corpus - which reads exactly like
+    //    "the contract holds". A green check over nothing is a silent hole, so it fails here.
+    let covered = !files.is_empty() || !myclauses.is_empty();
+    checks.push(Check {
+        name: "coverage".into(),
+        ok: covered,
+        detail: if covered {
+            format!("{} file(s) and {} contract clause(s) were actually examined", files.len(), myclauses.len())
+        } else if handshake.trim().is_empty() {
+            "NOTHING was checked: there is no handshake for this child, so this is not a pass.\n       End the child's answer with `surface:` / `contract:` / `surprise:` lines, or run\n       `agent contract-check --repo <repo> --prompt-file <the answer>`.".into()
+        } else {
+            "NOTHING was checked: the answer names no file (`surface: file:line sym -> who`) and\n       no clause of contracts.md names this repo, so the 3 checks above passed over an\n       empty corpus. This is NOT a pass.".into()
+        },
+    });
     let passed = checks.iter().filter(|c| c.ok).count();
     let total = checks.len();
     let mut out = format!("contract-check {repo}: {passed}/{total} pass\n");
@@ -682,6 +700,47 @@ fn split_items(rest: &str) -> Vec<String> {
         .filter(|s| !s.is_empty() && s != "none")
         .filter(|s| !is_template(s))
         .collect()
+}
+
+/// Any stored document that reads as a handshake touching `repo`.
+///
+/// `agent contract-check --repo R` with no `--name` used to look only for `<child>.md`, the key the
+/// hub stores a parsed handshake under. A child that wrote its own handoff instead (measured in
+/// the browser: `agent state put backend-handler.md`, a perfectly good one) was therefore
+/// invisible to the check, which then passed over nothing. This walks the store for a document
+/// that names a file of that repo, newest schema first, so the check sees the claim that exists.
+pub fn any_handshake(store: &ContextStore, repo: &str) -> Option<String> {
+    let want = repo.to_lowercase();
+    let mut best: Option<String> = None;
+    let mut best_score: usize = 0;
+    for d in store.docs() {
+        // The orchestrator's own documents describe the repos too; a handshake is the child's own
+        // account of what it touched, so skip the reserved schema keys.
+        if matches!(d.key.as_str(), FINDINGS | CONTRACTS | DECISIONS) || d.key.starts_with(SURFACE_PREFIX) {
+            continue;
+        }
+        let Some(body) = store.get(&d.key) else { continue };
+        let files = claimed_files(&body);
+        if files.is_empty() {
+            continue;
+        }
+        // A repo-less check accepts the first real handshake; a named one only accepts a handshake
+        // that mentions its repo, so `--repo frontend` never checks the backend child's claim.
+        let mentions = want.is_empty()
+            || files.iter().any(|f| f.to_lowercase().contains(&want))
+            || body.to_lowercase().contains(&want);
+        if !mentions {
+            continue;
+        }
+        // Prefer the most specific document: one that names a file of the repo beats a general
+        // one. `best_score` avoids re-parsing the incumbent on every candidate.
+        let score = files.iter().filter(|f| f.to_lowercase().contains(&want)).count();
+        if score > best_score {
+            best_score = score;
+            best = Some(body);
+        }
+    }
+    best
 }
 
 /// Is this line the handshake TEMPLATE rather than an answer? The tell is a bracketed
