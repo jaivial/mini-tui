@@ -2620,8 +2620,14 @@ pub fn client(args: &[String]) -> i32 {
                     req.get("repos").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
                 let positional_repo = positional.first().cloned().unwrap_or_default();
                 req["repo"] = json!(if flagged.is_empty() { positional_repo } else { flagged.join(" ") });
-                req["root"] = json!(positional.first().filter(|_| flagged.is_empty()).map(|_| positional.get(1).cloned().unwrap_or_default()).unwrap_or_else(|| positional.first().cloned().unwrap_or_default()));
-                req["handshake"] = json!(positional.get(2..).map(|p| p.join(" ")).unwrap_or_default());
+                // The positional form is `contract-check [repo] [root] [handshake...]`. With
+                // `--repo` given the repo slot is already filled, so `root` moves down one and
+                // the handshake with it - the handshake used to be read from index 2 either way,
+                // which meant `contract-check --repo R <root> "<text>"` dropped the text and fell
+                // back to the stored child. Measured in the browser on 2026-10-07 (run G).
+                let base = if flagged.is_empty() { 1 } else { 0 };
+                req["root"] = json!(positional.get(base).cloned().unwrap_or_default());
+                req["handshake"] = json!(positional.get(base + 1..).map(|p| p.join(" ")).unwrap_or_default());
             }
             "state" => {
                 let action = positional.first().cloned().ok_or("state needs an action: ls, get or put")?;
