@@ -2,6 +2,55 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.38.1 — 2026-10-07
+
+### Fixed
+
+- **`agent contract-check` no longer reports a pass over nothing.** Five separate ways to get a
+  green check that had examined nothing were found by running real orchestrations in the browser;
+  every one of them is a mechanical check parsing free text with a rule free text does not obey.
+  - **A vacuous pass**: a child that ended with good prose but no `surface:` tag claimed no files,
+    so the corpus was empty, every clause was trivially satisfied and the check printed `3/3 pass`
+    — indistinguishable from "the contract holds". There is now a fourth check, `coverage`, which
+    fails when no file was claimed *and* no clause names the repo, and says so in the message.
+  - **A false missing file**: splitting a prose `surface:` line on commas invented a file called
+    `which registerRoutes (backend/routes.go`. A claim has to be a real path, so
+    `path_tokens()` takes every path-shaped token and cuts the `:line` before the extension (else
+    `handler.go:18` reads as extension `go:18` and is thrown away).
+  - **Prose parsed as identifiers**: a contract clause is a sentence, and `There` and `Neither` are
+    Capitalised and 5+ characters, so they passed the snake_case/CamelCase filter — the check then
+    demanded that the source literally contain the word "There". `is_identifier()` now requires
+    what a field name has and a sentence word does not: a `_` with a letter, or an uppercase
+    followed by a lowercase *inside* the token (`groupMenuEnabled`), or a dotted code path, minus a
+    stoplist of the words that start a clause. A clause naming no field is skipped, not failed.
+  - **`--repo` was ignored**: `--repo` is parsed into `repos` by the shared flag parser while the
+    `contract-check` arm read `repo` from the positional, so the documented
+    `agent contract-check --repo backend` asked about the repo named `""` and printed `4/4 pass`
+    over zero clauses. `repos` now wins when the flag is present; the positional remains the
+    fallback for `contract-check <repo> [root]`.
+  - **The wrong repo**: the hub took the last segment of a child's `--cwd` as its repo, so a child
+    in `backend/.worktrees/be-x` was checked against a repo called `be-x` — one nothing mentions,
+    so again nothing was checked. `Child` now carries the repos `repos_of()` resolved at spawn, and
+    a child handed two slices is checked against both repos' clauses.
+
+### Measured
+
+Same 6-file two-repo task, orchestrator exploring **once**, in the web UI:
+
+| | before | after |
+|---|---|---|
+| discovery tokens per subagent | ~1,962 | **~0** |
+| subagent steps | 40 | **28** |
+
+Fewer steps for more work: the children stopped re-discovering the code their parent had already
+read. The saving is paid for up front by the orchestrator, so it amortises with more children or a
+bigger repo — on a 6-file repo the orchestrator's own exploration still costs about as much as a
+child's would have.
+
+The fifth defect was found by an *orchestrator*, not by a human: it received `4/4 pass`, copied the
+tree to `/tmp`, deleted the wire field, re-ran the check, got `4/4 pass` again with the field gone,
+and reported its own integration check as toothless. Nothing prompted it to do that.
+
 ## 0.38.0 — 2026-10-07
 
 ### Added

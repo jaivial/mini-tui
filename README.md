@@ -628,6 +628,19 @@ mini-agent-rs agent spawn api-worker --cwd ~/repo/backend --repo backend "add th
   repo, every field the contract names for that repo appears where it should, and a
   `no <invariant>` clause is checked literally against the touched files. No model in the loop.
   A claim that does not hold fails loudly instead of reaching the parent as a summary.
+  There is a fourth check, `coverage`, for the failure mode that matters most here: a check that
+  examined nothing must never be able to say *pass*. If no file was claimed and no clause of the
+  contract names the repo, it fails and says **"This is NOT a pass"**. Five separate ways to get a
+  green check over an empty corpus were found by running real orchestrations — a child's prose
+  without a `surface:` tag, a comma inside a sentence inventing a file name, the word `There` read
+  as a field name, `--repo` parsed into a key the arm never read, and a child's worktree directory
+  mistaken for its repo. All five are fixed; the shape they share is that a mechanical check was
+  parsing free text with a rule free text does not obey.
+
+  The best proof that it works came from an agent, not from a test: an orchestrator received
+  `4/4 pass`, did not trust it, copied the tree to `/tmp`, deleted the wire field, re-ran the
+  check, got `4/4 pass` again — and reported its own integration check as toothless. That negative
+  test is how the last defect was found.
 
 Measured on a real orchestration driven in the web UI with subagents (same task, 2 repos,
 orchestrator + 2 children), against the run without the store:
@@ -640,6 +653,18 @@ orchestrator + 2 children), against the run without the store:
 
 Duplicate *reads* do not go down, and that is expected: a child still reads the file it has to
 edit. What the store removes is the orientation work around it.
+
+The clearest measurement of the fix, same 6-file two-repo task, orchestrator exploring **once**:
+
+|                          | before | after |
+| ------------------------ | ------ | ----- |
+| discovery tokens per subagent | ~1,962 | **~0** |
+| subagent steps          | 40     | **28** |
+
+Fewer steps for more work. The honest caveat: the orchestrator pays for the exploration up front,
+so on a repo this small its own cost still roughly matches what a child would have spent, and total
+tokens went *up*. It amortises with more children or a bigger repo — which is exactly the shape
+the baseline measurement (66% of tokens spent rediscovering) came from.
 
 ### The RLM harness (`mini-agent-rs rlm`)
 
