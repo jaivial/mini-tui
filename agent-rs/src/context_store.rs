@@ -551,6 +551,62 @@ pub fn claimed_files(handshake: &str) -> Vec<String> {
     out
 }
 
+/// English words that look like identifiers because they are Capitalised (`There`, `Neither`,
+/// `Frontend`) or long enough with a lowercase tail. A contract is prose with a few field names
+/// in it, and the check needs the FIELD NAMES, not the sentences.
+const PROSE_WORDS: &[&str] = &[
+    "there", "these", "those", "their", "them", "then", "than", "that", "this", "what", "which",
+    "when", "where", "while", "would", "could", "should", "never", "always", "every", "either",
+    "neither", "both", "each", "some", "none", "with", "from", "into", "onto", "over", "under",
+    "after", "before", "between", "without", "within", "about", "above", "below", "again",
+    "because", "however", "therefore", "instead", "already", "another", "anything", "nothing",
+    "everything", "something", "someone", "anyone", "everyone", "nobody", "cannot", "unless",
+    "until", "against", "through", "during", "being", "having", "using", "given", "taken",
+    "front", "backend", "frontend", "repo", "repos", "note", "notes", "wire", "field", "fields",
+    "name", "names", "type", "types", "value", "values", "true", "false", "null", "none",
+    "json", "http", "https", "api", "rest", "get", "post", "put", "delete", "patch", "body",
+    "data", "code", "file", "files", "line", "lines", "call", "calls", "callers", "caller",
+    "returns", "return", "returns", "sends", "emit", "emits", "emitted", "read", "reads",
+    "reads", "carry", "carries", "require", "requires", "must", "shall", "will", "can", "may",
+];
+
+/// Does this token look like a code identifier rather than a word of the sentence?
+///
+/// The contracts check collects the tokens of a clause that are snake_case or CamelCase and then
+/// asks whether the touched files carry any of them. English words slip through that rule:
+/// `There`, `Neither` and `node_modules` are all Capitalised-or-underscored and 5+ characters,
+/// so a perfectly good run was told "nothing in the touched files carries There; neither".
+/// An identifier is a run of lowercase/digits with at least one `_`, OR is CamelCase with a
+/// LOWER-LETTER boundary and is not a plain dictionary word.
+fn is_identifier(t: &str) -> bool {
+    let lower = t.to_lowercase();
+    if PROSE_WORDS.contains(&lower.as_str()) {
+        return false;
+    }
+    // `node_modules`, `group_menu_enabled`: underscore plus at least one letter.
+    if t.contains('_') {
+        return t.chars().any(|c| c.is_ascii_alphabetic()) && !lower.ends_with("s ") ;
+    }
+    // CamelCase: an uppercase followed by a lowercase INSIDE the token (`groupMenuEnabled`), which
+    // is what a sentence's capitalised first word (`There`) never has. `api.ts`-style dotted
+    // paths are kept when a segment looks like a file.
+    let b = t.as_bytes();
+    for w in b.windows(2) {
+        if w[0].is_ascii_uppercase() && w[1].is_ascii_lowercase() {
+            return true;
+        }
+    }
+    // A dotted path whose last segment is a known code file extension.
+    if let Some(dot) = t.rfind('.') {
+        let ext = t[dot + 1..].to_ascii_lowercase();
+        const CODE: &[&str] = &["go", "ts", "tsx", "js", "jsx", "rs", "py", "json", "md", "yaml", "toml", "sql", "sh", "html", "css"];
+        if CODE.contains(&ext.as_str()) {
+            return true;
+        }
+    }
+    false
+}
+
 /// `agent contract-check --repo X`: the mechanical check at the child's turn end.
 ///
 /// Three kinds of check, all mechanical (no model in the loop):
@@ -624,6 +680,13 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
             if t.contains('_') || (t.chars().any(|c| c.is_ascii_uppercase()) && t.chars().any(|c| c.is_ascii_lowercase())) {
                 ids.push(t.to_string());
             }
+        }
+        ids.retain(|t| is_identifier(t));
+        if ids.is_empty() {
+            // A clause written entirely in prose names no field, so there is nothing to require of
+            // the touched files. Demanding it carry the word "There" is how a real run reported
+            // "nothing in the touched files carries There; neither" (measured 2026-10-07).
+            continue;
         }
         ids.sort();
         ids.dedup();
