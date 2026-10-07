@@ -24,12 +24,12 @@ use std::time::{Duration, Instant};
 
 type Obj = Map<String, Value>;
 
-const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MODEL] [--files a,b] [--hedge SECS] [--fix-rounds N] [-o stats.json]
+const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MODEL] [--files a,b] [--hedge SECS] [--scope auto|all] [--max-inflight N] [--fix-rounds N] [-o stats.json]
 
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
-file, hedge 8 s, 2 fix rounds.";
+file as context, executors only for the files the task names (--scope auto), hedge 8 s (adaptive), 32 calls in flight, 2 fix rounds.";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -46,7 +46,9 @@ fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>
         "TASK for the whole repository:\n{task}\n\nRepository (every file):\n{repo}\n\n\
          Several workers edit this repo at once, ONE FILE EACH, all from the same task text, so use exactly the names, \
          signatures, JSON tags and props the task gives. Keep the existing wire contract. Other files will be updated by \
-         their own workers as the task requires; you may rely on that.\nYOUR FILE: {file}\n{extra}\
+         their own workers as the task requires; you may rely on that. Change YOUR FILE only if the task explicitly requires it. \
+         Never carry a change over by analogy: a change the task asks for one entity, file or function does NOT apply to the \
+         similar ones it does not name (those answer UNCHANGED). Add nothing the task does not ask for.\nYOUR FILE: {file}\n{extra}\
          If the task requires no change to {file}, answer exactly UNCHANGED. Otherwise answer with the line {BEGIN}, then the COMPLETE new content of {file}, \
          then the line {END}, and nothing else (no code fences around it). No tests.",
         task = ctx.task
@@ -107,14 +109,68 @@ fn parse_answer(text: &str) -> Result<Option<String>, String> {
     Err("answer has neither the file markers nor UNCHANGED".into())
 }
 
-/// `ask` with tail hedging: a twin starts every `hedge` seconds while none is back (max 3 in
-/// flight in all); the first good answer wins and the others are abandoned.
+/// Global cap on model calls in flight (first calls and hedge twins alike). One call per file at
+/// once, plus twins, is a burst the provider answers with 429s; under a 429 storm uncapped
+/// twins multiply it (measured: 508 retries, 106 s for a 2-file task on xl). `--max-inflight`.
+struct Slots {
+    free: std::sync::Mutex<usize>,
+    cv: std::sync::Condvar,
+}
+
+impl Slots {
+    fn new(n: usize) -> Self {
+        Slots {
+            free: std::sync::Mutex::new(n.max(1)),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+    fn acquire(&self) {
+        let mut f = self.free.lock().unwrap();
+        while *f == 0 {
+            f = self.cv.wait(f).unwrap();
+        }
+        *f -= 1;
+    }
+    fn try_acquire(&self) -> bool {
+        let mut f = self.free.lock().unwrap();
+        if *f == 0 {
+            return false;
+        }
+        *f -= 1;
+        true
+    }
+    fn release(&self) {
+        *self.free.lock().unwrap() += 1;
+        self.cv.notify_one();
+    }
+}
+
+/// Latencies of the answers already back in this wave: the hedge threshold adapts to them.
+type Lat = std::sync::Arc<std::sync::Mutex<Vec<f64>>>;
+
+/// When to start a twin: `hedge` seconds until a quarter of the wave (min 3) has answered, then
+/// 2.5x the median answer so far, clamped to [2 s, hedge]. A fixed 8 s hedge was the whole wall
+/// time of 1-file tasks whose answers take ~1.5 s (measured, speed6 t01).
+fn threshold(lat: &Lat, wave_n: usize, hedge: f64) -> f64 {
+    let mut v = lat.lock().map(|v| v.clone()).unwrap_or_default();
+    if v.len() < (wave_n / 4).max(3).min(wave_n) {
+        return hedge;
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    (2.5 * v[v.len() / 2]).clamp(2.0f64.min(hedge), hedge)
+}
+
+/// `ask` with tail hedging: a twin starts when the newest call in flight is older than
+/// `threshold` (max 3 calls in all); the first good answer wins and the others are abandoned.
 fn hedged(
     ctx: &Ctx,
     repo: &str,
     file: &str,
     extra: &str,
     hedge: f64,
+    lat: &Lat,
+    wave_n: usize,
+    slots: &std::sync::Arc<Slots>,
 ) -> Result<(Option<String>, u64, u32), String> {
     let (tx, rx) = mpsc::channel();
     let start = |tx: mpsc::Sender<Result<(Option<String>, u64), String>>| {
@@ -124,25 +180,41 @@ fn hedged(
             file.to_string(),
             extra.to_string(),
         );
+        let sl = slots.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(ask(&c, &r, &f, &e));
+            let r = ask(&c, &r, &f, &e);
+            sl.release();
+            let _ = tx.send(r);
         });
     };
+    let t_first = Instant::now();
+    slots.acquire();
     start(tx.clone());
+    let mut last_start = Instant::now();
     let (mut started, mut live, mut last_err) = (1u32, 1u32, String::new());
     loop {
+        // Poll at most every 250 ms so a threshold that drops mid-wait is noticed.
         let wait = if started < 3 {
-            Duration::from_secs_f64(hedge)
+            Duration::from_secs_f64(threshold(lat, wave_n, hedge))
+                .saturating_sub(last_start.elapsed())
+                .clamp(Duration::from_millis(10), Duration::from_millis(250))
         } else {
             Duration::from_secs(3600)
         };
         match rx.recv_timeout(wait) {
-            Ok(Ok((a, t))) => return Ok((a, t, started)),
+            Ok(Ok((a, t))) => {
+                if let Ok(mut v) = lat.lock() {
+                    v.push(t_first.elapsed().as_secs_f64());
+                }
+                return Ok((a, t, started));
+            }
             Ok(Err(e)) => {
                 live -= 1;
                 last_err = e;
                 if started < 3 {
+                    slots.acquire();
                     start(tx.clone());
+                    last_start = Instant::now();
                     started += 1;
                     live += 1;
                 } else if live == 0 {
@@ -150,9 +222,14 @@ fn hedged(
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) if started < 3 => {
-                start(tx.clone());
-                started += 1;
-                live += 1;
+                if last_start.elapsed().as_secs_f64() >= threshold(lat, wave_n, hedge)
+                    && slots.try_acquire()
+                {
+                    start(tx.clone());
+                    last_start = Instant::now();
+                    started += 1;
+                    live += 1;
+                }
             }
             Err(_) => {
                 return Err(if last_err.is_empty() {
@@ -187,15 +264,25 @@ fn wave(
     extra: &dyn Fn(&str) -> String,
     hedge: f64,
     t0: Instant,
+    slots: &std::sync::Arc<Slots>,
 ) -> Vec<Value> {
     let repo = dump(root, all);
+    let lat: Lat = Default::default();
+    let wave_n = targets.len();
     let handles: Vec<_> = targets
         .iter()
         .map(|f| {
-            let (c, r, f2, e) = (ctx.clone(), repo.clone(), f.clone(), extra(f));
+            let (c, r, f2, e, l, sl) = (
+                ctx.clone(),
+                repo.clone(),
+                f.clone(),
+                extra(f),
+                lat.clone(),
+                slots.clone(),
+            );
             std::thread::spawn(move || {
                 let s = Instant::now();
-                let r = hedged(&c, &r, &f2, &e, hedge);
+                let r = hedged(&c, &r, &f2, &e, hedge, &l, wave_n, &sl);
                 (f2, r, s.elapsed().as_secs_f64())
             })
         })
@@ -231,6 +318,71 @@ fn wave(
         stats.push(st);
     }
     stats
+}
+
+/// Lower-case word tokens of `s`, camelCase split, a plural `s` dropped (len > 3).
+fn tokens(s: &str) -> std::collections::HashSet<String> {
+    let mut spaced = String::new();
+    let mut prev: Option<char> = None;
+    for c in s.chars() {
+        if c.is_ascii_uppercase()
+            && prev.is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit())
+        {
+            spaced.push(' ');
+        }
+        spaced.push(c);
+        prev = Some(c);
+    }
+    spaced
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .map(str::to_ascii_lowercase)
+        .filter(|w| w.len() >= 3)
+        .map(|w| match w.strip_suffix('s') {
+            Some(b) if w.len() > 3 => b.to_string(),
+            _ => w,
+        })
+        .collect()
+}
+
+/// `--scope auto`: the files the task is about, picked by plain code (no model round-trip).
+/// A file is a target when its path is quoted in the task, or a distinctive token of its
+/// basename (`MenuList.tsx` -> menu) is a word of the task. A basename token that pairs with
+/// two or more different tokens across the repo (`list` in MenuList, OrderList, ...) is a
+/// suffix, not a subject, and does not select. Every file stays in the prompt as context; only
+/// the executors are scoped. Measured reasons (speed6): one executor per tracked file is a token
+/// burst that a token-plan rate limit answers with 429 storms, and executors of files the task
+/// does not name copy the change over by analogy. A file the task needs but does not name is
+/// left to the gate: files blamed by --verify join the fix waves. No match -> every file.
+fn scope(task: &str, files: &[String]) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+    let stem = |f: &str| {
+        let b = f.rsplit('/').next().unwrap_or(f);
+        b.split('.').next().unwrap_or(b).to_string()
+    };
+    let mut partners: HashMap<String, HashSet<String>> = HashMap::new();
+    for f in files {
+        let t = tokens(&stem(f));
+        for a in &t {
+            let e = partners.entry(a.clone()).or_default();
+            e.extend(t.iter().filter(|b| *b != a).cloned());
+        }
+    }
+    let want = tokens(task);
+    let picked: Vec<String> = files
+        .iter()
+        .filter(|f| {
+            task.contains(f.as_str())
+                || tokens(&stem(f))
+                    .iter()
+                    .any(|t| want.contains(t) && partners.get(t).map_or(0, |p| p.len()) < 2)
+        })
+        .cloned()
+        .collect();
+    if picked.is_empty() {
+        files.to_vec()
+    } else {
+        picked
+    }
 }
 
 fn sh(root: &Path, cmd: &str) -> (bool, String) {
@@ -280,6 +432,8 @@ pub fn client(args: &[String]) -> i32 {
     );
     let (mut only, mut hedge, mut fix_rounds, mut configs) =
         (Vec::<String>::new(), 8.0f64, 2u32, Vec::<String>::new());
+    let mut max_inflight = 32usize;
+    let mut scope_all = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -311,6 +465,8 @@ pub fn client(args: &[String]) -> i32 {
                     .filter(|s| !s.is_empty())
                     .collect()
             }
+            "--scope" => scope_all = val() == "all",
+            "--max-inflight" => max_inflight = val().parse().unwrap_or(max_inflight),
             "--hedge" => hedge = val().parse().unwrap_or(hedge),
             "--fix-rounds" => fix_rounds = val().parse().unwrap_or(fix_rounds),
             "-o" => out = Some(config::expand_user(&val())),
@@ -374,8 +530,23 @@ pub fn client(args: &[String]) -> i32 {
         model_cfg,
         task,
     };
+    let slots = std::sync::Arc::new(Slots::new(max_inflight));
     let t0 = Instant::now();
-    let mut calls = wave(&ctx, &root, &files, &files, &|_| String::new(), hedge, t0);
+    let targets = if scope_all {
+        files.clone()
+    } else {
+        scope(&ctx.task, &files)
+    };
+    let mut calls = wave(
+        &ctx,
+        &root,
+        &files,
+        &targets,
+        &|_| String::new(),
+        hedge,
+        t0,
+        &slots,
+    );
     let gofmt = |root: &Path| {
         if files.iter().any(|f| f.ends_with(".go")) {
             let _ = sh(root, "gofmt -w $(git ls-files '*.go') 2>/dev/null");
@@ -406,20 +577,21 @@ pub fn client(args: &[String]) -> i32 {
         let extra = move |f: &str| {
             format!("\nThe repo above is the CURRENT state. The gate `{gate}` fails with:\n{tail}\nFix {f} so the gate passes.\n")
         };
-        calls.extend(wave(&ctx, &root, &files, &bad, &extra, hedge, t0));
+        calls.extend(wave(&ctx, &root, &files, &bad, &extra, hedge, t0, &slots));
         gofmt(&root);
         (ok, err) = sh(&root, &verify);
     }
     let wall = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
     let changed = calls.iter().filter(|c| c["changed"] == json!(true)).count();
     let errors: Vec<&Value> = calls.iter().filter(|c| c.get("error").is_some()).collect();
-    let stats = json!({"wall_s": wall, "gate": if verify.is_empty() { "none" } else if ok { "pass" } else { "FAIL" }, "fix_rounds": rounds, "files": files.len(), "changed": changed, "errors": errors.len(), "calls": calls});
+    let stats = json!({"wall_s": wall, "targets": targets.len(), "gate": if verify.is_empty() { "none" } else if ok { "pass" } else { "FAIL" }, "fix_rounds": rounds, "files": files.len(), "changed": changed, "errors": errors.len(), "calls": calls});
     if let Some(p) = out {
         let _ = std::fs::write(p, serde_json::to_string_pretty(&stats).unwrap_or_default());
     }
     println!(
-        "shard: {} files, {changed} written, gate {}, {rounds} fix round(s), {wall}s",
+        "shard: {} files, {} targeted, {changed} written, gate {}, {rounds} fix round(s), {wall}s",
         files.len(),
+        targets.len(),
         stats["gate"].as_str().unwrap_or("")
     );
     if !ok {
