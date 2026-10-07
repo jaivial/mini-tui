@@ -68,7 +68,15 @@ fn run_parent(dir: &Path, parent_yaml: &str, until: &str) -> Vec<Value> {
         .env("MSWEA_CONTROL_FILE", "")
         .env("MINI_AGENT_CHILD_CONFIG", dir.join("child-{name}.yaml"))
         .env("MINI_AGENT_MONITOR_MS", "50")
-        .env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_CONTEXT_DIR");
+        .env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_CONTEXT_DIR")
+        // The whole rest of the hub environment. These tests spawn real children and the child's
+        // bash tool reads the process env: an inherited MINI_AGENT_SOCKET (the agent of whatever
+        // session ran `cargo test`) made every child talk to THAT session's hub instead of its own,
+        // and the plan tests failed 5/5 while passing 5/5 in a clean env. Same class of bug in the
+        // other test files; here it made a real regression look like a passing run.
+        .env_remove("MINI_AGENT_BIN")
+        .env_remove("MINI_AGENT_CONFIG_DIR")
+        .env_remove("MINI_AGENT_CONTEXT");
     cmd.current_dir(dir);
     cmd.stdout(std::process::Stdio::null()).stderr(std::fs::File::create(dir.join("parent.log")).unwrap());
     let mut child = cmd.spawn().unwrap();

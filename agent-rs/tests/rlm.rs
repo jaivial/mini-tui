@@ -65,7 +65,7 @@ fn rlm(dir: &Path, cfg: &str, script: &str, args: &[&str]) -> Out {
         .arg("-")
         .env("MSWEA_GLOBAL_CONFIG_DIR", dir)
         .env("MSWEA_SILENT_STARTUP", "1")
-        .env_remove("MINI_AGENT_SOCKET")
+        .env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_BIN").env_remove("MINI_AGENT_CONFIG_DIR").env_remove("MINI_AGENT_CONTEXT")
         .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

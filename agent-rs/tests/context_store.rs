@@ -75,7 +75,7 @@ fn run_parent(dir: &Path, parent_yaml: &str, child_yaml: &str, until: &str) -> V
         .env_remove("MINI_AGENT_PARENT_SOCKET")
         .env_remove("MINI_AGENT_DEPTH")
         .env_remove("MINI_AGENT_CONTEXT_DIR")
-        .env_remove("MINI_AGENT_CONTEXT");
+        .env_remove("MINI_AGENT_CONTEXT").env_remove("MINI_AGENT_BIN").env_remove("MINI_AGENT_CONFIG_DIR").env_remove("MINI_AGENT_CONTEXT");
     cmd.current_dir(dir);
     cmd.stdout(std::process::Stdio::null()).stderr(std::fs::File::create(dir.join("parent.log")).unwrap());
     let mut child = cmd.spawn().unwrap();
@@ -204,4 +204,36 @@ fn contract_check_by_hand_reads_the_recorded_handshake() {
     assert!(!all.contains("the handshake names no file"), "the by-hand check read no handshake at all:\n{all}");
     assert!(all.contains("handler.go:2 handleToggle") || all.contains("1 claimed file"), "the claimed file was not found:\n{all}");
     assert!(all.contains("FAIL"), "the claim does not hold (handler.go lacks the field) and it must say so:\n{all}");
+}
+
+/// Review 2: the store is handed over by default, and the cap check that used to guard
+/// `--context-file` now also guards the store: a big findings.md made EVERY spawn fail with
+/// "the --context-file blocks are N chars" -- blaming a flag the parent never passed. The store
+/// is the parent's own paid-for text, so it degrades (drop, then trim) instead of failing the
+/// spawn; only an explicit --context-file is still refused.
+#[test]
+fn a_big_store_degrades_the_handover_instead_of_failing_the_spawn() {
+    let dir = tmp("big-store");
+    // One big findings doc and one small one: the child must still start, and get what fits.
+    let big = format!("# backend\n{}\n", "filler line about the backend handler\n".repeat(1200));
+    write(&dir.join("findings.md"), &big);
+    write(&dir.join("contracts.md"), "- backend: emits `group_menu_enabled`\n");
+    write(&dir.join("big.md"), &big);
+    // The other side of the wave handed its artifacts back: five 8 KB handshakes, which together
+    // with the two docs above are over the 32 KB the spawn used to cap --context-file against.
+    let puts: Vec<String> = (0..5)
+        .map(|i| format!("mini-agent-rs agent state put child{i}.md --prompt-file big.md > /dev/null 2>&1"))
+        .collect();
+    let parent = script(
+        "parent",
+        &[
+            ("run", &format!("mini-agent-rs agent state put findings.md --prompt-file findings.md > /dev/null 2>&1; {}; mini-agent-rs agent spawn be-worker --cwd /tmp --repo backend 'do it' > out1.txt 2>&1; cat out1.txt", &puts.join("; "))),
+            ("submit", "parent done"),
+        ],
+    );
+    let child = script("child", &[("submit", "Done.\nsurface: none\ncontract: none\nsurprise: none")]);
+    let msgs = run_parent(&dir, &parent, &child, "parent done");
+    let all = msgs.iter().map(text).collect::<Vec<_>>().join("\n---\n");
+    assert!(all.contains("started subagent be-worker"), "the spawn must not fail on a big store:\n{all}");
+    assert!(!all.contains("over the"), "no cap failure:\n{all}");
 }

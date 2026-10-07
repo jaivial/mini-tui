@@ -52,7 +52,7 @@ fn metrics_measure_a_real_run() {
         .arg("-t").arg("measure me")
         .env("MSWEA_SILENT_STARTUP", "1")
         .env("MSWEA_CONTROL_FILE", "")
-        .env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH")
+        .env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_BIN").env_remove("MINI_AGENT_CONFIG_DIR").env_remove("MINI_AGENT_CONTEXT")
         .current_dir(&dir)
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
         .status().unwrap();

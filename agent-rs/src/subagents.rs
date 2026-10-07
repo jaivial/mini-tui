@@ -1097,13 +1097,17 @@ impl Hub {
         // mechanically instead of re-discovering them. This is the delivery point: it happens
         // whether or not the parent remembered `--context-file`.
         let mut handed = 0usize;
+        let mut store_chars = 0usize;
+        let mut notes_trimmed: Option<usize> = None;
         if self.handover {
             let repos = repos_of(req, &s(req, "cwd"), &name);
             for (key, body) in self.store.scoped_keys(&repos) {
                 if body.trim().is_empty() || key == "index.json" {
                     continue;
                 }
-                context_blocks.push_str(&format!("<context name=\"{key}\">\n{}\n</context>\n\n", body.trim()));
+                let block = format!("<context name=\"{key}\">\n{}\n</context>\n\n", body.trim());
+                store_chars += block.chars().count();
+                context_blocks.push_str(&block);
                 handed += 1;
             }
         }
@@ -1115,9 +1119,33 @@ impl Hub {
             }
             context_blocks.push_str(&format!("<context name=\"{path}\">\n{}\n</context>\n\n", body.trim()));
         }
-        if context_blocks.chars().count() > context_max {
-            return Err(format!("the --context-file blocks are {} chars together, over the {} char cap: pass fewer or shorter files", context_blocks.chars().count(), context_max));
+        // The store must never be the reason a spawn fails. It is the parent's own text, it is
+        // handed over by DEFAULT (nobody asked for it) and the cap it broke is a cap that used to
+        // exist only for --context-file: a big findings.md plus the wave's own handshakes killed
+        // every spawn with "the --context-file blocks are N chars", blaming a flag nobody passed.
+        // So the budget is shared, the store gives way, and only an explicit --context-file is
+        // still refused -- there the parent chose that text and can trim it.
+        if store_chars > context_max {
+            let keep = context_max.saturating_sub(context_max / 4); // leave a quarter for the brief/task
+            let dropped = context_blocks.chars().count() - keep;
+            context_blocks = context_store::head_chars(&context_blocks, keep);
+            notes_trimmed = Some(dropped);
         }
+        let file_chars: usize = req
+            .get("context_files")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|p| std::fs::read_to_string(crate::config::expand_user(p)).ok())
+                    .map(|b| b.chars().count())
+                    .sum()
+            })
+            .unwrap_or(0);
+        if file_chars > context_max {
+            return Err(format!("the --context-file blocks are {} chars together, over the {} char cap: pass fewer or shorter files", file_chars, context_max));
+        }
+
         let brief_block = if req.get("brief").and_then(Value::as_bool).unwrap_or(false) {
             format!("{}\n\n", wrap_brief(&raw_task)?)
         } else {
@@ -1226,6 +1254,7 @@ impl Hub {
         self.write_index();
         let skills_note = if used.is_empty() { String::new() } else { format!(" · skills: {}", used.join(", ")) };
         let fork_note = fork_label.map(|l| format!(" · forked from {l}")).unwrap_or_default();
+        let trimmed_note = notes_trimmed.map(|d| format!(" \u{b7} the shared context was trimmed by {d} chars to fit")).unwrap_or_default();
         let ctx_note = if handed > 0 {
             format!(" · handed {handed} context doc(s): it does not re-discover what you already found")
         } else if self.handover {
@@ -1233,7 +1262,7 @@ impl Hub {
         } else {
             String::new()
         };
-        Ok(format!("started subagent {name} (pid {pid}) in {cwd}{skills_note}{fork_note}{ctx_note}{capped}\nYou will be told when it finishes; meanwhile keep working, or `agent wait {name}`."))
+        Ok(format!("started subagent {name} (pid {pid}) in {cwd}{skills_note}{fork_note}{ctx_note}{trimmed_note}{capped}\nYou will be told when it finishes; meanwhile keep working, or `agent wait {name}`."))
     }
 
     /// A short fingerprint of everything a UI shows about the children, `idle_s` left out (it moves
