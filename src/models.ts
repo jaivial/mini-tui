@@ -12,6 +12,11 @@ export const MODELS: SelectOption[] = [
     description: "cli-proxy · Claude Sonnet 5.5 (Claude subscription)",
     value: "cliproxy/claude-sonnet-5-5",
   },
+  {
+    name: "cliproxy/claude-haiku-5-5",
+    description: "cli-proxy · Claude Haiku 5.5 (Claude subscription)",
+    value: "cliproxy/claude-haiku-5-5",
+  },
   { name: "xiaomi/mimo-v2.6-pro", description: "Xiaomi MiMo V2.6 Pro", value: "xiaomi/mimo-v2.6-pro" },
   { name: "xiaomi/mimo-v2.6-flash", description: "Xiaomi MiMo V2.6 Flash (fast)", value: "xiaomi/mimo-v2.6-flash" },
   { name: "deepseek/deepseek-chat", description: "DeepSeek chat", value: "deepseek/deepseek-chat" },

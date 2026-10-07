@@ -82,7 +82,7 @@ fn load_learned() -> Obj {
 }
 
 const KNOWN: &[(&str, i64)] = &[
-    (r"claude-(opus|sonnet|fable)-(4-[6-9]|5)", 1_000_000),
+    (r"claude-(opus|sonnet|fable)-(4-[6-9]|5)|claude-haiku-5", 1_000_000),
     (r"claude|anthropic", 200_000),
     (r"gpt-5|codex", 400_000),
     (r"gpt-4\.1", 1_000_000),
@@ -316,6 +316,8 @@ mod tests {
     fn windows() {
         assert_eq!(context_window_for("cliproxy/claude-sonnet-4-5", 0), 200_000);
         assert_eq!(context_window_for("claude-opus-5-5", 0), 1_000_000);
+        assert_eq!(context_window_for("cliproxy/claude-haiku-5-5", 0), 1_000_000);
+        assert_eq!(context_window_for("claude-haiku-4-5-20251001", 0), 200_000);
         assert_eq!(context_window_for("x", 1234), 1234);
         assert!(is_context_overflow("ProviderError", "HTTP 400: prompt is too long: 250000 tokens > 200000"));
     }

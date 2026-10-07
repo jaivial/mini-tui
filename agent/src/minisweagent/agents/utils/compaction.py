@@ -19,7 +19,7 @@ LEARNED_WINDOWS_FILE = Path(global_config_dir) / "context_windows.json"
 
 #: (pattern on the lowercased model id, context window in tokens); first match wins.
 KNOWN_WINDOWS: tuple[tuple[str, int], ...] = (
-    (r"claude-(opus|sonnet|fable)-(4-[6-9]|5)", 1_000_000),
+    (r"claude-(opus|sonnet|fable)-(4-[6-9]|5)|claude-haiku-5", 1_000_000),
     (r"claude|anthropic", 200_000),
     (r"gpt-5|codex", 400_000),
     (r"gpt-4\.1", 1_000_000),

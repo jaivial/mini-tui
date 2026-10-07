@@ -194,6 +194,8 @@ def test_known_windows():
     fake = lambda name: type("M", (), {"config": type("C", (), {"model_name": name})()})()
     assert cmp.context_window_for(fake("cliproxy/claude-opus-5-5")) == 1_000_000
     assert cmp.context_window_for(fake("cliproxy/claude-sonnet-5-5")) == 1_000_000
+    assert cmp.context_window_for(fake("cliproxy/claude-haiku-5-5")) == 1_000_000
+    assert cmp.context_window_for(fake("cliproxy/claude-haiku-4-5-20251001")) == 200_000
     assert cmp.context_window_for(fake("cliproxy/claude-3-7-sonnet-20250219")) == 200_000
     assert cmp.is_context_overflow(ProviderAbortError("prompt is too long: 1000243 tokens > 1000000 maximum"))
     assert not cmp.is_context_overflow(ProviderAbortError("HTTP 401 invalid key"))
