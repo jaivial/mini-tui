@@ -183,6 +183,24 @@ conventions, searches done, decisions), and every run tree owns a shared append-
 `<run dir>/context/` folder (findings, artifacts, search caches) that each child is told about and
 that grandchildren share too.
 
+## Per-file sharding (`mini-agent-rs shard`)
+
+`mini-agent-rs shard --root DIR --task-file task.txt --verify CMD [-m MODEL]` runs the change with
+NO coordinator model: one one-shot executor per tracked file (`git ls-files`, or `--files a,b`),
+all at once. Each executor gets the task and every file (read-only) and answers only its own
+file's new content (or `UNCHANGED`); no tools, no steps. A call that is not back after `--hedge`
+seconds (default 8) gets an identical twin, up to 3, and the first complete answer wins (cuts the
+slow tail). `gofmt -w` runs on Go files, then `--verify` once; files named in its errors get up to
+`--fix-rounds` (default 2) more parallel waves with the errors attached. `-o stats.json` writes
+per-file timings. Wall-clock is the slowest single-file answer plus the gate.
+
+Measured (speed5, MiniMax-M3.1-Flash-Preview, n=5 paired vs one agent, this binary): het
+(4 features, 16 files) median 7.0x faster (57.3 s -> 7.9 s), xl (12 entities, 53 files) 3.3x
+(37.1 s -> 12.3 s); gate 5/5 on both. The whole repo goes into every prompt, so it is for repos
+(or a `--files` slice) that fit in one context. It sends one request per file at once, and hedge
+twins add more, so a provider rate limit (HTTP 429) becomes the slow tail: the one xl run that
+did not beat the single agent (0.97x) had 85 429 retries.
+
 ## Cold-start metrics (`mini-agent-rs metrics`)
 
 `mini-agent-rs metrics <traj.jsonl> [--json]` measures how much of a run went to **re-discovery**:
