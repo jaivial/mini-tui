@@ -168,6 +168,56 @@ in the pane, or message it like any session. In the terminal UI, `/subagents` li
 `/resume` opens one. Reference the bundled `$subagents` skill in a prompt to have the agent use
 them.
 
+## The shared context: explored once, handed over
+
+A subagent that re-reads what the orchestrator already read is the biggest cost in a fan-out. On a
+measured orchestration (6 subagents, 2 repos) **122,039 of 184,342 tokens — 66% — went on
+discovery**, 28 files were re-read that the parent had already read, and 3 integration failures
+were left for the parent to find later by reading diffs.
+
+`agent-rs` now keeps that knowledge in one place: the run tree's `context/` folder, as markdown
+with a schema. The orchestrator fills it once, before delegating:
+
+```sh
+mini-agent-rs agent state put findings.md  --prompt-file f.md   # symbols, files, lines
+mini-agent-rs agent state put contracts.md --prompt-file c.md   # the contract, producers/consumers
+mini-agent-rs agent state put decisions.md --prompt-file d.md   # what was decided, and why
+mini-agent-rs agent state put surface.backend.md --prompt-file s.md   # callers, types, payloads
+```
+
+**Every subagent then gets those documents handed over by default** — the parent does not have to
+remember to pass them — and **scoped to the repos it works in**: a backend child reads
+`surface.backend.md` and the `## backend` sections, and is never billed for the frontend's. The
+system prompt tells the orchestrator to fill the store; `MINI_AGENT_CONTEXT=0` turns the handover
+off.
+
+Three commands make it work end to end:
+
+- **`agent surface <symbol>`** answers "who calls this, which type carries it, what contract does
+  it obey" in one call, from what is already indexed, instead of grepping the tree again.
+- **The handshake goes back.** When a child's turn ends, its final answer is parsed into
+  `## surface`, `## contract` and `## surprise` and stored as `<child>.md` for the next child.
+  `surprise` is the point: it is the one place a subagent can say *the brief is wrong* without
+  stopping. In a live run that is how a subagent reported that the backend emitted
+  `group_menu_enabled` while the frontend expected `groupMenuEnabled` with no mapping layer — a
+  real integration bug, raised by the child that found it instead of merged.
+- **`agent contract-check`** runs by itself when a child's turn ends, with no model in the loop:
+  every file the child claims to touch exists and is under the repo, every field the contract
+  assigns to that repo appears where it should, and a `no <invariant>` clause is checked
+  literally. A claim that does not hold fails instead of reaching the parent as a summary.
+
+Measured in the web app against the same task without the store (orchestrator + 2 children over
+2 repos):
+
+| | without | with |
+| --- | --- | --- |
+| child discovery tokens | ~3,197 | ~1,456 (**-54%**) |
+| orchestrator tokens | ~26,699 | ~12,093 (**-55%**) |
+| integration bugs caught by a subagent | 0 | 1 |
+
+Duplicate file reads do not go down, and should not: a child still reads the file it has to edit.
+What the store removes is the orientation work around it.
+
 ## How it is kept identical
 
 `agent-rs/tests/parity/run_all.sh` runs both agents on the same scripted tasks against the same scripted

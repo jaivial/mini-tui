@@ -588,6 +588,59 @@ compares every scenario byte for byte. `$orchestration`'s `orch` forwards its co
 session's subagents when it runs inside a Rust session. Its detached headless runs remain for your
 own terminal and the Python agent. Full reference: [`agent-rs/README.md`](agent-rs/README.md#subagents-mini-agent-rs-agent).
 
+### The shared context (`ContextStore`)
+
+A subagent that re-reads what the orchestrator already read is the single biggest cost in a
+fan-out. Measured on a real orchestration (6 subagents, 2 repos, 2026-10-07): **122,039 of
+184,342 tokens (66%) were discovery**, 28 files were re-read that the parent had already read,
+and 3 integration failures were found by the parent reading diffs, not by any subagent.
+
+So the exploration is paid for **once** and handed over, in the run tree's `context/` folder,
+with a schema instead of a social contract:
+
+```sh
+# The orchestrator fills it, after exploring and before delegating:
+mini-agent-rs agent state put findings.md  --prompt-file f.md   # symbols, files, lines found
+mini-agent-rs agent state put contracts.md --prompt-file c.md   # the contract + producers/consumers
+mini-agent-rs agent state put decisions.md --prompt-file d.md   # what was decided and why
+mini-agent-rs agent state put surface.backend.md --prompt-file s.md   # callers, types, payloads
+
+mini-agent-rs agent spawn api-worker --cwd ~/repo/backend --repo backend "add the field"
+```
+
+- **Handed over by default.** A child receives the documents that name the repos it works in,
+  scoped: a backend child gets `surface.backend.md` and the `## backend` sections of
+  `findings.md` / `contracts.md`, and is not billed for the frontend's. It happens whether or
+  not the parent remembered `--context-file` — `--repo R` names the repos explicitly, otherwise
+  they are read from the child's own `--cwd`. `MINI_AGENT_CONTEXT=0` turns it off.
+- **Cheap to consult.** `mini-agent-rs agent surface <symbol>` answers "who calls this and
+  which contract does it carry" out of what is already indexed, in one call, instead of grepping
+  the tree again. `agent surface ls` lists what is indexed.
+- **The handshake goes back.** When a child's turn ends the hub parses its own final answer into
+  three lines — what it touched and who calls it, what contract field it emitted or read, and
+  **anything that contradicted the brief** — and stores it as `<child>.md` for the next child.
+  In a live run, that `surprise` line is how a subagent reported that the backend emitted
+  `group_menu_enabled` while the frontend struct expected `groupMenuEnabled`, with no mapping
+  layer: a real integration failure, caught at the child's own turn instead of by the parent
+  reading diffs.
+- **Checked mechanically, not by reminder.** `mini-agent-rs agent contract-check --repo R` runs
+  by itself when a child's turn ends: every file it claims to touch exists and is under the
+  repo, every field the contract names for that repo appears where it should, and a
+  `no <invariant>` clause is checked literally against the touched files. No model in the loop.
+  A claim that does not hold fails loudly instead of reaching the parent as a summary.
+
+Measured on a real orchestration driven in the web UI with subagents (same task, 2 repos,
+orchestrator + 2 children), against the run without the store:
+
+|                          | without | with |
+| ------------------------ | ------- | ---- |
+| child discovery tokens   | ~3,197  | ~1,456 (**-54%**) |
+| orchestrator tokens      | ~26,699 | ~12,093 (**-55%**) |
+| integration bugs caught by a subagent | 0 | 1 (a `snake_case`/`camelCase` mismatch) |
+
+Duplicate *reads* do not go down, and that is expected: a child still reads the file it has to
+edit. What the store removes is the orientation work around it.
+
 ### The RLM harness (`mini-agent-rs rlm`)
 
 The Rust binary also carries a small **RLM (Recursive Language Model) harness** in pure Rust —

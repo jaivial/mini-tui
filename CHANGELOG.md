@@ -2,6 +2,70 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.38.0 — 2026-10-07
+
+### Added
+
+- **The shared context (`ContextStore`) — the exploration is paid for once (F7 of the execution
+  order — Fase 7 of [`docs/orchestration-plan.md`](docs/orchestration-plan.md))**: a real
+  orchestration measured on 2026-10-07 (6 subagents over 2 repos) spent **122,039 of 184,342
+  tokens (66%) re-discovering what the orchestrator already knew**, re-read 28 files, and left 3
+  integration failures to be found later by the parent reading diffs. `agent-rs` now carries that
+  knowledge in one place: `agent state put <key>` writes markdown documents into the run tree's
+  `context/` (`findings`, `contracts`, `decisions`, `surface.<repo>`), and **every child gets
+  them handed over by default** (`MINI_AGENT_CONTEXT=0` opts out), scoped to the repos it works
+  in — a backend child reads `surface.backend.md` and the `## backend` sections, and is never
+  billed for the frontend's. No cooperation from the parent required: repos come from the new
+  `--repo` flag or, failing that, from the child's own `--cwd`.
+- **`agent surface <symbol>`**: who calls it, which type carries it and what contract it obeys,
+  answered in one call from the indexed documents instead of grepping the tree again; `agent
+  surface ls` lists what is indexed.
+- **The handshake back to the orchestrator**: when a child's turn ends the hub parses its final
+  answer into `## surface`, `## contract` and `## surprise` and stores it as `<child>.md` for
+  the next child to read. `surprise` is what makes this work — it is the one place a subagent can
+  report that the brief is wrong without stopping, so an integration mismatch is raised by the
+  child that found it instead of being rediscovered later. In a live run this is how a subagent
+  reported that the backend emitted `group_menu_enabled` while the frontend expected
+  `groupMenuEnabled` with no mapping layer: the field would have been `false` forever.
+- **`agent contract-check --repo R`**, run automatically when a child's turn ends: every file it
+  claims to touch exists and is under the repo, every field the contract assigns to that repo
+  appears where it should, and a `no <invariant>` clause is checked literally. No model in the
+  loop, so a claim that does not hold fails instead of reaching the parent as a summary.
+- **The RLM harness seeds the same store**: `rlm.rs` points it at its context directory on
+  startup and exposes the documents as `{{context.<key>}}` variables, so a scripted
+  orchestration sees what a chat one sees.
+- **The orchestrator is told to use it by default** in the system prompt itself (not in a
+  skill): `agent/src/minisweagent/config/mini.yaml` carries an `<orchestration_rule>` that names
+  the four documents, `agent surface` and `agent contract-check`.
+- Measured in the web UI against the same task without the store (2 repos, orchestrator + 2
+  children): **child discovery tokens ~3,197 → ~1,456 (-54%)**, orchestrator tokens ~26,699 →
+  ~12,093 (-55%), and 1 integration bug caught by a subagent that would otherwise have been
+  merged. Duplicate reads do not drop — a child still reads the file it edits; what the store
+  removes is the orientation work around it.
+
+### Fixed
+
+- **`is_discovery` counted orientation as discovery.** `cd`, `pushd` and `export` inside a
+  compound command made a step look exploratory when it was neither. Re-validated against the
+  villa journals it had been derived from: 120,718 vs 122,039 reported discovery tokens (1.1%
+  off, in the honest direction).
+- **The hub put `mini-agent-rs` on a child's PATH but not `mini-tui`**, which the system prompt
+  names. The model in a measured run spent ~20 tool calls hunting for it and for bun before
+  doing the work it was asked for. It is now resolved the way the runner resolves it
+  (`MINI_TUI_BIN`, then `~/.local/bin/mini-tui`) and put, with `~/.bun/bin`, beside the agent.
+- **`agent contract-check` run by hand was vacuous**: it looked for `<repo>.md` instead of the
+  `surface.<repo>.md` the store actually holds, found no handshake and reported "3/3 pass".
+- **A copied template became a false claim.** The handshake block ended with a bracketed
+  example and a subagent returned it verbatim; the hub stored it and the contract check failed
+  on a file named `<file`. The check was right, the input was garbage: the block now shows a
+  filled-in example and a template line is dropped on the way in instead of stored.
+- **A large store refused every spawn.** Past the `--context-file` cap a `spawn` failed with a
+  message blaming a flag the parent never passed. The store now degrades to a trimmed head and
+  says how much was dropped; only an explicit `--context-file` is refused.
+- **Integration tests inherited the ambient environment** (`MINI_AGENT_SOCKET`, `MINI_AGENT_BIN`,
+  `MINI_AGENT_CONFIG_DIR`), so the children they spawned talked to a *live* session's hub.
+  5 of 5 `agent plan` tests failed on `main` for that reason alone.
+
 ## 0.37.0 — 2026-10-06
 
 ### Added
