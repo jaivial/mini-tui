@@ -10,3 +10,4 @@ web/node_modules/
 site/build/
 site/.svelte-kit/
 site/node_modules/
+.worktrees/

@@ -2167,7 +2167,20 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
             };
             let wanted = s(req, "name");
             let handshake = {
-                let text = s(req, "handshake");
+                // `--prompt-file F` is how you check an answer that is not a stored child: the
+                // flag parser reads it into `text_file`, and this arm only ever looked at
+                // `handshake`, so the documented way to check an arbitrary answer was silently
+                // ignored and the STORED child's handshake was checked instead. Measured in the
+                // browser on 2026-10-07 (run F): a handshake naming a file that did not exist
+                // produced 4/4 pass, because the control never reached the check.
+                let from_file = s(req, "text_file");
+                let text = if !s(req, "handshake").trim().is_empty() {
+                    s(req, "handshake")
+                } else if !from_file.trim().is_empty() {
+                    from_file
+                } else {
+                    String::new()
+                };
                 if !text.trim().is_empty() {
                     text
                 } else {
