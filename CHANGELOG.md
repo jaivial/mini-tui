@@ -2,6 +2,23 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.38.2 — 2026-10-07
+
+### Fixed
+
+Patch release. 0.38.1 fixed five ways `agent contract-check` could report a pass over nothing
+(defects 1–5). Probing the fixed checker, an orchestrator found two more in the same arm; those
+fixes (PR #84) landed on `main` after the 0.38.1 tag and ship here (defects 6–7).
+
+- **`contract-check` ignored `--prompt-file`, and dropped the positional handshake whenever
+  `--repo` was given** (both found by an orchestrator probing the checker, both verified fixed
+  in the browser). `--prompt-file` is parsed into `req["text_file"]` while the arm only read
+  `req["handshake"]`, so the documented way to check an arbitrary answer silently examined a
+  *stored child's* handshake instead — which is how a control naming a file that did not exist
+  came back `4/4 pass`. And the positional form `contract-check [repo] [root] [handshake...]`
+  read the handshake from index 2 whether or not `--repo` had consumed the repo slot. All
+  three invocation forms now examine the text they were handed.
+
 ## 0.38.1 — 2026-10-07
 
 ### Fixed
@@ -32,15 +49,6 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
     in `backend/.worktrees/be-x` was checked against a repo called `be-x` — one nothing mentions,
     so again nothing was checked. `Child` now carries the repos `repos_of()` resolved at spawn, and
     a child handed two slices is checked against both repos' clauses.
-
-- **`contract-check` ignored `--prompt-file`, and dropped the positional handshake whenever
-  `--repo` was given** (both found by an orchestrator probing the checker, both verified fixed
-  in the browser). `--prompt-file` is parsed into `req["text_file"]` while the arm only read
-  `req["handshake"]`, so the documented way to check an arbitrary answer silently examined a
-  *stored child's* handshake instead — which is how a control naming a file that did not exist
-  came back `4/4 pass`. And the positional form `contract-check [repo] [root] [handshake...]`
-  read the handshake from index 2 whether or not `--repo` had consumed the repo slot. All
-  three invocation forms now examine the text they were handed.
 
 ### Measured
 

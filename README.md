@@ -637,7 +637,7 @@ mini-agent-rs agent spawn api-worker --cwd ~/repo/backend --repo backend "add th
   mistaken for its repo. All five are fixed; the shape they share is that a mechanical check was
   parsing free text with a rule free text does not obey.
 
-  Two more defects in the same arm came out of the same probing: `--prompt-file` was
+  Two more defects in the same arm came out of the same probing (fixed in 0.38.2): `--prompt-file` was
   ignored (so a control was answered about a different child's text), and the positional
   handshake was dropped whenever `--repo` was given. All three invocation forms are now
   verified to examine the text they are handed.
