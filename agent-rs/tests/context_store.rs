@@ -179,3 +179,29 @@ fn surface_answers_from_the_index_without_grepping() {
     assert!(all.contains("handleToggle") && all.contains("internal/api/server.go:650"), "{all}");
     assert!(all.contains("called by") && all.contains("contract: group_menu_display"), "{all}");
 }
+
+/// Review 1: `agent contract-check --repo X` run BY HAND reads the recorded handshake, and the
+/// parser only understood the raw answer, so the command reported a vacuous pass. This is the CLI
+/// path, end to end.
+#[test]
+fn contract_check_by_hand_reads_the_recorded_handshake() {
+    let dir = tmp("cc-hand");
+    write(&dir.join("contracts.md"), "- backend: emits `group_menu_display` for preact\n");
+    write(&dir.join("backend/handler.go"), "package main\nfunc handleToggle() {}\n");
+    let parent = script(
+        "parent",
+        &[
+            // A child finishes with a handshake naming a file that does NOT carry the contract field.
+            ("run", "mini-agent-rs agent state put contracts.md --prompt-file contracts.md > /dev/null 2>&1; mini-agent-rs agent spawn be-worker --cwd backend --repo backend 'edit it' && mini-agent-rs agent wait be-worker --timeout 20 > /dev/null 2>&1; sleep 1; mini-agent-rs agent contract-check --repo backend --name be-worker backend > out1.txt 2>&1; cat out1.txt"),
+            ("submit", "parent done"),
+        ],
+    );
+    let child = script("child", &[("submit", "Done.\nsurface: handler.go:2 handleToggle <- server\ncontract: none\nsurprise: none")]);
+    let msgs = run_parent(&dir, &parent, &child, "parent done");
+    let all = msgs.iter().map(text).collect::<Vec<_>>().join("\n---\n");
+    assert!(all.contains("contract-check"), "{all}");
+    // The file the child claimed must be recognised, otherwise the contracts check greps nothing.
+    assert!(!all.contains("the handshake names no file"), "the by-hand check read no handshake at all:\n{all}");
+    assert!(all.contains("handler.go:2 handleToggle") || all.contains("1 claimed file"), "the claimed file was not found:\n{all}");
+    assert!(all.contains("FAIL"), "the claim does not hold (handler.go lacks the field) and it must say so:\n{all}");
+}

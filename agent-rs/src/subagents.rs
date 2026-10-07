@@ -16,6 +16,7 @@
 //!   them as sessions under their parent and follow any of them live.
 
 use crate::context_store::{self, ContextStore};
+use context_store::claimed_files;
 use crate::plan::{Plan, Task, SATISFIED};
 use crate::util::now;
 use crate::resources::{self, Tracker};
@@ -81,7 +82,10 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
                                          instead of grepping the tree again
   agent contract-check --repo R [root]   the mechanical check: do the files a child's handshake
                                          claims to touch satisfy the contract, in the tree? It
-                                         runs by itself when a child's turn ends too
+                                         runs by itself when a child's turn ends too.
+                                         --name CHILD  whose stored handshake to check (default:
+                                         the child that worked in that root); the handshake can also
+                                         be piped in as a third positional argument
 
 Shared context (on by default, MINI_AGENT_CONTEXT=0 to turn it off): fill it ONCE as the
 orchestrator, with the exploration you already paid for:
@@ -2046,11 +2050,9 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
             let repos: Vec<String> = req.get("repos").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
             let cap: usize = req.get("cap").and_then(Value::as_u64).unwrap_or(4000) as usize;
             let (out, n) = context_store::surface(&h.store, &query, &repos, cap);
-            if n == 0 {
-                Ok(ok(out, json!({"hits": 0})))
-            } else {
-                Ok(ok(out, json!({"hits": n})))
-            }
+            // `surface ls` reports how many entries the store has indexed, not how many matched a
+            // query: the number means the same thing (entries seen) either way.
+            Ok(ok(out, json!({"hits": n})))
         }
         // `agent contract-check --repo X`: the mechanical check at a child's turn end, runnable by
         // hand: do the files it claims to touch satisfy the contract, in the tree itself?
@@ -2060,18 +2062,34 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
                 let r = s(req, "root");
                 if r.is_empty() { std::env::current_dir().unwrap_or_default() } else { PathBuf::from(r) }
             };
+            let wanted = s(req, "name");
             let handshake = {
                 let text = s(req, "handshake");
-                if text.trim().is_empty() {
-                    // No handshake given: use the one the hub stored for that child.
-                    let key = format!("{repo}.md");
-                    h.store.get(&key).unwrap_or_default()
-                } else {
+                if !text.trim().is_empty() {
                     text
+                } else {
+                    // No handshake given: use the one the hub stored. `--repo` alone is not a child
+                    // name (a child called `be-worker` works in `backend`, so `backend.md` is
+                    // nobody): take `--name` when given, else the child that worked in this root.
+                    let name = if !wanted.is_empty() {
+                        Some(wanted)
+                    } else {
+                        h.children.iter().rev().find(|c| Path::new(&c.cwd) == root.as_path()).map(|c| c.name.clone())
+                    };
+                    name.and_then(|n| context_store::state_key(&format!("{n}.md")).ok())
+                        .and_then(|k| h.store.get(&k))
+                        .unwrap_or_default()
                 }
             };
             let (out, checks) = context_store::contract_check(&h.store, &repo, &handshake, &root, 4000);
             let passed = checks.iter().all(|c| c.ok);
+            // A green check over nothing is not a pass, it is a silent hole: say which child it was
+            // meant to be so nobody reads 3/3 as "the contract holds".
+            let out = if claimed_files(&handshake).is_empty() {
+                format!("{out}no handshake to check: pass `--name <child>` (whose answer is stored in <child>.md) or `--prompt-file <its answer>`.\n")
+            } else {
+                out
+            };
             let data = json!({
                 "pass": passed,
                 "checks": checks.iter().map(|c| json!({"name": c.name, "ok": c.ok, "detail": c.detail})).collect::<Vec<_>>(),
@@ -2375,6 +2393,7 @@ pub fn client(args: &[String]) -> i32 {
                     }
                 }
                 "--rm" => req["rm"] = json!(true),
+                "--name" => req["name"] = json!(value(&mut i)?),
                 "--repo" => {
                     let r = value(&mut i)?;
                     match req.get("repos").and_then(Value::as_array) {

@@ -343,7 +343,13 @@ fn parse_index_line(line: &str) -> Option<SurfaceHit> {
 pub fn surface(store: &ContextStore, query: &str, repos: &[String], cap: usize) -> (String, usize) {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
-        return ("surface needs a symbol, a field or a path to look for\n".into(), 0);
+        return ("surface needs a symbol, a field or a path to look for (`agent surface ls` lists what is indexed)\n".into(), 0);
+    }
+    if q == "ls" || q == "list" {
+        // `surface ls`: what the store has indexed, so a child can see what is answerable without
+        // reading the whole findings file. The "nothing mentions X" message points here, so it has
+        // to exist.
+        return surface_listing(store, repos, cap);
     }
     let mut hits = vec![];
     for d in store.docs() {
@@ -372,7 +378,7 @@ pub fn surface(store: &ContextStore, query: &str, repos: &[String], cap: usize) 
         return (out, 0);
     }
     let mut out = format!("{n} indexed hit(s) for {query:?}:\n");
-    for (doc, hit) in hits {
+    for (_doc, hit) in hits {
         out.push_str(&format!("  {}:{} {}", hit.file, hit.line, hit.what));
         if !hit.callers.is_empty() {
             out.push_str(&format!("   called by: {}", hit.callers.join(", ")));
@@ -381,12 +387,40 @@ pub fn surface(store: &ContextStore, query: &str, repos: &[String], cap: usize) 
             out.push_str(&format!("   contract: {}", hit.contract.join(", ")));
         }
         out.push('\n');
-        let _ = doc;
     }
     if !repos.is_empty() {
         out.push_str(&format!("(scoped to {})\n", repos.join(", ")));
     }
     (head_chars(&out, cap), n)
+}
+
+/// `agent surface ls`: every indexed entry, grouped by document. The whole index, capped, so a
+/// child knows what it can ask about without grepping and without reading findings.md whole.
+fn surface_listing(store: &ContextStore, repos: &[String], cap: usize) -> (String, usize) {
+    let mut n = 0;
+    let mut out = String::new();
+    for d in store.docs() {
+        if !d.key.ends_with(SURFACE_SUFFIX) && d.key != FINDINGS {
+            continue;
+        }
+        let Some(body) = store.get(&d.key) else { continue };
+        let mut rows = vec![];
+        for hit in index(&body) {
+            if !repos.is_empty() && !store.mentions(&hit.file, repos) && !store.mentions(&format!("{} {}", hit.file, hit.what), repos) {
+                continue;
+            }
+            rows.push(format!("  {}:{} {}", hit.file, hit.line, hit.what));
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        n += rows.len();
+        out.push_str(&format!("{} ({} indexed)\n{}\n", d.key, rows.len(), rows.join("\n")));
+    }
+    if n == 0 {
+        return ("the shared context has no index yet: put one in `findings.md` as `file:line symbol <- callers`\n".into(), 0);
+    }
+    (head_chars(&format!("{n} indexed entr(ies); `agent surface <symbol>` answers about one:\n{out}"), cap), n)
 }
 
 // ---- contract-check: does the child's claim hold against the tree and the contract? ----------
@@ -420,14 +454,32 @@ pub fn clauses(body: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Files the child says it touched: from its handshake (the `surface:` lines), falling back to the
-/// files it actually wrote (a git diff of its own worktree when one is given).
+/// Files the child says it touched, from its handshake.
+///
+/// Both shapes of the same handshake are accepted, and they have to be: the hub checks the RAW
+/// answer (`surface: f.go:1 sym`) at the end of the turn, while `agent contract-check` by hand
+/// reads the RECORDED document (`## surface` heading). Parsing only one of them made the by-hand
+/// command silently vacuous -- zero claimed files, so the files check passes and the contract
+/// check greps an empty corpus.
 pub fn claimed_files(handshake: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![];
+    let mut in_surface = false;
     for raw in handshake.lines() {
         let line = raw.trim();
-        let Some((_, rest)) = line.split_once("surface:") else { continue };
-        for part in rest.split(|c: char| c == ',' || c == ';') {
+        // Recorded form: the body of the `## surface` section, until the next heading.
+        if line.starts_with('#') {
+            in_surface = line.trim_start_matches('#').trim().eq_ignore_ascii_case("surface");
+            continue;
+        }
+        // Raw form: a `surface:` tag on the line.
+        let rest = if let Some((_, r)) = line.split_once("surface:") {
+            r
+        } else if in_surface {
+            line
+        } else {
+            continue;
+        };
+        for part in rest.split([',', ';', '\n']) {
             let p = part.trim();
             // `src/lib/types.ts:506 GroupMenuDisplay -> Reservas.tsx` : take the file before `:`.
             let file = p.split("->").next().unwrap_or(p);
@@ -461,15 +513,7 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         })
     };
     // 1. files
-    let missing: Vec<String> = files
-        .iter()
-        .filter(|f| {
-            let p = Path::new(f);
-            let direct = if p.is_absolute() { p.to_path_buf() } else { root.join(f) };
-            !direct.is_file() && !std::fs::read_to_string(direct).is_ok()
-        })
-        .cloned()
-        .collect();
+    let missing: Vec<String> = files.iter().filter(|f| readable(f).is_none()).cloned().collect();
     checks.push(Check {
         name: "files".into(),
         ok: missing.is_empty(),
@@ -732,5 +776,42 @@ mod tests {
         // like any flat shared document).
         let out = s.scoped(&["backend".to_string()], 32 * 1024);
         assert!(out.contains("be-special-group.md"), "{out}");
+    }
+
+    /// Review 1 found this: the hub checks the RAW answer at the turn end, but `agent
+    /// contract-check` by hand reads the RECORDED document. `claimed_files` only parsed the raw
+    /// form, so the by-hand command found zero claimed files: the files check passed on nothing
+    /// and the contract check searched an empty corpus. Both shapes must parse.
+    #[test]
+    fn claimed_files_reads_the_raw_and_the_recorded_handshake() {
+        let s = store_in("/tmp/ctx-store-cf-test");
+        let answer = "surface: backend/handler.go:2 handleToggle <- server, api/router.go:9 go\ncontract: none\nsurprise: none";
+        assert_eq!(claimed_files(answer), vec!["backend/handler.go", "api/router.go"]);
+        let key = record_handshake(&s, "be-worker", answer).unwrap();
+        let recorded = s.get(&key).unwrap();
+        assert_eq!(
+            claimed_files(&recorded),
+            vec!["backend/handler.go", "api/router.go"],
+            "the recorded handshake must yield the same files as the raw answer: {recorded}"
+        );
+        // It must not bleed into the other sections of the recorded document.
+        assert!(!claimed_files(&recorded).iter().any(|f| f.contains("be-worker")), "{recorded}");
+    }
+
+    /// `agent surface ls` is what the "nothing mentions X" message tells the child to run; it did
+    /// not exist and `ls` was treated as the query.
+    #[test]
+    fn surface_ls_lists_the_index() {
+        let s = store_in("/tmp/ctx-store-ls-test");
+        assert!(surface(&s, "ls", &[], 4000).0.contains("no index yet"), "an empty store says so");
+        s.put(
+            "findings.md",
+            "# backend\n`internal/api/server.go:650 handleToggle <- server`\n`internal/api/x.go:3 other`\n",
+        )
+        .unwrap();
+        let (out, n) = surface(&s, "ls", &[], 4000);
+        assert_eq!(n, 2, "{out}");
+        assert!(out.contains("internal/api/server.go:650") && out.contains("internal/api/x.go:3"), "{out}");
+        assert!(out.contains("agent surface <symbol>"), "{out}");
     }
 }
