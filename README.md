@@ -637,6 +637,11 @@ mini-agent-rs agent spawn api-worker --cwd ~/repo/backend --repo backend "add th
   mistaken for its repo. All five are fixed; the shape they share is that a mechanical check was
   parsing free text with a rule free text does not obey.
 
+  Two more defects in the same arm came out of the same probing: `--prompt-file` was
+  ignored (so a control was answered about a different child's text), and the positional
+  handshake was dropped whenever `--repo` was given. All three invocation forms are now
+  verified to examine the text they are handed.
+
   The best proof that it works came from an agent, not from a test: an orchestrator received
   `4/4 pass`, did not trust it, copied the tree to `/tmp`, deleted the wire field, re-ran the
   check, got `4/4 pass` again — and reported its own integration check as toothless. That negative
