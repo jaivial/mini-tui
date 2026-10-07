@@ -41,7 +41,7 @@ fn run(dir: &Path, yaml: &str, until: &str, envs: &[(&str, &str)]) -> Vec<Value>
     write(&dir.join("run.yaml"), yaml);
     let mut cmd = Command::new(exe());
     cmd.arg("-y").arg("--exit-immediately").arg("-o").arg(dir.join("traj.json")).arg("-c").arg(dir.join("run.yaml")).arg("-t").arg("orchestrate");
-    cmd.env("MSWEA_SILENT_STARTUP", "1").env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH");
+    cmd.env("MSWEA_SILENT_STARTUP", "1").env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_BIN").env_remove("MINI_AGENT_CONFIG_DIR").env_remove("MINI_AGENT_CONTEXT");
     cmd.env("MINI_AGENT_MONITOR_MS", "50").current_dir(dir);
     for (k, v) in envs {
         cmd.env(k, v);

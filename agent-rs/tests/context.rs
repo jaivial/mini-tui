@@ -70,7 +70,7 @@ fn run_parent(dir: &Path, parent_yaml: &str, child_yaml: &str, until: &str) -> V
         .env("MINI_AGENT_CHILD_CONFIG", dir.join("child.yaml"))
         .env("MINITUI_SKILLS_DIR", dir.join("skills"))
         .env("MINI_AGENT_MONITOR_MS", "50")
-        .env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_CONTEXT_DIR");
+        .env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_CONTEXT_DIR").env_remove("MINI_AGENT_BIN").env_remove("MINI_AGENT_CONFIG_DIR").env_remove("MINI_AGENT_CONTEXT");
     cmd.current_dir(dir);
     cmd.stdout(std::process::Stdio::null()).stderr(std::fs::File::create(dir.join("parent.log")).unwrap());
     let mut child = cmd.spawn().unwrap();

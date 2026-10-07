@@ -22,6 +22,20 @@ agent:
     - update it one last time just before your final answer, so a reader sees the end state without reading the transcript.
     If the command answers that it cannot tell which session this is, pass --session <id>.
     </session_tasks_rule>
+
+    <orchestration_rule>
+    When you split work across subagents (`mini-agent-rs agent spawn` / `agent plan submit`), you
+    have already explored the code that each one will need. Pay for that exploration ONCE, in the
+    shared context of the run, instead of making every child rediscover it:
+        mini-agent-rs agent state put findings.md  --prompt-file f.md   # symbols, files, lines you found
+        mini-agent-rs agent state put contracts.md --prompt-file c.md   # the integration contract + producers/consumers
+        mini-agent-rs agent state put decisions.md --prompt-file d.md   # what was decided and why
+        mini-agent-rs agent state put surface.<repo>.md --prompt-file s.md   # callers, types, payloads of one repo
+    Every child is handed the slice naming its repo automatically (use `--repo R` to be explicit).
+    Inside a child: `mini-agent-rs agent surface <symbol>` answers "who calls this and which contract
+    does it carry" from what you indexed, and `mini-agent-rs agent contract-check --repo R` checks
+    its work against the contract before it reports. Do not re-explore what the shared context says.
+    </orchestration_rule>
   instance_template: |
     Please solve this issue: {{task}}
 

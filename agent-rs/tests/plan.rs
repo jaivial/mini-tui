@@ -68,7 +68,15 @@ fn run_parent(dir: &Path, parent_yaml: &str, until: &str) -> Vec<Value> {
         .env("MSWEA_CONTROL_FILE", "")
         .env("MINI_AGENT_CHILD_CONFIG", dir.join("child-{name}.yaml"))
         .env("MINI_AGENT_MONITOR_MS", "50")
-        .env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_CONTEXT_DIR");
+        .env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_CONTEXT_DIR")
+        // The whole rest of the hub environment. These tests spawn real children and the child's
+        // bash tool reads the process env: an inherited MINI_AGENT_SOCKET (the agent of whatever
+        // session ran `cargo test`) made every child talk to THAT session's hub instead of its own,
+        // and the plan tests failed 5/5 while passing 5/5 in a clean env. Same class of bug in the
+        // other test files; here it made a real regression look like a passing run.
+        .env_remove("MINI_AGENT_BIN")
+        .env_remove("MINI_AGENT_CONFIG_DIR")
+        .env_remove("MINI_AGENT_CONTEXT");
     cmd.current_dir(dir);
     cmd.stdout(std::process::Stdio::null()).stderr(std::fs::File::create(dir.join("parent.log")).unwrap());
     let mut child = cmd.spawn().unwrap();
@@ -169,11 +177,17 @@ fn a_chain_of_three_runs_with_handoff() {
     assert!(z2_task.contains("z1 done"), "{z2_task}");
     assert!(z2_task.contains("artifact context/z1.md"), "{z2_task}");
     assert!(z2_task.contains("z1 artifact body"), "{z2_task}");
-    // Z3 gets Z2's, and Z1's result is not pushed again (its deps are Z2's only).
+    // Z3 gets Z2's handoff. The DAG does NOT re-push Z1's result in the handoff block (Z3's only
+    // dep is Z2), but the accumulated shared context (ContextStore, Fase 7) does carry Z1's
+    // artifact: everything a previous child wrote into context/ is handed to the next one, so
+    // nothing that was already learned has to be discovered again.
     let z3_task = task_message(&dir, "Z3");
     assert!(z3_task.contains("<handoff from=\"Z2\""), "{z3_task}");
     assert!(z3_task.contains("z2 artifact body"), "{z3_task}");
-    assert!(!z3_task.contains("z1 artifact body"), "{z3_task}");
+    let handoff_only = z3_task.split("<context name=").next().unwrap_or("");
+    assert!(!handoff_only.contains("z1 artifact body"), "Z1 must not re-enter the handoff block: {handoff_only}");
+    // …and the shared context is what carries it instead.
+    assert!(z3_task.contains("<context name=\"z1.md\""), "{z3_task}");
 }
 
 #[test]

@@ -15,6 +15,8 @@
 //! - `<traj dir>/subagents/index.json` lists the children (paths, pid, state) so mini-tui can show
 //!   them as sessions under their parent and follow any of them live.
 
+use crate::context_store::{self, ContextStore};
+use context_store::claimed_files;
 use crate::plan::{Plan, Task, SATISFIED};
 use crate::util::now;
 use crate::resources::{self, Tracker};
@@ -38,6 +40,8 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
       --skill NAME       inline a skill's SKILL.md (repeatable; `$name` in the task works too)
       --prompt-file F    read the task from a file ('-' = stdin)
       --context-file F   hand it context instead of making it re-discover (repeatable; capped)
+      --repo R           the repo this child works in: its slice of the shared context is handed
+                         to it (repeatable). Default: the segments of --cwd and its own name.
       --brief            the task is a structured brief (goal, key paths, conventions,
                          searches done, decisions): validated and wrapped as <brief>
       --fork [--fork-k N] [--from NAME]
@@ -68,10 +72,30 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
   agent stop <name...>|--all             interrupt (it saves); `send` continues it later
   agent ask <text...>                    (inside a subagent) message the session that started it
 
-  agent state ls [--json]                the shared state of the run tree (<run dir>/context/)
+  agent state ls [--json]                the shared context of the run tree (<run dir>/context/)
   agent state get <key>                  one shared value (key = file name there)
-  agent state put <key> <text...>        write it (--prompt-file F for long text); the whole
-                                         tree reads it as {{context.<key-stem>}} in tasks
+  agent state put <key> <text...>        write it (--prompt-file F for long text); every child
+                                         spawned from now on is handed it, scoped to its repo
+
+  agent surface <query> [--repo R]       who calls this symbol / field and which contract it
+                                         carries, from what you already indexed: one call
+                                         instead of grepping the tree again
+  agent contract-check --repo R [root]   the mechanical check: do the files a child's handshake
+                                         claims to touch satisfy the contract, in the tree? It
+                                         runs by itself when a child's turn ends too.
+                                         --name CHILD  whose stored handshake to check (default:
+                                         the child that worked in that root); the handshake can also
+                                         be piped in as a third positional argument
+
+Shared context (on by default, MINI_AGENT_CONTEXT=0 to turn it off): fill it ONCE as the
+orchestrator, with the exploration you already paid for:
+  agent state put findings.md   --prompt-file f.md   # symbols, files, lines you found
+  agent state put contracts.md  --prompt-file c.md   # the contract + its producers/consumers
+  agent state put decisions.md  --prompt-file d.md   # what was decided and why
+  agent state put surface.backend.md --prompt-file s.md  # callers, types, payloads of one repo
+Every child is then handed the slice that names its repo (`--repo`, or the segments of its --cwd),
+and each child's handshake (what it touched -> who calls it, what contract it emitted -> who
+consumes it, what surprised it) goes back into the store for the next one.
 
   agent plan submit --file plan.json     hand over a whole DAG plan (validated: ids, deps, no cycles)
   agent plan add <id> [--deps a,b] [--group G] [--priority N] [--steps N] [--cost C]
@@ -197,6 +221,13 @@ pub struct Hub {
     journal: PathBuf,
     /// The run tree's shared state on disk (`<run dir>/context/`): the whole tree writes and reads it.
     context_dir: PathBuf,
+    /// The same folder with the ContextStore API over it: what the orchestrator fills once and the
+    /// subagents are handed, scoped to the repo each one works in (`findings`, `contracts`,
+    /// `decisions`, `surface.<repo>` and whatever previous children returned).
+    store: ContextStore,
+    /// Context delivery is ON by default (Fase 7): a child is handed the shared context whether or
+    /// not the parent remembered `--context-file`. `MINI_AGENT_CONTEXT=0` turns it back off.
+    pub handover: bool,
     runtime: PathBuf,
     socket: PathBuf,
     exe: PathBuf,
@@ -395,9 +426,9 @@ pub fn wrap_brief(task: &str) -> Result<String, String> {
 /// The note every child gets about the run tree's shared state on disk (append-only).
 pub fn shared_context_note(dir: &Path) -> String {
     format!(
-        "<shared-context>\nShared state on disk: {} (append-only).\nBefore searching or reading something, check what prior tasks left there (findings.md,\nsearch-cache.jsonl, artifacts/); when you learn something reusable or write an artifact, leave\nit there under your own file (one file per task, e.g. {}), stamped with date and author.\n</shared-context>",
+        "<shared-context>\nShared state on disk: {} (append-only; `mini-agent-rs agent state ls|get|put`).\nThree documents are the schema: `findings.md` (what is already known: symbols, files, lines),\n`contracts.md` (the integration contract and its producers/consumers) and `decisions.md` (what was\ndecided and why), plus `surface.<repo>.md` per repo. Before searching or reading something,\ncheck them and `agent surface <symbol>`; they are what the orchestrator already paid for.\n{}\n</shared-context>",
         dir.display(),
-        format!("{}/<your-task-id>.md", dir.display())
+        context_store::handshake_block(dir)
     )
 }
 
@@ -477,14 +508,69 @@ pub fn interpolate(text: &str, vars: &BTreeMap<String, String>) -> String {
 
 /// A state key names one file of the shared `context/` folder: ASCII letters, digits, `.`, `_`
 /// or `-`, never a path. It is the variable name too: key `findings.md` is `{{context.findings}}`.
-fn state_key(key: &str) -> Result<String, String> {
-    let k = key.trim();
-    if k.is_empty() || k.starts_with('.') || !k.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
-        return Err(format!("state key {key:?}: letters, digits, '.', '_' or '-' (it names a file in the shared context/)"));
+/// The repo names a child works in, so `ContextStore::scoped` can hand it only its slice. They come
+/// from `--repo` (explicit, best), else the name segments of its `--cwd` (a worktree under
+/// `backend/.worktrees/…` names `backend`), else nothing (the child gets the documents whole).
+pub fn repos_of(req: &Value, cwd: &str, name: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    fn add(out: &mut Vec<String>, r: &str) {
+        let r = r.trim();
+        if !r.is_empty() && !out.iter().any(|x| x == r) {
+            out.push(r.to_string());
+        }
     }
-    Ok(k.to_string())
+    if let Some(list) = req.get("repos").and_then(Value::as_array) {
+        for v in list {
+            if let Some(s) = v.as_str() {
+                add(&mut out, s);
+            }
+        }
+    }
+    if let Some(one) = req.get("repo").and_then(Value::as_str) {
+        add(&mut out, one);
+    }
+    if out.is_empty() {
+        // Nothing explicit: guess from the cwd and the child's name, because the whole point is
+        // that the parent does not have to say it. Two rules, in this order:
+        //
+        // 1. the LAST meaningful segment of the cwd (`.../newvillacarmen/backend/.worktrees/be-x`
+        //    names `backend`; the worktree is not the repo), and
+        // 2. the child's own name, split on `-`/`_` (a child called `be-special-group` also names
+        //    `be`, so `surface.be.md` is reachable too).
+        //
+        // Taking the FIRST few segments of the path instead (the obvious reading) put `home`,
+        // `jaime` and the project root in front and truncated the repo name away, so the default
+        // silently delivered no surface doc to the very child it was meant to.
+        let skip = |seg: &str| seg.is_empty() || seg.starts_with('.') || seg == "worktrees" || seg == "worktree" || seg == "src" || seg == "tmp";
+        let mut cwd_segs: Vec<String> = cwd
+            .split(['/', '\\'])
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !skip(s) && s.len() >= 2 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .collect();
+        // Nearest last: if the cwd ends in the child name, the name is not a separate repo.
+        // `backend/.worktrees/be-special-group` filtered down to `be-special-group` (the dot
+        // dir was skipped): that IS the child name, not a repo, so drop it before taking the last.
+        let nlow = name.to_lowercase();
+        if cwd_segs.last().map(|s| s.as_str()) == Some(nlow.as_str()) {
+            cwd_segs.pop();
+        }
+        let last = cwd_segs.last().cloned();
+        if let Some(l) = &last {
+            add(&mut out, l);
+        }
+        for seg in name.split(['-', '_', '.']) {
+            let seg = seg.trim().to_lowercase();
+            if seg.len() >= 2 && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                add(&mut out, &seg);
+            }
+        }
+        // A second-to-last path segment only when the last one IS the child name (`backend/be-x`).
+        if cwd_segs.len() >= 2 && name.split(['-', '_', '.']).any(|p| p.eq_ignore_ascii_case(last.as_deref().unwrap_or("~"))) {
+            add(&mut out, &cwd_segs[cwd_segs.len() - 2]);
+        }
+    }
+    out
 }
-
 // ---- the hub -----------------------------------------------------------------------------
 
 /// Stops the children and removes the socket when the run ends.
@@ -552,9 +638,13 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
     let path = std::env::var("PATH").unwrap_or_default();
     std::env::set_var("PATH", format!("{}:{path}", bin.display()));
     let plan = load_plan(&dir);
+    // The store wraps the same folder: ON by default, `MINI_AGENT_CONTEXT=0` to opt out.
+    let handover = std::env::var("MINI_AGENT_CONTEXT").map(|v| v != "0").unwrap_or(true);
     let hub = Hub {
         dir,
         journal: crate::agent::journal_path(traj),
+        store: ContextStore::new(context_dir.clone()),
+        handover,
         context_dir,
         runtime,
         socket,
@@ -758,6 +848,7 @@ impl Hub {
             }
         }
         let mut notes = vec![];
+        let mut finished: Vec<String> = vec![];
         for c in self.children.iter_mut() {
             for line in read_new(&c.journal, &mut c.offset, &mut c.partial) {
                 c.last_activity = now();
@@ -803,6 +894,7 @@ impl Hub {
                                 c.stop_requested = false;
                                 if !was_stop {
                                     notes.push((c.name.clone(), c.turns, finished_note(c)));
+                                    finished.push(c.name.clone());
                                 }
                             }
                             _ => {}
@@ -859,11 +951,62 @@ impl Hub {
                 )));
             }
         }
+        // The handshake (B) and the contract check (C), once the borrow of `children` is over.
+        // What a finished child learned goes back into the store so the NEXT child starts from it,
+        // and the claim it made is checked against the tree mechanically.
+        if self.handover {
+            let names = std::mem::take(&mut finished);
+            for n in names {
+                let Some(i) = self.children.iter().position(|c| c.name == n) else { continue };
+                let hs = self.record_handshake(&self.children[i]);
+                let checked = self.contract_check(&self.children[i]);
+                if !hs.is_empty() || !checked.is_empty() {
+                    notes.push((String::new(), 0, format!("{hs}{checked}")));
+                }
+            }
+        }
         self.notes.extend(notes);
         let total: f64 = self.children.iter().map(Child::total_cost).sum();
         CHILD_COST.store(total.to_bits(), Ordering::SeqCst);
         self.tick_plan();
         self.write_index();
+    }
+
+    /// Store a finished child's handshake (its own final answer parsed for surface/contract/
+    /// surprise). Nothing is stored when it answered none of the three: an empty handshake is a
+    /// claim of "nothing reusable", not a reason to invent one.
+    fn record_handshake(&self, c: &Child) -> String {
+        let answer = if !c.submission.trim().is_empty() { &c.submission } else if !c.exit_text.trim().is_empty() { &c.exit_text } else { &c.last_text };
+        let (surface, contract, surprise) = context_store::parse_handshake(answer);
+        if surface.is_empty() && contract.is_empty() && surprise.is_empty() {
+            return String::new();
+        }
+        match context_store::record_handshake(&self.store, &c.name, answer) {
+            Ok(key) => format!("[handshake {}] stored {key}: {} surface line(s), {} contract line(s){}.\n", c.name, surface.len(), contract.len(), if surprise.is_empty() { String::new() } else { ", something surprised it".to_string() }),
+            Err(e) => format!("[handshake {}] not stored: {e}\n", c.name),
+        }
+    }
+
+    /// `agent contract-check`, run for the child whose turn just ended: does what it claims to have
+    /// touched satisfy the contract, in the tree itself? Mechanical, no model.
+    fn contract_check(&self, c: &Child) -> String {
+        let repo = c.cwd.rsplit('/').find(|s| !s.is_empty()).unwrap_or("").to_string();
+        let handshake = self.store.get(&format!("{}.md", c.name)).unwrap_or_default();
+        let (out, checks) = context_store::contract_check(&self.store, &repo, &handshake, Path::new(&c.cwd), 2000);
+        if checks.iter().all(|k| k.ok) {
+            return String::new(); // green: no noise in the parent's notes
+        }
+        let _ = out;
+        let failed: Vec<String> = checks.iter().filter(|k| !k.ok).map(|k| format!("{} ({})", k.name, k.detail)).collect();
+        format!(
+            "[contract-check {}] {} of {} checks FAILED: {}\nThe claim of this child does not hold against the tree: fix it (`agent send {} \"...\"`) or run `agent contract-check --repo {}` yourself to see it all.\n",
+            c.name,
+            failed.len(),
+            checks.len(),
+            failed.join("; "),
+            c.name,
+            repo
+        )
     }
 
     fn write_index(&mut self) {
@@ -977,6 +1120,25 @@ impl Hub {
         // (`--context-file`), the parent's brief (`--brief`), and the shared state on disk note.
         let context_max: usize = env_num("MINI_AGENT_CONTEXT_MAX", 32 * 1024);
         let mut context_blocks = String::new();
+        // The ContextStore, scoped to the repos this child works in (Fase 7). ON by default: the
+        // orchestrator filled findings/contracts/decisions/surface once, and the child gets them
+        // mechanically instead of re-discovering them. This is the delivery point: it happens
+        // whether or not the parent remembered `--context-file`.
+        let mut handed = 0usize;
+        let mut store_chars = 0usize;
+        let mut notes_trimmed: Option<usize> = None;
+        if self.handover {
+            let repos = repos_of(req, &s(req, "cwd"), &name);
+            for (key, body) in self.store.scoped_keys(&repos) {
+                if body.trim().is_empty() || key == "index.json" {
+                    continue;
+                }
+                let block = format!("<context name=\"{key}\">\n{}\n</context>\n\n", body.trim());
+                store_chars += block.chars().count();
+                context_blocks.push_str(&block);
+                handed += 1;
+            }
+        }
         for f in req.get("context_files").and_then(Value::as_array).cloned().unwrap_or_default() {
             let path = f.as_str().unwrap_or("");
             let body = std::fs::read_to_string(crate::config::expand_user(path)).map_err(|e| format!("--context-file {path}: {e}"))?;
@@ -985,9 +1147,33 @@ impl Hub {
             }
             context_blocks.push_str(&format!("<context name=\"{path}\">\n{}\n</context>\n\n", body.trim()));
         }
-        if context_blocks.chars().count() > context_max {
-            return Err(format!("the --context-file blocks are {} chars together, over the {} char cap: pass fewer or shorter files", context_blocks.chars().count(), context_max));
+        // The store must never be the reason a spawn fails. It is the parent's own text, it is
+        // handed over by DEFAULT (nobody asked for it) and the cap it broke is a cap that used to
+        // exist only for --context-file: a big findings.md plus the wave's own handshakes killed
+        // every spawn with "the --context-file blocks are N chars", blaming a flag nobody passed.
+        // So the budget is shared, the store gives way, and only an explicit --context-file is
+        // still refused -- there the parent chose that text and can trim it.
+        if store_chars > context_max {
+            let keep = context_max.saturating_sub(context_max / 4); // leave a quarter for the brief/task
+            let dropped = context_blocks.chars().count() - keep;
+            context_blocks = context_store::head_chars(&context_blocks, keep);
+            notes_trimmed = Some(dropped);
         }
+        let file_chars: usize = req
+            .get("context_files")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|p| std::fs::read_to_string(crate::config::expand_user(p)).ok())
+                    .map(|b| b.chars().count())
+                    .sum()
+            })
+            .unwrap_or(0);
+        if file_chars > context_max {
+            return Err(format!("the --context-file blocks are {} chars together, over the {} char cap: pass fewer or shorter files", file_chars, context_max));
+        }
+
         let brief_block = if req.get("brief").and_then(Value::as_bool).unwrap_or(false) {
             format!("{}\n\n", wrap_brief(&raw_task)?)
         } else {
@@ -1096,7 +1282,15 @@ impl Hub {
         self.write_index();
         let skills_note = if used.is_empty() { String::new() } else { format!(" · skills: {}", used.join(", ")) };
         let fork_note = fork_label.map(|l| format!(" · forked from {l}")).unwrap_or_default();
-        Ok(format!("started subagent {name} (pid {pid}) in {cwd}{skills_note}{fork_note}{capped}\nYou will be told when it finishes; meanwhile keep working, or `agent wait {name}`."))
+        let trimmed_note = notes_trimmed.map(|d| format!(" \u{b7} the shared context was trimmed by {d} chars to fit")).unwrap_or_default();
+        let ctx_note = if handed > 0 {
+            format!(" · handed {handed} context doc(s): it does not re-discover what you already found")
+        } else if self.handover {
+            " · no shared context yet (`agent state put findings.md …` and the next child gets it)".to_string()
+        } else {
+            String::new()
+        };
+        Ok(format!("started subagent {name} (pid {pid}) in {cwd}{skills_note}{fork_note}{ctx_note}{trimmed_note}{capped}\nYou will be told when it finishes; meanwhile keep working, or `agent wait {name}`."))
     }
 
     /// A short fingerprint of everything a UI shows about the children, `idle_s` left out (it moves
@@ -1154,15 +1348,8 @@ impl Hub {
                 }
             }
         }
-        if let Ok(rd) = std::fs::read_dir(&self.context_dir) {
-            for e in rd.flatten() {
-                if e.file_name().to_string_lossy().starts_with('.') || !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                    continue;
-                }
-                let Some(stem) = e.path().file_stem().map(|st| st.to_string_lossy().to_string()).filter(|st| !st.is_empty()) else { continue };
-                let body = std::fs::read_to_string(e.path()).unwrap_or_default();
-                vars.insert(format!("context.{stem}"), head_chars(&body, 8 * 1024));
-            }
+        for (k, v) in self.store.vars(8 * 1024) {
+            vars.insert(k, v);
         }
         vars
     }
@@ -1173,43 +1360,44 @@ impl Hub {
     fn state_cmd(&mut self, req: &Value) -> Result<Value, String> {
         match s(req, "action").as_str() {
             "ls" => {
-                let mut rows: Vec<Value> = vec![];
-                if let Ok(rd) = std::fs::read_dir(&self.context_dir) {
-                    for e in rd.flatten() {
-                        let key = e.file_name().to_string_lossy().to_string();
-                        if key.starts_with('.') || !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                            continue; // hidden: the atomic-replace temp of `put`, never a key
-                        }
-                        rows.push(json!({"key": key, "size": e.metadata().map(|m| m.len()).unwrap_or(0)}));
-                    }
-                }
+                let docs = self.store.docs();
+                let mut rows: Vec<Value> = docs
+                    .iter()
+                    .map(|d| json!({"key": d.key, "size": d.bytes, "head": d.head}))
+                    .collect();
                 rows.sort_by_key(|v| s(v, "key"));
                 let mut out = String::new();
                 for r in &rows {
+                    let head = s(r, "head");
                     out.push_str(&format!("{} ({} B)\n", s(r, "key"), r["size"]));
+                    if !head.is_empty() && head.chars().count() < 80 {
+                        out.push_str(&format!("    {head}\n"));
+                    }
                 }
                 if out.is_empty() {
-                    out.push_str(&format!("(the shared state is empty: {})\n", self.context_dir.display()));
+                    out.push_str(&format!(
+                        "(the shared context is empty: {})\nThe orchestrator fills it once and every child is handed it:\n  agent state put findings.md --prompt-file notes.md   # what is already known\n  agent state put contracts.md --prompt-file contract.md # the integration contract\n  agent state put surface.<repo>.md --prompt-file api.md  # callers, types, payloads\n",
+                        self.context_dir.display()
+                    ));
                 }
                 Ok(ok(out, Value::Array(rows)))
             }
             "get" => {
-                let key = state_key(&s(req, "key"))?;
-                let body = std::fs::read_to_string(self.context_dir.join(&key)).map_err(|e| format!("state {key}: {e}"))?;
+                let key = context_store::state_key(&s(req, "key"))?;
+                let body = self.store.get(&key).ok_or_else(|| format!("state {key}: no such key (`agent state ls`)"))?;
                 Ok(ok(body.clone(), json!({"key": key, "value": body})))
             }
             "put" => {
-                let key = state_key(&s(req, "key"))?;
+                let key = context_store::state_key(&s(req, "key"))?;
                 let value = s(req, "text");
                 if value.is_empty() {
                     return Err(format!("state put {key} needs a value (text, or --prompt-file F)"));
                 }
-                let _ = std::fs::create_dir_all(&self.context_dir);
-                let tmp = self.context_dir.join(format!(".{key}.tmp"));
-                std::fs::write(&tmp, &value)
-                    .and_then(|_| std::fs::rename(&tmp, self.context_dir.join(&key)))
-                    .map_err(|e| format!("state put {key}: {e}"))?;
-                Ok(ok(format!("state {key} = {} B", value.len()), json!({"key": key, "value": value})))
+                let written = self.store.put(&key, &value)?;
+                Ok(ok(
+                    format!("state {written} = {} B (every child spawned from now on is handed it)", value.len()),
+                    json!({"key": written, "value": value}),
+                ))
             }
             other => Err(format!("state {other:?}: ls, get or put")),
         }
@@ -1912,6 +2100,65 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
         "spawn" => h.launch(req).map(|o| ok(o, json!(null))),
         "spawn_batch" => h.spawn_batch(req),
         "state" => h.state_cmd(req),
+        // `agent surface <query>`: who calls this symbol and which contract it carries, answered
+        // from what the orchestrator already indexed. One call instead of a fresh grep tree.
+        "surface" => {
+            let query = s(req, "query");
+            let repos: Vec<String> = req.get("repos").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+            let cap: usize = req.get("cap").and_then(Value::as_u64).unwrap_or(4000) as usize;
+            let (out, n) = context_store::surface(&h.store, &query, &repos, cap);
+            // `surface ls` reports how many entries the store has indexed, not how many matched a
+            // query: the number means the same thing (entries seen) either way.
+            Ok(ok(out, json!({"hits": n})))
+        }
+        // `agent contract-check --repo X`: the mechanical check at a child's turn end, runnable by
+        // hand: do the files it claims to touch satisfy the contract, in the tree itself?
+        "contract-check" => {
+            let repo = s(req, "repo");
+            let root = {
+                let r = s(req, "root");
+                if r.is_empty() { std::env::current_dir().unwrap_or_default() } else { PathBuf::from(r) }
+            };
+            let wanted = s(req, "name");
+            let handshake = {
+                let text = s(req, "handshake");
+                if !text.trim().is_empty() {
+                    text
+                } else {
+                    // No handshake given: use the one the hub stored. `--repo` alone is not a child
+                    // name (a child called `be-worker` works in `backend`, so `backend.md` is
+                    // nobody): take `--name` when given, else the child that worked in this root.
+                    let name = if !wanted.is_empty() {
+                        Some(wanted)
+                    } else {
+                        h.children.iter().rev().find(|c| Path::new(&c.cwd) == root.as_path()).map(|c| c.name.clone())
+                    };
+                    name.and_then(|n| context_store::state_key(&format!("{n}.md")).ok())
+                        .and_then(|k| h.store.get(&k))
+                        .unwrap_or_default()
+                }
+            };
+            let (out, checks) = context_store::contract_check(&h.store, &repo, &handshake, &root, 4000);
+            let passed = checks.iter().all(|c| c.ok);
+            // A green check over nothing is not a pass, it is a silent hole: say which child it was
+            // meant to be so nobody reads 3/3 as "the contract holds".
+            let out = if claimed_files(&handshake).is_empty() {
+                format!("{out}no handshake to check: pass `--name <child>` (whose answer is stored in <child>.md) or `--prompt-file <its answer>`.\n")
+            } else {
+                out
+            };
+            let data = json!({
+                "pass": passed,
+                "checks": checks.iter().map(|c| json!({"name": c.name, "ok": c.ok, "detail": c.detail})).collect::<Vec<_>>(),
+            });
+            // A failed check is a real finding, and this is a diagnostic the parent asked for:
+            // the report comes back either way, with ok:false so the exit code says it failed.
+            let mut v = ok(out, data);
+            if !passed {
+                v["ok"] = json!(false);
+            }
+            Ok(v)
+        }
         "plan" => h.plan_cmd(req),
         "send" => h.send(req).map(|o| ok(o, json!(null))),
         "model" => {
@@ -2203,6 +2450,14 @@ pub fn client(args: &[String]) -> i32 {
                     }
                 }
                 "--rm" => req["rm"] = json!(true),
+                "--name" => req["name"] = json!(value(&mut i)?),
+                "--repo" => {
+                    let r = value(&mut i)?;
+                    match req.get("repos").and_then(Value::as_array) {
+                        Some(a) => { let mut a = a.clone(); a.push(json!(r)); req["repos"] = json!(a); }
+                        None => req["repos"] = json!([r]),
+                    }
+                }
                 "--context-file" => {
                     let f = value(&mut i)?;
                     let canon = std::fs::canonicalize(crate::config::expand_user(&f)).map(|p| p.display().to_string()).map_err(|e| format!("--context-file {f}: {e}"))?;
@@ -2285,6 +2540,17 @@ pub fn client(args: &[String]) -> i32 {
                         req["model"] = m;
                     }
                 }
+            }
+            "surface" => {
+                req["query"] = json!(joined(0));
+                if let Some(r) = req.get("repo").and_then(Value::as_str).map(String::from) {
+                    req["repos"] = json!([r]);
+                }
+            }
+            "contract-check" => {
+                req["repo"] = json!(positional.first().cloned().unwrap_or_default());
+                req["root"] = json!(positional.get(1).cloned().unwrap_or_default());
+                req["handshake"] = json!(positional.get(2..).map(|p| p.join(" ")).unwrap_or_default());
             }
             "state" => {
                 let action = positional.first().cloned().ok_or("state needs an action: ls, get or put")?;
@@ -2431,5 +2697,24 @@ mod tests {
         assert!(valid_name("fix-auth.2"));
         assert!(!valid_name("../x"));
         assert!(!valid_name(""));
+    }
+
+    /// Review 3: the default (no --repo) took the FIRST few path segments, so for a cwd like
+    /// /home/jaime/work/newvillacarmen/backend the repo name was truncated away and the child got
+    /// no surface doc at all -- the default silently disabled the feature it was meant to enable.
+    #[test]
+    fn the_default_repos_are_the_repo_itself_not_the_path_to_it() {
+        let repos = repos_of(&serde_json::json!({}), "/home/jaime/work/newvillacarmen/backend", "be-special-group");
+        assert!(repos.iter().any(|r| r == "backend"), "the repo itself must be named: {repos:?}");
+        assert!(!repos.iter().any(|r| r == "home" || r == "jaime"), "the path to it is not a repo: {repos:?}");
+        // A worktree is not a repo: .../backend/.worktrees/be-x is still `backend`.
+        let wt = repos_of(&serde_json::json!({}), "/home/jaime/work/newvillacarmen/backend/.worktrees/be-special-group", "be-special-group");
+        assert_eq!(wt, vec!["backend", "be", "special", "group"], "{wt:?}");
+        // A cwd whose last segment IS the child name still gets the repo above it.
+        let nested = repos_of(&serde_json::json!({}), "/srv/backend/be-worker", "be-worker");
+        assert!(nested.iter().any(|r| r == "backend"), "{nested:?}");
+        // Explicit --repo wins outright.
+        let explicit = repos_of(&serde_json::json!({"repos": ["go-api"]}), "/home/jaime/backend", "be-worker");
+        assert_eq!(explicit, vec!["go-api"], "{explicit:?}");
     }
 }

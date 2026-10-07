@@ -10,6 +10,30 @@ pub fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
+/// The current UTC time as `2026-10-07T13:21:44Z`, for stamping what a run leaves behind
+/// (`date -u +%FT%TZ`): no dependency, and it reads the same in a file as in a log line.
+pub fn now_iso() -> String {
+    let secs = now() as i64;
+    let (y, mo, d, h, mi, s) = crate::util::civil_from_unix(secs);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+/// Days-to-civil date (Howard Hinnant's algorithm), no time zone database needed.
+pub fn civil_from_unix(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d, (rem / 3600) as u32, ((rem % 3600) / 60) as u32, (rem % 60) as u32)
+}
+
 /// `d.get(key)` for a JSON object, `None` for anything else.
 pub fn get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     v.as_object().and_then(|o| o.get(key))
