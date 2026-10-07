@@ -33,6 +33,15 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
     so again nothing was checked. `Child` now carries the repos `repos_of()` resolved at spawn, and
     a child handed two slices is checked against both repos' clauses.
 
+- **`contract-check` ignored `--prompt-file`, and dropped the positional handshake whenever
+  `--repo` was given** (both found by an orchestrator probing the checker, both verified fixed
+  in the browser). `--prompt-file` is parsed into `req["text_file"]` while the arm only read
+  `req["handshake"]`, so the documented way to check an arbitrary answer silently examined a
+  *stored child's* handshake instead — which is how a control naming a file that did not exist
+  came back `4/4 pass`. And the positional form `contract-check [repo] [root] [handshake...]`
+  read the handshake from index 2 whether or not `--repo` had consumed the repo slot. All
+  three invocation forms now examine the text they were handed.
+
 ### Measured
 
 Same 6-file two-repo task, orchestrator exploring **once**, in the web UI:
