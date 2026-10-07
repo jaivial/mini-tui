@@ -113,6 +113,7 @@ Host functions:
   print(x)                      show x to you (output is truncated to {OUT_MAX} chars per cell)
   len(x)  lines(s)  chunks(s, n)  slice(array_or_string, start, n)
   grep(s, regex) -> array of matching lines   num(s) -> float   fmt2(x)   top(map, k)
+  join(array, sep)  replace_all(s, from, to)  has(map, key)  digits(s)
   llm(prompt) -> string         ask a sub-model (it sees ONLY the prompt you give it; put the
                                 slice of context it needs inside the prompt)
   llm_batch([p1, p2, ...]) -> array   many sub-model calls IN PARALLEL: use it for map steps
@@ -298,6 +299,12 @@ fn engine(ctx: &Ctx, depth: u64, printed: Arc<Mutex<String>>, final_: Arc<Mutex<
         v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         v.into_iter().take(k.max(0) as usize).map(|(k, x)| Dynamic::from(vec![Dynamic::from(k), Dynamic::from(x)])).collect()
     });
+    e.register_fn("trimmed", |s: &str| s.trim().to_string());
+    // The rest of what the sub-call run reached for and Rhai lacks (13 of 30 cells failed on these).
+    e.register_fn("join", |a: Array, sep: &str| a.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(sep));
+    e.register_fn("replace_all", |s: &str, from: &str, to: &str| s.replace(from, to));
+    e.register_fn("has", |m: Map, k: &str| m.contains_key(k));
+    e.register_fn("digits", |s: &str| s.chars().filter(|c| c.is_ascii_digit()).collect::<String>());
     e.register_fn("slice", |a: Array, start: i64, n: i64| -> Array { a.into_iter().skip(start.max(0) as usize).take(n.max(0) as usize).collect() });
     e.register_fn("slice", |s: &str, start: i64, n: i64| -> String { s.chars().skip(start.max(0) as usize).take(n.max(0) as usize).collect() });
     e.register_fn("len", |s: &str| s.chars().count() as i64);
@@ -417,8 +424,29 @@ pub struct Session {
 }
 
 fn code_cells(text: &str) -> Vec<String> {
-    let re = regex::Regex::new(r"(?s)```(?:rhai|repl|rust|js)?[ \t]*\n(.*?)```").unwrap();
-    re.captures_iter(text).map(|c| c[1].to_string()).collect()
+    // Strip provider tool-call markup that leaks into text (seen: `]<]minimax[>[</invoke>`).
+    let junk = regex::Regex::new(r"(?m)^.*\]<\]\w+\[>.*$").unwrap();
+    let text = junk.replace_all(text, "");
+    let re = regex::Regex::new(r"(?s)```(?:rhai|repl|rust|js|javascript)?[ \t]*\n(.*?)(?:```|\z)").unwrap();
+    re.captures_iter(&text).map(|c| normalize(&c[1])).filter(|c| !c.trim().is_empty()).collect()
+}
+
+/// Rewrite what models write out of habit from JS/Rust into Rhai. Measured on the first semantic
+/// run: 7 of 9 cells failed on exactly these (`for (x in y)`, `let mut`, chained `.trim()`, which
+/// in Rhai trims IN PLACE and returns nothing).
+fn normalize(code: &str) -> String {
+    let rules: [(&str, &str); 4] = [
+        (r"\blet\s+mut\s+", "let "),
+        // `for (x, i) in arr` IS valid Rhai (value, index): only the single-name form is rewritten.
+        (r"\bfor\s*\(\s*(\w+)\s*\)\s*in\b", "for $1 in"),
+        (r"\bfor\s*\(\s*(\w+(?:\s*,\s*\w+)?)\s+in\s+([^{]*?)\)\s*\{", "for $1 in $2 {"),
+        (r"\.trim\(\)", ".trimmed()"),
+    ];
+    let mut out = code.to_string();
+    for (pat, to) in rules {
+        out = regex::Regex::new(pat).unwrap().replace_all(&out, to).to_string();
+    }
+    out
 }
 
 impl Session {
@@ -652,7 +680,7 @@ pub fn client(args: &[String]) -> i32 {
         scope.push_dynamic("context", context);
         let _ = eng.eval_with_scope::<Dynamic>(&mut scope, "__cell_start()");
         let t0 = now();
-        let r = eng.eval_with_scope::<Dynamic>(&mut scope, &code);
+        let r = eng.eval_with_scope::<Dynamic>(&mut scope, &normalize(&code));
         print!("{}", printed.lock().unwrap());
         match r {
             Ok(v) if !v.is_unit() => println!("{v}"),
