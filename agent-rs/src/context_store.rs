@@ -472,6 +472,9 @@ pub fn claimed_files(handshake: &str) -> Vec<String> {
             continue;
         }
         // Raw form: a `surface:` tag on the line.
+        if is_template(line) {
+            continue; // the template, copied verbatim: not a claim about a file
+        }
         let rest = if let Some((_, r)) = line.split_once("surface:") {
             r
         } else if in_surface {
@@ -484,7 +487,11 @@ pub fn claimed_files(handshake: &str) -> Vec<String> {
             // `src/lib/types.ts:506 GroupMenuDisplay -> Reservas.tsx` : take the file before `:`.
             let file = p.split("->").next().unwrap_or(p);
             let file = file.split(':').next().unwrap_or(file).trim();
-            if !file.is_empty() && !out.contains(&file.to_string()) {
+            // `<file:line symbol>` cut at the colon leaves `<file`: not a file.
+            if file.is_empty() || is_template(file) {
+                continue;
+            }
+            if !out.contains(&file.to_string()) {
                 out.push(file.to_string());
             }
         }
@@ -629,12 +636,18 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
 /// nothing else: what it touched and who calls it, what contract field it emitted or read, and
 /// whether reality contradicted the brief.
 pub fn handshake_block(dir: &Path) -> String {
+    // Measured in the browser on 2026-10-07: with the angle-bracket placeholders, a subagent
+    // copied `<file:line symbol -> who calls it now>` VERBATIM into its surface line, and the
+    // contract check then failed on a file named `<file`. A literal example beats a placeholder
+    // here: the check is mechanical, so one copied token of prose is a false claim.
     format!(
-        "When you finish your turn, answer these three, in this exact form (the hub stores it as\n\
-         {}/<your-name>.md and the next child reads it):\n\
-         surface: <file:line symbol -> who calls it now> (one per line)\n\
-         contract: <field/endpoint you emitted or consumed -> who consumes it>\n\
-         surprise: <something that contradicted the brief, or 'none'>",
+        "Before your final answer, write these three lines (they are how the work is handed to\
+         the next subagent; the hub stores them as {}/<your-name>.md):\n\
+         surface: file.ts:12 someSymbol -> who calls it\n\
+         contract: some_json_field -> who consumes it\n\
+         surprise: what did not match what you were told, or the word none\n\
+         Replace EVERY part with something real: file, symbol, caller. A line left as written here\
+         is a false claim and `contract-check` will fail it.",
         dir.display()
     )
 }
@@ -667,7 +680,23 @@ fn split_items(rest: &str) -> Vec<String> {
     rest.split(['\n', ';'])
         .map(|s| s.trim().trim_start_matches('-').trim().to_string())
         .filter(|s| !s.is_empty() && s != "none")
+        .filter(|s| !is_template(s))
         .collect()
+}
+
+/// Is this line the handshake TEMPLATE rather than an answer? The tell is a bracketed
+/// placeholder with nothing concrete in it: `<file:line symbol -> who calls it now>`.
+/// Measured in the browser: a child copied that line verbatim and the contract check failed on
+/// a file named `<file`. Storing it hands the NEXT child a false claim. A real line can contain
+/// `<-` (`handler.go:9 handleToggle <- server`), so the rule is a bracket that starts the item.
+fn is_template(line: &str) -> bool {
+    let l = line.trim_start_matches(['-', '*', ' ']).trim();
+    // Wholly bracketed: `<file:line symbol -> who calls it now>` starts with `<` and ends with
+    // `>`. A real answer names a concrete thing (`a.go:2 handleToggle <- server`) and never looks
+    // like that, so this is a safe rule that does not need to guess at the inside.
+    (l.starts_with('<') && l.ends_with('>'))
+        // Or it opens with a bracket and never closes one, which is a half-copied template.
+        || (l.starts_with('<') && !l.contains('>'))
 }
 
 /// Record a child's handshake in the store (`<name>.md`), stamped, and return the key. The next
@@ -813,5 +842,24 @@ mod tests {
         assert_eq!(n, 2, "{out}");
         assert!(out.contains("internal/api/server.go:650") && out.contains("internal/api/x.go:3"), "{out}");
         assert!(out.contains("agent surface <symbol>"), "{out}");
+    }
+
+    /// Measured in the browser: a child copied the angle-bracket placeholder of the handshake
+    /// template verbatim into its surface line. It must not be stored as a claim (it would be
+    /// handed to the next child as one) and it must not be checked as a file named `<file`.
+    #[test]
+    fn a_handshake_line_left_as_the_template_is_not_a_claim() {
+        let s = store_in("/tmp/ctx-store-tmpl-test");
+        let answer = "surface: <file:line symbol -> who calls it now>\ncontract: <field/endpoint you emitted>\nsurprise: <something, or 'none'>";
+        let (surface, contract, surprise) = parse_handshake(answer);
+        assert!(surface.is_empty() && contract.is_empty() && surprise.is_empty(), "{surface:?} {contract:?} {surprise:?}");
+        assert!(claimed_files(answer).is_empty(), "{:?}", claimed_files(answer));
+        // And the real thing is still parsed.
+        let real = "surface: a.go:2 handleToggle <- server\ncontract: group_menu_enabled -> Reservas.tsx\nsurprise: none";
+        assert_eq!(claimed_files(real), vec!["a.go"]);
+        // The template itself shows a filled-in example, never angle brackets.
+        let block = handshake_block(Path::new("/tmp/x"));
+        assert!(!block.contains("<file"), "{block}");
+        assert!(block.contains("file.ts:12 someSymbol"), "{block}");
     }
 }

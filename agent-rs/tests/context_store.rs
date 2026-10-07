@@ -41,6 +41,19 @@ fn script(name: &str, steps: &[(&str, &str)]) -> String {
     out
 }
 
+/// `run_parent` with a deliberate PATH, so a test about what the hub puts on PATH measures the
+/// hub and not the shell the developer happened to be in.
+fn run_parent_with_path(dir: &Path, parent_yaml: &str, child_yaml: &str, until: &str, path: &str) -> Vec<Value> {
+    let old = std::env::var("PATH").ok();
+    // SAFETY: single-threaded test setup, restored before returning.
+    unsafe { std::env::set_var("PATH", path) };
+    let out = run_parent(dir, parent_yaml, child_yaml, until);
+    if let Some(p) = old {
+        unsafe { std::env::set_var("PATH", p) };
+    }
+    out
+}
+
 fn messages(journal: &Path) -> Vec<Value> {
     let text = std::fs::read_to_string(journal).unwrap_or_default();
     let mut out = vec![];
@@ -266,4 +279,40 @@ fn a_child_gets_its_surface_doc_without_being_told_which_repo_it_is() {
     let ctext = cj.iter().map(text).collect::<Vec<_>>().join("\n");
     assert!(ctext.contains("surface.backend.md") || ctext.contains("handleToggle"), "the backend child did not get its own surface:\n{ctext}");
     assert!(!ctext.contains("Reservas.tsx"), "it must not be billed for the preact repo's surface:\n{ctext}");
+}
+
+/// Measured in the browser: the system prompt tells every agent to keep a task card with
+/// `mini-tui tasks set`, and it was not on the child's PATH, so the model burned ~20 calls
+/// hunting for it (and for bun). The hub puts `mini-agent-rs` there; it now puts `mini-tui`
+/// next to it, resolved the same way the runner resolves it.
+#[test]
+fn mini_tui_is_on_the_path_of_a_child() {
+    let dir = tmp("tui-path");
+    let parent = script(
+        "parent",
+        &[("run", "mini-agent-rs agent spawn be-worker --cwd /tmp 'check your tools' > /dev/null 2>&1; mini-agent-rs agent wait be-worker --timeout 20 > /dev/null 2>&1; sleep 1; true")],
+    );
+    // The child just reports what it can see of its own PATH.
+    let child = script("child", &[("run", "command -v mini-agent-rs > p1.txt; command -v mini-tui > p2.txt; cat p1.txt p2.txt"), ("submit", "Done.")]);
+    // The whole point is that the HUB puts it there, so the parent must not bring it: start from
+    // a PATH with neither binary on it, or the test would pass on the ambient environment.
+    let msgs = run_parent_with_path(&dir, &parent, &child, "Done.", "/usr/bin:/bin");
+    let cj = messages(&dir.join("subagents/be-worker/traj.jsonl"));
+    let ctext = cj.iter().map(text).collect::<Vec<_>>().join("\n");
+    assert!(ctext.contains("mini-agent-rs"), "mini-agent-rs must stay on PATH:\n{ctext}");
+    // mini-tui is only put there when the binary actually exists on this machine; assert the
+    // resolution, not the outcome, so the test is meaningful wherever it runs.
+    let resolved = mini_tui_bin().is_some();
+    if resolved {
+        assert!(ctext.contains("mini-tui"), "mini-tui is installed but not on the child's PATH:\n{ctext}");
+    }
+}
+
+/// The same resolution `start()` does, exposed so the test can assert what it resolved.
+fn mini_tui_bin() -> Option<String> {
+    std::env::var("MINI_TUI_BIN").ok().filter(|v| !v.is_empty()).or_else(|| {
+        let home = std::env::var("HOME").ok()?;
+        let installed = PathBuf::from(&home).join(".local/bin/mini-tui");
+        installed.is_file().then(|| installed.display().to_string())
+    })
 }
