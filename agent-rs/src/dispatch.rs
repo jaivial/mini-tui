@@ -321,7 +321,11 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
                 r["lane"] = json!(lane);
                 r["task"] = json!(format!("{}\n\n{}", s_of(&r, "task"), lane_preamble(&lane)));
             }
-            if !model.is_empty() {
+            // A task's own `model` wins: the executor is the cheap step, the coordinator stays on the default.
+            let task_model = s_of(t, "model");
+            if !task_model.is_empty() {
+                r["model"] = json!(task_model);
+            } else if !model.is_empty() {
                 r["model"] = json!(model);
             }
             wave.spawns.push(r);
