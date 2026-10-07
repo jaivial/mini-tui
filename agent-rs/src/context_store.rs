@@ -492,11 +492,7 @@ fn path_tokens(rest: &str) -> Vec<String> {
         }
         let Some(dot) = tok.rfind('.') else { continue };
         let ext = tok[dot + 1..].to_lowercase();
-        const CODE: &[&str] = &[
-            "go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "java", "kt", "rb", "php", "c",
-            "h", "cc", "cpp", "hpp", "cs", "swift", "sql", "sh", "vue", "svelte", "astro",
-        ];
-        if CODE.contains(&ext.as_str()) {
+        if CODE_EXTS.contains(&ext.as_str()) {
             if !out.contains(&tok.to_string()) {
                 out.push(tok.to_string());
             }
@@ -551,6 +547,15 @@ pub fn claimed_files(handshake: &str) -> Vec<String> {
     out
 }
 
+/// File extensions that mark a token as a path rather than a word. Shared by `path_tokens`
+/// (which decides what a handshake CLAIMS) and `is_identifier` (which decides what a contract
+/// clause NAMES), so the two can never drift apart on what a source file looks like.
+const CODE_EXTS: &[&str] = &[
+    "go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "java", "kt", "rb", "php", "c", "h",
+    "cc", "cpp", "hpp", "cs", "swift", "sql", "sh", "vue", "svelte", "astro", "json", "md",
+    "yaml", "yml", "toml", "html", "css", "scss",
+];
+
 /// English words that look like identifiers because they are Capitalised (`There`, `Neither`,
 /// `Frontend`) or long enough with a lowercase tail. A contract is prose with a few field names
 /// in it, and the check needs the FIELD NAMES, not the sentences.
@@ -566,8 +571,8 @@ const PROSE_WORDS: &[&str] = &[
     "name", "names", "type", "types", "value", "values", "true", "false", "null", "none",
     "json", "http", "https", "api", "rest", "get", "post", "put", "delete", "patch", "body",
     "data", "code", "file", "files", "line", "lines", "call", "calls", "callers", "caller",
-    "returns", "return", "returns", "sends", "emit", "emits", "emitted", "read", "reads",
-    "reads", "carry", "carries", "require", "requires", "must", "shall", "will", "can", "may",
+    "return", "returns", "sends", "emit", "emits", "emitted", "read", "reads",
+    "carry", "carries", "require", "requires", "must", "shall", "will", "can", "may",
 ];
 
 /// Does this token look like a code identifier rather than a word of the sentence?
@@ -585,7 +590,7 @@ fn is_identifier(t: &str) -> bool {
     }
     // `node_modules`, `group_menu_enabled`: underscore plus at least one letter.
     if t.contains('_') {
-        return t.chars().any(|c| c.is_ascii_alphabetic()) && !lower.ends_with("s ") ;
+        return t.chars().any(|c| c.is_ascii_alphabetic());
     }
     // CamelCase: an uppercase followed by a lowercase INSIDE the token (`groupMenuEnabled`), which
     // is what a sentence's capitalised first word (`There`) never has. `api.ts`-style dotted
@@ -599,8 +604,7 @@ fn is_identifier(t: &str) -> bool {
     // A dotted path whose last segment is a known code file extension.
     if let Some(dot) = t.rfind('.') {
         let ext = t[dot + 1..].to_ascii_lowercase();
-        const CODE: &[&str] = &["go", "ts", "tsx", "js", "jsx", "rs", "py", "json", "md", "yaml", "toml", "sql", "sh", "html", "css"];
-        if CODE.contains(&ext.as_str()) {
+        if CODE_EXTS.contains(&ext.as_str()) {
             return true;
         }
     }
