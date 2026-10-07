@@ -2596,8 +2596,18 @@ pub fn client(args: &[String]) -> i32 {
                 }
             }
             "contract-check" => {
-                req["repo"] = json!(positional.first().cloned().unwrap_or_default());
-                req["root"] = json!(positional.get(1).cloned().unwrap_or_default());
+                // `--repo R` is collected into `req["repos"]` by the shared flag parser above, but
+                // this arm used to read only the positional `repo`. So the documented invocation
+                // `agent contract-check --repo backend` (what the run instructions tell an
+                // orchestrator to type) asked about the repo named "" - no clause matched, the
+                // contracts and invariants checks reported "nothing to check", and the run showed
+                // 4/4 pass. Measured in the browser on 2026-10-07. `repos` wins when the flag was
+                // given; the positional stays as the fallback for `contract-check <repo>`.
+                let flagged: Vec<String> =
+                    req.get("repos").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+                let positional_repo = positional.first().cloned().unwrap_or_default();
+                req["repo"] = json!(if flagged.is_empty() { positional_repo } else { flagged.join(" ") });
+                req["root"] = json!(positional.first().filter(|_| flagged.is_empty()).map(|_| positional.get(1).cloned().unwrap_or_default()).unwrap_or_else(|| positional.first().cloned().unwrap_or_default()));
                 req["handshake"] = json!(positional.get(2..).map(|p| p.join(" ")).unwrap_or_default());
             }
             "state" => {
