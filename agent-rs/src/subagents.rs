@@ -2775,6 +2775,7 @@ pub fn client(args: &[String]) -> i32 {
                 "--verify" => req["verify"] = json!(value(&mut i)?),
                 "--verify-baseline" => req["verify_baseline"] = json!(value(&mut i)?),
                 "--join" => req["join"] = json!(true),
+                "--executor" => req["executor"] = json!(true),
                 "--brief" => req["brief"] = json!(true),
                 "--batch" => req["batch"] = json!(value(&mut i)?),
                 "--fork" => req["fork"] = json!(true),
