@@ -63,6 +63,10 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
       --max-concurrency N               children at once (default 8, hard max 10: past that the
                                        provider's 429s cost more wall-clock than the fan-out saves)
       --verify CMD                       the build/typecheck command every editing child must run
+      --verify-baseline BASELINE    what that command ALREADY does on the pristine tree: the
+                                         child compares instead of proving it by hand. Without it a
+                                         gate that cannot pass sends the parent back to manual
+                                         verification, serially, which is the cost this removes.
       -m, --model M                      model for this wave's children
       --no-fork                         start cold (default is to fork this session's conversation)
       --fork-k N                         messages of the forked context (default 12)
@@ -2639,6 +2643,7 @@ pub fn client(args: &[String]) -> i32 {
                 "--no-fork" => req["fork"] = json!(false),
                 "--max-concurrency" => req["max_concurrency"] = json!(value(&mut i)?.parse::<u64>().map_err(|_| "--max-concurrency needs a number")?),
                 "--verify" => req["verify"] = json!(value(&mut i)?),
+                "--verify-baseline" => req["verify_baseline"] = json!(value(&mut i)?),
                 "--brief" => req["brief"] = json!(true),
                 "--batch" => req["batch"] = json!(value(&mut i)?),
                 "--fork" => req["fork"] = json!(true),

@@ -120,17 +120,42 @@ fn discover_preamble(repo: &str) -> String {
 }
 
 /// The heading that hands the mechanical gate to the child that made the change.
-fn verify_preamble(cmd: &str) -> String {
-    format!(
-        "## Done means these pass, run them yourself\n\
-         Before you answer, run:\n\
-         \n   {cmd}\n\
-         \n\
-         A child that reports `done` without that command passing has not finished: fix what it\n\
-         catches and re-run it until it is clean. This is why you were handed the command: the\n\
-         session that started you does NOT re-read your diff to check it, so this output is the\n\
-         proof that the change compiles.\n"
-    )
+///
+/// `baseline` is the escape hatch that keeps the gate inside the child. A gate that CANNOT pass
+/// (the repo does not build before you touched it, the toolchain is missing) sends the parent
+/// back to proving it by hand, serially, after the wave -- which is exactly the cost this
+/// command removes. With a baseline the child is told the truth about the gate instead:
+/// compare against the untouched tree and report only what ITS OWN change added.
+fn verify_preamble(cmd: &str, baseline: &str) -> String {
+    if baseline.is_empty() {
+        format!(
+            "## Done means these pass, run them yourself\n\
+             Before you answer, run:\n\
+             \n   {cmd}\n\
+             \n\
+             A child that reports `done` without that command passing has not finished: fix what it\n\
+             catches and re-run it until it is clean. This is why you were handed the command: the\n\
+             session that started you does NOT re-read your diff to check it, so this output is the\n\
+             proof that the change compiles.\n"
+        )
+    } else {
+        format!(
+            "## Done means: {cmd} must not get WORSE because of you\n\
+             Run it:\n\
+             \n   {cmd}\n\
+             \n\
+             It is KNOWN to fail on this repo before anybody changed anything:\n\
+             \n   {baseline}\n\
+             \n\
+             So do NOT try to fix the pre-existing breakage and do NOT go shimming it in /tmp: that\n\
+             is not your task and it is not your file. What you owe is proof that YOUR change did\n\
+             not add to it. Run the command on the pristine tree (`git stash`, run it, `git stash\n\
+             pop`), run it on your tree, and report the two outputs side by side. If yours adds a\n\
+             NEW error, that one IS yours: fix it. If both fail the same way, say so in one line and\n\
+             finish. The session that started you does NOT re-read your diff to check this, so your\n\
+             comparison is the whole verification.\n"
+        )
+    }
 }
 
 /// One child of the wave: its name, the task, the repos, and the flags the parent chose.
@@ -161,6 +186,7 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
     }
     let fork = opts.get("fork").and_then(Value::as_bool).unwrap_or(true);
     let verify_cmd = opts.get("verify").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let verify_baseline = opts.get("verify_baseline").and_then(Value::as_str).unwrap_or("").trim().to_string();
     let cap = fanout(opts.get("max_concurrency").and_then(Value::as_u64).map(|n| n as usize));
     let model = opts.get("model_opt").and_then(Value::as_str).unwrap_or("").to_string();
     let default_fork_k = opts.get("fork_k").and_then(Value::as_i64).map(|n| n as usize);
@@ -214,7 +240,7 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
             wave.discoverers.push(id.clone());
         }
         if !verify_cmd.is_empty() && !discover {
-            body = format!("{body}\n\n{}", verify_preamble(&verify_cmd));
+            body = format!("{body}\n\n{}", verify_preamble(&verify_cmd, &verify_baseline));
         }
         let mut r = json!({"cmd": "spawn", "name": id, "task": body, "force": true});
         if !repos.is_empty() {
