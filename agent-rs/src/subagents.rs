@@ -127,6 +127,12 @@ pub struct Child {
     pub name: String,
     pub task: String,
     pub cwd: String,
+    /// The repos this child was resolved to when it was spawned (`--repo`, else guessed from its
+    /// cwd and name). Stored rather than re-derived, because the end-of-turn contract-check used
+    /// to take the LAST SEGMENT of the cwd as the repo: for a child at
+    /// `.../backend/.worktrees/be-x` that is `be-x`, a name nothing in the tree mentions, so the
+    /// check silently matched no clause of the contract and passed over nothing.
+    pub repos: Vec<String>,
     pub model: String,
     pub skills: Vec<String>,
     dir: PathBuf,
@@ -1013,8 +1019,24 @@ impl Hub {
     /// `agent contract-check`, run for the child whose turn just ended: does what it claims to have
     /// touched satisfy the contract, in the tree itself? Mechanical, no model.
     fn contract_check(&self, c: &Child) -> String {
-        let repo = c.cwd.rsplit('/').find(|s| !s.is_empty()).unwrap_or("").to_string();
-        let handshake = self.store.get(&format!("{}.md", c.name)).unwrap_or_default();
+        // Every repo the child works in, so a child given two slices is checked against the
+        // clauses of both. Empty falls back to the cwd's own name, which is what a repo-less
+        // check (`--repo` omitted) asks for anyway.
+        let repo = if c.repos.is_empty() {
+            c.cwd.rsplit('/').find(|s| !s.is_empty()).unwrap_or("").to_string()
+        } else {
+            c.repos.join(" ")
+        };
+        // The child's own handshake, or - when it wrote its own handoff under another key instead
+        // of the three tags - any stored handshake that names a file of its repo. Without this the
+        // check ran over an empty corpus and passed, which is how a real integration gap got
+        // reported as "3/3 pass" in the browser on 2026-10-07.
+        let handshake = self
+            .store
+            .get(&format!("{}.md", c.name))
+            .filter(|t| !context_store::claimed_files(t).is_empty())
+            .or_else(|| context_store::any_handshake(&self.store, &repo))
+            .unwrap_or_default();
         let (out, checks) = context_store::contract_check(&self.store, &repo, &handshake, Path::new(&c.cwd), 2000);
         if checks.iter().all(|k| k.ok) {
             return String::new(); // green: no noise in the parent's notes
@@ -1242,6 +1264,7 @@ impl Hub {
             name: name.clone(),
             task: raw_task.clone(),
             cwd: cwd.clone(),
+            repos: repos_of(req, &cwd, &name),
             model: model.clone(),
             skills: used.clone(),
             traj: dir.join("traj.json"),
@@ -2158,6 +2181,8 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
                     };
                     name.and_then(|n| context_store::state_key(&format!("{n}.md")).ok())
                         .and_then(|k| h.store.get(&k))
+                        .filter(|t| !context_store::claimed_files(t).is_empty())
+                        .or_else(|| context_store::any_handshake(&h.store, &repo))
                         .unwrap_or_default()
                 }
             };
@@ -2571,8 +2596,18 @@ pub fn client(args: &[String]) -> i32 {
                 }
             }
             "contract-check" => {
-                req["repo"] = json!(positional.first().cloned().unwrap_or_default());
-                req["root"] = json!(positional.get(1).cloned().unwrap_or_default());
+                // `--repo R` is collected into `req["repos"]` by the shared flag parser above, but
+                // this arm used to read only the positional `repo`. So the documented invocation
+                // `agent contract-check --repo backend` (what the run instructions tell an
+                // orchestrator to type) asked about the repo named "" - no clause matched, the
+                // contracts and invariants checks reported "nothing to check", and the run showed
+                // 4/4 pass. Measured in the browser on 2026-10-07. `repos` wins when the flag was
+                // given; the positional stays as the fallback for `contract-check <repo>`.
+                let flagged: Vec<String> =
+                    req.get("repos").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+                let positional_repo = positional.first().cloned().unwrap_or_default();
+                req["repo"] = json!(if flagged.is_empty() { positional_repo } else { flagged.join(" ") });
+                req["root"] = json!(positional.first().filter(|_| flagged.is_empty()).map(|_| positional.get(1).cloned().unwrap_or_default()).unwrap_or_else(|| positional.first().cloned().unwrap_or_default()));
                 req["handshake"] = json!(positional.get(2..).map(|p| p.join(" ")).unwrap_or_default());
             }
             "state" => {

@@ -454,6 +454,53 @@ pub fn clauses(body: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Every `path/with/ext` a piece of prose mentions, de-duplicated, in order.
+///
+/// The handshake is free text: `handleMenu (backend/handler.go:31), which registerRoutes
+/// (backend/routes.go:5) binds to GET /api/menu` names three files across one sentence. A claim
+/// has to be a real path or it is not a file the child touched, so anything with a `/` and an
+/// extension is taken, and the line number after `:` is dropped. `src/lib/types.ts:506` and
+/// `backend/routes.go` both come out as the file itself.
+fn path_tokens(rest: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    // Split on whitespace and the punctuation that separates a path from a sentence.
+    for raw in rest.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '`' | '"' | '\'' | '[' | ']')) {
+        let tok = raw.trim().trim_matches(|c: char| matches!(c, '>' | '.' | '"' | '\'' | '`'));
+        // `backend/handler.go:18` is a path AND a line: cut the line off FIRST, or the extension
+        // reads as `go:18` and the token is thrown away as not-a-file.
+        let tok = tok.split(':').next().unwrap_or(tok);
+        if !tok.contains('/') || tok.contains("://") || tok.starts_with('/') {
+            continue;
+        }
+        let Some(dot) = tok.rfind('.') else { continue };
+        let ext = &tok[dot + 1..];
+        if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '+') {
+            continue;
+        }
+        if !out.contains(&tok.to_string()) {
+            out.push(tok.to_string());
+        }
+    }
+    // `handler.go:18` has no `/`, but a file at the repo root does not need one. Take it only when
+    // it ends in a known source extension, so a sentence word like `tsconfig.json` still counts and
+    // `nothing.` does not.
+    for raw in rest.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '`' | '"' | '\'' | '[' | ']')) {
+        let tok = raw.trim().trim_matches(|c: char| matches!(c, '>' | '.' | '"' | '\'' | '`'));
+        let tok = tok.split(':').next().unwrap_or(tok);
+        if tok.contains('/') {
+            continue;
+        }
+        let Some(dot) = tok.rfind('.') else { continue };
+        let ext = tok[dot + 1..].to_lowercase();
+        if CODE_EXTS.contains(&ext.as_str()) {
+            if !out.contains(&tok.to_string()) {
+                out.push(tok.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Files the child says it touched, from its handshake.
 ///
 /// Both shapes of the same handshake are accepted, and they have to be: the hub checks the RAW
@@ -482,21 +529,86 @@ pub fn claimed_files(handshake: &str) -> Vec<String> {
         } else {
             continue;
         };
-        for part in rest.split([',', ';', '\n']) {
-            let p = part.trim();
-            // `src/lib/types.ts:506 GroupMenuDisplay -> Reservas.tsx` : take the file before `:`.
-            let file = p.split("->").next().unwrap_or(p);
-            let file = file.split(':').next().unwrap_or(file).trim();
-            // `<file:line symbol>` cut at the colon leaves `<file`: not a file.
-            if file.is_empty() || is_template(file) {
+        // A surface line is PROSE, not a list: `backend/handler.go:18 toDisplay -> called only
+        // by handleMenu (backend/handler.go:31), which registerRoutes (backend/routes.go:5) binds
+        // to GET /api/menu`. Splitting on commas alone left a bogus claim named
+        // `which registerRoutes (backend/routes.go`, which the file check then reported as a
+        // missing file and failed the whole check. Take every path-shaped token in the line
+        // instead: a claim is what the child names as a FILE, and prose mentions them all.
+        for file in path_tokens(rest) {
+            if is_template(&file) {
                 continue;
             }
-            if !out.contains(&file.to_string()) {
-                out.push(file.to_string());
+            if !out.contains(&file) {
+                out.push(file);
             }
         }
     }
     out
+}
+
+/// File extensions that mark a token as a path rather than a word. Shared by `path_tokens`
+/// (which decides what a handshake CLAIMS) and `is_identifier` (which decides what a contract
+/// clause NAMES), so the two can never drift apart on what a source file looks like.
+const CODE_EXTS: &[&str] = &[
+    "go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "java", "kt", "rb", "php", "c", "h",
+    "cc", "cpp", "hpp", "cs", "swift", "sql", "sh", "vue", "svelte", "astro", "json", "md",
+    "yaml", "yml", "toml", "html", "css", "scss",
+];
+
+/// English words that look like identifiers because they are Capitalised (`There`, `Neither`,
+/// `Frontend`) or long enough with a lowercase tail. A contract is prose with a few field names
+/// in it, and the check needs the FIELD NAMES, not the sentences.
+const PROSE_WORDS: &[&str] = &[
+    "there", "these", "those", "their", "them", "then", "than", "that", "this", "what", "which",
+    "when", "where", "while", "would", "could", "should", "never", "always", "every", "either",
+    "neither", "both", "each", "some", "none", "with", "from", "into", "onto", "over", "under",
+    "after", "before", "between", "without", "within", "about", "above", "below", "again",
+    "because", "however", "therefore", "instead", "already", "another", "anything", "nothing",
+    "everything", "something", "someone", "anyone", "everyone", "nobody", "cannot", "unless",
+    "until", "against", "through", "during", "being", "having", "using", "given", "taken",
+    "front", "backend", "frontend", "repo", "repos", "note", "notes", "wire", "field", "fields",
+    "name", "names", "type", "types", "value", "values", "true", "false", "null", "none",
+    "json", "http", "https", "api", "rest", "get", "post", "put", "delete", "patch", "body",
+    "data", "code", "file", "files", "line", "lines", "call", "calls", "callers", "caller",
+    "return", "returns", "sends", "emit", "emits", "emitted", "read", "reads",
+    "carry", "carries", "require", "requires", "must", "shall", "will", "can", "may",
+];
+
+/// Does this token look like a code identifier rather than a word of the sentence?
+///
+/// The contracts check collects the tokens of a clause that are snake_case or CamelCase and then
+/// asks whether the touched files carry any of them. English words slip through that rule:
+/// `There`, `Neither` and `node_modules` are all Capitalised-or-underscored and 5+ characters,
+/// so a perfectly good run was told "nothing in the touched files carries There; neither".
+/// An identifier is a run of lowercase/digits with at least one `_`, OR is CamelCase with a
+/// LOWER-LETTER boundary and is not a plain dictionary word.
+fn is_identifier(t: &str) -> bool {
+    let lower = t.to_lowercase();
+    if PROSE_WORDS.contains(&lower.as_str()) {
+        return false;
+    }
+    // `node_modules`, `group_menu_enabled`: underscore plus at least one letter.
+    if t.contains('_') {
+        return t.chars().any(|c| c.is_ascii_alphabetic());
+    }
+    // CamelCase: an uppercase followed by a lowercase INSIDE the token (`groupMenuEnabled`), which
+    // is what a sentence's capitalised first word (`There`) never has. `api.ts`-style dotted
+    // paths are kept when a segment looks like a file.
+    let b = t.as_bytes();
+    for w in b.windows(2) {
+        if w[0].is_ascii_uppercase() && w[1].is_ascii_lowercase() {
+            return true;
+        }
+    }
+    // A dotted path whose last segment is a known code file extension.
+    if let Some(dot) = t.rfind('.') {
+        let ext = t[dot + 1..].to_ascii_lowercase();
+        if CODE_EXTS.contains(&ext.as_str()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// `agent contract-check --repo X`: the mechanical check at the child's turn end.
@@ -510,7 +622,9 @@ pub fn claimed_files(handshake: &str) -> Vec<String> {
 pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &Path, cap: usize) -> (String, Vec<Check>) {
     let mut checks = vec![];
     let files = claimed_files(handshake);
-    let repos: Vec<String> = if repo.is_empty() { vec![] } else { vec![repo.to_string()] };
+    // `repo` may name SEVERAL repos: the hub passes every repo a child was spawned for, joined, so
+    // a child given two slices is checked against the contract clauses of both.
+    let repos: Vec<String> = repo.split_whitespace().map(|r| r.to_string()).collect();
     let readable = |f: &str| -> Option<String> {
         let p = Path::new(f);
         let direct = if p.is_absolute() { p.to_path_buf() } else { root.join(f) };
@@ -573,6 +687,13 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
                 ids.push(t.to_string());
             }
         }
+        ids.retain(|t| is_identifier(t));
+        if ids.is_empty() {
+            // A clause written entirely in prose names no field, so there is nothing to require of
+            // the touched files. Demanding it carry the word "There" is how a real run reported
+            // "nothing in the touched files carries There; neither" (measured 2026-10-07).
+            continue;
+        }
         ids.sort();
         ids.dedup();
         let hit_any = ids.iter().any(|id| corpus.contains(id.as_str()));
@@ -620,6 +741,24 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         name: "invariants".into(),
         ok: broken.is_empty(),
         detail: if broken.is_empty() { "no invariant of the contract is contradicted".into() } else { broken.join("; ") },
+    });
+    // 4. COVERAGE. The checks above can all be true about nothing at all: with no file
+    //    claimed, an empty corpus satisfies every clause and no invariant can be contradicted.
+    //    Measured in the browser on 2026-10-07 a child finished with 1,765 chars of perfectly
+    //    good prose naming two real files, but without a `surface:` tag, so nothing was claimed
+    //    and the check reported "3/3 pass" over an empty corpus - which reads exactly like
+    //    "the contract holds". A green check over nothing is a silent hole, so it fails here.
+    let covered = !files.is_empty() || !myclauses.is_empty();
+    checks.push(Check {
+        name: "coverage".into(),
+        ok: covered,
+        detail: if covered {
+            format!("{} file(s) and {} contract clause(s) were actually examined", files.len(), myclauses.len())
+        } else if handshake.trim().is_empty() {
+            "NOTHING was checked: there is no handshake for this child, so this is not a pass.\n       End the child's answer with `surface:` / `contract:` / `surprise:` lines, or run\n       `agent contract-check --repo <repo> --prompt-file <the answer>`.".into()
+        } else {
+            "NOTHING was checked: the answer names no file (`surface: file:line sym -> who`) and\n       no clause of contracts.md names this repo, so the earlier checks passed over an\n       empty corpus. This is NOT a pass.".into()
+        },
     });
     let passed = checks.iter().filter(|c| c.ok).count();
     let total = checks.len();
@@ -682,6 +821,52 @@ fn split_items(rest: &str) -> Vec<String> {
         .filter(|s| !s.is_empty() && s != "none")
         .filter(|s| !is_template(s))
         .collect()
+}
+
+/// Any stored document that reads as a handshake touching `repo`.
+///
+/// `agent contract-check --repo R` with no `--name` used to look only for `<child>.md`, the key the
+/// hub stores a parsed handshake under. A child that wrote its own handoff instead (measured in
+/// the browser: `agent state put backend-handler.md`, a perfectly good one) was therefore
+/// invisible to the check, which then passed over nothing. This walks the store for a document
+/// that names a file of that repo, newest schema first, so the check sees the claim that exists.
+pub fn any_handshake(store: &ContextStore, repo: &str) -> Option<String> {
+    let want = repo.to_lowercase();
+    let mut best: Option<String> = None;
+    let mut best_score: usize = 0;
+    for d in store.docs() {
+        // The orchestrator's own documents describe the repos too; a handshake is the child's own
+        // account of what it touched, so skip the reserved schema keys.
+        if matches!(d.key.as_str(), FINDINGS | CONTRACTS | DECISIONS) || d.key.starts_with(SURFACE_PREFIX) {
+            continue;
+        }
+        let Some(body) = store.get(&d.key) else { continue };
+        let files = claimed_files(&body);
+        if files.is_empty() {
+            continue;
+        }
+        // A repo-less check accepts the first real handshake; a named one only accepts a handshake
+        // that mentions its repo, so `--repo frontend` never checks the backend child's claim.
+        let mentions = want.is_empty()
+            || files.iter().any(|f| f.to_lowercase().contains(&want))
+            || body.to_lowercase().contains(&want);
+        if !mentions {
+            continue;
+        }
+        // Prefer the most specific document: one that names a file of the repo beats a general
+        // one. `best_score` avoids re-parsing the incumbent on every candidate. With no repo to
+        // narrow by there is nothing to be more specific ABOUT, so the first real handshake stands.
+        let score = if want.is_empty() {
+            1
+        } else {
+            files.iter().filter(|f| f.to_lowercase().contains(&want)).count()
+        };
+        if score > best_score {
+            best_score = score;
+            best = Some(body);
+        }
+    }
+    best
 }
 
 /// Is this line the handshake TEMPLATE rather than an answer? The tell is a bracketed
