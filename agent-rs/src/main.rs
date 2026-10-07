@@ -17,6 +17,7 @@ mod models;
 mod plan;
 mod repl;
 mod rlm;
+mod shard;
 mod subagents;
 mod templates;
 mod util;
@@ -381,6 +382,12 @@ fn main() {
         config::load_dotenv();
         install_signals();
         std::process::exit(repl::client(&argv[1..]));
+    }
+    // `shard`: one one-shot executor per file, all in parallel, no coordinator model (src/shard.rs).
+    if argv.first().map(String::as_str) == Some("shard") {
+        config::load_dotenv();
+        install_signals();
+        std::process::exit(shard::client(&argv[1..]));
     }
     if argv.first().map(String::as_str) == Some("rlm") {
         config::load_dotenv();
