@@ -636,7 +636,30 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
     std::env::set_var("MINI_AGENT_SOCKET", &socket);
     std::env::set_var("MINI_AGENT_BIN", &exe);
     let path = std::env::var("PATH").unwrap_or_default();
-    std::env::set_var("PATH", format!("{}:{path}", bin.display()));
+    // `mini-tui` goes on PATH next to `mini-agent-rs`, found the same way the runner finds it:
+    // MINI_TUI_BIN, then the installed copy, then the repo's bin/. Measured in the browser on
+    // 2026-10-07: the system prompt tells every agent to keep a task card with `mini-tui tasks
+    // set`, the command was not on PATH, and the model spent ~20 calls hunting for it (and for
+    // bun, which the script needs) before doing the work it was asked for.
+    let mut extra = vec![bin.display().to_string()];
+    let tui = std::env::var("MINI_TUI_BIN").ok().filter(|v| !v.is_empty()).or_else(|| {
+        let home = std::env::var("HOME").ok()?;
+        let installed = PathBuf::from(&home).join(".local/bin/mini-tui");
+        installed.is_file().then_some(installed.display().to_string())
+    });
+    if let Some(tui) = tui {
+        extra.push(tui);
+        // The bin/ scripts are `#!/bin/sh exec bun ...`, so bun has to be reachable too.
+        if let Ok(bun) = std::env::var("HOME") {
+            for d in [".bun/bin", ".local/bin"] {
+                let p = PathBuf::from(&bun).join(d);
+                if p.is_dir() {
+                    extra.push(p.display().to_string());
+                }
+            }
+        }
+    }
+    std::env::set_var("PATH", format!("{}:{path}", extra.join(":")));
     let plan = load_plan(&dir);
     // The store wraps the same folder: ON by default, `MINI_AGENT_CONTEXT=0` to opt out.
     let handover = std::env::var("MINI_AGENT_CONTEXT").map(|v| v != "0").unwrap_or(true);
