@@ -454,6 +454,57 @@ pub fn clauses(body: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Every `path/with/ext` a piece of prose mentions, de-duplicated, in order.
+///
+/// The handshake is free text: `handleMenu (backend/handler.go:31), which registerRoutes
+/// (backend/routes.go:5) binds to GET /api/menu` names three files across one sentence. A claim
+/// has to be a real path or it is not a file the child touched, so anything with a `/` and an
+/// extension is taken, and the line number after `:` is dropped. `src/lib/types.ts:506` and
+/// `backend/routes.go` both come out as the file itself.
+fn path_tokens(rest: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    // Split on whitespace and the punctuation that separates a path from a sentence.
+    for raw in rest.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '`' | '"' | '\'' | '[' | ']')) {
+        let tok = raw.trim().trim_matches(|c: char| matches!(c, '>' | '.' | '"' | '\'' | '`'));
+        // `backend/handler.go:18` is a path AND a line: cut the line off FIRST, or the extension
+        // reads as `go:18` and the token is thrown away as not-a-file.
+        let tok = tok.split(':').next().unwrap_or(tok);
+        if !tok.contains('/') || tok.contains("://") || tok.starts_with('/') {
+            continue;
+        }
+        let Some(dot) = tok.rfind('.') else { continue };
+        let ext = &tok[dot + 1..];
+        if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '+') {
+            continue;
+        }
+        if !out.contains(&tok.to_string()) {
+            out.push(tok.to_string());
+        }
+    }
+    // `handler.go:18` has no `/`, but a file at the repo root does not need one. Take it only when
+    // it ends in a known source extension, so a sentence word like `tsconfig.json` still counts and
+    // `nothing.` does not.
+    for raw in rest.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '`' | '"' | '\'' | '[' | ']')) {
+        let tok = raw.trim().trim_matches(|c: char| matches!(c, '>' | '.' | '"' | '\'' | '`'));
+        let tok = tok.split(':').next().unwrap_or(tok);
+        if tok.contains('/') {
+            continue;
+        }
+        let Some(dot) = tok.rfind('.') else { continue };
+        let ext = tok[dot + 1..].to_lowercase();
+        const CODE: &[&str] = &[
+            "go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "java", "kt", "rb", "php", "c",
+            "h", "cc", "cpp", "hpp", "cs", "swift", "sql", "sh", "vue", "svelte", "astro",
+        ];
+        if CODE.contains(&ext.as_str()) {
+            if !out.contains(&tok.to_string()) {
+                out.push(tok.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Files the child says it touched, from its handshake.
 ///
 /// Both shapes of the same handshake are accepted, and they have to be: the hub checks the RAW
@@ -482,17 +533,18 @@ pub fn claimed_files(handshake: &str) -> Vec<String> {
         } else {
             continue;
         };
-        for part in rest.split([',', ';', '\n']) {
-            let p = part.trim();
-            // `src/lib/types.ts:506 GroupMenuDisplay -> Reservas.tsx` : take the file before `:`.
-            let file = p.split("->").next().unwrap_or(p);
-            let file = file.split(':').next().unwrap_or(file).trim();
-            // `<file:line symbol>` cut at the colon leaves `<file`: not a file.
-            if file.is_empty() || is_template(file) {
+        // A surface line is PROSE, not a list: `backend/handler.go:18 toDisplay -> called only
+        // by handleMenu (backend/handler.go:31), which registerRoutes (backend/routes.go:5) binds
+        // to GET /api/menu`. Splitting on commas alone left a bogus claim named
+        // `which registerRoutes (backend/routes.go`, which the file check then reported as a
+        // missing file and failed the whole check. Take every path-shaped token in the line
+        // instead: a claim is what the child names as a FILE, and prose mentions them all.
+        for file in path_tokens(rest) {
+            if is_template(&file) {
                 continue;
             }
-            if !out.contains(&file.to_string()) {
-                out.push(file.to_string());
+            if !out.contains(&file) {
+                out.push(file);
             }
         }
     }
