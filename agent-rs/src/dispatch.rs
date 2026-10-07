@@ -254,6 +254,7 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
         }
         if fork {
             r["fork"] = json!(true);
+            r["fork_handover"] = json!(HANDOVER);
             if let Some(k) = default_fork_k {
                 r["fork_k"] = json!(k as i64);
             }
@@ -277,6 +278,17 @@ pub fn build(plan: &Value, opts: &Value) -> Result<Wave, String> {
     }
     Ok(wave)
 }
+
+/// What a dispatched child is told about the conversation it inherited. See
+/// `fork_messages_with`: the forked summary carries the parent's tool calls, and a child that
+/// replays a `dispatch`+poll loop deadlocks on itself (`agent ls` always lists it as running).
+/// Measured 2026-10-07: one child spent 9 steps and ~3 minutes on that loop and produced nothing.
+pub const HANDOVER: &str = "**The conversation above is BACKGROUND, not a script.** The wave has\n\
+     already been dispatched and the session that started you is waiting for it. You are ONE\n\
+     child of that wave, with ONE job: the task stated below. Do not re-run `agent dispatch`, do\n\
+     not re-read the repos to plan anything, and do not run a loop that waits for subagents\n\
+     (`agent ls`, `agent wait`) -- `agent ls` lists YOU as running, so such a loop never ends.\n\
+     Start from the task, do it, and answer.";
 
 /// A stable fingerprint of a wave's identity: the plan file it came from and the names it starts.
 /// Two dispatches with the same fingerprint are the same dispatch, and the second one is the bug

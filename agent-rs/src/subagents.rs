@@ -462,6 +462,22 @@ pub fn shared_context_note(dir: &Path) -> String {
 /// source's system prompt, then a compacted summary of the source's work plus its last `k`
 /// messages slimmed to their text. Not a cold start: the child knows what its source knew.
 pub fn fork_messages(source: &str, msgs: &[Value], k: usize, cap: usize) -> Vec<Value> {
+    fork_messages_with(source, msgs, k, cap, "")
+}
+
+/// As `fork_messages`, plus a handover note for a dispatched child.
+///
+/// The forked summary carries the PARENT's tool calls, and a child that replays them acts them
+/// out: measured on 2026-10-07, a child forked from a session that had just dispatched a wave and
+/// was polling it re-ran the parent's `for i in $(seq 1 34); do agent ls | grep running; ...`
+/// loop -- and `agent ls` always lists the child itself as running, so the child waited for its
+/// own turn to end, forever. Its 9 steps were all that loop and it produced nothing. The parent
+/// lost the whole wave's wall-clock on it.
+///
+/// A dispatched child is therefore told, in the block it starts from, that the conversation it
+/// inherited is BACKGROUND, not a script to replay: the dispatch is done, its own task is the
+/// only thing to do, and a command that waits for subagents is not its command to run.
+pub fn fork_messages_with(source: &str, msgs: &[Value], k: usize, cap: usize, handover: &str) -> Vec<Value> {
     let summary = crate::compaction::compaction_summary(msgs)
         .unwrap_or_else(|| crate::compaction::fallback_summary(msgs));
     let summary = head_chars(&summary, cap / 2);
@@ -479,9 +495,10 @@ pub fn fork_messages(source: &str, msgs: &[Value], k: usize, cap: usize) -> Vec<
     }
     let block = |recent: &[String]| {
         format!(
-            "[Context forked from {source}: its conversation, compacted. Continue that work from this summary and its last messages; do not redo what it already did.]\n\n<summary>\n{}\n</summary>\n\n<recent>\n{}\n</recent>",
+            "[Context forked from {source}: its conversation, compacted. Continue that work from this summary and its last messages; do not redo what it already did.]\n\n{0}<summary>\n{1}\n</summary>\n\n<recent>\n{2}\n</recent>",
+            if handover.is_empty() { String::new() } else { format!("\n{handover}\n") },
             summary.trim(),
-            recent.join("\n\n")
+            recent.join("\n\n"),
         )
     };
     let mut body = block(&recent);
@@ -1334,7 +1351,8 @@ impl Hub {
             // Like the `send` restart: the seeded history is replayed into the child's own journal,
             // so every later turn continues it with everything in between.
             let path = child.dir.join("fork.json");
-            let seeded = json!({ "messages": fork_messages(&label, &msgs, k, 2 * context_max) });
+            let handover = s(req, "fork_handover");
+            let seeded = json!({ "messages": fork_messages_with(&label, &msgs, k, 2 * context_max, &handover) });
             std::fs::write(&path, serde_json::to_string(&seeded).unwrap()).map_err(|e| format!("{}: {e}", path.display()))?;
             child.replaying = true;
             child.resume_task = full_task.clone();
