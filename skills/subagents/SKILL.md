@@ -18,6 +18,7 @@ spend counts toward its cost limit, and every one is saved as a session under th
 
 ```bash
 mini-agent-rs agent spawn <name> [--cwd DIR] [-m MODEL] [--max-steps N] [--cost-limit USD] [--skill NAME] "<task>"
+mini-agent-rs agent dispatch --file plan.json  # the WHOLE WAVE in ONE step (read this first)
 mini-agent-rs agent spawn <name> --prompt-file task.md      # long tasks ('-' = stdin)
 mini-agent-rs agent spawn <name> --context-file notes.md ... # hand over what you know (repeatable)
 mini-agent-rs agent spawn <name> --brief --prompt-file brief.md   # a structured brief
@@ -38,10 +39,84 @@ mini-agent-rs agent stop <name>|--all      # interrupt (it saves); `send` contin
 whole context for `send`), `stopped`, `exited`. Exit codes: 0 ok, 1 refused (the reason is printed),
 2 usage, 3 `wait` timed out.
 
+## When to split, and when NOT to (measured, not folklore)
+
+Splitting is not free. On a 6-file change the measured cost of a split was **2.1x the wall-clock
+and 2.1x the tokens** of one single agent (2026-10-07), because an orchestrated run pays five
+phases a single agent does not:
+
+| | single agent | a split run |
+|---|---|---|
+| reading the code | interleaved with the edits, every read pays for itself | the orchestrator reads ALONE first (P1) |
+| writing it down | nothing to write down | contract documents, by hand (P2) |
+| starting helpers | none | one `agent` step per `spawn` (P3) |
+| doing the work | one context | parallel (P4) |
+| checking it | in the same pass | re-reading everyone's diff afterwards (P5) |
+
+Only P4 overlaps. So: **if P1+P2+P3+P5 is bigger than the work, do not split** — do it yourself.
+Split when the work is big, when the parts are genuinely independent, and when you can write the
+split DOWN without reading anything first. A split you cannot write before exploring is not a
+split, it is the serial phase with extra steps.
+
+## `agent dispatch`: the wave in one step, with discovery inside it
+
+The command that removes P1/P2/P3/P5 instead of moving them:
+
+```bash
+mini-agent-rs agent dispatch --file plan.json [--max-concurrency 8] [--verify "go build ./..."]
+```
+
+`plan.json` is written FROM THE TASK, before anything is read:
+
+```json
+{ "tasks": [
+  { "id": "go-edit", "repo": "backend",
+    "task": "backend/... must gain X. Do not touch frontend/." },
+  { "id": "be-map",  "repo": "backend", "discover": true,
+    "task": "Map the backend packages and the payloads they publish." }
+] }
+```
+
+What it does, in one `agent` step:
+
+- **starts every task at once**, forked from this conversation (no cold start, no re-orienting);
+- **puts discovery IN the wave**: a `discover: true` task maps its repo and writes
+  `surface.<repo>.md` + `contracts.md` into the shared store, concurrently with the tasks that
+  edit. That is P1 and P2 running in parallel instead of before;
+- **hands the mechanical gate to the child** with `--verify "..."`: the build that proves the
+  change compiles runs in the child that made it, so you do not re-read its diff (P5);
+- **caps the wave** with `--max-concurrency` (default 8, hard max 10). Past ~8 concurrent children
+  the provider's 429s cost more wall-clock than the fan-out saves;
+- **defers tasks that depend on another task in the same plan** and tells you so: they launch on
+  the next `dispatch`, when their predecessor's map is in the store.
+
+Two waves therefore beat one big wave when the second depends on the first's map:
+
+```bash
+agent dispatch --file wave1.json      # the `discover: true` tasks only
+# (each one reports when it is done; its map is in the store)
+agent dispatch --file wave2.json --verify "..."   # the editing tasks, handed the map
+```
+
+### Waiting without wasting steps
+
+The bash tool kills a command at ~30 s, so `agent wait --timeout 900` is a step that does
+nothing. Poll instead — one step, not eleven:
+
+```bash
+while mini-agent-rs agent ls --json | grep -q '"state":"running"'; do sleep 25; done
+```
+
+While the wave runs there is NOTHING useful to do. Do not explore the repos yourself (that is
+P1 again), do not re-read the children's diffs (that is P5), and do not go looking at sessions,
+processes or the box: each of those is a serial step paid by you while the children are paid for
+in parallel.
+
 ## How the loop works
 
-1. **Plan the split.** One self-contained task per subagent: the folder (`--cwd`), the files, what
-   "done" means, and that it must end with a short summary. Subagents share nothing but the
+1. **Plan the split** — from the task, not from an exploration (see `agent dispatch` above; if you
+   cannot write the split before reading, do not split). One self-contained task per subagent: the
+   folder (`--cwd`), the files, what "done" means, and that it must end with a short summary. Subagents share nothing but the
    filesystem: never give two of them the same files. For parallel edits in one repo, give each its
    own `git worktree`. **Hand over what you already know** (see "Hand context over" below): a child
    that re-discovers your searches pays for them again.

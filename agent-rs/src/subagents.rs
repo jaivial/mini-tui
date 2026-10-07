@@ -53,6 +53,24 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
                          ('-' = stdin): each entry its own name/task/budget, entries without a
                          budget split what the session has left. Task texts interpolate
                          {{tasks.ID.result}}, {{artifacts.NAME}}, {{context.KEY}}.
+  agent dispatch --file plan.json       the WHOLE wave in ONE step: the plan is written from
+                                       the task before anything is read, every child starts at
+                                       once (forked, no cold start), the `discover: true` children
+                                       map their repo INTO the shared store while the others work,
+                                       `--verify CMD` hands the mechanical gate to the child, and
+                                       the whole thing costs one model turn instead of one per
+                                       child. This is the shape that can beat a single agent.
+      --max-concurrency N               children at once (default 8, hard max 10: past that the
+                                       provider's 429s cost more wall-clock than the fan-out saves)
+      --verify CMD                       the build/typecheck command every editing child must run
+      --verify-baseline BASELINE    what that command ALREADY does on the pristine tree: the
+                                         child compares instead of proving it by hand. Without it a
+                                         gate that cannot pass sends the parent back to manual
+                                         verification, serially, which is the cost this removes.
+      -m, --model M                      model for this wave's children
+      --no-fork                         start cold (default is to fork this session's conversation)
+      --fork-k N                         messages of the forked context (default 12)
+
   agent send <name> <text...>            message it: mid-turn it lands before its next model call;
                                          a finished one continues with its full context.
       --steps N / --cost USD             extend its budget (automatic after LimitsExceeded)
@@ -444,6 +462,22 @@ pub fn shared_context_note(dir: &Path) -> String {
 /// source's system prompt, then a compacted summary of the source's work plus its last `k`
 /// messages slimmed to their text. Not a cold start: the child knows what its source knew.
 pub fn fork_messages(source: &str, msgs: &[Value], k: usize, cap: usize) -> Vec<Value> {
+    fork_messages_with(source, msgs, k, cap, "")
+}
+
+/// As `fork_messages`, plus a handover note for a dispatched child.
+///
+/// The forked summary carries the PARENT's tool calls, and a child that replays them acts them
+/// out: measured on 2026-10-07, a child forked from a session that had just dispatched a wave and
+/// was polling it re-ran the parent's `for i in $(seq 1 34); do agent ls | grep running; ...`
+/// loop -- and `agent ls` always lists the child itself as running, so the child waited for its
+/// own turn to end, forever. Its 9 steps were all that loop and it produced nothing. The parent
+/// lost the whole wave's wall-clock on it.
+///
+/// A dispatched child is therefore told, in the block it starts from, that the conversation it
+/// inherited is BACKGROUND, not a script to replay: the dispatch is done, its own task is the
+/// only thing to do, and a command that waits for subagents is not its command to run.
+pub fn fork_messages_with(source: &str, msgs: &[Value], k: usize, cap: usize, handover: &str) -> Vec<Value> {
     let summary = crate::compaction::compaction_summary(msgs)
         .unwrap_or_else(|| crate::compaction::fallback_summary(msgs));
     let summary = head_chars(&summary, cap / 2);
@@ -461,9 +495,10 @@ pub fn fork_messages(source: &str, msgs: &[Value], k: usize, cap: usize) -> Vec<
     }
     let block = |recent: &[String]| {
         format!(
-            "[Context forked from {source}: its conversation, compacted. Continue that work from this summary and its last messages; do not redo what it already did.]\n\n<summary>\n{}\n</summary>\n\n<recent>\n{}\n</recent>",
+            "[Context forked from {source}: its conversation, compacted. Continue that work from this summary and its last messages; do not redo what it already did.]\n\n{0}<summary>\n{1}\n</summary>\n\n<recent>\n{2}\n</recent>",
+            if handover.is_empty() { String::new() } else { format!("\n{handover}\n") },
             summary.trim(),
-            recent.join("\n\n")
+            recent.join("\n\n"),
         )
     };
     let mut body = block(&recent);
@@ -1316,7 +1351,8 @@ impl Hub {
             // Like the `send` restart: the seeded history is replayed into the child's own journal,
             // so every later turn continues it with everything in between.
             let path = child.dir.join("fork.json");
-            let seeded = json!({ "messages": fork_messages(&label, &msgs, k, 2 * context_max) });
+            let handover = s(req, "fork_handover");
+            let seeded = json!({ "messages": fork_messages_with(&label, &msgs, k, 2 * context_max, &handover) });
             std::fs::write(&path, serde_json::to_string(&seeded).unwrap()).map_err(|e| format!("{}: {e}", path.display()))?;
             child.replaying = true;
             child.resume_task = full_task.clone();
@@ -1490,6 +1526,82 @@ impl Hub {
             format!("{}batch done: {} subagents started", report(&outs), started.len()),
             json!({"started": started}),
         ))
+    }
+
+    /// `agent dispatch`: the whole wave in ONE step (see `dispatch` for why this is the only
+    /// orchestration shape that can be faster than one agent).
+    ///
+    /// Builds the wave from a plan WITHOUT reading the repo -- a plan that needs exploration to
+    /// write has already paid the serial cost -- launches every child in one go under one shared
+    /// budget, and prints what started so the parent needs no second step to find out.
+    fn dispatch_cmd(&mut self, req: &Value) -> Result<Value, String> {
+        let file = s(req, "file");
+        let text = if file == "-" {
+            let mut t = String::new();
+            std::io::stdin().read_to_string(&mut t).map_err(|e| e.to_string())?;
+            t
+        } else if file.is_empty() {
+            return Err("dispatch needs --file plan.json ('-' = stdin)".into());
+        } else {
+            std::fs::read_to_string(crate::config::expand_user(&file)).map_err(|e| format!("--file {file}: {e}"))?
+        };
+        let plan: Value = serde_json::from_str(&text).map_err(|e| format!("{file}: {e}"))?;
+        let wave = crate::dispatch::build(&plan, req)?;
+        // Idempotency. `launch` force-replaces a live child, so re-running the same plan KILLS
+        // every child of the first run and starts them again from zero: the wave's wall-clock is
+        // paid twice and nothing is finished. That is not a retry, it is a reset, and it was
+        // measured (an orchestrator dispatched the same 4-child plan three times). Refuse it and
+        // say what is already running, so the parent continues the wave instead of restarting it.
+        let fp = crate::dispatch::fingerprint(&file, &wave);
+        if let Some((_, names)) = crate::dispatch::load_runs(&self.dir).into_iter().find(|(id, _)| *id == fp) {
+            let running_now: Vec<String> = self
+                .children
+                .iter()
+                .filter(|c| c.running() && names.iter().any(|n| n == &c.name))
+                .map(|c| c.name.clone())
+                .collect();
+            let live: Vec<String> = names.iter().filter(|n| running_now.contains(n)).cloned().collect();
+            let finished: Vec<String> = names.iter().filter(|n| !live.contains(n)).cloned().collect();
+            let mut msg = format!(
+                "this plan is ALREADY dispatched in this run ({}): re-running it would kill the {} child(ren) that are still working and restart the whole wave from zero.\n",
+                fp,
+                live.len()
+            );
+            if !live.is_empty() {
+                msg.push_str(&format!("  still running: {}\n", live.join(", ")));
+            }
+            if !finished.is_empty() {
+                msg.push_str(&format!("  already finished: {} -- `agent result <name>` has their answers, or `agent send <name> \"...\"` continues them.\n", finished.join(", ")));
+            }
+            msg.push_str("If you really want a fresh wave, use `agent stop` on them first (or change the plan).");
+            return Ok(ok(msg, json!({"started": [], "already": names, "fingerprint": fp})));
+        }
+        let mut started: Vec<String> = vec![];
+        let mut outs: Vec<String> = vec![];
+        for r in &wave.spawns {
+            let mut r = r.clone();
+            let name = s(&r, "name");
+            // A budget on the spawn request wins; a `budget` object in the plan is translated.
+            if r.get("cost_limit").is_none() {
+                if let Some(b) = r.get("budget") {
+                    if let Some(c) = b.get("cost").and_then(Value::as_f64) {
+                        r["cost_limit"] = json!(c);
+                    }
+                }
+                if let Some(st) = r.get("budget").and_then(|b| b.get("steps")).and_then(Value::as_i64) {
+                    r["max_steps"] = json!(st);
+                }
+            }
+            r.as_object_mut().map(|o| { o.remove("budget"); });
+            r["cmd"] = json!("spawn");
+            match self.launch(&r) {
+                Ok(o) => { started.push(name); outs.push(o); }
+                Err(e) => return Err(format!("dispatch stopped at {name}: {e}\n{}", crate::subagents::report(&outs))),
+            }
+        }
+        crate::dispatch::record_run(&self.dir, &fp, &started);
+        let summary = format!("{}\n{}", report(&outs), crate::dispatch::report(&wave));
+        Ok(ok(summary, json!({"started": started, "discoverers": wave.discoverers, "repos": wave.repos, "warnings": wave.warnings})))
     }
 
     /// Live subagents: the ones a new spawn would have to share memory with.
@@ -2144,6 +2256,7 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
     h.monitor();
     let r: Result<Value, String> = match cmd.as_str() {
         "spawn" => h.launch(req).map(|o| ok(o, json!(null))),
+        "dispatch" => h.dispatch_cmd(req),
         "spawn_batch" => h.spawn_batch(req),
         "state" => h.state_cmd(req),
         // `agent surface <query>`: who calls this symbol and which contract it carries, answered
@@ -2358,7 +2471,16 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
 fn wait(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
     let names: Vec<String> = req.get("names").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
     let any = req.get("any").and_then(Value::as_bool).unwrap_or(false);
-    let timeout = req.get("timeout").and_then(Value::as_f64).unwrap_or(20.0);
+    // `wait` runs INSIDE the agent's bash tool, which kills the command at ~30 s. A wait longer
+    // than that is therefore a step that does nothing and has to be re-issued: measured on a real
+    // dispatch run, `agent wait <name> --timeout 900` was issued 11 times and each one was killed.
+    // So the effective wait is clamped to what the tool can survive (MINI_AGENT_WAIT_MAX, default
+    // 25 s) and the clamp is REPORTED, so a caller asking for 900 is told it got 25 instead of
+    // silently discovering it. Poll in a loop for longer waits -- the loop is one step, not N.
+    let asked = req.get("timeout").and_then(Value::as_f64).unwrap_or(20.0);
+    let cap: f64 = std::env::var("MINI_AGENT_WAIT_MAX").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(25.0).max(1.0);
+    let timeout = asked.min(cap);
+    let clamped = asked > cap;
     let deadline = now() + timeout;
     loop {
         {
@@ -2381,13 +2503,22 @@ fn wait(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
                         format!("{}: {}{} · {} steps · ${:.4}{why}", c.name, c.state, if c.exit_status.is_empty() { String::new() } else { format!(" ({})", c.exit_status) }, c.steps, c.total_cost())
                     })
                     .collect();
-                let head = if finished { "done" } else { "still running (timeout); you will be told when each one finishes" };
+                let head = if finished {
+                    "done".to_string()
+                } else if clamped {
+                    format!(
+                        "still running after {:.0}s (you asked for {:.0}s; the bash tool kills a command at ~30 s, so the wait is capped at {:.0}s. TO WAIT LONGER, POLL IN A LOOP, it is one step instead of N:\n  while mini-agent-rs agent ls --json | grep -q '\"state\":\"running\"'; do sleep 25; done)",
+                        timeout, asked, cap
+                    )
+                } else {
+                    "still running (timeout); you will be told when each one finishes, and a message wakes you up before your next step -- polling is rarely needed".to_string()
+                };
                 let done_names: Vec<String> = chosen.iter().filter(|c| !c.running()).map(|c| c.name.clone()).collect();
                 drop(chosen);
                 if !done_names.is_empty() {
                     h.mark_seen(&done_names);
                 }
-                return json!({"ok": finished, "timeout": !finished, "output": format!("{head}\n{}", rows.join("\n"))});
+                return json!({"ok": finished, "timeout": !finished, "waited_s": timeout, "output": format!("{head}\n{}", rows.join("\n"))});
             }
         }
         std::thread::sleep(Duration::from_millis(150));
@@ -2527,6 +2658,10 @@ pub fn client(args: &[String]) -> i32 {
                         None => req["context_files"] = json!([canon]),
                     }
                 }
+                "--no-fork" => req["fork"] = json!(false),
+                "--max-concurrency" => req["max_concurrency"] = json!(value(&mut i)?.parse::<u64>().map_err(|_| "--max-concurrency needs a number")?),
+                "--verify" => req["verify"] = json!(value(&mut i)?),
+                "--verify-baseline" => req["verify_baseline"] = json!(value(&mut i)?),
                 "--brief" => req["brief"] = json!(true),
                 "--batch" => req["batch"] = json!(value(&mut i)?),
                 "--fork" => req["fork"] = json!(true),
@@ -2601,6 +2736,11 @@ pub fn client(args: &[String]) -> i32 {
                         req["model"] = m;
                     }
                 }
+            }
+            "dispatch" => {
+                let f = req.get("file").and_then(Value::as_str).unwrap_or("").to_string();
+                req["file"] = json!(if f == "-" { f } else if f.is_empty() { return Err("dispatch needs --file plan.json".into()) } else { f });
+                if let Some(m) = req.get("model_opt").cloned() { req["model"] = m; }
             }
             "surface" => {
                 req["query"] = json!(joined(0));
