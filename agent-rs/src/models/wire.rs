@@ -71,7 +71,18 @@ impl WireModel {
     /// sometimes called bash instead of answering (finish "tool_calls", empty text); with NO tool
     /// list the model reasoned 4-20x longer (1.1k-8.2k reasoning tokens, 10-73 s, one hit the
     /// 8192 cap) than with tools + `none` (90-470 tokens, 2.7-4.3 s).
+    ///
+    /// `text_only: "no_tools"` drops the tool list instead: Zai's GLM ignores `tool_choice: "none"`
+    /// (measured, speed8, glm-5.3-flash, same prompt x4: 2 of 4 answers were tool calls with no
+    /// text; without the list 6/6 answered in text, in 5-11 s).
     fn text_only(&self, body: &mut Value) {
+        if self.config.get("text_only").and_then(Value::as_str) == Some("no_tools") {
+            if let Some(o) = body.as_object_mut() {
+                o.shift_remove("tools");
+                o.shift_remove("tool_choice");
+            }
+            return;
+        }
         if self.config.get("text_only").and_then(Value::as_bool) == Some(true) && body.get("tools").is_some() {
             body["tool_choice"] = match self.protocol {
                 Protocol::Messages => json!({"type": "none"}),

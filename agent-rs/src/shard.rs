@@ -143,8 +143,8 @@ fn ask_group(ctx: &Ctx, repo: &str, group: &[String], extra: &str) -> Result<(Op
     Ok((Some(parse_group(&text, group)?), usage))
 }
 
-/// A group answer (`<<<FILE path` ... `FILE>>>` or `UNCHANGED path` per file) as the JSON object
-/// `{path: new content | null}`; a file of the group without an answer is an error.
+/// A multi-file answer (`<<<FILE path` ... `FILE>>>` or `UNCHANGED path` per file) as the JSON
+/// object `{path: new content | null}`; a file without an answer makes the whole answer an error.
 pub(crate) fn parse_group(text: &str, group: &[String]) -> Result<String, String> {
     let mut out = serde_json::Map::new();
     for f in group {
@@ -173,15 +173,15 @@ pub(crate) fn parse_group(text: &str, group: &[String]) -> Result<String, String
 /// hedge twins hit it (65-160 HTTP 429s, 20-46 s tails). Groups cost latency instead (a group
 /// answer is 2-4 files long: 24-file waves took 24-27 s grouped vs 7-15 s per file), so only
 /// the largest waves are grouped.
-pub(crate) const GROUP_ABOVE: usize = 32;
+const GROUP_ABOVE: usize = 32;
 
 /// Files per group executor. 4 made one answer 4 files long, and its tail set the wave (21 s for
 /// a 2-5 s median, speed7 t20); 2 keeps the request count halved with shorter answers.
-pub(crate) const GROUP_SIZE: usize = 2;
+const GROUP_SIZE: usize = 2;
 
 /// Targets grouped by subject (menu.go, menu.ts, MenuList.tsx, menu.md), at most GROUP_SIZE per group, in
 /// the targets' order.
-pub(crate) fn groups(targets: &[String], all: &[String]) -> Vec<Vec<String>> {
+fn groups(targets: &[String], all: &[String]) -> Vec<Vec<String>> {
     let subj = subjects(all);
     let mut out: Vec<(std::collections::HashSet<String>, Vec<String>)> = vec![];
     for f in targets {
@@ -244,7 +244,7 @@ impl Slots {
             cv: std::sync::Condvar::new(),
         }
     }
-    pub(crate) fn acquire(&self) {
+    fn acquire(&self) {
         let mut f = self.free.lock().unwrap();
         while *f == 0 {
             f = self.cv.wait(f).unwrap();
@@ -259,7 +259,7 @@ impl Slots {
         *f -= 1;
         true
     }
-    pub(crate) fn release(&self) {
+    fn release(&self) {
         *self.free.lock().unwrap() += 1;
         self.cv.notify_one();
     }
@@ -284,7 +284,7 @@ fn threshold(lat: &Lat, wave_n: usize, hedge: f64) -> f64 {
 
 /// Hedge of a fix wave: one or two files, and the whole run waits on them (measured, speed7 t20:
 /// a fix call that answered no file took 17.5 s before the next one was tried).
-pub(crate) const FIX_HEDGE: f64 = 2.0;
+const FIX_HEDGE: f64 = 2.0;
 
 /// Calls per file at most (the first one plus hedge twins). Measured (speed7): with 3, a file
 /// whose three calls were all slow set the whole wall time (19 s for a 2 s median wave).
@@ -383,7 +383,7 @@ pub(crate) fn dump(root: &Path, files: &[String]) -> String {
 }
 
 /// One parallel wave over `targets`; writes every changed file. Returns per-file stats.
-pub(crate) fn wave(
+fn wave(
     ctx: &Ctx,
     root: &Path,
     all: &[String],
@@ -656,7 +656,7 @@ fn excluded(task: &str) -> std::collections::HashSet<String> {
 /// burst that a token-plan rate limit answers with 429 storms, and executors of files the task
 /// does not name copy the change over by analogy. A file the task needs but does not name is
 /// left to the gate: files blamed by --verify join the fix waves. No match -> every file.
-pub(crate) fn scope(task: &str, files: &[String]) -> Vec<String> {
+fn scope(task: &str, files: &[String]) -> Vec<String> {
     let subj = subjects(files);
     let want = &tokens(task) - &excluded(task);
     let picked: Vec<String> = files
@@ -839,7 +839,7 @@ pub fn client(args: &[String]) -> i32 {
         crate::clones::run(&ctx, &root, &files, hedge, t0, &slots)
     } else if hybrid {
         let targets = if scope_all { files.clone() } else { scope(&ctx.task, &files) };
-        (crate::hybrid::run(&ctx, &root, &files, &targets, hedge, t0, &slots), targets)
+        (crate::hybrid::run(&ctx, &root, &files, &targets, hedge, max_inflight, t0, &slots), targets)
     } else {
         let targets = if scope_all {
             files.clone()
