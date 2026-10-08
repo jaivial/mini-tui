@@ -18,6 +18,7 @@ mod plan;
 mod repl;
 mod rlm;
 mod shard;
+mod clones;
 mod subagents;
 mod templates;
 mod util;
@@ -388,6 +389,14 @@ fn main() {
         config::load_dotenv();
         install_signals();
         std::process::exit(shard::client(&argv[1..]));
+    }
+    // `orchestrate` = `shard --clones`: subagents are copies of the parent session (src/clones.rs).
+    if argv.first().map(String::as_str) == Some("orchestrate") {
+        config::load_dotenv();
+        install_signals();
+        let mut a = vec!["--clones".to_string()];
+        a.extend(argv[1..].iter().cloned());
+        std::process::exit(shard::client(&a));
     }
     if argv.first().map(String::as_str) == Some("rlm") {
         config::load_dotenv();

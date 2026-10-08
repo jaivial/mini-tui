@@ -315,7 +315,10 @@ pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<
             Ok(v) => return Ok(v),
             Err(e) if e.abort || attempt >= attempts => return Err(e),
             Err(e) => {
-                let wait = retry_wait(attempt, min_wait);
+                // Jittered (x0.5-1.5): calls that hit a 429 together must not retry together
+                // (measured, speed7: 32 parallel calls retried in lockstep at 1/2/4/8 s and hit
+                // the provider's concurrency limit again every time).
+                let wait = retry_wait(attempt, min_wait) * rand::Rng::gen_range(&mut rand::thread_rng(), 0.5..1.5);
                 let wait = if e.connect_refused { refused_wait(attempt, min_wait) } else { wait };
                 eprintln!("WARNING: Retrying in {wait:.1} seconds as it raised {}: {}.", e.kind, e.message);
                 if !crate::agent::interruptible_sleep(Duration::from_secs_f64(wait)) {
