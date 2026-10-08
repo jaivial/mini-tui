@@ -42,7 +42,7 @@
   {#if d.summary}<p class="mt-3 max-w-3xl leading-relaxed">{d.summary}</p>{/if}
   <p class="mt-3 text-xs text-faint">
     Every box is a real piece of the code, drawn like a UML class: «stereotype» and name, then <span class="font-mono">−</span> attributes,
-    <span class="font-mono">+</span> operations, <span class="font-mono">–</span> responsibilities. Click a box for its input, steps and output.
+    <span class="font-mono">+</span> operations, <span class="font-mono">–</span> responsibilities. Click a box for its details and the steps it follows.
     Dashed arrows go back up the flow (retries and loops).
   </p>
 
