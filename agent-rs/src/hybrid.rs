@@ -98,9 +98,13 @@ pub(crate) fn apply_edits(old: &str, answer: &str) -> Result<Option<String>, Str
         } else {
             // Whitespace-tolerant: match the lines of `find` with runs of blanks collapsed.
             let lines: Vec<&str> = new.split_inclusive('\n').collect();
-            let want: Vec<String> = find.lines().map(|l| ws.replace_all(l.trim_end(), " ").to_string()).collect();
+            // Leading blanks too: the model re-indents (a tab as spaces) and invents comment
+            // styles' leading spaces (measured, speed9 xl t20: `  * Mirrors ...` for `// Mirrors ...`
+            // stays a miss; `    Name  string` for `\tName  string` now matches).
+            let norm = |l: &str| ws.replace_all(l.trim(), " ").to_string();
+            let want: Vec<String> = find.lines().map(norm).collect();
             let hits: Vec<usize> = (0..lines.len().saturating_sub(want.len() - 1))
-                .filter(|&i| want.iter().enumerate().all(|(j, w)| ws.replace_all(lines[i + j].trim_end(), " ") == *w))
+                .filter(|&i| want.iter().enumerate().all(|(j, w)| norm(lines[i + j]) == *w))
                 .collect();
             let [i] = hits[..] else {
                 return Err(format!("edit does not apply ({} matches): {:?}", hits.len(), find.chars().take(80).collect::<String>()));

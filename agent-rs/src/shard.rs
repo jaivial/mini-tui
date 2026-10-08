@@ -732,6 +732,7 @@ pub fn client(args: &[String]) -> i32 {
     let mut coord = false;
     let mut coordinator = String::from(DEFAULT_COORDINATOR);
     let mut coord_thinking = false;
+    let mut hedge_set = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -770,7 +771,10 @@ pub fn client(args: &[String]) -> i32 {
             "--coordinator" => coordinator = val(),
             "--coordinator-thinking" => coord_thinking = true,
             "--max-inflight" => max_inflight = val().parse().unwrap_or(max_inflight),
-            "--hedge" => hedge = val().parse().unwrap_or(hedge),
+            "--hedge" => {
+                hedge = val().parse().unwrap_or(hedge);
+                hedge_set = true;
+            }
             "--fix-rounds" => fix_rounds = val().parse().unwrap_or(fix_rounds),
             "-o" => out = Some(config::expand_user(&val())),
             other => {
@@ -862,7 +866,9 @@ pub fn client(args: &[String]) -> i32 {
         cc.insert("model_kwargs".into(), Value::Object(kw));
         let o = crate::coord::Opts {
             coord: Ctx { model_name: Some(coordinator.clone()), model_cfg: cc, task: ctx.task.clone() },
-            hedge,
+            // Workers' answers are short edits (2-3 s median on Zai glm-5.3-flash, speed9), so
+            // the first twin starts at 2 s unless --hedge says otherwise.
+            hedge: if hedge_set { hedge } else { 2.0 },
             inflight: max_inflight,
             verify: verify.clone(),
             reviews: fix_rounds,

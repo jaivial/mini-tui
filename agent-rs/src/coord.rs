@@ -48,6 +48,9 @@ fn worker_order(n: &str, files: &[String], current: &str, edits: bool, note: &st
         } else {
             format!("Answer with the line <<<FILE, then the COMPLETE new content of {f}, then the line FILE>>>, and nothing else (no code fences around it). If the order needs no change to {f}, answer exactly UNCHANGED.")
         }
+    } else if edits {
+        format!("For EACH of your files, in this order, answer the line `=== EDITS <path>` followed by one or more blocks\n{S}\n<exact current lines of that file, enough to be unique>\n{E}\n<the new lines>\n{R}\n\
+         (or the line `UNCHANGED <path>` if the order needs no change to it). Nothing else (no code fences, no commentary).", S = crate::hybrid::SEARCH, E = crate::hybrid::SEP, R = crate::hybrid::REPLACE)
     } else {
         "For EACH of your files, in this order, answer the line `<<<FILE <path>`, then the COMPLETE new content of that file, then the line FILE>>> \
          (or the line `UNCHANGED <path>` if the order needs no change to it). Nothing else (no code fences around the content)."
@@ -122,10 +125,16 @@ fn spawn_task(w: &Ctx, root: &Path, msgs: Vec<Value>, n: &str, paths: &[String],
                 let s = Instant::now();
                 let g2 = g.clone();
                 let k = std::sync::atomic::AtomicU32::new(0);
+                let whole = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let call: Arc<dyn Fn() -> Answer + Send + Sync> = Arc::new(move || {
                     let k = k.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let old: Vec<Option<String>> = g2.iter().map(|f| std::fs::read_to_string(root.join(f)).ok()).collect();
-                    let edits = g2.len() == 1 && k == 0 && old[0].as_ref().is_some_and(|x| x.len() as u64 > crate::hybrid::EDITS_ABOVE);
+                    // Edits for every existing file on the first call: a worker that rewrites a whole file
+                    // drops lines nobody asked it to touch (measured, speed9 rep 1 xl t14: the docs
+                    // "Fields:" line lost its "(snake_case)" note, which cost a review round).
+                    // Twins answer edits too (short answers are the fast ones); after an edit
+                    // that did not apply, the next calls answer whole files.
+                    let edits = !whole.load(std::sync::atomic::Ordering::SeqCst) && old.iter().all(|x| x.as_ref().is_some_and(|x| !x.trim().is_empty()));
                     // A fix worker sees its file as it is now (the session holds the original).
                     let current = if fix { g2.iter().zip(&old).map(|(f, x)| format!("\n=== {f} (current)\n{}", x.as_deref().unwrap_or("(new file)"))).collect() } else { String::new() };
                     let note = if k > 0 { "Think briefly: the order is mechanical; answer right away." } else { "" };
@@ -133,11 +142,17 @@ fn spawn_task(w: &Ctx, root: &Path, msgs: Vec<Value>, n: &str, paths: &[String],
                     msgs.push(json!({"role": "user", "content": worker_order(&n, &g2, &current, edits, note)}));
                     let (text, usage) = crate::shard::query_text(&c.model_name, &crate::hybrid::call_cfg(&c, k), &msgs)?;
                     let js = if g2.len() == 1 {
-                        let a = if edits { crate::hybrid::apply_edits(old[0].as_deref().unwrap_or(""), &text)? } else { parse_answer(&text)? };
-                        json!({g2[0].clone(): a}).to_string()
+                        let a = if edits { crate::hybrid::apply_edits(old[0].as_deref().unwrap_or(""), &text) } else { parse_answer(&text) };
+                        a.map(|a| json!({g2[0].clone(): a}).to_string())
+                    } else if edits {
+                        group_edits(&g2, &old, &text)
                     } else {
-                        parse_group(&text, &g2)?
+                        parse_group(&text, &g2)
                     };
+                    if edits && js.is_err() {
+                        whole.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    let js = js?;
                     Ok((Some(js), usage))
                 });
                 let r = hedged(call, &g.join(","), hedge, &l, 8, &sl);
@@ -145,6 +160,28 @@ fn spawn_task(w: &Ctx, root: &Path, msgs: Vec<Value>, n: &str, paths: &[String],
             })
         })
         .collect()
+}
+
+/// A grouped worker's edit answer (`=== EDITS <path>` + SEARCH/REPLACE blocks, or `UNCHANGED
+/// <path>`, per file) as `{path: new content | null}`; a file without an answer, or an edit that
+/// does not apply, is an error (the hedge twin then answers whole files). Measured (speed9 rep 1,
+/// xl t20, a 12-entity rename): runs of 3 whole Go files took 13-14 s and ~1000 tokens out each.
+fn group_edits(group: &[String], old: &[Option<String>], text: &str) -> Result<String, String> {
+    let head = regex::Regex::new(r"(?m)^[ \t]*(?:=== EDITS|UNCHANGED)[ \t]+(\S+)[ \t]*$").unwrap();
+    let hs: Vec<_> = head.captures_iter(text).collect();
+    let mut out = serde_json::Map::new();
+    for (f, o) in group.iter().zip(old) {
+        let k = hs.iter().position(|c| c[1].trim_matches('`') == f.as_str()).ok_or_else(|| format!("edit answer misses {f}"))?;
+        let m = hs[k].get(0).unwrap();
+        if m.as_str().trim_start().starts_with("UNCHANGED") {
+            out.insert(f.clone(), Value::Null);
+            continue;
+        }
+        let end = hs.get(k + 1).map_or(text.len(), |n| n.get(0).unwrap().start());
+        let new = crate::hybrid::apply_edits(o.as_deref().unwrap_or(""), &text[m.end()..end]).map_err(|e| format!("{f}: {e}"))?;
+        out.insert(f.clone(), new.map_or(Value::Null, Value::String));
+    }
+    Ok(Value::Object(out).to_string())
 }
 
 fn collect(root: &Path, hs: Vec<std::thread::JoinHandle<WorkerResult>>, t0: Instant, task_of: &str, stats: &mut Vec<Value>, status: &mut Vec<String>) {
@@ -310,6 +347,15 @@ pub(crate) fn run(w: &Ctx, root: &Path, files: &[String], o: &Opts, t0: Instant,
             if !targets.contains(&f) {
                 targets.push(f);
             }
+        }
+        // The coordinator already reviewed every change and wrote exact FIX orders for what was
+        // wrong; if the gate passes after them, a second full review only adds its latency
+        // (measured, speed9 rep 1: 1.4-6 s per run). It reviews again when the gate fails.
+        if files.iter().chain(&targets).any(|f| f.ends_with(".go")) {
+            gofmt(root);
+        }
+        if o.verify.is_empty() || sh(root, &o.verify).0 {
+            return (stats, targets, true, rounds);
         }
     }
 }
