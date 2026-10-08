@@ -29,7 +29,7 @@ const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MO
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
-file as context, executors only for the files the task names (--scope auto), hedge 4 s (adaptive, at most 4 calls per file), 32 calls in flight, 2 fix rounds.";
+file as context, executors only for the files the task names (--scope auto), hedge 4 s (adaptive, at most 4 calls per file), 16 calls in flight, 2 fix rounds.";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -43,7 +43,7 @@ pub(crate) struct Ctx {
 /// One answer for one file: Some(new content), None = UNCHANGED, plus the call's usage.
 fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>, Value), String> {
     let prompt = format!(
-        "TASK for the whole repository:\n{task}\n\nRepository (every file):\n{repo}\n\n\
+        "TASK for the whole repository:\n{task}\n\nRepository (every file, or on a large change the files related to yours):\n{repo}\n\n\
          Several workers edit this repo at once, ONE FILE EACH, all from the same task text, so use exactly the names, \
          signatures, JSON tags and props the task gives. Keep the existing wire contract. Other files will be updated by \
          their own workers as the task requires; you may rely on that. Change YOUR FILE only if the task explicitly requires it. \
@@ -272,15 +272,21 @@ fn wave(
     t0: Instant,
     slots: &std::sync::Arc<Slots>,
 ) -> Vec<Value> {
-    let repo = dump(root, all);
+    let full = dump(root, all);
+    let small = full.len() * targets.len() <= BURST_CHARS;
     let lat: Lat = Default::default();
     let wave_n = targets.len();
     let handles: Vec<_> = targets
         .iter()
         .map(|f| {
+            let repo = if small {
+                full.clone()
+            } else {
+                dump(root, &related(&ctx.task, all, f))
+            };
             let (c, r, f2, e, l, sl) = (
                 ctx.clone(),
-                repo.clone(),
+                repo,
                 f.clone(),
                 extra(f),
                 lat.clone(),
@@ -367,6 +373,55 @@ fn tokens(s: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// While (repo dump x executors) stays under this many characters (~50k tokens), every executor
+/// gets the whole repo (one shared, cached prefix). Above it each executor gets only `related`
+/// files: measured (speed7 t18, xl), 48 executors x the whole 27 kB repo = 417k prompt tokens
+/// in one burst, which the provider's token plan answered with 160 HTTP 429s and a 44 s tail.
+const BURST_CHARS: usize = 200_000;
+
+/// The basename tokens of each file that name its subject (`MenuList.tsx` -> menu): a token that
+/// pairs with two or more different tokens across the repo (`list`) is a suffix, not a subject.
+fn subjects(files: &[String]) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+    use std::collections::{HashMap, HashSet};
+    let stem = |f: &str| {
+        let b = f.rsplit('/').next().unwrap_or(f);
+        b.split('.').next().unwrap_or(b).to_string()
+    };
+    let mut partners: HashMap<String, HashSet<String>> = HashMap::new();
+    for f in files {
+        let t = tokens(&stem(f));
+        for a in &t {
+            partners.entry(a.clone()).or_default().extend(t.iter().filter(|b| *b != a).cloned());
+        }
+    }
+    files
+        .iter()
+        .map(|f| {
+            let s = tokens(&stem(f)).into_iter().filter(|t| partners.get(t).map_or(0, |p| p.len()) < 2).collect();
+            (f.clone(), s)
+        })
+        .collect()
+}
+
+/// The context of one executor on a large burst: its own file, the files of its directory (its
+/// package), the files that share its subject (menu.go, menu.ts, MenuList.tsx, menu.md) and the
+/// files the task quotes by path.
+fn related(task: &str, files: &[String], file: &str) -> Vec<String> {
+    let subj = subjects(files);
+    let mine = subj.get(file).cloned().unwrap_or_default();
+    let dir = |f: &str| f.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+    files
+        .iter()
+        .filter(|f| {
+            f.as_str() == file
+                || task.contains(f.as_str())
+                || dir(f) == dir(file)
+                || subj.get(*f).is_some_and(|s| !s.is_disjoint(&mine))
+        })
+        .cloned()
+        .collect()
+}
+
 /// `--scope auto`: the files the task is about, picked by plain code (no model round-trip).
 /// A file is a target when its path is quoted in the task, or a distinctive token of its
 /// basename (`MenuList.tsx` -> menu) is a word of the task. A basename token that pairs with
@@ -377,28 +432,11 @@ fn tokens(s: &str) -> std::collections::HashSet<String> {
 /// does not name copy the change over by analogy. A file the task needs but does not name is
 /// left to the gate: files blamed by --verify join the fix waves. No match -> every file.
 fn scope(task: &str, files: &[String]) -> Vec<String> {
-    use std::collections::{HashMap, HashSet};
-    let stem = |f: &str| {
-        let b = f.rsplit('/').next().unwrap_or(f);
-        b.split('.').next().unwrap_or(b).to_string()
-    };
-    let mut partners: HashMap<String, HashSet<String>> = HashMap::new();
-    for f in files {
-        let t = tokens(&stem(f));
-        for a in &t {
-            let e = partners.entry(a.clone()).or_default();
-            e.extend(t.iter().filter(|b| *b != a).cloned());
-        }
-    }
+    let subj = subjects(files);
     let want = tokens(task);
     let picked: Vec<String> = files
         .iter()
-        .filter(|f| {
-            task.contains(f.as_str())
-                || tokens(&stem(f))
-                    .iter()
-                    .any(|t| want.contains(t) && partners.get(t).map_or(0, |p| p.len()) < 2)
-        })
+        .filter(|f| task.contains(f.as_str()) || subj.get(*f).is_some_and(|s| !s.is_disjoint(&want)))
         .cloned()
         .collect();
     if picked.is_empty() {
@@ -455,7 +493,7 @@ pub fn client(args: &[String]) -> i32 {
     );
     let (mut only, mut hedge, mut fix_rounds, mut configs) =
         (Vec::<String>::new(), 4.0f64, 2u32, Vec::<String>::new());
-    let mut max_inflight = 32usize;
+    let mut max_inflight = 16usize;
     let mut scope_all = false;
     let mut clones = false;
     let mut i = 0;
