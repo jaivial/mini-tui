@@ -65,6 +65,18 @@ impl WireModel {
         (params, headers)
     }
 
+    /// `text_only: true` (set by one-shot callers such as `shard`): the request carries no tool
+    /// list, so the model answers in text. With the agent's bash tool offered, a one-shot
+    /// executor sometimes called it instead of answering (measured, speed7: finish "tool_calls",
+    /// empty text, the hedge had to retry up to 7 times).
+    fn text_only(&self, body: &mut Value) {
+        if self.config.get("text_only").and_then(Value::as_bool) == Some(true) {
+            if let Some(o) = body.as_object_mut() {
+                o.shift_remove("tools");
+            }
+        }
+    }
+
     fn timeout(&self) -> f64 {
         self.config.get("request_timeout").and_then(Value::as_f64).unwrap_or(600.0)
     }
@@ -141,6 +153,7 @@ impl WireModel {
         for (k, v) in params {
             body[k] = v;
         }
+        self.text_only(&mut body);
         let data = post_chat_stream(&self.api_base, &body, &headers, self.timeout(), sink)?;
         if data.get("choices").and_then(Value::as_array).is_none_or(|c| c.is_empty()) {
             return Err(ModelError { message: format!("response without choices from {}: {}", self.api_base, data.to_string().chars().take(300).collect::<String>()), status: None, abort: false, kind: "ProviderError".into(), connect_refused: false });
@@ -167,6 +180,7 @@ impl WireModel {
         for (k, v) in params {
             body[k] = v;
         }
+        self.text_only(&mut body);
         if let Some(tc) = &tool_choice {
             body["tool_choice"] = tc.clone();
         }
@@ -209,6 +223,7 @@ impl WireModel {
         for (k, v) in params {
             body[k] = v;
         }
+        self.text_only(&mut body);
         post_json(&self.api_base, "/responses", &body, &headers, self.timeout())
     }
 

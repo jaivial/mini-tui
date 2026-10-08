@@ -72,7 +72,13 @@ pub(crate) fn query_text(model_name: &Option<String>, model_cfg: &Obj, msgs: &[V
         .collect();
     let msg = match model.query(&msgs, None).map_err(|e| format!("{}: {}", e.kind, e.message))? {
         Reply::Message(m) => m,
-        Reply::FormatError(ms) => ms.into_iter().next().unwrap_or(Value::Null),
+        // A reply with no text (a tool call instead -- every request carries the agent's tool
+        // list -- or nothing) comes back as a format error; say so instead of parsing its text.
+        Reply::FormatError(ms) => {
+            let m = ms.into_iter().next().unwrap_or(Value::Null);
+            let r = m.pointer("/extra/response/choices/0/message").cloned().unwrap_or(Value::Null);
+            return Err(format!("no text answer (finish {}, tool_calls {})", m.pointer("/extra/response/choices/0/finish_reason").unwrap_or(&Value::Null), r.get("tool_calls").map_or(0, |t| t.as_array().map_or(0, |a| a.len()))));
+        }
     };
     let usage = msg.pointer("/extra/response/usage").cloned().unwrap_or(Value::Null);
     let text = msg
@@ -81,7 +87,79 @@ pub(crate) fn query_text(model_name: &Option<String>, model_cfg: &Obj, msgs: &[V
         .map(String::from)
         .unwrap_or_else(|| shapes::text_of(msg.get("content").unwrap_or(&Value::Null)));
     let think = regex::Regex::new(r"(?s)<think>.*?</think>").unwrap();
-    Ok((think.replace_all(&text, "").trim().to_string(), usage))
+    let visible = think.replace_all(&text, "").trim().to_string();
+    if visible.is_empty() {
+        let finish = msg.pointer("/extra/response/choices/0/finish_reason").cloned().unwrap_or(Value::Null);
+        return Err(format!("empty text answer (raw {} chars, finish {finish}, {} tokens out)", text.len(), usage["completion_tokens"]));
+    }
+    Ok((visible, usage))
+}
+
+/// One answer for a GROUP of files (one executor per subject on a large wave). The answer is a
+/// JSON object `{path: new content | null}` (null = UNCHANGED), so it travels through `hedged`
+/// like a single file's content; every file of the group must be answered, else the call is an
+/// error and the hedge tries again.
+fn ask_group(ctx: &Ctx, repo: &str, group: &[String], extra: &str) -> Result<(Option<String>, Value), String> {
+    let list = group.join(", ");
+    let prompt = format!(
+        "TASK for the whole repository:\n{task}\n\nRepository (every file, or on a large repo the files related to yours):\n{repo}\n\n\
+         Several workers edit this repo at once, each one a few files, all from the same task text, so use exactly the names, \
+         signatures, JSON tags and props the task gives. Keep the existing wire contract. Other files will be updated by \
+         their own workers as the task requires; you may rely on that. Change a file only if the task explicitly requires it. \
+         Never carry a change over by analogy: a change the task asks for one entity, file or function does NOT apply to the \
+         similar ones it does not name. Add nothing the task does not ask for. Before answering, check that EVERY requirement the task states for YOUR FILES \
+         holds, in the task's exact terms (names, status codes, phrases; for docs: every case the task lists).\nYOUR FILES: {list}\n{extra}\
+         For EACH of your files, in this order, answer either the line `UNCHANGED <path>` or the line `{BEGIN} <path>`, then the COMPLETE \
+         new content of that file, then the line {END}. Nothing else (no code fences around the content). No tests.",
+        task = ctx.task
+    );
+    let msgs = vec![
+        json!({"role": "system", "content": SYSTEM}),
+        json!({"role": "user", "content": prompt}),
+    ];
+    let (text, usage) = query_text(&ctx.model_name, &ctx.model_cfg, &msgs)?;
+    let mut out = serde_json::Map::new();
+    for f in group {
+        let open = format!("{BEGIN} {f}\n");
+        if let Some(o) = text.find(&open) {
+            let body = &text[o + open.len()..];
+            let c = body.find(END).ok_or_else(|| format!("truncated answer for {f}: no end marker"))?;
+            let mut b = body[..c].to_string();
+            if !b.ends_with('\n') {
+                b.push('\n');
+            }
+            out.insert(f.clone(), json!(b));
+        } else if text.contains(&format!("UNCHANGED {f}")) {
+            out.insert(f.clone(), Value::Null);
+        } else {
+            let head: String = text.chars().take(200).collect();
+            return Err(format!("group answer misses {f}: {head:?}"));
+        }
+    }
+    Ok((Some(Value::Object(out).to_string()), usage))
+}
+
+/// A wave with more targets than this sends one executor per subject group (`groups`) instead of
+/// one per file. Measured (speed7): the provider's limit is on requests (a probe at 4 req/s got
+/// ~80 through, then every request was refused for 40 s), and 48-file waves on xl plus their
+/// hedge twins hit it (65-160 HTTP 429s, 20-46 s tails). Groups cost latency instead (a group
+/// answer is 2-4 files long: 24-file waves took 24-27 s grouped vs 7-15 s per file), so only
+/// the largest waves are grouped.
+const GROUP_ABOVE: usize = 32;
+
+/// Targets grouped by subject (menu.go, menu.ts, MenuList.tsx, menu.md), at most 4 per group, in
+/// the targets' order.
+fn groups(targets: &[String], all: &[String]) -> Vec<Vec<String>> {
+    let subj = subjects(all);
+    let mut out: Vec<(std::collections::HashSet<String>, Vec<String>)> = vec![];
+    for f in targets {
+        let s = subj.get(f).cloned().unwrap_or_default();
+        match out.iter_mut().find(|(k, g)| g.len() < 4 && !s.is_empty() && !k.is_disjoint(&s)) {
+            Some((_, g)) => g.push(f.clone()),
+            None => out.push((s, vec![f.clone()])),
+        }
+    }
+    out.into_iter().map(|(_, g)| g).collect()
 }
 
 const BEGIN: &str = "<<<FILE";
@@ -286,6 +364,9 @@ fn wave(
     let full = dump(root, all);
     let small = full.len() <= PROMPT_CHARS;
     let lat: Lat = Default::default();
+    if targets.len() > GROUP_ABOVE {
+        return group_wave(ctx, root, all, targets, &full, small, extra, hedge, t0, slots);
+    }
     let wave_n = targets.len();
     let handles: Vec<_> = targets
         .iter()
@@ -318,6 +399,82 @@ fn wave(
             .join()
             .unwrap_or_else(|_| (String::new(), Err("executor panicked".into()), 0.0));
         stats.push(record(root, &f, r, secs, t0));
+    }
+    stats
+}
+
+/// `wave` with one executor per subject group (see `GROUP_ABOVE`).
+#[allow(clippy::too_many_arguments)]
+fn group_wave(
+    ctx: &Ctx,
+    root: &Path,
+    all: &[String],
+    targets: &[String],
+    full: &str,
+    small: bool,
+    extra: &dyn Fn(&str) -> String,
+    hedge: f64,
+    t0: Instant,
+    slots: &std::sync::Arc<Slots>,
+) -> Vec<Value> {
+    let lat: Lat = Default::default();
+    let gs = groups(targets, all);
+    let wave_n = gs.len();
+    let handles: Vec<_> = gs
+        .into_iter()
+        .map(|g| {
+            let repo = if small {
+                full.to_string()
+            } else {
+                let mut ctx_files: Vec<String> = vec![];
+                for f in &g {
+                    for r in related(&ctx.task, all, f) {
+                        if !ctx_files.contains(&r) {
+                            ctx_files.push(r);
+                        }
+                    }
+                }
+                dump(root, &ctx_files)
+            };
+            let e: String = g.iter().map(|f| extra(f)).collect::<Vec<_>>().join("");
+            let (c, l, sl, g2) = (ctx.clone(), lat.clone(), slots.clone(), g.clone());
+            std::thread::spawn(move || {
+                let s = Instant::now();
+                let label = g2.join(",");
+                let g3 = g2.clone();
+                let call = std::sync::Arc::new(move || ask_group(&c, &repo, &g3, &e));
+                let r = hedged(call, &label, hedge, &l, wave_n, &sl);
+                (g2, r, s.elapsed().as_secs_f64())
+            })
+        })
+        .collect();
+    let mut stats = vec![];
+    for h in handles {
+        let (g, r, secs) = h
+            .join()
+            .unwrap_or_else(|_| (vec![], Err("executor panicked".into()), 0.0));
+        match r {
+            Ok((Some(js), usage, n)) => {
+                let m: serde_json::Map<String, Value> = serde_json::from_str(&js).unwrap_or_default();
+                for (k, f) in g.iter().enumerate() {
+                    let new = m.get(f).and_then(Value::as_str).map(String::from);
+                    // The group's usage and call count go on its first file only.
+                    let (u, c) = if k == 0 { (usage.clone(), n) } else { (Value::Null, 0) };
+                    let mut st = record(root, f, Ok((new, u, c)), secs, t0);
+                    st["group"] = json!(g.len());
+                    stats.push(st);
+                }
+            }
+            other => {
+                for f in &g {
+                    let r = match &other {
+                        Err(e) => Err(e.clone()),
+                        _ => Err("group answered nothing".into()),
+                    };
+                    stats.push(record(root, f, r, secs, t0));
+                }
+            }
+        }
     }
     stats
 }
@@ -598,11 +755,13 @@ pub fn client(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let model_cfg = cfg
+    let mut model_cfg = cfg
         .get("model")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    // One-shot calls answer in text: no tool list in the request (see WireModel::text_only).
+    model_cfg.insert("text_only".into(), json!(true));
     let files: Vec<String> = if only.is_empty() {
         let (ok, o) = sh(&root, "git ls-files");
         if !ok {

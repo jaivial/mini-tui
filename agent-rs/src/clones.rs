@@ -205,7 +205,6 @@ pub(crate) fn run(ctx: &Ctx, root: &Path, files: &[String], hedge: f64, t0: Inst
                         st["usage"] = usage;
                         st["plan"] = json!(text);
                         if !dispatched.is_empty() {
-                            owner = Some(id);
                             break;
                         }
                         errors.push("plan has no ORDER block".to_string());
