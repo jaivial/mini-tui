@@ -44,7 +44,7 @@ pub(crate) struct Ctx {
 fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>, Value), String> {
     let prompt = format!(
         "TASK for the whole repository:\n{task}\n\nRepository (every file, or on a large repo the files related to yours):\n{repo}\n\n\
-         Several workers edit this repo at once, ONE FILE EACH, all from the same task text, so use exactly the names, \
+         Several workers edit this repo at once, ONE FILE EACH, all from the same task text, so use exactly the names (built literally from the task's patterns: <E>s means the name + s, never a corrected plural), \
          signatures, JSON tags and props the task gives. Keep the existing wire contract. Other files will be updated by \
          their own workers as the task requires; you may rely on that. Change YOUR FILE only if the task explicitly requires it. \
          Never carry a change over by analogy: a change the task asks for one entity, file or function does NOT apply to the \
@@ -100,6 +100,10 @@ pub(crate) fn query_text(model_name: &Option<String>, model_cfg: &Obj, msgs: &[V
         .unwrap_or_else(|| shapes::text_of(msg.get("content").unwrap_or(&Value::Null)));
     let think = regex::Regex::new(r"(?s)<think>.*?</think>").unwrap();
     let visible = think.replace_all(&text, "").trim().to_string();
+    // Markers sometimes come back HTML-escaped (`&lt;&lt;&lt;FILE`, measured): unescape them.
+    let visible = visible
+        .replace("&lt;&lt;&lt;FILE", BEGIN)
+        .replace("FILE&gt;&gt;&gt;", END);
     if visible.is_empty() {
         let finish = msg.pointer("/extra/response/choices/0/finish_reason").cloned().unwrap_or(Value::Null);
         return Err(format!("empty text answer (raw {} chars, finish {finish}, {} tokens out)", text.len(), usage["completion_tokens"]));
@@ -115,7 +119,7 @@ fn ask_group(ctx: &Ctx, repo: &str, group: &[String], extra: &str) -> Result<(Op
     let list = group.join(", ");
     let prompt = format!(
         "TASK for the whole repository:\n{task}\n\nRepository (every file, or on a large repo the files related to yours):\n{repo}\n\n\
-         Several workers edit this repo at once, each one a few files, all from the same task text, so use exactly the names, \
+         Several workers edit this repo at once, each one a few files, all from the same task text, so use exactly the names (built literally from the task's patterns: <E>s means the name + s, never a corrected plural), \
          signatures, JSON tags and props the task gives. Keep the existing wire contract. Other files will be updated by \
          their own workers as the task requires; you may rely on that. Change a file only if the task explicitly requires it. \
          Never carry a change over by analogy: a change the task asks for one entity, file or function does NOT apply to the \
@@ -161,14 +165,18 @@ fn ask_group(ctx: &Ctx, repo: &str, group: &[String], extra: &str) -> Result<(Op
 /// the largest waves are grouped.
 const GROUP_ABOVE: usize = 32;
 
-/// Targets grouped by subject (menu.go, menu.ts, MenuList.tsx, menu.md), at most 4 per group, in
+/// Files per group executor. 4 made one answer 4 files long, and its tail set the wave (21 s for
+/// a 2-5 s median, speed7 t20); 2 keeps the request count halved with shorter answers.
+const GROUP_SIZE: usize = 2;
+
+/// Targets grouped by subject (menu.go, menu.ts, MenuList.tsx, menu.md), at most GROUP_SIZE per group, in
 /// the targets' order.
 fn groups(targets: &[String], all: &[String]) -> Vec<Vec<String>> {
     let subj = subjects(all);
     let mut out: Vec<(std::collections::HashSet<String>, Vec<String>)> = vec![];
     for f in targets {
         let s = subj.get(f).cloned().unwrap_or_default();
-        match out.iter_mut().find(|(k, g)| g.len() < 4 && !s.is_empty() && !k.is_disjoint(&s)) {
+        match out.iter_mut().find(|(k, g)| g.len() < GROUP_SIZE && !s.is_empty() && !k.is_disjoint(&s)) {
             Some((_, g)) => g.push(f.clone()),
             None => out.push((s, vec![f.clone()])),
         }
