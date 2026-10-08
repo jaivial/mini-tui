@@ -1,0 +1,281 @@
+{
+  "id": "mini-agent-rs-orchestrate",
+  "title": "Shard / hybrid orchestration",
+  "project": "mini-tui · mini-agent-rs",
+  "question": "How does `mini-agent-rs orchestrate` split one coding task across parallel executors and still pass the build gate?",
+  "summary": "A hub in plain code (no planner model) scopes the files the task names, builds ONE parent session (repo + task) and starts one executor per file. Each executor is a copy of that session plus an order for its own file. Every call is hedged: if it is slow, a twin starts and the first good answer wins. A plain-code check doubts suspicious answers. Files are written as answers land, then gofmt and the gate run, and fix waves repair only the files the gate blames.",
+  "source": "agent-rs/src at perf/hybrid-shard-clones 062b27f (PR #96); shard core merged in #94 and #95",
+  "direction": "TB",
+  "nodes": [
+    {
+      "id": "cli",
+      "label": "mini-agent-rs orchestrate",
+      "kind": "entry",
+      "stereotype": "entry point",
+      "file": "agent-rs/src/main.rs:396",
+      "summary": "Alias of `shard --hybrid`",
+      "attributes": [
+        { "name": "-t", "type": "TASK", "description": "The task text. It is also the contract when it spells names (`code`, {json}, \"quotes\")." },
+        { "name": "--root", "type": "DIR", "description": "Repository to edit (its git-tracked files)." },
+        { "name": "--verify", "type": "CMD", "description": "The gate, e.g. go build ./... && go vet ./..." },
+        { "name": "--max-inflight", "type": "N", "description": "Concurrent model calls (default 8 on zai/zhipu, 24 elsewhere)." }
+      ],
+      "operations": [
+        { "name": "main(argv)", "type": "exit code", "description": "Loads .env, installs signal handlers, prepends --hybrid." },
+        { "name": "shard::client([--hybrid, ...])", "type": "i32" }
+      ],
+      "input": [ { "name": "argv", "type": "Vec<String>" } ],
+      "process": [ "`orchestrate` loads the dotenv file and installs signal handlers.", "It calls shard::client with --hybrid prepended. `shard --clones` keeps speed7's planning-parent design as an opt-in." ],
+      "output": [ { "name": "exit code", "type": "i32", "description": "0 when the gate passes" } ]
+    },
+    {
+      "id": "hub",
+      "label": "Hub — shard::client",
+      "kind": "service",
+      "stereotype": "hub · plain code",
+      "file": "agent-rs/src/shard.rs:711",
+      "summary": "Owns the run; makes no model call of its own",
+      "attributes": [
+        { "name": "hedge", "type": "f64 = 3.0", "description": "Seconds before the first twin of a call (adaptive afterwards)" },
+        { "name": "fix_rounds", "type": "u32 = 2" },
+        { "name": "slots", "type": "Arc<Slots>", "description": "Counting semaphore: at most max_inflight calls in flight across all executors" },
+        { "name": "RETRY_MIN/MAX_WAIT", "type": "1 s / 3 s", "description": "429 backoff floor and ceiling for one-shot calls" },
+        { "name": "text_only", "type": "true", "description": "One-shot calls answer in text (tool_choice none, or no tool list on GLM)" }
+      ],
+      "operations": [
+        { "name": "client(args)", "type": "i32" },
+        { "name": "scope(task, files)", "type": "Vec<String>" },
+        { "name": "hybrid::run(ctx, root, files, targets, …)", "type": "Vec<Value>" },
+        { "name": "gofmt(root) · sh(root, verify)", "type": "(bool, String)" }
+      ],
+      "responsibilities": [ "Pick the targets, start the waves, run the gate", "Write stats.json (wall_s, gate, tokens, calls)" ],
+      "input": [ { "name": "task, root, verify, model", "type": "CLI flags" } ],
+      "process": [ "Reads the tracked files and the model config, and sets text_only.", "Sets the retry env (1 s floor, 3 s ceiling): one-shot calls are hedged, so a 429 should be retried soon.", "Creates Slots(max_inflight), scopes the targets and hands them to hybrid::run.", "Adds any new files the clones wrote to the gofmt and blame lists, then runs gofmt, the gate and the fix waves." ],
+      "output": [ { "name": "stats", "type": "JSON", "description": "wall_s, mode=hybrid, targets, gate pass/FAIL, fix_rounds, tokens, per-call stats" } ]
+    },
+    {
+      "id": "scope",
+      "label": "scope()",
+      "kind": "decision",
+      "stereotype": "plain code · no model",
+      "file": "agent-rs/src/shard.rs:659",
+      "summary": "Which files get an executor",
+      "attributes": [
+        { "name": "subjects", "type": "HashMap<file, {token}>", "description": "MenuList.tsx -> {menu}: tokens that pair with ≥2 others (list) are suffixes" },
+        { "name": "excluded", "type": "HashSet<token>", "description": "Words of sentences that say keep / unchanged / do not touch" }
+      ],
+      "operations": [
+        { "name": "subjects(files)", "type": "HashMap" },
+        { "name": "excluded(task)", "type": "HashSet" },
+        { "name": "scope(task, files)", "type": "targets" }
+      ],
+      "responsibilities": [ "Target = path quoted in the task, or its subject is a task word", "No match → every file; gate blames fill gaps" ],
+      "process": [ "want = task tokens − excluded tokens.", "A file is a target when the task quotes its path or one of its subject tokens is in want.", "Every file stays in the prompt as context; only the executors are scoped (t09: 20 → 4 executors)." ],
+      "output": [ { "name": "targets", "type": "Vec<String>" } ]
+    },
+    {
+      "id": "session",
+      "label": "Parent session",
+      "kind": "data",
+      "stereotype": "shared prefix",
+      "file": "agent-rs/src/hybrid.rs:243",
+      "summary": "Built once and copied into every executor",
+      "attributes": [
+        { "name": "[0] system", "type": "PARENT_SYSTEM", "description": "\"lead engineer … executors that are copies of this session apply the change\"" },
+        { "name": "[1] user", "type": "repo dump + TASK", "description": "Every tracked file (dump), then the task" },
+        { "name": "[2] assistant?", "type": "contract", "description": "Only when the task spells no contract" }
+      ],
+      "operations": [
+        { "name": "dump(root, files)", "type": "String" },
+        { "name": "spells_contract(task)", "type": "bool", "description": "true if the task has `code`, { or a quote" },
+        { "name": "query_text(CONTRACT_ASK)", "type": "contract text", "description": "The one optional serial call" }
+      ],
+      "responsibilities": [ "Identical bytes for every clone → provider prompt cache hits" ],
+      "process": [ "session = [system, user(repo + task)].", "If the task does not spell its contract, one call writes it (names, signatures, JSON tags, status codes) and the answer is appended.", "The session is wrapped in an Arc and shared by every clone thread." ],
+      "output": [ { "name": "session", "type": "Arc<Vec<Message>>" } ]
+    },
+    {
+      "id": "units",
+      "label": "units()",
+      "kind": "function",
+      "stereotype": "wave planner",
+      "file": "agent-rs/src/hybrid.rs:360",
+      "summary": "One clone per file, or balanced runs",
+      "attributes": [
+        { "name": "MAX_RUN", "type": "usize = 6", "description": "A 15-file run missed a file in 7 of 8 calls" },
+        { "name": "inflight", "type": "usize" },
+        { "name": "size(f)", "type": "bytes + 400", "description": "Per-file answer overhead floor" }
+      ],
+      "operations": [ { "name": "units(root, targets, inflight)", "type": "Vec<Vec<String>>" } ],
+      "responsibilities": [ "≤ 2×inflight targets → one clone per file", "Else runs of adjacent files, balanced by size, so the wave fits in about one round of the rate limit" ],
+      "process": [ "Path order keeps a layer together (all types/*.ts, all components).", "Runs close when the accumulated size passes total/inflight or MAX_RUN files." ],
+      "output": [ { "name": "units", "type": "Vec<Vec<String>>", "description": "One thread per unit" } ]
+    },
+    {
+      "id": "hedged",
+      "label": "hedged()",
+      "kind": "function",
+      "stereotype": "tail hedging",
+      "file": "agent-rs/src/shard.rs:299",
+      "summary": "Twin calls race; the first good answer wins",
+      "attributes": [
+        { "name": "MAX_CALLS", "type": "u32 = 8", "description": "First call + twins per unit" },
+        { "name": "lat", "type": "Arc<Mutex<Vec<f64>>>", "description": "Answer latencies of this wave" },
+        { "name": "FIX_HEDGE", "type": "f64 = 2.0", "description": "Hedge for fix waves" }
+      ],
+      "operations": [
+        { "name": "threshold(lat, wave_n, hedge)", "type": "f64", "description": "hedge until ¼ of the wave answered (min 3), then 2× median, clamped to [1.5 s, hedge]" },
+        { "name": "hedged(call, file, hedge, lat, wave_n, slots)", "type": "Result<(content?, usage, calls)>" }
+      ],
+      "responsibilities": [ "Beat provider tail latency (a 150-token answer taking 20 s)", "A failed or doubted call starts a new copy at once" ],
+      "process": [ "Acquires a slot and starts call k = 0.", "Polls every 250 ms or less; when the newest call is older than threshold() and a slot is free, starts a twin.", "Ok → records latency and returns; Err (including doubted) → starts another copy, until MAX_CALLS.", "Abandoned calls just release their slot when they finish." ],
+      "output": [ { "name": "answer", "type": "{path: content | null}", "description": "null = UNCHANGED" } ]
+    },
+    {
+      "id": "clone",
+      "label": "Clone executor (call k)",
+      "kind": "function",
+      "stereotype": "executor · session copy",
+      "file": "agent-rs/src/hybrid.rs:280",
+      "summary": "Session + \"execute only YOUR FILE(S)\"",
+      "attributes": [
+        { "name": "msgs", "type": "session + system(clone_order)" },
+        { "name": "edits", "type": "bool", "description": "k == 0 and file > EDITS_ABOVE (600 B): answer SEARCH/REPLACE; twins answer the whole file" },
+        { "name": "call_cfg(k)", "type": "model cfg", "description": "GLM: thinking disabled, text_only = no_tools; twins (k>0) get twin_kwargs" }
+      ],
+      "operations": [
+        { "name": "clone_order(files, extra, edits)", "type": "String" },
+        { "name": "query_text(model, cfg, msgs)", "type": "(text, usage)" },
+        { "name": "apply_edits(old, answer)", "type": "Option<String>" },
+        { "name": "parse_answer / parse_group", "type": "content | UNCHANGED" }
+      ],
+      "responsibilities": [ "Do not investigate, plan or review: execute the order", "Use the task's names literally (<E>s = name + s)" ],
+      "process": [ "Copies the session and appends the order for its file(s), with a Note when a previous copy was doubted.", "One file: edits (first call, file > 600 B) or <<<FILE … FILE>>>; several files: one block or `UNCHANGED <path>` per file.", "An edit that does not apply is an Err, and the hedge answers it with a whole-file twin." ],
+      "output": [ { "name": "map", "type": "{path: content | null}" } ]
+    },
+    {
+      "id": "provider",
+      "label": "Model provider",
+      "kind": "external",
+      "stereotype": "external API",
+      "file": "agent-rs/src/models/http.rs:308",
+      "summary": "zai/glm-5.3-flash or MiniMax-M3.1-Flash",
+      "attributes": [
+        { "name": "rate limit", "type": "≈10 concurrent (Zai)", "description": "Above that: 429 code 1302" },
+        { "name": "retry wait", "type": "×0.5–1.5 jitter, ≤ 3 s", "description": "So parallel calls never retry in lockstep" }
+      ],
+      "operations": [
+        { "name": "with_retry(call)", "type": "Result<T, ModelError>" },
+        { "name": "text_only(body)", "type": "()", "description": "models/wire.rs:78 — tool_choice none, or no tool list" }
+      ],
+      "process": [ "Retries 429/5xx with a jittered exponential wait, capped by MINI_AGENT_RETRY_MAX_WAIT.", "The shared session prefix is cached by the provider: repeated clones mostly pay for the order and the answer." ],
+      "output": [ { "name": "text", "type": "String" }, { "name": "usage", "type": "tokens" } ]
+    },
+    {
+      "id": "doubt",
+      "label": "doubt()",
+      "kind": "decision",
+      "stereotype": "plain-code check",
+      "file": "agent-rs/src/hybrid.rs:215",
+      "summary": "Re-asks suspicious answers",
+      "attributes": [
+        { "name": "CHECKED", "type": "u32 = 5", "description": "Only the first 5 copies must pass; later ones are taken as they come" },
+        { "name": "UNCHANGED_CHECKS", "type": "u32 = 2" },
+        { "name": "need", "type": "Vec<String>", "description": "JSON message literals the task quotes for this file" }
+      ],
+      "operations": [
+        { "name": "required(task, files)", "type": "HashMap<file, literals>" },
+        { "name": "layer_named(task, file)", "type": "bool" },
+        { "name": "doubt(file, answer, need, k, layer)", "type": "Option<reason>" }
+      ],
+      "responsibilities": [ "UNCHANGED for a scoped file whose layer the task names → confirm with another copy", "Dropped quoted literal → re-ask with the reason as a Note" ],
+      "process": [ "A doubt is returned as Err(\"doubted: …\"), so hedged() starts the next copy, whose order carries the reason.", "A wrong doubt never stalls a file: after CHECKED copies, answers are accepted." ],
+      "output": [ { "name": "accepted map", "type": "{path: content | null}" } ]
+    },
+    {
+      "id": "files",
+      "label": "Working tree",
+      "kind": "data",
+      "stereotype": "files on disk",
+      "file": "agent-rs/src/shard.rs:523",
+      "summary": "Written as each unit answers",
+      "attributes": [
+        { "name": "changed", "type": "bool per file" },
+        { "name": "call stats", "type": "file, secs, at_s, calls, usage, group" }
+      ],
+      "operations": [ { "name": "record(root, f, result, secs, t0)", "type": "Value", "description": "Writes the new content if it differs and returns the per-file stat" } ],
+      "process": [ "null (UNCHANGED) leaves the file as is.", "A unit's usage and call count go on its first file only." ],
+      "output": [ { "name": "edited repo", "type": "files" } ]
+    },
+    {
+      "id": "gate",
+      "label": "Gate",
+      "kind": "decision",
+      "stereotype": "verify",
+      "file": "agent-rs/src/shard.rs:859",
+      "summary": "gofmt, then --verify",
+      "attributes": [
+        { "name": "verify", "type": "CMD", "description": "go build / go vet / gofmt in the bench" },
+        { "name": "rounds", "type": "u32 ≤ fix_rounds" }
+      ],
+      "operations": [
+        { "name": "gofmt -w <tracked *.go>", "type": "()" },
+        { "name": "sh(root, verify)", "type": "(ok, err)" },
+        { "name": "blamed(err, files)", "type": "Vec<String>", "description": "Files named in the error; none → every file" }
+      ],
+      "responsibilities": [ "The one serial step left: +2–5 s when it fails" ],
+      "process": [ "No --verify → pass.", "FAIL → fix wave over the blamed files, then gofmt and the gate again, at most fix_rounds times." ],
+      "output": [ { "name": "gate", "type": "pass | FAIL" } ]
+    },
+    {
+      "id": "fix",
+      "label": "Fix wave",
+      "kind": "function",
+      "stereotype": "repair",
+      "file": "agent-rs/src/shard.rs:871",
+      "summary": "Only the files the gate blames",
+      "attributes": [
+        { "name": "bad", "type": "Vec<String>", "description": "blamed(err, files)" },
+        { "name": "tail", "type": "last 3000 chars of err" },
+        { "name": "hedge", "type": "FIX_HEDGE = 2.0 s" }
+      ],
+      "operations": [ { "name": "wave(ctx, root, files, bad, extra, FIX_HEDGE, …)", "type": "Vec<Value>" } ],
+      "responsibilities": [ "Show each executor the CURRENT repo + the gate error, and fix its file" ],
+      "process": [ "extra(f) = \"The repo above is the CURRENT state. The gate fails with: … Fix f so the gate passes.\"", "Uses shard's one-shot executor wave (also hedged)." ],
+      "output": [ { "name": "fixed files", "type": "files" } ]
+    },
+    {
+      "id": "stats",
+      "label": "stats.json",
+      "kind": "data",
+      "stereotype": "report",
+      "file": "agent-rs/src/shard.rs:896",
+      "summary": "-o stats.json",
+      "attributes": [
+        { "name": "wall_s", "type": "f64" },
+        { "name": "mode", "type": "\"hybrid\"" },
+        { "name": "gate", "type": "pass | FAIL | none" },
+        { "name": "tokens", "type": "prompt / uncached / out" },
+        { "name": "calls", "type": "per-file stats" }
+      ],
+      "process": [ "Prints one line: files, targeted, written, gate, fix rounds, wall seconds." ]
+    }
+  ],
+  "edges": [
+    { "source": "cli", "target": "hub", "label": "argv + --hybrid" },
+    { "source": "hub", "target": "scope", "label": "task, tracked files" },
+    { "source": "scope", "target": "session", "label": "targets" },
+    { "source": "session", "target": "units", "label": "Arc<session>" },
+    { "source": "units", "target": "hedged", "label": "one thread per unit" },
+    { "source": "hedged", "target": "clone", "label": "call k = 0…7" },
+    { "source": "clone", "target": "provider", "label": "chat request" },
+    { "source": "provider", "target": "clone", "label": "text + usage" },
+    { "source": "clone", "target": "doubt", "label": "{path: content|null}" },
+    { "source": "doubt", "target": "hedged", "label": "doubted → next copy" },
+    { "source": "doubt", "target": "files", "label": "accepted" },
+    { "source": "files", "target": "gate", "label": "all units joined" },
+    { "source": "gate", "target": "fix", "label": "FAIL: blamed files" },
+    { "source": "fix", "target": "gate", "label": "gofmt + re-run" },
+    { "source": "gate", "target": "stats", "label": "pass / FAIL" }
+  ]
+}
