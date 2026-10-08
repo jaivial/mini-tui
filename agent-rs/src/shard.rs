@@ -900,16 +900,16 @@ pub fn client(args: &[String]) -> i32 {
             reviews: fix_rounds,
             warmup: std::env::var("ORCH_NO_WARMUP").is_err(),
         };
-        let (calls, targets, ok, rounds) = crate::coord::run(&ctx, &root, &files, &o, t0, &slots);
+        let (calls, targets, ok, rounds, path) = crate::coord::run(&ctx, &root, &files, &o, t0, &slots);
         let wall = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
         let changed = calls.iter().filter(|c| c["changed"] == json!(true)).count();
         let errors = calls.iter().filter(|c| c.get("error").is_some()).count();
         let gate = if verify.is_empty() { "none" } else if ok { "pass" } else { "FAIL" };
-        let stats = json!({"wall_s": wall, "mode": "coord", "coordinator": coordinator, "worker": ctx.model_name, "targets": targets.len(), "gate": gate, "review_rounds": rounds, "files": files.len(), "changed": changed, "errors": errors, "tokens": token_totals(&calls), "calls": calls});
+        let stats = json!({"wall_s": wall, "mode": "coord", "coordinator": coordinator, "worker": ctx.model_name, "targets": targets.len(), "gate": gate, "review_rounds": rounds, "path": path, "files": files.len(), "changed": changed, "errors": errors, "tokens": token_totals(&calls), "calls": calls});
         if let Some(p) = out {
             let _ = std::fs::write(p, serde_json::to_string_pretty(&stats).unwrap_or_default());
         }
-        println!("orchestrate: coordinator {coordinator}, workers {}: {} targeted, {changed} written, gate {gate}, {rounds} fix round(s), {wall}s", ctx.model_name.as_deref().unwrap_or("?"), targets.len());
+        println!("orchestrate: coordinator {coordinator}, workers {}: {} targeted, {changed} written, gate {gate}, path {path}, {rounds} fix round(s), {wall}s", ctx.model_name.as_deref().unwrap_or("?"), targets.len());
         use std::io::Write;
         let _ = std::io::stdout().flush();
         std::process::exit(if ok { 0 } else { 1 });
