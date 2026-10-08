@@ -39,12 +39,14 @@ const CONTRACT_ASK: &str = "Before the executors start, write the shared contrac
 identifier, signature, JSON tag, route, status code and user-visible text, exactly as all files must use it, and which files change. \
 No code, no preamble. Plain text; do not call any tool.";
 
-fn clone_order(files: &[String], extra: &str) -> String {
+fn clone_order(files: &[String], extra: &str, edits: bool) -> String {
     let (who, how) = if let [f] = files {
-        (
-            format!("YOUR FILE: {f}"),
-            format!("If the task requires no change to {f}, answer exactly UNCHANGED. Otherwise answer with the line <<<FILE, then the COMPLETE new content of {f}, then the line FILE>>>, and nothing else (no code fences around it)."),
-        )
+        let shape = if edits {
+            format!("Otherwise answer with EDITS ONLY: one or more blocks\n{SEARCH}\n<exact current lines of {f}, enough to be unique>\n{SEP}\n<the new lines>\n{REPLACE}\nand nothing else (no code fences, no commentary).")
+        } else {
+            format!("Otherwise answer with the line <<<FILE, then the COMPLETE new content of {f}, then the line FILE>>>, and nothing else (no code fences around it).")
+        };
+        (format!("YOUR FILE: {f}"), format!("If the task requires no change to {f}, answer exactly UNCHANGED. {shape}"))
     } else {
         (
             format!("YOUR FILES ({}): {}", files.len(), files.join(", ")),
@@ -60,6 +62,61 @@ fn clone_order(files: &[String], extra: &str) -> String {
          task does not ask for. Before answering, check that EVERY requirement the task states for your files holds, in the task's exact terms \
          (names, status codes, phrases; for docs: every case the task lists). No tests, no tool calls.\n{who}\n{extra}{how}"
     )
+}
+
+const SEARCH: &str = "<<<<<<< SEARCH";
+const SEP: &str = "=======";
+const REPLACE: &str = ">>>>>>> REPLACE";
+
+/// The first call of a one-file clone answers SEARCH/REPLACE edits instead of the whole file;
+/// its hedge twins answer the whole file. Measured on Zai glm-5.3-flash (speed8, 4 calls each,
+/// same prompt): xl t14 voucher.go, whole file 10.2-10.6 s / 360 tokens out vs edits 5.3-6.4 s /
+/// 37-55 tokens, 4/4 applied; m5 t13 menu.go edits 6.7-8.3 s, 4/4 applied; het t08 voucher.go
+/// (a rewrite of the handler) edits 10.6-15.2 s, 1 of 4 did not apply. Output length is the
+/// clone's latency on small edits of mid-size files; a rewrite gains nothing, and an edit that does
+/// not apply is an error the hedge answers with a whole-file twin.
+const EDITS_ABOVE: u64 = 600;
+
+/// `answer`'s SEARCH/REPLACE blocks applied to `old`: every SEARCH must match once, exactly or
+/// with runs of spaces/tabs collapsed (the model realigns struct fields). `None` = UNCHANGED.
+fn apply_edits(old: &str, answer: &str) -> Result<Option<String>, String> {
+    let t = answer.trim();
+    if !t.contains(SEARCH) {
+        return if t.contains("UNCHANGED") { Ok(None) } else { Err(format!("no edit blocks: {:?}", t.chars().take(120).collect::<String>())) };
+    }
+    let re = regex::Regex::new(&format!(r"(?s){}\n(.*?)\n?{}\n(.*?)\n?{}", regex::escape(SEARCH), regex::escape(SEP), regex::escape(REPLACE))).unwrap();
+    let ws = regex::Regex::new(r"[ \t]+").unwrap();
+    let mut new = old.to_string();
+    let mut n = 0;
+    for c in re.captures_iter(t) {
+        let (find, repl) = (&c[1], &c[2]);
+        if find.trim().is_empty() {
+            return Err("an edit with an empty SEARCH".into());
+        }
+        if new.matches(find).count() == 1 {
+            new = new.replacen(find, repl, 1);
+        } else {
+            // Whitespace-tolerant: match the lines of `find` with runs of blanks collapsed.
+            let lines: Vec<&str> = new.split_inclusive('\n').collect();
+            let want: Vec<String> = find.lines().map(|l| ws.replace_all(l.trim_end(), " ").to_string()).collect();
+            let hits: Vec<usize> = (0..lines.len().saturating_sub(want.len() - 1))
+                .filter(|&i| want.iter().enumerate().all(|(j, w)| ws.replace_all(lines[i + j].trim_end(), " ") == *w))
+                .collect();
+            let [i] = hits[..] else {
+                return Err(format!("edit does not apply ({} matches): {:?}", hits.len(), find.chars().take(80).collect::<String>()));
+            };
+            let mut r = repl.to_string();
+            if lines[i + want.len() - 1].ends_with('\n') {
+                r.push('\n');
+            }
+            new = format!("{}{}{}", lines[..i].concat(), r, lines[i + want.len()..].concat());
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return Err("edit blocks do not parse".into());
+    }
+    Ok(Some(new))
 }
 
 /// The model config of call `k` of a unit. `twin_kwargs` (config) is merged into the model_kwargs
@@ -214,7 +271,7 @@ pub(crate) fn run(ctx: &Ctx, root: &Path, files: &[String], targets: &[String], 
     let handles: Vec<_> = units
         .into_iter()
         .map(|g| {
-            let (c, l, sl, sess) = (ctx.clone(), lat.clone(), slots.clone(), session.clone());
+            let (c, l, sl, sess, root) = (ctx.clone(), lat.clone(), slots.clone(), session.clone(), root.to_path_buf());
             let nd: Vec<Vec<String>> = g.iter().map(|f| need.get(f).cloned().unwrap_or_default()).collect();
             std::thread::spawn(move || {
                 let s = Instant::now();
@@ -225,12 +282,15 @@ pub(crate) fn run(ctx: &Ctx, root: &Path, files: &[String], targets: &[String], 
                     let k = n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let note = why.lock().map(|w| if w.is_empty() { String::new() } else { format!("Note: {w}\n") }).unwrap_or_default();
                     let mut msgs = (*sess).clone();
-                    msgs.push(json!({"role": "system", "content": clone_order(&g2, &brief(&note, k))}));
+                    let old = if g2.len() == 1 { std::fs::read_to_string(root.join(&g2[0])).ok() } else { None };
+                    let edits = k == 0 && old.as_ref().is_some_and(|o| o.len() as u64 > EDITS_ABOVE);
+                    msgs.push(json!({"role": "system", "content": clone_order(&g2, &brief(&note, k), edits)}));
                     let (text, usage) = query_text(&c.model_name, &call_cfg(&c, k), &msgs)?;
                     // One answer shape for one file or several: {path: new content | null}.
                     let map: serde_json::Map<String, Value> = if g2.len() == 1 {
+                        let a = if edits { apply_edits(old.as_deref().unwrap_or(""), &text)? } else { parse_answer(&text)? };
                         let mut m = serde_json::Map::new();
-                        m.insert(g2[0].clone(), parse_answer(&text)?.map_or(Value::Null, Value::String));
+                        m.insert(g2[0].clone(), a.map_or(Value::Null, Value::String));
                         m
                     } else {
                         serde_json::from_str(&parse_group(&text, &g2)?).unwrap_or_default()
