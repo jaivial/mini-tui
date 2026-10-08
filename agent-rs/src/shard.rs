@@ -27,13 +27,22 @@ use std::time::{Duration, Instant};
 
 type Obj = Map<String, Value>;
 
-const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MODEL] [--files a,b] [--hybrid|--clones] [--hedge SECS] [--scope auto|all] [--max-inflight N] [--fix-rounds N] [-o stats.json]
+const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MODEL] [--files a,b] [--coord [--coordinator MODEL] [--coordinator-thinking]|--hybrid|--clones] [--hedge SECS] [--scope auto|all] [--max-inflight N] [--fix-rounds N] [-o stats.json]
 
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
 file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 24 calls in flight (8 on zai/zhipu), 2 fix rounds.
---hybrid (alias `orchestrate`): the same hub, but every executor is a copy of ONE parent session (repo + task, plus a contract call only when the task spells none), so the repo is a shared cacheable prefix. --clones: speed7's planning parent + clones.";
+--coord (alias `orchestrate`): an LLM coordinator (--coordinator, default cliproxy/claude-opus-5-5) reads the repo and the task and streams a plan
+of basic orders (no code); every order starts workers = copies of the coordinator's session on the -m model (one per file); then the gate,
+and the coordinator reviews the diff: OK, or FIX orders for new workers (at most --fix-rounds reviews). The worker model's cache is warmed with the
+coordinator's session at t=0 (ORCH_NO_WARMUP=1 skips it); a worker's candidates are syntax-checked and the first valid one wins (twins only on a
+stalled call, losers cancelled; --hedge does not apply); Go imports are repaired before the gate; 10 calls in flight on zai/zhipu.
+--hybrid: the plain-code hub, but every executor is a copy of ONE parent session (repo + task, plus a contract call only when the task spells none), so the repo is a shared cacheable prefix. --clones: speed7's planning parent + clones.";
+
+/// `--coordinator` default: the strongest model in the local config (speed9: Claude Opus 5.5
+/// behind cli-proxy; probed against fable-5-1, sonnet-5-5 and gpt-6-luna).
+const DEFAULT_COORDINATOR: &str = "cliproxy/claude-opus-5-5";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -113,6 +122,20 @@ pub(crate) fn query_text(model_name: &Option<String>, model_cfg: &Obj, msgs: &[V
         return Err(format!("empty text answer (raw {} chars, finish {finish}, {} tokens out)", text.len(), usage["completion_tokens"]));
     }
     Ok((visible, usage))
+}
+
+/// The usage of one call whatever it answered (a warmup: one token out, the text is not used).
+pub(crate) fn query_usage(model_name: &Option<String>, model_cfg: &Obj, msgs: &[Value]) -> Result<Value, String> {
+    let mut model = get_model(model_name.as_deref(), model_cfg)?;
+    let msgs: Vec<Value> = msgs
+        .iter()
+        .map(|m| model.format_message(m["role"].as_str().unwrap_or("user"), m["content"].as_str().unwrap_or(""), None))
+        .collect();
+    let m = match model.query(&msgs, None).map_err(|e| format!("{}: {}", e.kind, e.message))? {
+        Reply::Message(m) => m,
+        Reply::FormatError(ms) => ms.into_iter().next().unwrap_or(Value::Null),
+    };
+    Ok(m.pointer("/extra/response/usage").cloned().unwrap_or(Value::Null))
 }
 
 /// One answer for a GROUP of files (one executor per subject on a large wave). The answer is a
@@ -235,6 +258,7 @@ pub(crate) fn parse_answer(text: &str) -> Result<Option<String>, String> {
 pub(crate) struct Slots {
     free: std::sync::Mutex<usize>,
     cv: std::sync::Condvar,
+    waiting: std::sync::atomic::AtomicUsize,
 }
 
 impl Slots {
@@ -242,16 +266,28 @@ impl Slots {
         Slots {
             free: std::sync::Mutex::new(n.max(1)),
             cv: std::sync::Condvar::new(),
+            waiting: Default::default(),
         }
     }
-    fn acquire(&self) {
+    pub(crate) fn acquire(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.waiting.fetch_add(1, SeqCst);
         let mut f = self.free.lock().unwrap();
         while *f == 0 {
             f = self.cv.wait(f).unwrap();
         }
         *f -= 1;
+        self.waiting.fetch_sub(1, SeqCst);
     }
-    fn try_acquire(&self) -> bool {
+    /// A slot for a speculative call (a hedge twin): only when one is free AND no first call is
+    /// waiting for one, so twins never delay real work.
+    pub(crate) fn try_acquire_spare(&self) -> bool {
+        if self.waiting.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            return false;
+        }
+        self.try_acquire()
+    }
+    pub(crate) fn try_acquire(&self) -> bool {
         let mut f = self.free.lock().unwrap();
         if *f == 0 {
             return false;
@@ -259,7 +295,7 @@ impl Slots {
         *f -= 1;
         true
     }
-    fn release(&self) {
+    pub(crate) fn release(&self) {
         *self.free.lock().unwrap() += 1;
         self.cv.notify_one();
     }
@@ -722,6 +758,9 @@ pub fn client(args: &[String]) -> i32 {
     let mut scope_all = false;
     let mut clones = false;
     let mut hybrid = false;
+    let mut coord = false;
+    let mut coordinator = String::from(DEFAULT_COORDINATOR);
+    let mut coord_thinking = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -756,6 +795,9 @@ pub fn client(args: &[String]) -> i32 {
             "--scope" => scope_all = val() == "all",
             "--clones" => clones = true,
             "--hybrid" => hybrid = true,
+            "--coord" => coord = true,
+            "--coordinator" => coordinator = val(),
+            "--coordinator-thinking" => coord_thinking = true,
             "--max-inflight" => max_inflight = val().parse().unwrap_or(max_inflight),
             "--hedge" => hedge = val().parse().unwrap_or(hedge),
             "--fix-rounds" => fix_rounds = val().parse().unwrap_or(fix_rounds),
@@ -769,6 +811,11 @@ pub fn client(args: &[String]) -> i32 {
     }
     if max_inflight == 0 {
         max_inflight = crate::hybrid::default_inflight(model_name.as_deref());
+        // orchestrate on Zai: 10 streams open at once are all served, an 11th gets 429 (measured,
+        // speed10 probe), and its hedge twins only take spare slots, so its first calls get all 10.
+        if coord && max_inflight == 8 {
+            max_inflight = 10;
+        }
     }
     if task.trim().is_empty() {
         eprintln!("error: shard needs -t TASK or --task-file\n\n{HELP}");
@@ -835,6 +882,38 @@ pub fn client(args: &[String]) -> i32 {
     }
     let slots = std::sync::Arc::new(Slots::new(max_inflight));
     let t0 = Instant::now();
+    if coord {
+        // The coordinator: same config, its own model; it answers in text (no tool list) and,
+        // unless --coordinator-thinking, without extended thinking (measured, speed9: Opus 5.5
+        // via cli-proxy planned xl t14 in 6.5 s with thinking, 2.1 s without, same plan).
+        let mut cc = ctx.model_cfg.clone();
+        cc.insert("text_only".into(), json!("no_tools"));
+        let mut kw = cc.get("model_kwargs").and_then(Value::as_object).cloned().unwrap_or_default();
+        kw.entry("max_tokens").or_insert(json!(16000));
+        if !coord_thinking {
+            kw.insert("thinking".into(), json!({"type": "disabled"}));
+        }
+        cc.insert("model_kwargs".into(), Value::Object(kw));
+        let o = crate::coord::Opts {
+            coord: Ctx { model_name: Some(coordinator.clone()), model_cfg: cc, task: ctx.task.clone() },
+            verify: verify.clone(),
+            reviews: fix_rounds,
+            warmup: std::env::var("ORCH_NO_WARMUP").is_err(),
+        };
+        let (calls, targets, ok, rounds) = crate::coord::run(&ctx, &root, &files, &o, t0, &slots);
+        let wall = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+        let changed = calls.iter().filter(|c| c["changed"] == json!(true)).count();
+        let errors = calls.iter().filter(|c| c.get("error").is_some()).count();
+        let gate = if verify.is_empty() { "none" } else if ok { "pass" } else { "FAIL" };
+        let stats = json!({"wall_s": wall, "mode": "coord", "coordinator": coordinator, "worker": ctx.model_name, "targets": targets.len(), "gate": gate, "review_rounds": rounds, "files": files.len(), "changed": changed, "errors": errors, "tokens": token_totals(&calls), "calls": calls});
+        if let Some(p) = out {
+            let _ = std::fs::write(p, serde_json::to_string_pretty(&stats).unwrap_or_default());
+        }
+        println!("orchestrate: coordinator {coordinator}, workers {}: {} targeted, {changed} written, gate {gate}, {rounds} fix round(s), {wall}s", ctx.model_name.as_deref().unwrap_or("?"), targets.len());
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     let (mut calls, targets) = if clones {
         crate::clones::run(&ctx, &root, &files, hedge, t0, &slots)
     } else if hybrid {
