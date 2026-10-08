@@ -29,7 +29,7 @@ const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MO
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
-file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 32 calls in flight, 2 fix rounds.";
+file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 24 calls in flight, 2 fix rounds.";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -119,7 +119,9 @@ pub(crate) fn parse_answer(text: &str) -> Result<Option<String>, String> {
 
 /// Global cap on model calls in flight (first calls and hedge twins alike). One call per file at
 /// once, plus twins, is a burst the provider answers with 429s; under a 429 storm uncapped
-/// twins multiply it (measured: 508 retries, 106 s for a 2-file task on xl). `--max-inflight`.
+/// twins multiply it (measured: 508 retries, 106 s for a 2-file task on xl). MiniMax's token plan
+/// took 32 concurrent requests and refused 32 of 40 (speed7 probe), per account: other sessions
+/// count too, hence 24 by default. `--max-inflight`.
 pub(crate) struct Slots {
     free: std::sync::Mutex<usize>,
     cv: std::sync::Condvar,
@@ -519,7 +521,7 @@ pub fn client(args: &[String]) -> i32 {
     );
     let (mut only, mut hedge, mut fix_rounds, mut configs) =
         (Vec::<String>::new(), 3.0f64, 2u32, Vec::<String>::new());
-    let mut max_inflight = 32usize;
+    let mut max_inflight = 24usize;
     let mut scope_all = false;
     let mut clones = false;
     let mut i = 0;
