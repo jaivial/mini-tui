@@ -34,14 +34,14 @@ file as context, executors only for the files the task names (--scope auto), hed
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
 #[derive(Clone)]
-struct Ctx {
-    model_name: Option<String>,
-    model_cfg: Obj,
-    task: String,
+pub(crate) struct Ctx {
+    pub(crate) model_name: Option<String>,
+    pub(crate) model_cfg: Obj,
+    pub(crate) task: String,
 }
 
-/// One answer for one file: Some(new content), None = UNCHANGED.
-fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>, u64), String> {
+/// One answer for one file: Some(new content), None = UNCHANGED, plus the call's usage.
+fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>, Value), String> {
     let prompt = format!(
         "TASK for the whole repository:\n{task}\n\nRepository (every file):\n{repo}\n\n\
          Several workers edit this repo at once, ONE FILE EACH, all from the same task text, so use exactly the names, \
@@ -53,28 +53,34 @@ fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>
          then the line {END}, and nothing else (no code fences around it). No tests.",
         task = ctx.task
     );
-    let mut model = get_model(ctx.model_name.as_deref(), &ctx.model_cfg)?;
     let msgs = vec![
-        model.format_message("system", SYSTEM, None),
-        model.format_message("user", &prompt, None),
+        json!({"role": "system", "content": SYSTEM}),
+        json!({"role": "user", "content": prompt}),
     ];
-    let msg = match model
-        .query(&msgs, None)
-        .map_err(|e| format!("{}: {}", e.kind, e.message))?
-    {
+    let (text, usage) = query_text(&ctx.model_name, &ctx.model_cfg, &msgs)?;
+    parse_answer(&text).map(|a| (a, usage))
+}
+
+/// One plain model call on `msgs` (`{role, content}` objects): the reply text without its
+/// `<think>` block, and the provider's usage object (prompt / cached / completion tokens).
+pub(crate) fn query_text(model_name: &Option<String>, model_cfg: &Obj, msgs: &[Value]) -> Result<(String, Value), String> {
+    let mut model = get_model(model_name.as_deref(), model_cfg)?;
+    let msgs: Vec<Value> = msgs
+        .iter()
+        .map(|m| model.format_message(m["role"].as_str().unwrap_or("user"), m["content"].as_str().unwrap_or(""), None))
+        .collect();
+    let msg = match model.query(&msgs, None).map_err(|e| format!("{}: {}", e.kind, e.message))? {
         Reply::Message(m) => m,
         Reply::FormatError(ms) => ms.into_iter().next().unwrap_or(Value::Null),
     };
-    let out_tok = msg
-        .pointer("/extra/response/usage/completion_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let usage = msg.pointer("/extra/response/usage").cloned().unwrap_or(Value::Null);
     let text = msg
         .pointer("/extra/submission")
         .and_then(Value::as_str)
         .map(String::from)
         .unwrap_or_else(|| shapes::text_of(msg.get("content").unwrap_or(&Value::Null)));
-    parse_answer(&text).map(|a| (a, out_tok))
+    let think = regex::Regex::new(r"(?s)<think>.*?</think>").unwrap();
+    Ok((think.replace_all(&text, "").trim().to_string(), usage))
 }
 
 const BEGIN: &str = "<<<FILE";
@@ -84,10 +90,8 @@ const END: &str = "FILE>>>";
 /// a markdown file with a fenced example inside it was cut at the inner fence (measured, a doc
 /// truncated mid-example). No END = a truncated answer: an error, so the hedge tries again instead
 /// of writing half a file.
-fn parse_answer(text: &str) -> Result<Option<String>, String> {
-    let think = regex::Regex::new(r"(?s)<think>.*?</think>").unwrap();
-    let t = think.replace_all(text, "");
-    let t = t.trim();
+pub(crate) fn parse_answer(text: &str) -> Result<Option<String>, String> {
+    let t = text.trim();
     if let Some(open) = t.find(BEGIN) {
         let body_start = t[open..]
             .find('\n')
@@ -112,13 +116,13 @@ fn parse_answer(text: &str) -> Result<Option<String>, String> {
 /// Global cap on model calls in flight (first calls and hedge twins alike). One call per file at
 /// once, plus twins, is a burst the provider answers with 429s; under a 429 storm uncapped
 /// twins multiply it (measured: 508 retries, 106 s for a 2-file task on xl). `--max-inflight`.
-struct Slots {
+pub(crate) struct Slots {
     free: std::sync::Mutex<usize>,
     cv: std::sync::Condvar,
 }
 
 impl Slots {
-    fn new(n: usize) -> Self {
+    pub(crate) fn new(n: usize) -> Self {
         Slots {
             free: std::sync::Mutex::new(n.max(1)),
             cv: std::sync::Condvar::new(),
@@ -146,7 +150,7 @@ impl Slots {
 }
 
 /// Latencies of the answers already back in this wave: the hedge threshold adapts to them.
-type Lat = std::sync::Arc<std::sync::Mutex<Vec<f64>>>;
+pub(crate) type Lat = std::sync::Arc<std::sync::Mutex<Vec<f64>>>;
 
 /// When to start a twin: `hedge` seconds until a quarter of the wave (min 3) has answered, then
 /// 2.5x the median answer so far, clamped to [2 s, hedge]. A fixed 8 s hedge was the whole wall
@@ -160,29 +164,25 @@ fn threshold(lat: &Lat, wave_n: usize, hedge: f64) -> f64 {
     (2.5 * v[v.len() / 2]).clamp(2.0f64.min(hedge), hedge)
 }
 
-/// `ask` with tail hedging: a twin starts when the newest call in flight is older than
+/// One model call's result: Some(new content) / None = UNCHANGED, and the call's usage.
+pub(crate) type Answer = Result<(Option<String>, Value), String>;
+
+/// `call` with tail hedging: a twin starts when the newest call in flight is older than
 /// `threshold` (max 3 calls in all); the first good answer wins and the others are abandoned.
-fn hedged(
-    ctx: &Ctx,
-    repo: &str,
+/// Returns the answer, the usage of every call that came back, and how many calls started.
+pub(crate) fn hedged(
+    call: std::sync::Arc<dyn Fn() -> Answer + Send + Sync>,
     file: &str,
-    extra: &str,
     hedge: f64,
     lat: &Lat,
     wave_n: usize,
     slots: &std::sync::Arc<Slots>,
-) -> Result<(Option<String>, u64, u32), String> {
-    let (tx, rx) = mpsc::channel();
-    let start = |tx: mpsc::Sender<Result<(Option<String>, u64), String>>| {
-        let (c, r, f, e) = (
-            ctx.clone(),
-            repo.to_string(),
-            file.to_string(),
-            extra.to_string(),
-        );
-        let sl = slots.clone();
+) -> Result<(Option<String>, Value, u32), String> {
+    let (tx, rx) = mpsc::channel::<Answer>();
+    let start = |tx: mpsc::Sender<Answer>| {
+        let (c, sl) = (call.clone(), slots.clone());
         std::thread::spawn(move || {
-            let r = ask(&c, &r, &f, &e);
+            let r = c();
             sl.release();
             let _ = tx.send(r);
         });
@@ -202,13 +202,14 @@ fn hedged(
             Duration::from_secs(3600)
         };
         match rx.recv_timeout(wait) {
-            Ok(Ok((a, t))) => {
+            Ok(Ok((a, u))) => {
                 if let Ok(mut v) = lat.lock() {
                     v.push(t_first.elapsed().as_secs_f64());
                 }
-                return Ok((a, t, started));
+                return Ok((a, u, started));
             }
             Ok(Err(e)) => {
+                eprintln!("{file}: call failed: {}", e.chars().take(400).collect::<String>());
                 live -= 1;
                 last_err = e;
                 if started < 3 {
@@ -242,7 +243,7 @@ fn hedged(
     }
 }
 
-fn dump(root: &Path, files: &[String]) -> String {
+pub(crate) fn dump(root: &Path, files: &[String]) -> String {
     files
         .iter()
         .map(|f| {
@@ -282,7 +283,9 @@ fn wave(
             );
             std::thread::spawn(move || {
                 let s = Instant::now();
-                let r = hedged(&c, &r, &f2, &e, hedge, &l, wave_n, &sl);
+                let f3 = f2.clone();
+                let call = std::sync::Arc::new(move || ask(&c, &r, &f3, &e));
+                let r = hedged(call, &f2, hedge, &l, wave_n, &sl);
                 (f2, r, s.elapsed().as_secs_f64())
             })
         })
@@ -292,32 +295,47 @@ fn wave(
         let (f, r, secs) = h
             .join()
             .unwrap_or_else(|_| (String::new(), Err("executor panicked".into()), 0.0));
-        let mut st = json!({"file": f, "call_s": (secs * 10.0).round() / 10.0, "at_s": (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0});
-        match r {
-            Ok((Some(new), tok, n)) => {
-                let path = root.join(&f);
-                let changed = std::fs::read_to_string(&path)
-                    .map(|old| old.trim() != new.trim())
-                    .unwrap_or(true);
+        stats.push(record(root, &f, r, secs, t0));
+    }
+    stats
+}
+
+/// Writes one executor's answer to `root/file` (if it changed) and returns its stats line.
+pub(crate) fn record(root: &Path, f: &str, r: Result<(Option<String>, Value, u32), String>, secs: f64, t0: Instant) -> Value {
+    let mut st = json!({"file": f, "call_s": (secs * 10.0).round() / 10.0, "at_s": (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0});
+    match r {
+        Ok((new, usage, n)) => {
+            let mut changed = false;
+            if let Some(new) = new {
+                let path = root.join(f);
+                changed = std::fs::read_to_string(&path).map(|old| old.trim() != new.trim()).unwrap_or(true);
                 if changed {
+                    if let Some(d) = path.parent() {
+                        let _ = std::fs::create_dir_all(d);
+                    }
                     if let Err(e) = std::fs::write(&path, &new) {
                         st["error"] = json!(e.to_string());
                     }
                 }
-                st["changed"] = json!(changed);
-                st["out_tokens"] = json!(tok);
-                st["calls"] = json!(n);
             }
-            Ok((None, tok, n)) => {
-                st["changed"] = json!(false);
-                st["out_tokens"] = json!(tok);
-                st["calls"] = json!(n);
-            }
-            Err(e) => st["error"] = json!(e),
+            st["changed"] = json!(changed);
+            st["usage"] = usage;
+            st["calls"] = json!(n);
         }
-        stats.push(st);
+        Err(e) => st["error"] = json!(e),
     }
-    stats
+    st
+}
+
+/// Sum of prompt / cached / completion tokens over stats lines that carry a `usage`.
+pub(crate) fn token_totals(calls: &[Value]) -> Value {
+    let (mut p, mut c, mut o) = (0u64, 0u64, 0u64);
+    for u in calls.iter().filter_map(|c| c.get("usage")) {
+        p += u["prompt_tokens"].as_u64().unwrap_or(0);
+        c += u.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64).unwrap_or(0);
+        o += u["completion_tokens"].as_u64().unwrap_or(0);
+    }
+    json!({"prompt": p, "cached": c, "completion": o})
 }
 
 /// Lower-case word tokens of `s`, camelCase split, a plural `s` dropped (len > 3).
@@ -385,7 +403,7 @@ fn scope(task: &str, files: &[String]) -> Vec<String> {
     }
 }
 
-fn sh(root: &Path, cmd: &str) -> (bool, String) {
+pub(crate) fn sh(root: &Path, cmd: &str) -> (bool, String) {
     match Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -405,7 +423,7 @@ fn sh(root: &Path, cmd: &str) -> (bool, String) {
 }
 
 /// Tracked files named in the gate's output (`path/x.go:12:` relative to root or any subdir).
-fn blamed(out: &str, files: &[String]) -> Vec<String> {
+pub(crate) fn blamed(out: &str, files: &[String]) -> Vec<String> {
     let re = regex::Regex::new(r"([\w./-]+\.\w+):\d+").unwrap();
     let mut hit: Vec<String> = vec![];
     for c in re.captures_iter(out) {
@@ -434,6 +452,7 @@ pub fn client(args: &[String]) -> i32 {
         (Vec::<String>::new(), 8.0f64, 2u32, Vec::<String>::new());
     let mut max_inflight = 32usize;
     let mut scope_all = false;
+    let mut clones = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -466,6 +485,7 @@ pub fn client(args: &[String]) -> i32 {
                     .collect()
             }
             "--scope" => scope_all = val() == "all",
+            "--clones" => clones = true,
             "--max-inflight" => max_inflight = val().parse().unwrap_or(max_inflight),
             "--hedge" => hedge = val().parse().unwrap_or(hedge),
             "--fix-rounds" => fix_rounds = val().parse().unwrap_or(fix_rounds),
@@ -530,26 +550,34 @@ pub fn client(args: &[String]) -> i32 {
         model_cfg,
         task,
     };
+    // One-shot calls are hedged, so a 429 is better retried soon than after the agent loop's
+    // 4 s floor (measured: a parent call spent 36 s in 4/4/4/8/16 s backoff on a 1-file task).
+    if std::env::var_os("MINI_AGENT_RETRY_MIN_WAIT").is_none() {
+        std::env::set_var("MINI_AGENT_RETRY_MIN_WAIT", "1");
+    }
     let slots = std::sync::Arc::new(Slots::new(max_inflight));
     let t0 = Instant::now();
-    let targets = if scope_all {
-        files.clone()
+    let (mut calls, targets) = if clones {
+        crate::clones::run(&ctx, &root, &files, hedge, t0, &slots)
     } else {
-        scope(&ctx.task, &files)
+        let targets = if scope_all {
+            files.clone()
+        } else {
+            scope(&ctx.task, &files)
+        };
+        let calls = wave(&ctx, &root, &files, &targets, &|_| String::new(), hedge, t0, &slots);
+        (calls, targets)
     };
-    let mut calls = wave(
-        &ctx,
-        &root,
-        &files,
-        &targets,
-        &|_| String::new(),
-        hedge,
-        t0,
-        &slots,
-    );
+    // New files written by the clones join the gate's blame list and the gofmt pass.
+    let mut files = files;
+    for t in &targets {
+        if !files.contains(t) {
+            files.push(t.clone());
+        }
+    }
     let gofmt = |root: &Path| {
         if files.iter().any(|f| f.ends_with(".go")) {
-            let _ = sh(root, "gofmt -w $(git ls-files '*.go') 2>/dev/null");
+            let _ = sh(root, "gofmt -w $(git ls-files -co --exclude-standard '*.go') 2>/dev/null");
         }
     };
     gofmt(&root);
@@ -584,7 +612,7 @@ pub fn client(args: &[String]) -> i32 {
     let wall = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
     let changed = calls.iter().filter(|c| c["changed"] == json!(true)).count();
     let errors: Vec<&Value> = calls.iter().filter(|c| c.get("error").is_some()).collect();
-    let stats = json!({"wall_s": wall, "targets": targets.len(), "gate": if verify.is_empty() { "none" } else if ok { "pass" } else { "FAIL" }, "fix_rounds": rounds, "files": files.len(), "changed": changed, "errors": errors.len(), "calls": calls});
+    let stats = json!({"wall_s": wall, "mode": if clones { "clones" } else { "shard" }, "targets": targets.len(), "gate": if verify.is_empty() { "none" } else if ok { "pass" } else { "FAIL" }, "fix_rounds": rounds, "files": files.len(), "changed": changed, "errors": errors.len(), "tokens": token_totals(&calls), "calls": calls});
     if let Some(p) = out {
         let _ = std::fs::write(p, serde_json::to_string_pretty(&stats).unwrap_or_default());
     }

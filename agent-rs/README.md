@@ -201,6 +201,26 @@ Measured (speed5, MiniMax-M3.1-Flash-Preview, n=5 paired vs one agent, this bina
 twins add more, so a provider rate limit (HTTP 429) becomes the slow tail: the one xl run that
 did not beat the single agent (0.97x) had 85 429 retries.
 
+### Subagents as clones of the parent session (`shard --clones`, alias `mini-agent-rs orchestrate`)
+
+Same command line as `shard`, a different split. The parent session is `[system, user: task + the
+repo]`; ONE streamed parent call writes the plan as `<<<ORDER path[, path...]` ... `ORDER>>>`
+blocks (exact names, signatures, tags; one block may list several files that get the same
+order up to the entity name). Each block starts its clones the moment it closes, while the parent
+is still writing. A clone is a COPY of the parent session (its messages byte for byte, plus the
+plan so far) and one system message: "you are a clone in executor mode: apply only the order for
+<file>, no investigation"; it answers the full new file. Clones are hedged like `shard`
+executors; the parent is hedged too (a twin parent while no order has arrived; the first stream
+with an order owns the plan, so clones never mix two plans). Then gofmt + `--verify` + fix waves,
+as in `shard`. The shared prefix is what the provider's prompt cache serves: on MiniMax 90-97% of
+the clones' prompt tokens came back cached. One-shot calls retry 429s after 1 s instead of the agent's 4 s floor.
+
+Measured (speed7, paired, never concurrent): see `~/bg/speed7-result.txt`. In short: on the
+speed2 fixtures `shard` stayed faster (het 9.9x vs 4.1x, xl 4.2x vs 1.4x median); the parent's plan
+is a serial step that `shard` does not have, and on xl the clones' total tokens hit the provider's
+token-plan rate limit. Clones need fewer uncached input tokens (het 4-5k vs shard 0.2-40k,
+depending on the cache), and they do not need the task to spell the contract out.
+
 ## Cold-start metrics (`mini-agent-rs metrics`)
 
 `mini-agent-rs metrics <traj.jsonl> [--json]` measures how much of a run went to **re-discovery**:
