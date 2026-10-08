@@ -308,6 +308,10 @@ pub fn read_chat_sse(reader: impl Read, sink: &mut Option<DeltaSink>) -> std::io
 pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<T, ModelError> {
     let attempts: u32 = std::env::var("MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT").ok().and_then(|s| s.parse().ok()).unwrap_or(10).max(1);
     let min_wait: f64 = std::env::var("MINI_AGENT_RETRY_MIN_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(4.0);
+    // A ceiling for one-shot callers (shard/hybrid set it): Zai's limit is on requests in flight,
+    // so a slot frees within seconds, and the exponential curve's 8-17 s waits were the wall time
+    // of whole waves (measured, speed8 t08: 37-39 s tails behind 8.9/11.6/17.6 s retries).
+    let max_wait: f64 = std::env::var("MINI_AGENT_RETRY_MAX_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(f64::INFINITY);
     let mut attempt = 0;
     loop {
         attempt += 1;
@@ -318,7 +322,7 @@ pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<
                 // Jittered (x0.5-1.5): calls that hit a 429 together must not retry together
                 // (measured, speed7: 32 parallel calls retried in lockstep at 1/2/4/8 s and hit
                 // the provider's concurrency limit again every time).
-                let wait = retry_wait(attempt, min_wait) * rand::Rng::gen_range(&mut rand::thread_rng(), 0.5..1.5);
+                let wait = retry_wait(attempt, min_wait).min(max_wait) * rand::Rng::gen_range(&mut rand::thread_rng(), 0.5..1.5);
                 let wait = if e.connect_refused { refused_wait(attempt, min_wait) } else { wait };
                 eprintln!("WARNING: Retrying in {wait:.1} seconds as it raised {}: {}.", e.kind, e.message);
                 if !crate::agent::interruptible_sleep(Duration::from_secs_f64(wait)) {
