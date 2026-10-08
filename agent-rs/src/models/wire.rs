@@ -65,15 +65,18 @@ impl WireModel {
         (params, headers)
     }
 
-    /// `text_only: true` (set by one-shot callers such as `shard`): the request carries no tool
-    /// list, so the model answers in text. With the agent's bash tool offered, a one-shot
-    /// executor sometimes called it instead of answering (measured, speed7: finish "tool_calls",
-    /// empty text, the hedge had to retry up to 7 times).
+    /// `text_only: true` (set by one-shot callers such as `shard`): the model must answer in text.
+    /// The tool list stays in the request with `tool_choice: "none"`. Both halves are measured
+    /// (speed7, MiniMax-M3.1-Flash, same prompt x4): with tools and `auto`, a one-shot executor
+    /// sometimes called bash instead of answering (finish "tool_calls", empty text); with NO tool
+    /// list the model reasoned 4-20x longer (1.1k-8.2k reasoning tokens, 10-73 s, one hit the
+    /// 8192 cap) than with tools + `none` (90-470 tokens, 2.7-4.3 s).
     fn text_only(&self, body: &mut Value) {
-        if self.config.get("text_only").and_then(Value::as_bool) == Some(true) {
-            if let Some(o) = body.as_object_mut() {
-                o.shift_remove("tools");
-            }
+        if self.config.get("text_only").and_then(Value::as_bool) == Some(true) && body.get("tools").is_some() {
+            body["tool_choice"] = match self.protocol {
+                Protocol::Messages => json!({"type": "none"}),
+                _ => json!("none"),
+            };
         }
     }
 
