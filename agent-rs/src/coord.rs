@@ -109,13 +109,29 @@ pub(crate) struct Opts {
     pub(crate) reviews: u32,
 }
 
+/// Files per worker at most. A task's files share one order, so a worker takes a run of them and
+/// answers edits for each: Zai's coding plan serves ~8 requests at once, and requests, not
+/// tokens, were the queue. Measured (speed9 rep 3, m5 t13, 20 one-file workers, 8 in flight,
+/// Zai at 7-16 s per call): 3 queued rounds, 36.7 s; the same task at 2.5 s per call took 13.3 s.
+const RUN: usize = 4;
+
+/// A task's files split into balanced runs of at most `RUN` (5 -> 3+2, 12 -> 4+4+4); a task of one
+/// or two files keeps one worker per file.
+fn runs(paths: &[String]) -> Vec<Vec<String>> {
+    if paths.len() <= 2 {
+        return paths.iter().map(|p| vec![p.clone()]).collect();
+    }
+    let n = paths.len().div_ceil(RUN);
+    let size = paths.len().div_ceil(n);
+    paths.chunks(size).map(|c| c.to_vec()).collect()
+}
+
 type WorkerResult = (Vec<String>, Result<(Option<String>, Value, u32), String>, f64, f64);
 
-/// The workers of one task: one per file, or runs of files (`hybrid::units`) when the task alone
-/// is larger than the request limit allows in about two rounds.
+/// The workers of one task: one per run of files (`runs`).
 #[allow(clippy::too_many_arguments)]
 fn spawn_task(w: &Ctx, root: &Path, msgs: Vec<Value>, n: &str, paths: &[String], fix: bool, o: &Opts, lat: &Lat, slots: &Arc<Slots>, t0: Instant) -> Vec<std::thread::JoinHandle<WorkerResult>> {
-    let units = crate::hybrid::units(root, paths, o.inflight / 2);
+    let units = runs(paths);
     let msgs = Arc::new(msgs);
     units
         .into_iter()
