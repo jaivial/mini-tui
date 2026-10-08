@@ -27,13 +27,20 @@ use std::time::{Duration, Instant};
 
 type Obj = Map<String, Value>;
 
-const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MODEL] [--files a,b] [--hybrid|--clones] [--hedge SECS] [--scope auto|all] [--max-inflight N] [--fix-rounds N] [-o stats.json]
+const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MODEL] [--files a,b] [--coord [--coordinator MODEL] [--coordinator-thinking]|--hybrid|--clones] [--hedge SECS] [--scope auto|all] [--max-inflight N] [--fix-rounds N] [-o stats.json]
 
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
 file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 24 calls in flight (8 on zai/zhipu), 2 fix rounds.
---hybrid (alias `orchestrate`): the same hub, but every executor is a copy of ONE parent session (repo + task, plus a contract call only when the task spells none), so the repo is a shared cacheable prefix. --clones: speed7's planning parent + clones.";
+--coord (alias `orchestrate`): an LLM coordinator (--coordinator, default cliproxy/claude-opus-5-5) reads the repo and the task and streams a plan
+of basic orders (no code); every order starts workers = copies of the coordinator's session on the -m model (one per file); then the gate,
+and the coordinator reviews the diff: OK, or FIX orders for new workers (at most --fix-rounds reviews).
+--hybrid: the plain-code hub, but every executor is a copy of ONE parent session (repo + task, plus a contract call only when the task spells none), so the repo is a shared cacheable prefix. --clones: speed7's planning parent + clones.";
+
+/// `--coordinator` default: the strongest model in the local config (speed9: Claude Opus 5.5
+/// behind cli-proxy; probed against fable-5-1, sonnet-5-5 and gpt-6-luna).
+const DEFAULT_COORDINATOR: &str = "cliproxy/claude-opus-5-5";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -722,6 +729,9 @@ pub fn client(args: &[String]) -> i32 {
     let mut scope_all = false;
     let mut clones = false;
     let mut hybrid = false;
+    let mut coord = false;
+    let mut coordinator = String::from(DEFAULT_COORDINATOR);
+    let mut coord_thinking = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -756,6 +766,9 @@ pub fn client(args: &[String]) -> i32 {
             "--scope" => scope_all = val() == "all",
             "--clones" => clones = true,
             "--hybrid" => hybrid = true,
+            "--coord" => coord = true,
+            "--coordinator" => coordinator = val(),
+            "--coordinator-thinking" => coord_thinking = true,
             "--max-inflight" => max_inflight = val().parse().unwrap_or(max_inflight),
             "--hedge" => hedge = val().parse().unwrap_or(hedge),
             "--fix-rounds" => fix_rounds = val().parse().unwrap_or(fix_rounds),
@@ -835,6 +848,39 @@ pub fn client(args: &[String]) -> i32 {
     }
     let slots = std::sync::Arc::new(Slots::new(max_inflight));
     let t0 = Instant::now();
+    if coord {
+        // The coordinator: same config, its own model; it answers in text (no tool list) and,
+        // unless --coordinator-thinking, without extended thinking (measured, speed9: Opus 5.5
+        // via cli-proxy planned xl t14 in 6.5 s with thinking, 2.1 s without, same plan).
+        let mut cc = ctx.model_cfg.clone();
+        cc.insert("text_only".into(), json!("no_tools"));
+        let mut kw = cc.get("model_kwargs").and_then(Value::as_object).cloned().unwrap_or_default();
+        kw.entry("max_tokens").or_insert(json!(16000));
+        if !coord_thinking {
+            kw.insert("thinking".into(), json!({"type": "disabled"}));
+        }
+        cc.insert("model_kwargs".into(), Value::Object(kw));
+        let o = crate::coord::Opts {
+            coord: Ctx { model_name: Some(coordinator.clone()), model_cfg: cc, task: ctx.task.clone() },
+            hedge,
+            inflight: max_inflight,
+            verify: verify.clone(),
+            reviews: fix_rounds,
+        };
+        let (calls, targets, ok, rounds) = crate::coord::run(&ctx, &root, &files, &o, t0, &slots);
+        let wall = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+        let changed = calls.iter().filter(|c| c["changed"] == json!(true)).count();
+        let errors = calls.iter().filter(|c| c.get("error").is_some()).count();
+        let gate = if verify.is_empty() { "none" } else if ok { "pass" } else { "FAIL" };
+        let stats = json!({"wall_s": wall, "mode": "coord", "coordinator": coordinator, "worker": ctx.model_name, "targets": targets.len(), "gate": gate, "review_rounds": rounds, "files": files.len(), "changed": changed, "errors": errors, "tokens": token_totals(&calls), "calls": calls});
+        if let Some(p) = out {
+            let _ = std::fs::write(p, serde_json::to_string_pretty(&stats).unwrap_or_default());
+        }
+        println!("orchestrate: coordinator {coordinator}, workers {}: {} targeted, {changed} written, gate {gate}, {rounds} fix round(s), {wall}s", ctx.model_name.as_deref().unwrap_or("?"), targets.len());
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     let (mut calls, targets) = if clones {
         crate::clones::run(&ctx, &root, &files, hedge, t0, &slots)
     } else if hybrid {

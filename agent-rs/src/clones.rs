@@ -50,7 +50,7 @@ fn clone_order(file: &str) -> String {
 }
 
 /// The plan text the model shows (its `<think>` blocks dropped, an unclosed one cut off).
-fn visible(raw: &str) -> String {
+pub(crate) fn visible(raw: &str) -> String {
     let re = regex::Regex::new(r"(?s)<think>.*?</think>").unwrap();
     let v = re.replace_all(raw, "").to_string();
     match v.find("<think>") {
@@ -119,7 +119,7 @@ fn stream_plan(id: usize, ctx: &Ctx, session: &[Value], files: &[String], tx: &s
     let _ = tx.send(Event::Done(id, r));
 }
 
-fn query_streamed(ctx: &Ctx, session: &[Value], sink: &mut dyn FnMut(&str, &str)) -> Result<(String, Value), String> {
+pub(crate) fn query_streamed(ctx: &Ctx, session: &[Value], sink: &mut dyn FnMut(&str, &str)) -> Result<(String, Value), String> {
     let mut model = crate::models::get_model(ctx.model_name.as_deref(), &ctx.model_cfg)?;
     let msgs: Vec<Value> = session
         .iter()

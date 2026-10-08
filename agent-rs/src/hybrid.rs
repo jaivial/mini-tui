@@ -64,9 +64,9 @@ fn clone_order(files: &[String], extra: &str, edits: bool) -> String {
     )
 }
 
-const SEARCH: &str = "<<<<<<< SEARCH";
-const SEP: &str = "=======";
-const REPLACE: &str = ">>>>>>> REPLACE";
+pub(crate) const SEARCH: &str = "<<<<<<< SEARCH";
+pub(crate) const SEP: &str = "=======";
+pub(crate) const REPLACE: &str = ">>>>>>> REPLACE";
 
 /// The first call of a one-file clone answers SEARCH/REPLACE edits instead of the whole file;
 /// its hedge twins answer the whole file. Measured on Zai glm-5.3-flash (speed8, 4 calls each,
@@ -75,11 +75,11 @@ const REPLACE: &str = ">>>>>>> REPLACE";
 /// (a rewrite of the handler) edits 10.6-15.2 s, 1 of 4 did not apply. Output length is the
 /// clone's latency on small edits of mid-size files; a rewrite gains nothing, and an edit that does
 /// not apply is an error the hedge answers with a whole-file twin.
-const EDITS_ABOVE: u64 = 600;
+pub(crate) const EDITS_ABOVE: u64 = 600;
 
 /// `answer`'s SEARCH/REPLACE blocks applied to `old`: every SEARCH must match once, exactly or
 /// with runs of spaces/tabs collapsed (the model realigns struct fields). `None` = UNCHANGED.
-fn apply_edits(old: &str, answer: &str) -> Result<Option<String>, String> {
+pub(crate) fn apply_edits(old: &str, answer: &str) -> Result<Option<String>, String> {
     let t = answer.trim();
     if !t.contains(SEARCH) {
         return if t.contains("UNCHANGED") { Ok(None) } else { Err(format!("no edit blocks: {:?}", t.chars().take(120).collect::<String>())) };
@@ -125,7 +125,7 @@ fn apply_edits(old: &str, answer: &str) -> Result<Option<String>, String> {
 /// reasoning), off 11-18 s; xl t19 (24 subject-pair clones, 8 in flight), on: 500-960 reasoning
 /// tokens per clone, 25-35 s each, 75 s wall. The one literal that thinking-off dropped (t08, the
 /// voucher 409 body) is caught by `doubt` and re-asked.
-fn call_cfg(ctx: &Ctx, k: u32) -> crate::util::Obj {
+pub(crate) fn call_cfg(ctx: &Ctx, k: u32) -> crate::util::Obj {
     let cfg = &ctx.model_cfg;
     let mut c = cfg.clone();
     let mut extra = crate::util::Obj::new();
@@ -357,7 +357,7 @@ const MAX_RUN: usize = 6;
 /// 41 s from start to answer), 68 s wall for answers of 50-330 tokens. Mixed-subject pairs
 /// (MenuList.tsx + menu.ts) answered UNCHANGED for the component in 5/12 calls vs 0/12 alone, so
 /// a run keeps one layer where it can, and `doubt` re-asks a run with a wrong UNCHANGED.
-fn units(root: &Path, targets: &[String], inflight: usize) -> Vec<Vec<String>> {
+pub(crate) fn units(root: &Path, targets: &[String], inflight: usize) -> Vec<Vec<String>> {
     // A run never holds more than MAX_RUN files (a 15-file run missed one file in 7 of 8 calls),
     // and there are at most two rounds of runs.
     if targets.len() <= 2 * inflight.max(1) {
