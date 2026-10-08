@@ -189,7 +189,7 @@ that grandchildren share too.
 NO coordinator model: one one-shot executor per tracked file (`git ls-files`, or `--files a,b`),
 all at once. Each executor gets the task and every file (read-only) and answers only its own
 file's new content (or `UNCHANGED`); no tools, no steps. A call that is not back after `--hedge`
-seconds (default 4; later 2.5x the median answer) gets an identical twin, up to 6 calls, and the first complete answer wins (cuts the
+seconds (default 3; later 2x the median answer, at least 1.5 s) gets an identical twin, up to 8 calls, and the first complete answer wins (cuts the
 slow tail). `gofmt -w` runs on Go files, then `--verify` once; files named in its errors get up to
 `--fix-rounds` (default 2) more parallel waves with the errors attached. `-o stats.json` writes
 per-file timings. Wall-clock is the slowest single-file answer plus the gate.

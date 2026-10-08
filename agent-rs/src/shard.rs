@@ -8,7 +8,7 @@
 //!   2. ONE one-shot executor per file, all at once: each gets the task + every file (read-only) and
 //!      answers with only ITS file's new content (or UNCHANGED). No tools, no steps, no exploration;
 //!   3. the slow tail is cut by hedging: a call not back after `--hedge` seconds gets an identical
-//!      twin (at most 6 calls); the first complete answer wins;
+//!      twin (at most 8 calls); the first complete answer wins;
 //!   4. `--verify` runs once; on failure the files named in the errors get one more parallel wave
 //!      with the errors attached (at most `--fix-rounds`).
 //!
@@ -29,7 +29,7 @@ const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MO
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
-file as context, executors only for the files the task names (--scope auto), hedge 4 s (adaptive, at most 6 calls per file), 16 calls in flight, 2 fix rounds.";
+file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 16 calls in flight, 2 fix rounds.";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -157,7 +157,9 @@ impl Slots {
 pub(crate) type Lat = std::sync::Arc<std::sync::Mutex<Vec<f64>>>;
 
 /// When to start a twin: `hedge` seconds until a quarter of the wave (min 3) has answered, then
-/// 2.5x the median answer so far, clamped to [2 s, hedge]. A fixed 8 s hedge was the whole wall
+/// 2x the median answer so far, clamped to [1.5 s, hedge]. The slow tail is provider latency, not
+/// long answers (measured, speed7: 150-token answers that took 20 s, while the median was 3 s),
+/// so a quick twin is cheap and usually lands on a fast server. A fixed 8 s hedge was the whole wall
 /// time of 1-file tasks whose answers take ~1.5 s (measured, speed6 t01).
 fn threshold(lat: &Lat, wave_n: usize, hedge: f64) -> f64 {
     let mut v = lat.lock().map(|v| v.clone()).unwrap_or_default();
@@ -165,7 +167,7 @@ fn threshold(lat: &Lat, wave_n: usize, hedge: f64) -> f64 {
         return hedge;
     }
     v.sort_by(|a, b| a.total_cmp(b));
-    (2.5 * v[v.len() / 2]).clamp(2.0f64.min(hedge), hedge)
+    (2.0 * v[v.len() / 2]).clamp(1.5f64.min(hedge), hedge)
 }
 
 /// Hedge of a fix wave: one or two files, and the whole run waits on them (measured, speed7 t20:
@@ -174,7 +176,7 @@ const FIX_HEDGE: f64 = 2.0;
 
 /// Calls per file at most (the first one plus hedge twins). Measured (speed7): with 3, a file
 /// whose three calls were all slow set the whole wall time (19 s for a 2 s median wave).
-const MAX_CALLS: u32 = 6;
+const MAX_CALLS: u32 = 8;
 
 /// One model call's result: Some(new content) / None = UNCHANGED, and the call's usage.
 pub(crate) type Answer = Result<(Option<String>, Value), String>;
@@ -499,7 +501,7 @@ pub fn client(args: &[String]) -> i32 {
         None::<PathBuf>,
     );
     let (mut only, mut hedge, mut fix_rounds, mut configs) =
-        (Vec::<String>::new(), 4.0f64, 2u32, Vec::<String>::new());
+        (Vec::<String>::new(), 3.0f64, 2u32, Vec::<String>::new());
     let mut max_inflight = 16usize;
     let mut scope_all = false;
     let mut clones = false;
