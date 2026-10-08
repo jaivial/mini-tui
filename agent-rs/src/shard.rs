@@ -866,9 +866,10 @@ pub fn client(args: &[String]) -> i32 {
         cc.insert("model_kwargs".into(), Value::Object(kw));
         let o = crate::coord::Opts {
             coord: Ctx { model_name: Some(coordinator.clone()), model_cfg: cc, task: ctx.task.clone() },
-            // Workers' answers are short edits (2-3 s median on Zai glm-5.3-flash, speed9), so
-            // the first twin starts at 2 s unless --hedge says otherwise.
-            hedge: if hedge_set { hedge } else { 2.0 },
+            // Workers' answers are short edits (2-3 s median on Zai glm-5.3-flash, speed9, with
+            // 4-9 s tails under load), so the first twin starts at 1.5 s unless --hedge says
+            // otherwise. Twins only take free slots, so a large wave gets no extra requests.
+            hedge: if hedge_set { hedge } else { 1.5 },
             inflight: max_inflight,
             verify: verify.clone(),
             reviews: fix_rounds,

@@ -215,64 +215,130 @@ fn collect(root: &Path, hs: Vec<std::thread::JoinHandle<WorkerResult>>, t0: Inst
     }
 }
 
-/// One streamed coordinator call over `msgs`; every TASK block starts its workers as it closes.
-/// Returns the coordinator's text, its stats line and the worker handles.
+/// Coordinator streams: a twin starts if no TASK block (and no answer) came back from the first
+/// one within `COORD_HEDGE` s. Measured (speed9, Opus 5.5 via cli-proxy, s2 t02 x5): first token
+/// at 1.2-4.0 s for the same prompt. The first stream that emits a task, or finishes, OWNS the
+/// plan: the other stream's tasks are dropped, so workers never mix two plans.
+const COORD_HEDGE: f64 = 2.0;
+
+enum Ev {
+    Task(usize, (String, Vec<String>, String)),
+    Done(usize, Result<(String, Value), String>),
+}
+
+/// One coordinator answer over `msgs` (hedged, see `COORD_HEDGE`); every TASK block starts its
+/// workers as it closes. Returns the coordinator's text, its stats line and the worker handles.
 #[allow(clippy::too_many_arguments)]
 fn coordinate(w: &Ctx, root: &Path, files: &[String], msgs: &[Value], fix: bool, o: &Opts, t0: Instant, slots: &Arc<Slots>, label: &str) -> (String, Value, Vec<(String, std::thread::JoinHandle<WorkerResult>)>, Vec<String>) {
     let s = Instant::now();
-    let (tx, rx) = mpsc::channel::<(String, Vec<String>, String)>();
-    let (c, m, fl) = (o.coord.clone(), msgs.to_vec(), files.to_vec());
-    let stream = std::thread::spawn(move || {
-        let mut raw = String::new();
-        let mut sent = 0usize;
-        let mut sink = |kind: &str, piece: &str| {
-            if kind != "text" {
-                return;
+    let (tx, rx) = mpsc::channel::<Ev>();
+    let spawn = |id: usize| {
+        let (c, m, fl, tx) = (o.coord.clone(), msgs.to_vec(), files.to_vec(), tx.clone());
+        std::thread::spawn(move || {
+            let mut raw = String::new();
+            let mut sent = 0usize;
+            let mut sink = |kind: &str, piece: &str| {
+                if kind != "text" {
+                    return;
+                }
+                raw.push_str(piece);
+                for t in tasks(&crate::clones::visible(&raw), &fl, false).into_iter().skip(sent) {
+                    let _ = tx.send(Ev::Task(id, t));
+                    sent += 1;
+                }
+            };
+            let r = crate::clones::query_streamed(&c, &m, &mut sink);
+            if let Ok((text, _)) = &r {
+                for t in tasks(text, &fl, true).into_iter().skip(sent) {
+                    let _ = tx.send(Ev::Task(id, t));
+                }
             }
-            raw.push_str(piece);
-            let ts = tasks(&crate::clones::visible(&raw), &fl, false);
-            for t in ts.into_iter().skip(sent) {
-                let _ = tx.send(t);
-                sent += 1;
-            }
-        };
-        let r = crate::clones::query_streamed(&c, &m, &mut sink);
-        if let Ok((text, _)) = &r {
-            for t in tasks(text, &fl, true).into_iter().skip(sent) {
-                let _ = tx.send(t);
-            }
-        }
-        r
-    });
+            let _ = tx.send(Ev::Done(id, r));
+        });
+    };
+    spawn(0);
+    let (mut started, mut live) = (1usize, 1usize);
+    let mut owner: Option<usize> = None;
     let lat: Lat = Default::default();
     let (mut hs, mut dispatched, mut first) = (vec![], vec![], None);
-    for (n, paths, plan) in rx {
-        first.get_or_insert(s.elapsed().as_secs_f64());
-        let paths: Vec<String> = paths.into_iter().filter(|p| !dispatched.contains(p)).collect();
-        if paths.is_empty() {
-            continue;
-        }
-        dispatched.extend(paths.iter().cloned());
-        let mut wm = msgs.to_vec();
-        wm.push(json!({"role": "assistant", "content": plan}));
-        for h in spawn_task(w, root, wm, &n, &paths, fix, o, &lat, slots, t0) {
-            hs.push((n.clone(), h));
+    let (mut text, mut usage, mut errs) = (String::new(), Value::Null, vec![]);
+    let mut usages = vec![];
+    loop {
+        let ev = if owner.is_none() && started < 2 {
+            match rx.recv_timeout(std::time::Duration::from_secs_f64(COORD_HEDGE).saturating_sub(s.elapsed())) {
+                Ok(ev) => ev,
+                Err(_) => {
+                    spawn(started);
+                    started += 1;
+                    live += 1;
+                    continue;
+                }
+            }
+        } else {
+            match rx.recv() {
+                Ok(ev) => ev,
+                Err(_) => break,
+            }
+        };
+        match ev {
+            Ev::Task(id, (n, paths, plan)) => {
+                if *owner.get_or_insert(id) != id {
+                    continue;
+                }
+                first.get_or_insert(s.elapsed().as_secs_f64());
+                let paths: Vec<String> = paths.into_iter().filter(|p| !dispatched.contains(p)).collect();
+                if paths.is_empty() {
+                    continue;
+                }
+                dispatched.extend(paths.iter().cloned());
+                let mut wm = msgs.to_vec();
+                wm.push(json!({"role": "assistant", "content": plan}));
+                for h in spawn_task(w, root, wm, &n, &paths, fix, o, &lat, slots, t0) {
+                    hs.push((n.clone(), h));
+                }
+            }
+            Ev::Done(id, r) => {
+                live -= 1;
+                match r {
+                    Ok((t, u)) => {
+                        usages.push(u.clone());
+                        if owner.is_none() || owner == Some(id) {
+                            owner = Some(id);
+                            text = t;
+                            usage = u;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{label} stream {id}: coordinator call failed: {}", e.chars().take(400).collect::<String>());
+                        errs.push(e);
+                        if owner == Some(id) {
+                            break;
+                        }
+                    }
+                }
+                if live == 0 {
+                    if started < 2 {
+                        spawn(started);
+                        started += 1;
+                        live += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
         }
     }
     let mut st = json!({"file": label, "model": o.coord.model_name, "call_s": (s.elapsed().as_secs_f64() * 10.0).round() / 10.0,
-        "first_task_s": first.map(|x| (x * 10.0).round() / 10.0), "at_s": (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0, "calls": 1, "tasks_to": dispatched});
-    let text = match stream.join().unwrap_or_else(|_| Err("coordinator panicked".into())) {
-        Ok((text, usage)) => {
-            st["usage"] = usage;
-            st["text"] = json!(text);
-            text
-        }
-        Err(e) => {
-            eprintln!("{label}: coordinator call failed: {}", e.chars().take(400).collect::<String>());
-            st["error"] = json!(e);
-            String::new()
-        }
-    };
+        "first_task_s": first.map(|x| (x * 10.0).round() / 10.0), "at_s": (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0,
+        "calls": started, "owner": owner, "tasks_to": dispatched, "usage": usage, "text": text});
+    if text.is_empty() && !errs.is_empty() {
+        st["error"] = json!(errs.join(" | "));
+    }
+    // A twin that lost still bills its tokens: count the ones that came back.
+    if usages.len() > 1 {
+        st["twin_usage"] = json!(usages.into_iter().filter(|u| *u != st["usage"]).collect::<Vec<_>>());
+    }
     (text, st, hs, dispatched)
 }
 
