@@ -35,7 +35,9 @@ files named in its errors get up to --fix-rounds more parallel waves. Default: e
 file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 24 calls in flight (8 on zai/zhipu), 2 fix rounds.
 --coord (alias `orchestrate`): an LLM coordinator (--coordinator, default cliproxy/claude-opus-5-5) reads the repo and the task and streams a plan
 of basic orders (no code); every order starts workers = copies of the coordinator's session on the -m model (one per file); then the gate,
-and the coordinator reviews the diff: OK, or FIX orders for new workers (at most --fix-rounds reviews).
+and the coordinator reviews the diff: OK, or FIX orders for new workers (at most --fix-rounds reviews). The worker model's cache is warmed with the
+coordinator's session at t=0 (ORCH_NO_WARMUP=1 skips it); a worker's candidates are syntax-checked and the first valid one wins (twins only on a
+stalled call, losers cancelled; --hedge does not apply); Go imports are repaired before the gate; 10 calls in flight on zai/zhipu.
 --hybrid: the plain-code hub, but every executor is a copy of ONE parent session (repo + task, plus a contract call only when the task spells none), so the repo is a shared cacheable prefix. --clones: speed7's planning parent + clones.";
 
 /// `--coordinator` default: the strongest model in the local config (speed9: Claude Opus 5.5
@@ -120,6 +122,20 @@ pub(crate) fn query_text(model_name: &Option<String>, model_cfg: &Obj, msgs: &[V
         return Err(format!("empty text answer (raw {} chars, finish {finish}, {} tokens out)", text.len(), usage["completion_tokens"]));
     }
     Ok((visible, usage))
+}
+
+/// The usage of one call whatever it answered (a warmup: one token out, the text is not used).
+pub(crate) fn query_usage(model_name: &Option<String>, model_cfg: &Obj, msgs: &[Value]) -> Result<Value, String> {
+    let mut model = get_model(model_name.as_deref(), model_cfg)?;
+    let msgs: Vec<Value> = msgs
+        .iter()
+        .map(|m| model.format_message(m["role"].as_str().unwrap_or("user"), m["content"].as_str().unwrap_or(""), None))
+        .collect();
+    let m = match model.query(&msgs, None).map_err(|e| format!("{}: {}", e.kind, e.message))? {
+        Reply::Message(m) => m,
+        Reply::FormatError(ms) => ms.into_iter().next().unwrap_or(Value::Null),
+    };
+    Ok(m.pointer("/extra/response/usage").cloned().unwrap_or(Value::Null))
 }
 
 /// One answer for a GROUP of files (one executor per subject on a large wave). The answer is a
@@ -242,6 +258,7 @@ pub(crate) fn parse_answer(text: &str) -> Result<Option<String>, String> {
 pub(crate) struct Slots {
     free: std::sync::Mutex<usize>,
     cv: std::sync::Condvar,
+    waiting: std::sync::atomic::AtomicUsize,
 }
 
 impl Slots {
@@ -249,16 +266,28 @@ impl Slots {
         Slots {
             free: std::sync::Mutex::new(n.max(1)),
             cv: std::sync::Condvar::new(),
+            waiting: Default::default(),
         }
     }
-    fn acquire(&self) {
+    pub(crate) fn acquire(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.waiting.fetch_add(1, SeqCst);
         let mut f = self.free.lock().unwrap();
         while *f == 0 {
             f = self.cv.wait(f).unwrap();
         }
         *f -= 1;
+        self.waiting.fetch_sub(1, SeqCst);
     }
-    fn try_acquire(&self) -> bool {
+    /// A slot for a speculative call (a hedge twin): only when one is free AND no first call is
+    /// waiting for one, so twins never delay real work.
+    pub(crate) fn try_acquire_spare(&self) -> bool {
+        if self.waiting.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            return false;
+        }
+        self.try_acquire()
+    }
+    pub(crate) fn try_acquire(&self) -> bool {
         let mut f = self.free.lock().unwrap();
         if *f == 0 {
             return false;
@@ -266,7 +295,7 @@ impl Slots {
         *f -= 1;
         true
     }
-    fn release(&self) {
+    pub(crate) fn release(&self) {
         *self.free.lock().unwrap() += 1;
         self.cv.notify_one();
     }
@@ -732,7 +761,6 @@ pub fn client(args: &[String]) -> i32 {
     let mut coord = false;
     let mut coordinator = String::from(DEFAULT_COORDINATOR);
     let mut coord_thinking = false;
-    let mut hedge_set = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -771,10 +799,7 @@ pub fn client(args: &[String]) -> i32 {
             "--coordinator" => coordinator = val(),
             "--coordinator-thinking" => coord_thinking = true,
             "--max-inflight" => max_inflight = val().parse().unwrap_or(max_inflight),
-            "--hedge" => {
-                hedge = val().parse().unwrap_or(hedge);
-                hedge_set = true;
-            }
+            "--hedge" => hedge = val().parse().unwrap_or(hedge),
             "--fix-rounds" => fix_rounds = val().parse().unwrap_or(fix_rounds),
             "-o" => out = Some(config::expand_user(&val())),
             other => {
@@ -786,6 +811,11 @@ pub fn client(args: &[String]) -> i32 {
     }
     if max_inflight == 0 {
         max_inflight = crate::hybrid::default_inflight(model_name.as_deref());
+        // orchestrate on Zai: 10 streams open at once are all served, an 11th gets 429 (measured,
+        // speed10 probe), and its hedge twins only take spare slots, so its first calls get all 10.
+        if coord && max_inflight == 8 {
+            max_inflight = 10;
+        }
     }
     if task.trim().is_empty() {
         eprintln!("error: shard needs -t TASK or --task-file\n\n{HELP}");
@@ -866,13 +896,9 @@ pub fn client(args: &[String]) -> i32 {
         cc.insert("model_kwargs".into(), Value::Object(kw));
         let o = crate::coord::Opts {
             coord: Ctx { model_name: Some(coordinator.clone()), model_cfg: cc, task: ctx.task.clone() },
-            // Workers' answers are short edits (2-3 s median on Zai glm-5.3-flash, speed9, with
-            // 4-9 s tails under load), so the first twin starts at 1.5 s unless --hedge says
-            // otherwise. Twins only take free slots, so a large wave gets no extra requests.
-            hedge: if hedge_set { hedge } else { 1.5 },
-            inflight: max_inflight,
             verify: verify.clone(),
             reviews: fix_rounds,
+            warmup: std::env::var("ORCH_NO_WARMUP").is_err(),
         };
         let (calls, targets, ok, rounds) = crate::coord::run(&ctx, &root, &files, &o, t0, &slots);
         let wall = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;

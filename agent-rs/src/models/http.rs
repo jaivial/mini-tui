@@ -116,6 +116,27 @@ fn request(url: &str, headers: &[(String, String)], timeout: f64, accept: &str) 
     req
 }
 
+thread_local! {
+    /// Set by a caller (orchestrate's hedged workers) on the thread that runs a model call: when
+    /// the flag turns true the call returns at once and its stream is dropped, which closes the
+    /// connection. Measured on Zai (speed10): with 10 streams open an 11th request gets 429;
+    /// closing 6 of them frees 6 slots at once.
+    pub static CANCEL: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
+    /// Set by a caller to see a call's progress: milliseconds since `epoch()` of the last
+    /// streamed fragment (text or reasoning).
+    pub static PROGRESS: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicU64>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The process-wide time origin of `PROGRESS` stamps.
+pub fn epoch_ms() -> u64 {
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+fn cancelled() -> ModelError {
+    ModelError { message: "cancelled".into(), status: None, abort: true, kind: "Cancelled".into(), connect_refused: false }
+}
+
 fn stopped() -> ModelError {
     ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false }
 }
@@ -135,7 +156,14 @@ fn interruptible<T: Send + 'static>(
     }
     let (tx, rx) = mpsc::channel::<Msg<T>>();
     let delta_tx = tx.clone();
+    let cancel = CANCEL.with(|c| c.borrow().clone());
+    let progress = PROGRESS.with(|p| p.borrow().clone());
+    if cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst)) {
+        return Err(cancelled());
+    }
+    let worker_cancel = cancel.clone();
     std::thread::spawn(move || {
+        CANCEL.with(|c| *c.borrow_mut() = worker_cancel);
         let mut forward = |k: &str, t: &str| {
             let _ = delta_tx.send(Msg::Delta(k.to_string(), t.to_string()));
         };
@@ -146,8 +174,14 @@ fn interruptible<T: Send + 'static>(
         if crate::agent::STOP.load(Ordering::SeqCst) {
             return Err(stopped()); // the worker is abandoned; the process is about to exit
         }
+        if cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst)) {
+            return Err(cancelled()); // the worker sees the same flag and drops its stream
+        }
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(Msg::Delta(k, t)) => {
+                if let Some(p) = &progress {
+                    p.store(epoch_ms(), Ordering::SeqCst);
+                }
                 if let Some(s) = sink.as_mut() {
                     s(&k, &t);
                 }
@@ -225,7 +259,12 @@ pub fn read_chat_sse(reader: impl Read, sink: &mut Option<DeltaSink>) -> std::io
     let mut role = String::new();
     let mut finish: Option<Value> = None;
     let mut usage: Option<Value> = None;
+    let cancel = CANCEL.with(|c| c.borrow().clone());
     for line in BufReader::new(reader).split(b'\n') {
+        if cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst)) {
+            // Returning drops the reader: ureq closes the connection, the provider frees the slot.
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+        }
         let line = line?;
         let line = String::from_utf8_lossy(&line);
         let line = line.trim();
