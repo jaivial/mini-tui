@@ -8,7 +8,7 @@
 //!   2. ONE one-shot executor per file, all at once: each gets the task + every file (read-only) and
 //!      answers with only ITS file's new content (or UNCHANGED). No tools, no steps, no exploration;
 //!   3. the slow tail is cut by hedging: a call not back after `--hedge` seconds gets an identical
-//!      twin (at most 4 calls); the first complete answer wins;
+//!      twin (at most 6 calls); the first complete answer wins;
 //!   4. `--verify` runs once; on failure the files named in the errors get one more parallel wave
 //!      with the errors attached (at most `--fix-rounds`).
 //!
@@ -29,7 +29,7 @@ const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MO
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
-file as context, executors only for the files the task names (--scope auto), hedge 4 s (adaptive, at most 4 calls per file), 16 calls in flight, 2 fix rounds.";
+file as context, executors only for the files the task names (--scope auto), hedge 4 s (adaptive, at most 6 calls per file), 16 calls in flight, 2 fix rounds.";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -111,7 +111,10 @@ pub(crate) fn parse_answer(text: &str) -> Result<Option<String>, String> {
     if t.contains("UNCHANGED") {
         return Ok(None);
     }
-    Err("answer has neither the file markers nor UNCHANGED".into())
+    Err(format!(
+        "answer has neither the file markers nor UNCHANGED: {:?}",
+        t.chars().take(160).collect::<String>()
+    ))
 }
 
 /// Global cap on model calls in flight (first calls and hedge twins alike). One call per file at
@@ -165,9 +168,13 @@ fn threshold(lat: &Lat, wave_n: usize, hedge: f64) -> f64 {
     (2.5 * v[v.len() / 2]).clamp(2.0f64.min(hedge), hedge)
 }
 
+/// Hedge of a fix wave: one or two files, and the whole run waits on them (measured, speed7 t20:
+/// a fix call that answered no file took 17.5 s before the next one was tried).
+const FIX_HEDGE: f64 = 2.0;
+
 /// Calls per file at most (the first one plus hedge twins). Measured (speed7): with 3, a file
 /// whose three calls were all slow set the whole wall time (19 s for a 2 s median wave).
-const MAX_CALLS: u32 = 4;
+const MAX_CALLS: u32 = 6;
 
 /// One model call's result: Some(new content) / None = UNCHANGED, and the call's usage.
 pub(crate) type Answer = Result<(Option<String>, Value), String>;
@@ -648,7 +655,7 @@ pub fn client(args: &[String]) -> i32 {
         let extra = move |f: &str| {
             format!("\nThe repo above is the CURRENT state. The gate `{gate}` fails with:\n{tail}\nFix {f} so the gate passes.\n")
         };
-        calls.extend(wave(&ctx, &root, &files, &bad, &extra, hedge, t0, &slots));
+        calls.extend(wave(&ctx, &root, &files, &bad, &extra, FIX_HEDGE, t0, &slots));
         gofmt(&root);
         (ok, err) = sh(&root, &verify);
     }
