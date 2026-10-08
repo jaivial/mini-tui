@@ -8,7 +8,7 @@
 //!   2. ONE one-shot executor per file, all at once: each gets the task + every file (read-only) and
 //!      answers with only ITS file's new content (or UNCHANGED). No tools, no steps, no exploration;
 //!   3. the slow tail is cut by hedging: a call not back after `--hedge` seconds gets an identical
-//!      twin (at most 3); the first complete answer wins;
+//!      twin (at most 4 calls); the first complete answer wins;
 //!   4. `--verify` runs once; on failure the files named in the errors get one more parallel wave
 //!      with the errors attached (at most `--fix-rounds`).
 //!
@@ -29,7 +29,7 @@ const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MO
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
-file as context, executors only for the files the task names (--scope auto), hedge 8 s (adaptive), 32 calls in flight, 2 fix rounds.";
+file as context, executors only for the files the task names (--scope auto), hedge 4 s (adaptive, at most 4 calls per file), 32 calls in flight, 2 fix rounds.";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -48,7 +48,8 @@ fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>
          signatures, JSON tags and props the task gives. Keep the existing wire contract. Other files will be updated by \
          their own workers as the task requires; you may rely on that. Change YOUR FILE only if the task explicitly requires it. \
          Never carry a change over by analogy: a change the task asks for one entity, file or function does NOT apply to the \
-         similar ones it does not name (those answer UNCHANGED). Add nothing the task does not ask for.\nYOUR FILE: {file}\n{extra}\
+         similar ones it does not name (those answer UNCHANGED). Add nothing the task does not ask for. Before answering, check that EVERY requirement the task states for YOUR FILE \
+         holds, in the task's exact terms (names, status codes, phrases; for docs: every case the task lists).\nYOUR FILE: {file}\n{extra}\
          If the task requires no change to {file}, answer exactly UNCHANGED. Otherwise answer with the line {BEGIN}, then the COMPLETE new content of {file}, \
          then the line {END}, and nothing else (no code fences around it). No tests.",
         task = ctx.task
@@ -164,11 +165,15 @@ fn threshold(lat: &Lat, wave_n: usize, hedge: f64) -> f64 {
     (2.5 * v[v.len() / 2]).clamp(2.0f64.min(hedge), hedge)
 }
 
+/// Calls per file at most (the first one plus hedge twins). Measured (speed7): with 3, a file
+/// whose three calls were all slow set the whole wall time (19 s for a 2 s median wave).
+const MAX_CALLS: u32 = 4;
+
 /// One model call's result: Some(new content) / None = UNCHANGED, and the call's usage.
 pub(crate) type Answer = Result<(Option<String>, Value), String>;
 
 /// `call` with tail hedging: a twin starts when the newest call in flight is older than
-/// `threshold` (max 3 calls in all); the first good answer wins and the others are abandoned.
+/// `threshold` (max `MAX_CALLS` calls in all); the first good answer wins and the others are abandoned.
 /// Returns the answer, the usage of every call that came back, and how many calls started.
 pub(crate) fn hedged(
     call: std::sync::Arc<dyn Fn() -> Answer + Send + Sync>,
@@ -194,7 +199,7 @@ pub(crate) fn hedged(
     let (mut started, mut live, mut last_err) = (1u32, 1u32, String::new());
     loop {
         // Poll at most every 250 ms so a threshold that drops mid-wait is noticed.
-        let wait = if started < 3 {
+        let wait = if started < MAX_CALLS {
             Duration::from_secs_f64(threshold(lat, wave_n, hedge))
                 .saturating_sub(last_start.elapsed())
                 .clamp(Duration::from_millis(10), Duration::from_millis(250))
@@ -212,7 +217,7 @@ pub(crate) fn hedged(
                 eprintln!("{file}: call failed: {}", e.chars().take(400).collect::<String>());
                 live -= 1;
                 last_err = e;
-                if started < 3 {
+                if started < MAX_CALLS {
                     slots.acquire();
                     start(tx.clone());
                     last_start = Instant::now();
@@ -222,7 +227,7 @@ pub(crate) fn hedged(
                     return Err(last_err);
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) if started < 3 => {
+            Err(mpsc::RecvTimeoutError::Timeout) if started < MAX_CALLS => {
                 if last_start.elapsed().as_secs_f64() >= threshold(lat, wave_n, hedge)
                     && slots.try_acquire()
                 {
@@ -449,7 +454,7 @@ pub fn client(args: &[String]) -> i32 {
         None::<PathBuf>,
     );
     let (mut only, mut hedge, mut fix_rounds, mut configs) =
-        (Vec::<String>::new(), 8.0f64, 2u32, Vec::<String>::new());
+        (Vec::<String>::new(), 4.0f64, 2u32, Vec::<String>::new());
     let mut max_inflight = 32usize;
     let mut scope_all = false;
     let mut clones = false;
