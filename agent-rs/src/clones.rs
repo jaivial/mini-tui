@@ -8,10 +8,10 @@
 //! 2868 prompt tokens cached on the second identical-prefix call).
 //!
 //!   1. parent session = [system, user: task + the repo as read by plain code];
-//!   2. ONE parent call writes the plan: an `<<<ORDER path` ... `ORDER>>>` block per file that
-//!      must change, with the exact names, signatures and contract to use (hedged like any call);
-//!   3. one clone per order, all at once: parent messages + the parent's plan + "execute only
-//!      the order for <path>"; it answers with the file's full new content (hedged).
+//!   2. ONE streamed parent call writes the plan: an `<<<ORDER path[, path]` ... `ORDER>>>` block
+//!      per file (or files) that must change, with the exact names, signatures and contract;
+//!   3. each block starts its clones the moment it closes: parent messages + the plan so far +
+//!      "execute only the order for <path>"; a clone answers the file's full new content (hedged).
 use crate::shard::{dump, hedged, parse_answer, query_text, record, Answer, Ctx, Lat, Slots};
 use serde_json::{json, Value};
 use std::path::Path;

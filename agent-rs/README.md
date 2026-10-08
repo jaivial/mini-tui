@@ -189,17 +189,29 @@ that grandchildren share too.
 NO coordinator model: one one-shot executor per tracked file (`git ls-files`, or `--files a,b`),
 all at once. Each executor gets the task and every file (read-only) and answers only its own
 file's new content (or `UNCHANGED`); no tools, no steps. A call that is not back after `--hedge`
-seconds (default 3; later 2x the median answer, at least 1.5 s) gets an identical twin, up to 8 calls, and the first complete answer wins (cuts the
+seconds (default 3; later 2x the median answer, at least 1.5 s) gets a twin, up to 8 calls, and the first complete answer wins (cuts the
 slow tail). `gofmt -w` runs on Go files, then `--verify` once; files named in its errors get up to
 `--fix-rounds` (default 2) more parallel waves with the errors attached. `-o stats.json` writes
 per-file timings. Wall-clock is the slowest single-file answer plus the gate.
 
-Measured (speed5, MiniMax-M3.1-Flash-Preview, n=5 paired vs one agent, this binary): het
-(4 features, 16 files) median 7.0x faster (57.3 s -> 7.9 s), xl (12 entities, 53 files) 3.3x
-(37.1 s -> 12.3 s); gate 5/5 on both. The whole repo goes into every prompt, so it is for repos
-(or a `--files` slice) that fit in one context. It sends one request per file at once, and hedge
-twins add more, so a provider rate limit (HTTP 429) becomes the slow tail: the one xl run that
-did not beat the single agent (0.97x) had 85 429 retries.
+Measured (speed5, MiniMax-M3.1-Flash-Preview, n=5 paired vs one agent): het (4 features, 16
+files) median 7.0x faster, xl (12 entities, 53 files) 3.3x. Speed7 (20 tasks from 1-file edits
+to 48-file contract changes, paired, never concurrent) took it to 20/20 tasks at >= 2x with gate
+and markers at 100%; see `~/bg/speed7-result.txt`. What that needed, each step measured:
+
+- `--scope auto` (default): executors only for files whose subject the task names, minus the
+  entities the task says stay unchanged; every file stays in the prompt as context.
+- Prompts up to 120k chars carry the whole repo (one shared, cached prefix); above that, each
+  executor gets its own directory + the files of its subject + the files the task quotes.
+- Waves over 32 files run one executor per subject pair (half the requests: the provider's limit
+  is per request), at most 24 calls in flight (`--max-inflight`).
+- Hedge: 3 s, then 2x the wave's median answer (min 1.5 s), up to 8 calls per file; twins are
+  told to think briefly. Fix waves hedge at 2 s. 429 retries start at 1 s and are jittered.
+- One-shot calls keep the tool list but send `tool_choice: none` (`text_only`): with `auto` an
+  executor sometimes called bash instead of answering; with no tool list MiniMax reasoned 4-20x
+  longer.
+
+The rate limit is still the risk: it is per account, so other sessions on the same key count.
 
 ### Subagents as clones of the parent session (`shard --clones`, alias `mini-agent-rs orchestrate`)
 
@@ -215,11 +227,11 @@ with an order owns the plan, so clones never mix two plans). Then gofmt + `--ver
 as in `shard`. The shared prefix is what the provider's prompt cache serves: on MiniMax 90-97% of
 the clones' prompt tokens came back cached. One-shot calls retry 429s after 1 s instead of the agent's 4 s floor.
 
-Measured (speed7, paired, never concurrent): see `~/bg/speed7-result.txt`. In short: on the
-speed2 fixtures `shard` stayed faster (het 9.9x vs 4.1x, xl 4.2x vs 1.4x median); the parent's plan
-is a serial step that `shard` does not have, and on xl the clones' total tokens hit the provider's
-token-plan rate limit. Clones need fewer uncached input tokens (het 4-5k vs shard 0.2-40k,
-depending on the cache), and they do not need the task to spell the contract out.
+Measured (speed7, paired, never concurrent, n=3 per fixture): on the speed2 fixtures `shard`
+stayed faster (het 9.9x vs 4.1x, xl 4.2x vs 1.4x median); the parent's plan is a serial step that
+`shard` does not have (6-25 s), and on xl the clones' burst hit the provider's rate limit. Clones
+send fewer uncached input tokens (het 4-5k vs shard 0.2-40k, depending on the cache) and do not
+need the task to spell the contract out. It is kept as an opt-in; `shard` is the default.
 
 ## Cold-start metrics (`mini-agent-rs metrics`)
 

@@ -4,16 +4,19 @@
 //! model-driven coordinator loses to one agent, because the coordinator's research is serial and as
 //! long as the single agent's whole run. `shard` removes the coordinator model entirely:
 //!
-//!   1. the hub (plain code) lists the repo's tracked files;
-//!   2. ONE one-shot executor per file, all at once: each gets the task + every file (read-only) and
-//!      answers with only ITS file's new content (or UNCHANGED). No tools, no steps, no exploration;
-//!   3. the slow tail is cut by hedging: a call not back after `--hedge` seconds gets an identical
-//!      twin (at most 8 calls); the first complete answer wins;
+//!   1. the hub (plain code) lists the repo's tracked files and picks the ones the task is about
+//!      (`--scope auto`, see `scope`; `--scope all` = every file);
+//!   2. ONE one-shot executor per picked file (per subject pair on waves over `GROUP_ABOVE`), all
+//!      at once, at most `--max-inflight` calls in flight: each gets the task + the repo (or its
+//!      related files on a large repo) and answers with only ITS file's new content (or
+//!      UNCHANGED). No tools, no steps, no exploration;
+//!   3. the slow tail is cut by hedging: a call not back after the adaptive threshold gets a twin
+//!      told to think briefly (at most `MAX_CALLS`); the first complete answer wins;
 //!   4. `--verify` runs once; on failure the files named in the errors get one more parallel wave
 //!      with the errors attached (at most `--fix-rounds`).
 //!
 //! Wall-clock = the slowest single-file answer (+ the gate), not the sum of a conversation.
-//! It is for edits that a whole-repo prompt can hold; large repos need `--files` to narrow it.
+//! `--clones` (`orchestrate`) swaps step 2 for a planning parent and session clones (clones.rs).
 use crate::config;
 use crate::models::{get_model, shapes, Reply};
 use serde_json::{json, Map, Value};
