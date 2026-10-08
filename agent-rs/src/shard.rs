@@ -62,6 +62,18 @@ fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>
     parse_answer(&text).map(|a| (a, usage))
 }
 
+/// Twin `n` of a hedged executor (n >= 1) answers without thinking aloud: "think briefly" is
+/// appended to its prompt. The slow tail is mostly long hidden reasoning on an easy file
+/// (measured, speed7: 1600-2200 reasoning tokens for a 300-token answer, 19-38 s), and an
+/// identical twin tends to think just as long; a twin told to be brief usually lands first.
+fn brief(extra: &str, n: u32) -> String {
+    if n == 0 {
+        extra.to_string()
+    } else {
+        format!("{extra}\nThink briefly: the change is mechanical; answer right away.\n")
+    }
+}
+
 /// One plain model call on `msgs` (`{role, content}` objects): the reply text without its
 /// `<think>` block, and the provider's usage object (prompt / cached / completion tokens).
 pub(crate) fn query_text(model_name: &Option<String>, model_cfg: &Obj, msgs: &[Value]) -> Result<(String, Value), String> {
@@ -107,7 +119,9 @@ fn ask_group(ctx: &Ctx, repo: &str, group: &[String], extra: &str) -> Result<(Op
          signatures, JSON tags and props the task gives. Keep the existing wire contract. Other files will be updated by \
          their own workers as the task requires; you may rely on that. Change a file only if the task explicitly requires it. \
          Never carry a change over by analogy: a change the task asks for one entity, file or function does NOT apply to the \
-         similar ones it does not name. Add nothing the task does not ask for. Before answering, check that EVERY requirement the task states for YOUR FILES \
+         similar ones it does not name. Add nothing the task does not ask for. Decide EACH file on its own: find every instruction of the \
+         task that applies to that file's path or layer (Go struct/handler, TS type, component, docs) and apply them all; answer UNCHANGED \
+         for a file only when no instruction of the task applies to it. Before answering, check that EVERY requirement the task states for YOUR FILES \
          holds, in the task's exact terms (names, status codes, phrases; for docs: every case the task lists).\nYOUR FILES: {list}\n{extra}\
          For EACH of your files, in this order, answer either the line `UNCHANGED <path>` or the line `{BEGIN} <path>`, then the COMPLETE \
          new content of that file, then the line {END}. Nothing else (no code fences around the content). No tests.",
@@ -387,7 +401,11 @@ fn wave(
             std::thread::spawn(move || {
                 let s = Instant::now();
                 let f3 = f2.clone();
-                let call = std::sync::Arc::new(move || ask(&c, &r, &f3, &e));
+                let n = std::sync::atomic::AtomicU32::new(0);
+                let call = std::sync::Arc::new(move || {
+                    let k = n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ask(&c, &r, &f3, &brief(&e, k))
+                });
                 let r = hedged(call, &f2, hedge, &l, wave_n, &sl);
                 (f2, r, s.elapsed().as_secs_f64())
             })
@@ -442,7 +460,11 @@ fn group_wave(
                 let s = Instant::now();
                 let label = g2.join(",");
                 let g3 = g2.clone();
-                let call = std::sync::Arc::new(move || ask_group(&c, &repo, &g3, &e));
+                let n = std::sync::atomic::AtomicU32::new(0);
+                let call = std::sync::Arc::new(move || {
+                    let k = n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ask_group(&c, &repo, &g3, &brief(&e, k))
+                });
                 let r = hedged(call, &label, hedge, &l, wave_n, &sl);
                 (g2, r, s.elapsed().as_secs_f64())
             })
