@@ -29,7 +29,7 @@ const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MO
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
-file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 16 calls in flight, 2 fix rounds.";
+file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 32 calls in flight, 2 fix rounds.";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -43,7 +43,7 @@ pub(crate) struct Ctx {
 /// One answer for one file: Some(new content), None = UNCHANGED, plus the call's usage.
 fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>, Value), String> {
     let prompt = format!(
-        "TASK for the whole repository:\n{task}\n\nRepository (every file, or on a large change the files related to yours):\n{repo}\n\n\
+        "TASK for the whole repository:\n{task}\n\nRepository (every file, or on a large repo the files related to yours):\n{repo}\n\n\
          Several workers edit this repo at once, ONE FILE EACH, all from the same task text, so use exactly the names, \
          signatures, JSON tags and props the task gives. Keep the existing wire contract. Other files will be updated by \
          their own workers as the task requires; you may rely on that. Change YOUR FILE only if the task explicitly requires it. \
@@ -282,7 +282,7 @@ fn wave(
     slots: &std::sync::Arc<Slots>,
 ) -> Vec<Value> {
     let full = dump(root, all);
-    let small = full.len() * targets.len() <= BURST_CHARS;
+    let small = full.len() <= PROMPT_CHARS;
     let lat: Lat = Default::default();
     let wave_n = targets.len();
     let handles: Vec<_> = targets
@@ -382,11 +382,12 @@ fn tokens(s: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// While (repo dump x executors) stays under this many characters (~50k tokens), every executor
-/// gets the whole repo (one shared, cached prefix). Above it each executor gets only `related`
-/// files: measured (speed7 t18, xl), 48 executors x the whole 27 kB repo = 417k prompt tokens
-/// in one burst, which the provider's token plan answered with 160 HTTP 429s and a 44 s tail.
-const BURST_CHARS: usize = 200_000;
+/// A repo dump up to this many characters (~30k tokens) goes WHOLE into every executor's prompt:
+/// every executor then shares one identical prefix, which the provider's prompt cache serves
+/// (measured, speed7: up to 100% of a 424k-token burst cached). Above it each executor gets only
+/// `related` files. Tried and dropped: switching to related files by burst size -- the prefixes
+/// stop being shared, the cache hit rate fell from ~100% to ~15%, and the 429s did not go away.
+const PROMPT_CHARS: usize = 120_000;
 
 /// The basename tokens of each file that name its subject (`MenuList.tsx` -> menu): a token that
 /// pairs with two or more different tokens across the repo (`list`) is a suffix, not a subject.
@@ -412,8 +413,8 @@ fn subjects(files: &[String]) -> std::collections::HashMap<String, std::collecti
         .collect()
 }
 
-/// The context of one executor on a large burst: its own file, the files of its directory (its
-/// package), the files that share its subject (menu.go, menu.ts, MenuList.tsx, menu.md) and the
+/// The context of one executor on a repo too large for one prompt: its own file, the files of
+/// its directory (its package), the files that share its subject (menu.go, menu.ts, MenuList.tsx, menu.md) and the
 /// files the task quotes by path.
 fn related(task: &str, files: &[String], file: &str) -> Vec<String> {
     let subj = subjects(files);
@@ -431,6 +432,22 @@ fn related(task: &str, files: &[String], file: &str) -> Vec<String> {
         .collect()
 }
 
+/// Words of the task's sentences that say what stays as it is ("order and table keep total
+/// exactly as it is", "do not touch invoice"): their subjects are not targets. Measured (speed7
+/// t09): a task that named four untouched entities got 20 executors instead of 4, and the 16
+/// extra ones (all UNCHANGED, hedged) set the wall time.
+fn excluded(task: &str) -> std::collections::HashSet<String> {
+    let neg = regex::Regex::new(r"(?i)\b(keep|keeps|unchanged|untouched|do not (touch|change)|don't (touch|change)|must not change|stays?|as it is|only the)\b").unwrap();
+    let mut out = std::collections::HashSet::new();
+    for sentence in task.split(['.', ';', ':', '\n']) {
+        let only = sentence.to_ascii_lowercase().contains("only the");
+        if neg.is_match(sentence) && !only {
+            out.extend(tokens(sentence));
+        }
+    }
+    out
+}
+
 /// `--scope auto`: the files the task is about, picked by plain code (no model round-trip).
 /// A file is a target when its path is quoted in the task, or a distinctive token of its
 /// basename (`MenuList.tsx` -> menu) is a word of the task. A basename token that pairs with
@@ -442,7 +459,7 @@ fn related(task: &str, files: &[String], file: &str) -> Vec<String> {
 /// left to the gate: files blamed by --verify join the fix waves. No match -> every file.
 fn scope(task: &str, files: &[String]) -> Vec<String> {
     let subj = subjects(files);
-    let want = tokens(task);
+    let want = &tokens(task) - &excluded(task);
     let picked: Vec<String> = files
         .iter()
         .filter(|f| task.contains(f.as_str()) || subj.get(*f).is_some_and(|s| !s.is_disjoint(&want)))
@@ -502,7 +519,7 @@ pub fn client(args: &[String]) -> i32 {
     );
     let (mut only, mut hedge, mut fix_rounds, mut configs) =
         (Vec::<String>::new(), 3.0f64, 2u32, Vec::<String>::new());
-    let mut max_inflight = 16usize;
+    let mut max_inflight = 32usize;
     let mut scope_all = false;
     let mut clones = false;
     let mut i = 0;
