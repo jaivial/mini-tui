@@ -218,6 +218,19 @@ Measured in the web app against the same task without the store (orchestrator + 
 Duplicate file reads do not go down, and should not: a child still reads the file it has to edit.
 What the store removes is the orientation work around it.
 
+## One task, many executors: `shard` and `orchestrate`
+
+`mini-agent-rs shard` and `mini-agent-rs orchestrate` split one coding task by file. A hub in plain
+code (no planner model) picks the files the task names. It starts one executor per file, all in
+parallel, hedges the slow calls, and runs your gate (`--verify`). If the gate fails, fix waves repair
+only the files it blames. `orchestrate` is the hybrid: each executor is a copy of one parent session
+(repo + task, a shared and cached prefix) with an order for its own file.
+
+On a 20-task suite (2 to 48 files per task), every task passed the gate with every required change in
+place, and runs were 2x to 18x faster than a single agent. Not every repeat kept all 20 tasks at 2x or
+more. Box by box, with the code behind each one:
+**[the orchestration diagram](/diagrams/mini-agent-rs-orchestrate/)**.
+
 ## How it is kept identical
 
 `agent-rs/tests/parity/run_all.sh` runs both agents on the same scripted tasks against the same scripted

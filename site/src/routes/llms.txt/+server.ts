@@ -1,4 +1,5 @@
 import { docs } from "$lib/docs-data";
+import { diagrams } from "$lib/diagrams-data";
 import { DESCRIPTION, NAME, REPO, abs } from "$lib/site";
 
 export const prerender = true;
@@ -12,6 +13,9 @@ export const GET = () => {
     "",
     "## Docs",
     ...docs.map((d) => `- [${d.title}](${abs(`/docs/${d.slug}/`)}): ${d.description}`),
+    "",
+    "## Diagrams",
+    ...diagrams.map((d) => `- [${d.title}](${abs(`/diagrams/${d.id}/`)}): ${d.question ?? d.summary ?? ""}`),
     "",
     "## Project",
     `- [Web app](${abs("/web-app/")}): what the browser UI does`,
