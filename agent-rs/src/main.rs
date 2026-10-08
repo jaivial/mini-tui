@@ -19,6 +19,7 @@ mod repl;
 mod rlm;
 mod shard;
 mod clones;
+mod hybrid;
 mod subagents;
 mod templates;
 mod util;
@@ -390,11 +391,12 @@ fn main() {
         install_signals();
         std::process::exit(shard::client(&argv[1..]));
     }
-    // `orchestrate` = `shard --clones`: subagents are copies of the parent session (src/clones.rs).
+    // `orchestrate` = `shard --hybrid`: shard's hub with executors that are copies of the parent
+    // session (src/hybrid.rs). `shard --clones` keeps speed7's planning-parent design.
     if argv.first().map(String::as_str) == Some("orchestrate") {
         config::load_dotenv();
         install_signals();
-        let mut a = vec!["--clones".to_string()];
+        let mut a = vec!["--hybrid".to_string()];
         a.extend(argv[1..].iter().cloned());
         std::process::exit(shard::client(&a));
     }

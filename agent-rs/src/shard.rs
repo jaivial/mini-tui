@@ -27,12 +27,13 @@ use std::time::{Duration, Instant};
 
 type Obj = Map<String, Value>;
 
-const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MODEL] [--files a,b] [--hedge SECS] [--scope auto|all] [--max-inflight N] [--fix-rounds N] [-o stats.json]
+const HELP: &str = "mini-agent-rs shard -t TASK --root DIR [--verify CMD] [-m MODEL] [--files a,b] [--hybrid|--clones] [--hedge SECS] [--scope auto|all] [--max-inflight N] [--fix-rounds N] [-o stats.json]
 
 One one-shot executor per file, all in parallel, no coordinator model. Each executor sees the task
 and every file, and writes back only its own file. --verify (run in --root with sh -c) is the gate;
 files named in its errors get up to --fix-rounds more parallel waves. Default: every `git ls-files`
-file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 24 calls in flight, 2 fix rounds.";
+file as context, executors only for the files the task names (--scope auto), hedge 3 s (adaptive, at most 8 calls per file), 24 calls in flight (8 on zai/zhipu), 2 fix rounds.
+--hybrid (alias `orchestrate`): the same hub, but every executor is a copy of ONE parent session (repo + task, plus a contract call only when the task spells none), so the repo is a shared cacheable prefix. --clones: speed7's planning parent + clones.";
 
 const SYSTEM: &str = "You are an executor. You output file contents only, never commentary.";
 
@@ -69,7 +70,7 @@ fn ask(ctx: &Ctx, repo: &str, file: &str, extra: &str) -> Result<(Option<String>
 /// appended to its prompt. The slow tail is mostly long hidden reasoning on an easy file
 /// (measured, speed7: 1600-2200 reasoning tokens for a 300-token answer, 19-38 s), and an
 /// identical twin tends to think just as long; a twin told to be brief usually lands first.
-fn brief(extra: &str, n: u32) -> String {
+pub(crate) fn brief(extra: &str, n: u32) -> String {
     if n == 0 {
         extra.to_string()
     } else {
@@ -139,6 +140,12 @@ fn ask_group(ctx: &Ctx, repo: &str, group: &[String], extra: &str) -> Result<(Op
         json!({"role": "user", "content": prompt}),
     ];
     let (text, usage) = query_text(&ctx.model_name, &ctx.model_cfg, &msgs)?;
+    Ok((Some(parse_group(&text, group)?), usage))
+}
+
+/// A multi-file answer (`<<<FILE path` ... `FILE>>>` or `UNCHANGED path` per file) as the JSON
+/// object `{path: new content | null}`; a file without an answer makes the whole answer an error.
+pub(crate) fn parse_group(text: &str, group: &[String]) -> Result<String, String> {
     let mut out = serde_json::Map::new();
     for f in group {
         let open = format!("{BEGIN} {f}\n");
@@ -157,7 +164,7 @@ fn ask_group(ctx: &Ctx, repo: &str, group: &[String], extra: &str) -> Result<(Op
             return Err(format!("group answer misses {f}: {head:?}"));
         }
     }
-    Ok((Some(Value::Object(out).to_string()), usage))
+    Ok(Value::Object(out).to_string())
 }
 
 /// A wave with more targets than this sends one executor per subject group (`groups`) instead of
@@ -551,7 +558,7 @@ pub(crate) fn token_totals(calls: &[Value]) -> Value {
 }
 
 /// Lower-case word tokens of `s`, camelCase split, a plural `s` dropped (len > 3).
-fn tokens(s: &str) -> std::collections::HashSet<String> {
+pub(crate) fn tokens(s: &str) -> std::collections::HashSet<String> {
     let mut spaced = String::new();
     let mut prev: Option<char> = None;
     for c in s.chars() {
@@ -583,7 +590,7 @@ const PROMPT_CHARS: usize = 120_000;
 
 /// The basename tokens of each file that name its subject (`MenuList.tsx` -> menu): a token that
 /// pairs with two or more different tokens across the repo (`list`) is a suffix, not a subject.
-fn subjects(files: &[String]) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+pub(crate) fn subjects(files: &[String]) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
     use std::collections::{HashMap, HashSet};
     let stem = |f: &str| {
         let b = f.rsplit('/').next().unwrap_or(f);
@@ -711,9 +718,10 @@ pub fn client(args: &[String]) -> i32 {
     );
     let (mut only, mut hedge, mut fix_rounds, mut configs) =
         (Vec::<String>::new(), 3.0f64, 2u32, Vec::<String>::new());
-    let mut max_inflight = 24usize;
+    let mut max_inflight = 0usize;
     let mut scope_all = false;
     let mut clones = false;
+    let mut hybrid = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -747,6 +755,7 @@ pub fn client(args: &[String]) -> i32 {
             }
             "--scope" => scope_all = val() == "all",
             "--clones" => clones = true,
+            "--hybrid" => hybrid = true,
             "--max-inflight" => max_inflight = val().parse().unwrap_or(max_inflight),
             "--hedge" => hedge = val().parse().unwrap_or(hedge),
             "--fix-rounds" => fix_rounds = val().parse().unwrap_or(fix_rounds),
@@ -757,6 +766,9 @@ pub fn client(args: &[String]) -> i32 {
             }
         }
         i += 1;
+    }
+    if max_inflight == 0 {
+        max_inflight = crate::hybrid::default_inflight(model_name.as_deref());
     }
     if task.trim().is_empty() {
         eprintln!("error: shard needs -t TASK or --task-file\n\n{HELP}");
@@ -818,10 +830,16 @@ pub fn client(args: &[String]) -> i32 {
     if std::env::var_os("MINI_AGENT_RETRY_MIN_WAIT").is_none() {
         std::env::set_var("MINI_AGENT_RETRY_MIN_WAIT", "1");
     }
+    if std::env::var_os("MINI_AGENT_RETRY_MAX_WAIT").is_none() {
+        std::env::set_var("MINI_AGENT_RETRY_MAX_WAIT", "3");
+    }
     let slots = std::sync::Arc::new(Slots::new(max_inflight));
     let t0 = Instant::now();
     let (mut calls, targets) = if clones {
         crate::clones::run(&ctx, &root, &files, hedge, t0, &slots)
+    } else if hybrid {
+        let targets = if scope_all { files.clone() } else { scope(&ctx.task, &files) };
+        (crate::hybrid::run(&ctx, &root, &files, &targets, hedge, max_inflight, t0, &slots), targets)
     } else {
         let targets = if scope_all {
             files.clone()
@@ -875,7 +893,7 @@ pub fn client(args: &[String]) -> i32 {
     let wall = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
     let changed = calls.iter().filter(|c| c["changed"] == json!(true)).count();
     let errors: Vec<&Value> = calls.iter().filter(|c| c.get("error").is_some()).collect();
-    let stats = json!({"wall_s": wall, "mode": if clones { "clones" } else { "shard" }, "targets": targets.len(), "gate": if verify.is_empty() { "none" } else if ok { "pass" } else { "FAIL" }, "fix_rounds": rounds, "files": files.len(), "changed": changed, "errors": errors.len(), "tokens": token_totals(&calls), "calls": calls});
+    let stats = json!({"wall_s": wall, "mode": if clones { "clones" } else if hybrid { "hybrid" } else { "shard" }, "targets": targets.len(), "gate": if verify.is_empty() { "none" } else if ok { "pass" } else { "FAIL" }, "fix_rounds": rounds, "files": files.len(), "changed": changed, "errors": errors.len(), "tokens": token_totals(&calls), "calls": calls});
     if let Some(p) = out {
         let _ = std::fs::write(p, serde_json::to_string_pretty(&stats).unwrap_or_default());
     }
