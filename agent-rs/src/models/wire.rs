@@ -8,7 +8,7 @@ use super::prices;
 use super::read_tools as read;
 use super::shapes::{anthropic_bash_tool, anthropic_cu_tool, bash_tool, bash_tool_responses, cu_tool, cu_tool_responses, expand_multimodal, parse_response_actions, parse_toolcall_actions, response_observations, toolcall_observations};
 use super::{DeltaSink, Model, ModelError, Reply};
-use crate::util::{get, get_str, now, Obj};
+use crate::util::{extra, get, get_str, now, Obj};
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -480,6 +480,63 @@ impl Model for WireModel {
 
     fn model_name(&self) -> String {
         self.cfg_str("model_name").unwrap_or_default()
+    }
+
+    /// The cache warmer's replay (plan item 5): the same request the provider already answered,
+    /// with `max_tokens` forced to 1 so the reply is a single token. Cost is computed from the
+    /// same price row that bills the run; the replay never enters the conversation or
+    /// `model_stats`, because it did no work.
+    fn warm_cache(&mut self, messages: &[Value]) -> Result<f64, String> {
+        // `max_tokens` reaches the wire through `model_kwargs` on every protocol (chat and
+        // Responses pass the kwargs straight through, Messages lifts it out of them), so the cap
+        // goes there; the config-level field is set too because Messages reads it as a fallback.
+        let kwargs_max = self.model_kwargs().get("max_tokens").cloned();
+        let config_max = self.config.get("max_tokens").cloned();
+        if let Some(k) = self.config.get_mut("model_kwargs").and_then(Value::as_object_mut) {
+            k.insert("max_tokens".into(), json!(1));
+        }
+        self.config.insert("max_tokens".into(), json!(1));
+        let view = messages.to_vec();
+        let result = match self.query(&view, None) {
+            Ok(reply) => {
+                let cost = match reply {
+                    Reply::Message(m) => extra(&m).get("cost").and_then(Value::as_f64).unwrap_or(0.0),
+                    Reply::FormatError(msgs) => msgs.first().and_then(|m| extra(m).get("cost").and_then(Value::as_f64)).unwrap_or(0.0),
+                };
+                Ok(cost)
+            }
+            Err(e) => Err(e.message),
+        };
+        // Restore exactly what was there: an absent `max_tokens` must stay absent, or the next
+        // real request would inherit the replay's one-token cap.
+        if let Some(v) = kwargs_max {
+            if let Some(k) = self.config.get_mut("model_kwargs").and_then(Value::as_object_mut) {
+                k.insert("max_tokens".into(), v);
+            }
+        } else if let Some(k) = self.config.get_mut("model_kwargs").and_then(Value::as_object_mut) {
+            k.shift_remove("max_tokens");
+        }
+        match config_max {
+            Some(v) => {
+                self.config.insert("max_tokens".into(), v);
+            }
+            None => {
+                self.config.shift_remove("max_tokens");
+            }
+        }
+        result
+    }
+
+    fn cache_prices(&self) -> (f64, f64, f64, f64) {
+        let name = self.config.get("model_name").and_then(Value::as_str).unwrap_or("");
+        match prices::price_for(&self.price_provider, name) {
+            Some(p) => (p.cache_read, p.cache_write, p.input, p.output),
+            None => (0.0, 0.0, 0.0, 0.0),
+        }
+    }
+
+    fn cache_ttl_secs(&self) -> Option<f64> {
+        crate::cache_warmer::ttl_secs(&Value::Object(self.config.clone()))
     }
 
     fn context_window(&self) -> i64 {

@@ -572,12 +572,6 @@ impl Environment for DockerEnvironment {
         json!({"info": {"config": {"environment": self.config, "environment_type": "minisweagent.environments.docker.DockerEnvironment"}}})
     }
 
-    /// A docker run has no local filesystem to read: the read tool would open the *host's* file,
-    /// which is not the file the command sees. Answer with a distinct cwd so the tool is never
-    /// offered for it (see `tools::read_supported`).
-    fn working_dir(&self) -> String {
-        String::new()
-    }
 }
 
 impl Drop for DockerEnvironment {

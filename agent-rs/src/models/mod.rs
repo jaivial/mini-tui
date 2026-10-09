@@ -63,6 +63,22 @@ pub trait Model {
     fn streams(&self) -> bool {
         false
     }
+    /// Replay the last request with a one-token output cap to keep its prompt-cache entry alive
+    /// (the cache warmer, plan item 5). Returns the cost of the replay. The default is "not
+    /// supported": a scripted model has no entry to keep warm, so the warmer stays idle for it.
+    fn warm_cache(&mut self, _messages: &[Value]) -> Result<f64, String> {
+        Err("this model cannot replay a request".into())
+    }
+    /// The price row that bills this model, as `(cache_read, cache_write, input, output)` per
+    /// million tokens. Zeroes when unknown, which is the warmer's "economics unavailable" case.
+    fn cache_prices(&self) -> (f64, f64, f64, f64) {
+        (0.0, 0.0, 0.0, 0.0)
+    }
+    /// The prompt-cache TTL in seconds when the model's config pins one (`cache_ttl`), else
+    /// `None`: without a known TTL the warmer would refresh on a guess.
+    fn cache_ttl_secs(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// `GLOBAL_MODEL_STATS` (`MSWEA_GLOBAL_COST_LIMIT` / `MSWEA_GLOBAL_CALL_LIMIT`): every model call
