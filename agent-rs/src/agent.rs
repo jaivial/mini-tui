@@ -436,15 +436,22 @@ impl Agent {
     /// `cache_warm` line), never to the conversation: warming is not a turn, and its cost stays
     /// out of `model_stats` because it did no work.
     fn warm_cache(&mut self) {
+        // Cheap first: the state the decision needs, before any clone. The view (the whole
+        // conversation) is only built once the warmer says a refresh is due, because this runs
+        // every 200 ms of an idle wait.
         if !crate::cache_warmer::active() {
             return;
         }
-        let view: Vec<Value> = self.context_view().cloned().collect();
-        let prompt_tokens = view.last().and_then(|m| crate::compaction::prompt_tokens(m)).unwrap_or(0);
+        let prompt_tokens = self.context_view().last().and_then(|m| crate::compaction::prompt_tokens(m)).unwrap_or(0);
         let prices = self.model.cache_prices();
         let ttl = self.model.cache_ttl_secs();
+        let due = self.warmer.refresh_due(ttl, prompt_tokens, prices);
+        if !due {
+            return;
+        }
+        let view: Vec<Value> = self.context_view().cloned().collect();
         let model = &mut self.model;
-        let note = self.warmer.tick(prompt_tokens, prices, ttl, |max_tokens| {
+        let note = self.warmer.run_due(prompt_tokens, prices, ttl, |max_tokens| {
             let _ = max_tokens; // the cap is the model's own business (it owns `max_tokens`)
             model.warm_cache(&view)
         });
@@ -557,10 +564,11 @@ impl Agent {
         }
         // Closes the open `model` label and opens `actions`.
         t.mark("actions");
-        let r = self.execute_actions(&message);
+        let outputs = self.execute_actions(&message)?;
         t.mark("observe");
+        self.finish_step(&message, outputs)?;
         self.record_timings(&mut t, at);
-        r
+        Ok(())
     }
 
     /// Close the clock and stamp it: onto the assistant message the step produced, and into the
@@ -696,7 +704,9 @@ impl Agent {
         Ok(message)
     }
 
-    fn execute_actions(&mut self, message: &Value) -> Result<(), Flow> {
+    /// Run the step's actions and return their observations **in issue order**; the caller renders
+    /// them into messages (`finish_step`) so the timing clock can tell execution from rendering.
+    fn execute_actions(&mut self, message: &Value) -> Result<Vec<Value>, Flow> {
         let actions: Vec<Value> = message.pointer("/extra/actions").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut outputs = Vec::new();
         // A single action, or concurrency disabled: the plain serial loop, unchanged.
@@ -725,7 +735,7 @@ impl Agent {
                     Outcome::Stopped => return Err(Flow::Interrupt(vec![])),
                 }
             }
-            return self.finish_step(message, outputs);
+            return Ok(outputs);
         }
         // More than one action: run them overlapped on worker threads, then collect them back
         // **in the order they were issued**, so the observation messages the model sees are
@@ -774,7 +784,7 @@ impl Agent {
         for slot in slots {
             outputs.push(slot.unwrap_or_else(crate::models::shapes::not_executed));
         }
-        self.finish_step(message, outputs)
+        Ok(outputs)
     }
 
     /// The tail of a step, shared by the serial and overlapped paths: render the observations.

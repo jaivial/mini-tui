@@ -166,26 +166,39 @@ impl Warmer {
         self.last_decision = None;
     }
 
-    /// Called from the idle loop. `replay` performs the warm request (the caller owns the model);
-    /// returning `Some(note)` means a refresh happened and the note should reach the journal.
-    pub fn tick<F: FnMut(i64) -> Result<f64, String>>(&mut self, prompt_tokens: i64, prices: (f64, f64, f64, f64), ttl: Option<f64>, replay: F) -> Option<Value> {
+    /// Whether a refresh is due **now** (gate only, no request): the caller asks this every poll
+    /// and only builds the replay's view (a full conversation clone) when it passes.
+    pub fn refresh_due(&mut self, ttl: Option<f64>, prompt_tokens: i64, prices: (f64, f64, f64, f64)) -> bool {
         if !active() {
-            return None;
+            return false;
         }
-        let Some(ttl) = ttl else { return None };
-        let Some(delay) = warming_delay(ttl) else { return None };
+        let Some(ttl) = ttl else { return false };
+        let Some(delay) = warming_delay(ttl) else { return false };
         if self.last_call_at <= 0.0 || now() - self.last_call_at < delay {
-            return None;
+            return false;
         }
         let (cache_read, cache_write, input, output) = prices;
         let d = decide(prompt_tokens, cache_read, cache_write, input, output);
-        self.last_decision = Some(d.clone());
-        if !d.warm {
+        self.last_decision = Some(d);
+        if !self.last_decision.as_ref().is_some_and(|d| d.warm) {
             // Do not re-evaluate every 200 ms for a decision that will not change until the
             // conversation does: park the clock so the next check is a full delay away.
             self.last_call_at = now();
+            return false;
+        }
+        true
+    }
+
+    /// Perform the refresh [`refresh_due`] approved: `replay` issues the warm request (the caller
+    /// owns the model); returning `Some(note)` means a refresh happened and the note should reach
+    /// the journal.
+    pub fn run_due<F: FnMut(i64) -> Result<f64, String>>(&mut self, prompt_tokens: i64, prices: (f64, f64, f64, f64), ttl: Option<f64>, replay: F) -> Option<Value> {
+        if !self.refresh_due(ttl, prompt_tokens, prices) {
             return None;
         }
+        // `refresh_due` just set this; the fallback only exists so a bare `run_due` call cannot
+        // replay with no decision recorded.
+        let d = self.last_decision.clone().unwrap_or(Decision { warm: false, prompt_tokens, warm_cost: 0.0, miss_cost: 0.0, expected_savings: 0.0, continuation_probability: IDLE_CONTINUATION_PROBABILITY, reason: "no decision recorded" });
         let mut replay = replay;
         match replay(WARM_OUTPUT_TOKENS) {
             Ok(cost) => {
