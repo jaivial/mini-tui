@@ -162,10 +162,15 @@ interface Internal {
   syncedAt?: number;
   /** The next trajectory snapshot rebuilds the transcript (just attached to another UI's agent). */
   rebuild?: boolean;
+  /** Transcript counts at the last mid-run save: a running session persists at most every PERSIST_MS. */
+  persistedCount?: number;
+  persistedAt?: number;
 }
 
 /** How often held sessions are checked for agents and saves made by other UIs (a terminal). */
 const SYNC_MS = Number(process.env.MINITUI_WEB_SYNC_MS ?? 1000);
+/** How often a running session's transcript is saved mid-run, so a restart or crash keeps it. */
+const PERSIST_MS = Number(process.env.MINITUI_WEB_PERSIST_MS ?? 15000);
 
 /** The agent answered and holds at its exit (only compaction notes may follow the `exit`). */
 function waitingAtExit(messages: TrajectoryMessage[]): boolean {
@@ -344,6 +349,7 @@ export class SessionManager {
    */
   async #syncExternal(): Promise<void> {
     this.#syncSubagents();
+    this.#persistDirty();
     const idle = [...this.#live.values()].filter(
       (entry) =>
         entry.session.target === "local" && !(entry.run && !entry.exited) && entry.session.status !== "running" && !entry.probing,
@@ -770,6 +776,28 @@ export class SessionManager {
       // Even a failed save means this copy is the newest: an older row must not replace it later.
       entry.syncedAt = Date.now();
     }
+  }
+
+  /**
+   * Mid-run saves: until this only `#finish` persisted, so a restart (a deploy) took a running
+   * session's whole conversation with it. Own local runs only; another UI's agent is saved by it.
+   */
+  #persistDirty(): void {
+    const now = Date.now();
+    for (const entry of this.#live.values()) {
+      if (entry.session.target !== "local" || entry.exited || entry.run?.attached) continue;
+      const count = entry.session.messages.length + entry.session.events.length;
+      if (!count || count === entry.persistedCount) continue;
+      if (now - (entry.persistedAt ?? 0) < PERSIST_MS) continue;
+      this.#persist(entry);
+      entry.persistedCount = count;
+      entry.persistedAt = now;
+    }
+  }
+
+  /** Save every held session now: a deploy or Ctrl+C keeps even mid-run conversations. */
+  persistAll(): void {
+    for (const entry of this.#live.values()) this.#persist(entry);
   }
 
   /** Tell the other UIs which agent runs this session, so they follow it instead of forking it. */
@@ -1329,6 +1357,23 @@ export class SessionManager {
     const row = getSession(this.db(), id);
     if (!row) throw new Error("unknown session");
     const session = restoreFromRow(row);
+    // A session the server lost mid-run (a deploy before its first save) has an empty row but a
+    // complete journal on disk: rebuild its transcript from there instead of showing nothing.
+    if (!session.messages.length) {
+      for (const trajPath of this.trajsOf(id)) {
+        try {
+          const traj = readTrajectory(trajPath);
+          if (traj?.messages?.length) {
+            session.messages = traj.messages;
+            session.info = { ...session.info, ...parseInfo(traj) };
+            session.events = messagesToEvents(session.messages, { showSystem: false }, 0, createParseState());
+            break;
+          }
+        } catch {
+          // an unreadable journal does not block the restore
+        }
+      }
+    }
     const entry: Internal = {
       session,
       consumed: session.messages.length,
