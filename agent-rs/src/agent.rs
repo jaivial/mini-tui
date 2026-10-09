@@ -435,6 +435,11 @@ impl Agent {
     /// real call needs is still cached. The note it returns is appended to the journal (a
     /// `cache_warm` line), never to the conversation: warming is not a turn, and its cost stays
     /// out of `model_stats` because it did no work.
+    ///
+    /// The replay runs inline in the idle loop (pi's warmer is async; this agent has no runtime),
+    /// so a follow-up that arrives *during* a warm waits for it. A one-token reply is one
+    /// provider round-trip, and the same timeout bounds it as any real call, so the worst case
+    /// is one request's latency --- never a hang the run cannot recover from.
     fn warm_cache(&mut self) {
         // Cheap first: the state the decision needs, before any clone. The view (the whole
         // conversation) is only built once the warmer says a refresh is due, because this runs
