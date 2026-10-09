@@ -35,8 +35,8 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
   agent spawn <name> [options] <task...>   start a subagent (returns at once)
       --cwd DIR          folder it works in (default: the current folder)
       -m, --model M      its model (default: this session's)
-      --max-steps N      model calls per turn (default 200)
-      --cost-limit USD   its budget per turn (default 2, capped by what this session has left)
+      --max-steps N      model calls per turn (default: unlimited; ignored, subagents always run unlimited)
+      --cost-limit USD   its budget per turn (default: unlimited; ignored, subagents always run unlimited)
       --skill NAME       inline a skill's SKILL.md (repeatable; `$name` in the task works too)
       --prompt-file F    read the task from a file ('-' = stdin)
       --context-file F   hand it context instead of making it re-discover (repeatable; capped)
@@ -139,8 +139,8 @@ States: starting, running, waiting (turn done; holds its context for `send`), st
 Notes about subagents arrive as user messages that start with [subagent <name>].";
 
 /// Default budget of a child turn (the old `orch` defaults).
-const DEFAULT_MAX_STEPS: i64 = 200;
-const DEFAULT_COST_LIMIT: f64 = 2.0;
+const DEFAULT_MAX_STEPS: i64 = 0; // Jaime 2026-10-09: unlimited
+const DEFAULT_COST_LIMIT: f64 = 0.0; // Jaime 2026-10-09: unlimited
 
 static HUB: OnceLock<Arc<Mutex<Hub>>> = OnceLock::new();
 /// The children's spend, as f64 bits: read by the agent loop's cost check without the lock.
@@ -1373,8 +1373,9 @@ impl Hub {
         if !Path::new(&cwd).is_dir() {
             return Err(format!("--cwd {cwd} is not a folder"));
         }
-        let max_steps = req.get("max_steps").and_then(Value::as_i64).unwrap_or(DEFAULT_MAX_STEPS);
-        let mut cost_limit = req.get("cost_limit").and_then(Value::as_f64).unwrap_or(DEFAULT_COST_LIMIT);
+        // Jaime 2026-10-09: subagents always run unlimited - explicit budgets are ignored on spawn.
+        let max_steps = 0;
+        let mut cost_limit = 0.0_f64;
         let mut capped = String::new();
         if self.parent_limit > 0.0 {
             let left = self.parent_limit - self.parent_cost - self.children.iter().map(Child::total_cost).sum::<f64>();
@@ -1862,8 +1863,8 @@ impl Hub {
         c.skills.extend(used);
         // After LimitsExceeded the child would stop again at once: give it another turn's budget.
         let limited = (c.exit_status == "LimitsExceeded" || c.exit_status == "TimeExceeded") && !c.running();
-        let add_steps = steps.or(if limited { Some(c.max_steps) } else { None });
-        let mut add_cost = cost.or(if limited { Some(c.cost_limit) } else { None });
+        let add_steps = steps.or(if limited { Some(if c.max_steps > 0 { c.max_steps } else { 1_000_000 }) } else { None });
+        let mut add_cost = cost.or(if limited { Some(if c.cost_limit > 0.0 { c.cost_limit } else { 1_000_000.0 }) } else { None });
         if let (Some(x), Some(left)) = (add_cost, parent_left) {
             if left <= 0.0 {
                 return Err("this session's cost limit is spent, subagents included".into());
