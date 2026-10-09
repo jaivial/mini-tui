@@ -614,6 +614,10 @@ model creates live in `~/.config/mini-tui/agents/`.
   grandchildren) with live state, model, steps, cost and cache reuse, and the timeline of
   delegations, handoffs, corrections, replies and fan-outs. Any agent opens as its own session.
 
+![a translation chain: translator -> reviewer (corrections, second review) -> deployer](docs/screenshots/agents-chain.png)
+
+![a recursive fan-out: login delegates backend and frontend, running in parallel](docs/screenshots/agents-fanout.png)
+
 ### The shared context (`ContextStore`)
 
 A subagent that re-reads what the orchestrator already read is the single biggest cost in a
