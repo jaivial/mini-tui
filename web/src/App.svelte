@@ -519,7 +519,6 @@ import { windows } from "./lib/stores/windows.svelte";
           windows.remove(id);
         }}
         ontasks={() => (tasksOpen = true)}
-        {taskRows}
         windowTasks={tasksByWindow}
         inOtherWindow={(id) => {
           const w = panes.windowOf(id);

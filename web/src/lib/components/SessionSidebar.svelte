@@ -17,7 +17,7 @@
   import { store } from "../stores/sessions.svelte";
   import { baseName, relativeTime, cost } from "../format";
   import type { SessionState } from "../types";
-  import type { TaskRow, WindowTasks } from "../tasks";
+  import type { WindowTasks } from "../tasks";
 
   let {
     onnew,
@@ -37,7 +37,6 @@
     onrename,
     onclosewindow,
     ontasks,
-    taskRows = [],
     windowTasks = {},
     paneOf = () => 0,
     focusedSession = null,
@@ -82,8 +81,6 @@
 
     /** Open the window's task board (the panel listing every session's task card). */
     ontasks?: () => void;
-    /** The board's rows, for the drawer the popover's "Open board" opens. */
-    taskRows?: TaskRow[];
     /** Each window's panes and their tasks, one for the icon on that window's row. */
     windowTasks?: Record<string, WindowTasks>;
 
