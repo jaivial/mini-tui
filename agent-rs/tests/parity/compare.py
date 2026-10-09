@@ -16,6 +16,11 @@ def normalize(v, root):
     if isinstance(v, dict):
         out = {}
         for k, x in v.items():
+            # Rust-only observability (plan items 5-6): per-phase step timings on assistant
+            # messages and the run summary, and the cache warmer's counters. Measured durations
+            # and warm counts, never behaviour, so they are dropped rather than compared.
+            if k in ("timings", "cache_warmer"):
+                continue
             if k in ("timestamp",) and isinstance(x, (int, float)):
                 out[k] = "<ts>"
             elif k == "thinking_seconds":

@@ -373,9 +373,25 @@ execution, fine-grained self-truncating tools, header-first retries — and the 
 optimizations for `agent-rs` are correspondingly unglamorous: fix the retry clock, make action
 execution concurrency-ready, and stop cloning the whole trajectory every step.
 
-**Status: items 1–3 of the plan are implemented** on branch `perf/pi-speed-parity`
-(`Retry-After`/`retry-after-ms` honoured first with pi's throttle backoff, overlapped
-`execute_batch` with serial-equivalent semantics, `serialize_info` for the journal-only save
-path, one journal file handle per model call, and a prompt nudge to batch independent
-commands), verified with `cargo build --release` and a `$review-code` pass. Item 4+ (read-only
-tools, cache warmer, per-phase timings) remain open.
+**Status: items 1–6 of the plan are implemented.** Items 1–3 landed on
+`perf/pi-speed-parity` (PR #109: `Retry-After`/`retry-after-ms` honoured first with pi's
+throttle backoff, overlapped `execute_batch` with serial-equivalent semantics, `serialize_info`
+for the journal-only save path, one journal file handle per model call, and a prompt nudge to
+batch independent commands). Items 4–6 landed on `perf/pi-speed-items-4-6`:
+
+- **Item 4** — `agent-rs/src/tools.rs`: a `read` tool that opens the file directly (no
+  shell), with 1-indexed `offset`/`limit`, a 2000-line / 50 KB budget (whole lines, whichever
+  binds first) and continuation notes that state the next `offset`; gated by the same
+  `MINITUI_AGENT_TOOLS` flag as the other agent tools, so parity runs see only `bash`+`cu`.
+  `bash` stays the only mutating path.
+- **Item 5** — `agent-rs/src/cache_warmer.rs`: a prompt-cache warmer that ticks from the
+  idle wait (follow-up / subagent hold), replays the last answered request with
+  `max_tokens: 1`, and refreshes at `min(0.9 × TTL, TTL − 10 s)` with pi's economics
+  ($0.05 expected-savings floor, 0.15 continuation probability) from the model's own price
+  row. `MINI_AGENT_CACHE_WARMER=1|auto|0` (default `auto`: on only when a control file
+  exists); the TTL comes from `MSWEA_CACHE_TTL`. Warms are journaled as `cache_warm` lines and
+  counted in `info.cache_warmer`, never added to `model_stats`.
+- **Item 6** — `agent-rs/src/timings.rs`: per-phase step timings (`save`, `control`,
+  `model`, `view`, `actions`, `observe`, plus `overhead_ms`/`model_ms`/`harness_ms`) stamped
+  on each assistant message's `extra.timings`, and a run summary in `info.timings`. On unless
+  `MINI_AGENT_TIMINGS=0`.
