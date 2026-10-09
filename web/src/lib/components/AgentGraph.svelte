@@ -3,12 +3,14 @@
    * The session's agent tree as a live node graph: the session on top, every agent it starts
    * below, in spawn order, with solid edges for the parent-child tree and dashed edges for what
    * agents say to each other (messages, replies, handoffs). Fed by the agents SSE stream, so
-   * nodes and states move in real time. Read-only: clicking a node opens that agent's session.
+   * nodes and states move in real time. Read-only: clicking a node opens that agent's session,
+   * unless that session is stopped or no longer in the history (then the click is ignored).
    */
   import { SvelteFlow, Background, Controls, Handle, Position, type Node, type Edge } from "@xyflow/svelte";
   import "@xyflow/svelte/dist/style.css";
   import AgentGraphNode from "./AgentGraphNode.svelte";
   import FitView from "./FitView.svelte";
+  import { api } from "../api";
   import type { AgentEvent, AgentNode, AgentsView } from "../types";
 
   let {
@@ -79,6 +81,10 @@
     });
   }
 
+  // The SSE stream ticks often; only hand Svelte Flow new arrays when something actually
+  // changed, or every tick re-renders the whole graph.
+  let prev: { sig: string; value: { nodes: Node[]; edges: Edge[] } } | null = null;
+
   const graph = $derived.by(() => {
     const rows = flatten(view.nodes);
     const byDepth = new Map<number, { node: AgentNode; depth: number }[]>();
@@ -96,7 +102,7 @@
       id: "root",
       type: "agent",
       position: { x: (totalW(maxWidth) - NODE_W) / 2, y: 0 },
-      data: { name: "session", label: "orchestrator", tone: "live", model: "", steps: 0, cost: 0, task: "", root: true, sessionId: "" },
+      data: { name: "session", label: "orchestrator", tone: "live", model: "", steps: 0, cost: 0, task: "", root: true, sessionId: "", state: "" },
       draggable: false,
     });
     for (const [depth, list] of byDepth) {
@@ -119,6 +125,7 @@
             origin: r.node.origin,
             root: false,
             sessionId: r.node.sessionId,
+            state: r.node.state,
           },
           draggable: false,
         });
@@ -135,11 +142,35 @@
     }
     const paths = new Set(rows.map((r) => r.node.path));
     edges.push(...relationEdges(view.events, paths));
-    return { nodes, edges };
+    const value = { nodes, edges };
+    const sig = JSON.stringify(value);
+    if (prev?.sig === sig) return prev.value;
+    prev = { sig, value };
+    return value;
   });
 
   let nodes = $derived(graph.nodes);
   let edges = $derived(graph.edges);
+
+  // Stopped sessions and sessions no longer in the history error out when opened:
+  // ignore those clicks instead of redirecting.
+  let historyIds: Set<string> | null = null;
+  async function openNode(node: Node) {
+    const sid = node.data.sessionId as string;
+    const state = node.data.state as string;
+    if (!sid || state === "stopped") return;
+    if (state !== "running" && state !== "starting") {
+      if (!historyIds) {
+        try {
+          historyIds = new Set((await api.history("", 500)).map((h) => h.id));
+        } catch {
+          historyIds = new Set();
+        }
+      }
+      if (historyIds.size && !historyIds.has(sid)) return;
+    }
+    onopen(sid);
+  }
 </script>
 
 <div class="graph-wrap">
@@ -155,9 +186,7 @@
     zoomOnScroll
     panOnDrag
     proOptions={{ hideAttribution: false }}
-    onnodeclick={({ node }: { node: Node }) => {
-      if (node.data.sessionId) onopen(node.data.sessionId as string);
-    }}
+    onnodeclick={({ node }: { node: Node }) => void openNode(node)}
   >
     <FitView count={nodes.length} />
     <Background gap={20} />
