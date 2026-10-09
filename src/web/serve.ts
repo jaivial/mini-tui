@@ -117,6 +117,7 @@ if (tasksSyncMs > 0) {
 // No shell outlives the server (a restart, a deploy, Ctrl+C in a dev shell).
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.once(sig, () => {
+    sessions.persistAll();
     terminals.killAll();
     process.exit(0);
   });
