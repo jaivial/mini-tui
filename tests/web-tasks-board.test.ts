@@ -1,6 +1,6 @@
-/** The task board's rows and words: order, where each session lives, the hover glance. */
+/** The task board's rows and words: order, where each session lives, and each window's own summary. */
 import { describe, expect, test } from "bun:test";
-import { boardRows, previewLines, todoCounts, whereLabel } from "../web/src/lib/tasks";
+import { boardRows, paneRowLabel, paneSummary, todoCounts, whereLabel, windowTasks } from "../web/src/lib/tasks";
 import type { SessionTask } from "../web/src/lib/types";
 
 const card = (id: string, updatedAt: number, title = `task of ${id}`): SessionTask => ({
@@ -49,7 +49,7 @@ describe("whereLabel", () => {
   });
 });
 
-describe("todoCounts and the hover glance", () => {
+describe("todoCounts", () => {
   const task: SessionTask = {
     id: "s-1",
     title: "Fix login",
@@ -61,15 +61,59 @@ describe("todoCounts and the hover glance", () => {
   test("one count per bucket", () => {
     expect(todoCounts(task)).toEqual({ done: 2, pending: 1, left: 3 });
   });
+});
 
-  test("the glance names the session and how its to-dos stand", () => {
-    const rows = boardRows([task], () => "Alpha", () => null);
-    expect(previewLines(rows)).toEqual([{ title: "Alpha", detail: "Fix login — 2 done, 1 pending, 3 left" }]);
+describe("windowTasks", () => {
+  const alpha: SessionTask = {
+    id: "s-alpha",
+    title: "Fix the login bug",
+    description: "Reworked auth.",
+    todos: { done: ["parse tokens"], pending: [], left: ["write tests"] },
+    updatedAt: 2,
+  };
+  const beta: SessionTask = {
+    id: "s-beta",
+    title: "Write the docs",
+    description: "",
+    todos: { done: ["intro"], pending: ["api"], left: [] },
+    updatedAt: 1,
+  };
+
+  test("one row per pane, in reading order, numbered from one", () => {
+    const t = windowTasks("Work", [
+      { sessionId: "s-alpha", sessionTitle: "Alpha", task: alpha },
+      { sessionId: "s-beta", sessionTitle: "Beta", task: beta },
+    ]);
+    expect(t.panes.map((p) => p.pane)).toEqual([1, 2]);
+    expect(t.panes.map((p) => p.task?.title)).toEqual(["Fix the login bug", "Write the docs"]);
+    expect(t.withTask).toBe(2);
   });
 
-  test("the glance is short: only the first few rows", () => {
-    const rows = boardRows(Array.from({ length: 9 }, (_, i) => card(`s-${i}`, i, `task ${i}`)), (id) => `title ${id}`, () => null);
-    expect(previewLines(rows)).toHaveLength(5);
-    expect(previewLines(rows, 2)).toHaveLength(2);
+  test("the title is the general task: the first pane that has one speaks for the window", () => {
+    const t = windowTasks("Work", [
+      { sessionId: null, sessionTitle: "New chat", task: null },
+      { sessionId: "s-alpha", sessionTitle: "Alpha", task: alpha },
+    ]);
+    expect(t.title).toBe("Fix the login bug");
+  });
+
+  test("a window whose panes have no card falls back to the first pane's session title", () => {
+    const t = windowTasks("Window 2", [{ sessionId: "s-x", sessionTitle: "Scratch", task: null }]);
+    expect(t.title).toBe("Scratch");
+    expect(t.withTask).toBe(0);
+  });
+
+  test("a pane with no session is still a row, and says so", () => {
+    const t = windowTasks("Work", [{ sessionId: null, sessionTitle: "New chat", task: null }]);
+    expect(t.panes).toHaveLength(1);
+    expect(t.panes[0]!.counts).toBeNull();
+    expect(paneRowLabel(t.panes[0]!)).toBe("New chat");
+    expect(paneSummary(t.panes[0]!)).toBe("No task card yet");
+  });
+
+  test("a pane's summary says what it is doing and how far along it is", () => {
+    const t = windowTasks("Work", [{ sessionId: "s-alpha", sessionTitle: "Alpha", task: alpha }]);
+    expect(paneRowLabel(t.panes[0]!)).toBe("Fix the login bug");
+    expect(paneSummary(t.panes[0]!)).toBe("Fix the login bug \u2014 1 done, 0 pending, 1 left");
   });
 });

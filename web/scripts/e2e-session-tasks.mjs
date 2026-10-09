@@ -58,11 +58,31 @@ try {
   await page.goto(base);
   await page.waitForTimeout(1500);
 
-  const button = page.getByRole("button", { name: "Session tasks" });
-  check("the window has its session-tasks button", (await button.count()) === 1);
+  // One tasks icon per window, in the sidebar's window rows; the drawer is opened from its popover.
+  const button = page.getByRole("button", { name: "Tasks of Window 1" });
+  check("every window row has its tasks icon", (await button.count()) === 1);
+  /** Open the window's task popover and click through to the full board (the drawer). */
+  const openBoard = async () => {
+    await button.click();
+    await page.getByRole("dialog", { name: "Tasks of Window 1" }).waitFor({ timeout: 5000 });
+    await page.getByRole("button", { name: "Open board" }).click();
+  };
 
-  // ---- 1. the click opens the panel, and it starts empty (no agent has written yet)
+  // ---- 1. the icon opens the window's popover, and the board starts empty (no agent has written yet)
   await button.click();
+  const popover = page.getByRole("dialog", { name: "Tasks of Window 1" });
+  await popover.waitFor({ timeout: 5000 });
+  check("a click opens the window's tasks popover", await popover.isVisible());
+  check("the popover is in a portal, drawn over the app and not inside the sidebar rail", await page.evaluate(() => {
+    const portal = document.querySelector("[data-popover]");
+    const el = portal?.firstElementChild;
+    // The card lives in its own container on the body, outside the rail that opened it.
+    return !!el && !!portal && portal.parentElement === document.body && !el.closest("aside");
+  }));
+  check("the popover lists one row per pane", (await popover.getByRole("button", { name: /^Pane \d+:/ }).count()) >= 1);
+  await button.click();
+  await page.waitForTimeout(300);
+  await openBoard();
   const panel = page.getByRole("dialog", { name: "Session tasks" });
   await panel.waitFor({ timeout: 5000 });
   check("a click opens the task panel", await panel.isVisible());
@@ -71,8 +91,9 @@ try {
   await page.waitForTimeout(300);
 
   // ---- 2. a card written the agents' way lands in the panel live (no reload)
-  await button.click();
-  await panel.waitFor({ timeout: 5000 });
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  await openBoard();
   const wrote = await agent("set", "--session", "s-alpha", "--title", "Fix the login bug", "--description", "Reworked the auth flow end to end.", "--done", "parse tokens", "--left", "write tests");
   check("`mini-tui tasks set` writes the card (the agent's way)", wrote.code === 0 && stored("s-alpha") === "Fix the login bug", wrote.out.trim());
   check("the card appears in the panel while it is open", await until(async () => (await panel.textContent()).includes("Fix the login bug")));
@@ -85,8 +106,7 @@ try {
   await page.waitForTimeout(300);
   await page.getByRole("button", { name: /Alpha task/ }).first().click();
   await page.waitForTimeout(900);
-  await button.click();
-  await panel.waitFor({ timeout: 5000 });
+  await openBoard();
   check("the card names the pane showing its session", await until(async () => /Pane \d+ · Window \d+/.test(await panel.textContent())));
 
   // ---- 4. the accordion opens on the description and the to-dos
@@ -101,18 +121,27 @@ try {
   check("a second write replaces the card (the agent's way)", again.code === 0 && stored("s-alpha") === "Fix the login bug (v2)");
   check("the panel shows the new card without a reload", await until(async () => (await panel.textContent()).includes("Fix the login bug (v2)")));
 
-  // ---- 6. the hover shows a quick glance; the panel stays the click's job
+  // ---- 6. the popover is titled with the window's general task and one row per pane; hovering a row
+  // opens that pane's own card, and the drawer stays one click away inside it
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
-  await button.hover();
-  const glance = page.getByRole("tooltip");
-  check("hovering the button shows a quick glance", await until(async () => (await glance.count()) > 0 && (await glance.first().textContent()).includes("Fix the login bug (v2)")));
-  check("the glance is a peek, not the panel", !(await panel.isVisible()));
+  await button.click();
+  const glance = page.getByRole("dialog", { name: "Tasks of Window 1" });
+  await glance.waitFor({ timeout: 5000 });
+  check("the popover is titled with the window's general task", (await glance.textContent()).includes("Fix the login bug (v2)"));
+  check("the popover is a peek, not the panel", !(await panel.isVisible()));
+  const paneRow = glance.getByRole("button", { name: /^Pane \d+:/ }).first();
+  await paneRow.hover();
+  const peek = page.getByRole("dialog", { name: /^Pane \d+ of Window 1/ });
+  check("hovering a pane row opens that pane's own card", await until(async () => (await peek.count()) > 0));
+  check("the pane's card carries its to-dos", await until(async () => (await peek.textContent()).includes("2 done")));
+  check("the pane's card is a portal of its own", await page.evaluate(() => document.querySelectorAll("[data-popover]").length === 2));
 
   // ---- 7. a card for a session no pane shows says so
   await agent("set", "--session", "s-beta", "--title", "Beta's task", "--pending", "everything");
-  await button.click();
-  await panel.waitFor({ timeout: 5000 });
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  await openBoard();
   check("a session in no pane is labelled so", await until(async () => (await panel.textContent()).includes("Not open in a pane")));
 } catch (e) {
   console.log("FAIL  the run threw:", (e?.message ?? String(e)).split("\n")[0]);

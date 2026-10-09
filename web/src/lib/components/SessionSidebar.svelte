@@ -17,7 +17,7 @@
   import { store } from "../stores/sessions.svelte";
   import { baseName, relativeTime, cost } from "../format";
   import type { SessionState } from "../types";
-  import type { TaskRow } from "../tasks";
+  import type { TaskRow, WindowTasks } from "../tasks";
 
   let {
     onnew,
@@ -38,6 +38,7 @@
     onclosewindow,
     ontasks,
     taskRows = [],
+    windowTasks = {},
     paneOf = () => 0,
     focusedSession = null,
     loading = false,
@@ -81,8 +82,10 @@
 
     /** Open the window's task board (the panel listing every session's task card). */
     ontasks?: () => void;
-    /** The board's rows, for the button's quick glance; the click opens the panel. */
+    /** The board's rows, for the drawer the popover's "Open board" opens. */
     taskRows?: TaskRow[];
+    /** Each window's panes and their tasks, one for the icon on that window's row. */
+    windowTasks?: Record<string, WindowTasks>;
 
     /** The window holding a session that no pane on screen shows, or "" when one does. */
     inOtherWindow?: (id: string) => string;
@@ -325,10 +328,7 @@
     <div class="px-2.5 pb-2" role="group" aria-label="Windows">
       <div class="mb-0.5 flex items-center gap-1.5 px-1">
         <span class="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-ink-faint uppercase"><Layers size={10} strokeWidth={2} aria-hidden="true" />Windows</span>
-        <span class="ml-auto flex items-center gap-1.5">
-          <TasksButton rows={taskRows} onopen={() => ontasks?.()} />
-          <span class="tnum text-[10px] text-ink-faint">{windows.length}</span>
-        </span>
+        <span class="tnum ml-auto text-[10px] text-ink-faint">{windows.length}</span>
       </div>
       <div class="flex flex-col gap-0.5" role="radiogroup" aria-label="Window to show">
         {#each windows as w (w.id)}
@@ -378,6 +378,13 @@
                 {/if}
                 <span class="tnum shrink-0 rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="{w.panes} {w.panes === 1 ? 'pane' : 'panes'}">{w.panes}</span>
               </button>
+              <!--
+                One tasks icon per window, and it is always visible: it is the window's own state, not
+                a hover extra (the row's rename and close still fade in).
+              -->
+              {#if windowTasks[w.id]}
+                <TasksButton tasks={windowTasks[w.id]} onopen={() => ontasks?.()} />
+              {/if}
               <button
                 type="button"
                 class="interactive mr-0.5 grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint opacity-0 hover:text-ink group-hover/win:opacity-100 group-focus-within/win:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
