@@ -720,8 +720,8 @@ impl Agent {
                 if STOP.load(Ordering::SeqCst) {
                     break;
                 }
-                if let Some(read) = self.read_outcome(action) {
-                    outputs.push(read);
+                if let Some(native) = self.native_outcome(action) {
+                    outputs.push(native);
                     continue;
                 }
                 let command = action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default();
@@ -752,8 +752,8 @@ impl Agent {
         let mut slots: Vec<Option<Value>> = (0..actions.len()).map(|_| None).collect();
         let mut batch: Vec<(usize, String)> = Vec::new();
         for (i, action) in actions.iter().enumerate() {
-            match self.read_outcome(action) {
-                Some(read) => slots[i] = Some(read),
+            match self.native_outcome(action) {
+                Some(native) => slots[i] = Some(native),
                 None => batch.push((i, action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default())),
             }
         }
@@ -800,16 +800,46 @@ impl Agent {
         Ok(())
     }
 
-    /// The observation for a `read` action, or `None` when the action is a shell command.
-    /// Reads go straight to the filesystem --- no `/bin/sh`, no process, no timeout --- which is
-    /// the point of plan item 4: a read costs an open and a bounded copy instead of a spawn, and
-    /// its output is bounded before it ever reaches the prompt.
-    fn read_outcome(&self, action: &Value) -> Option<Value> {
-        if action.get("tool").and_then(Value::as_str) != Some("read") {
-            return None;
-        }
+    /// The observation for a native tool action, or `None` when the action is a shell command.
+    /// `read`/`write`/`edit` go straight to the filesystem --- no `/bin/sh`, no process, no
+    /// timeout --- which is the point of plan item 4 (a read costs an open and a bounded copy
+    /// instead of a spawn) and of the benchmark's item 1 (an edit costs `oldText`/`newText`
+    /// instead of the whole file inside a heredoc). `code` additionally runs its script's
+    /// `bash` calls through the environment's own execute path, so they are journaled, timed and
+    /// killed like any command the model issued directly.
+    fn native_outcome(&mut self, action: &Value) -> Option<Value> {
+        let tool = action.get("tool").and_then(Value::as_str)?;
         let args = action.get("args").cloned().unwrap_or(json!({}));
-        Some(crate::tools::read_outcome(&args, &self.env.working_dir()))
+        let cwd = self.env.working_dir();
+        match tool {
+            "read" => Some(crate::tools::read_outcome(&args, &cwd)),
+            "write" => Some(crate::writing::write_outcome(&args, &cwd)),
+            "edit" => Some(crate::writing::edit_outcome(&args, &cwd)),
+            "code" => {
+                // The script's `bash` calls run through the environment's own execute path, so
+                // they are journaled, timed and killed like commands the model issued directly.
+                // A command that submits or is stopped ends the script's shell access there: the
+                // observation reports it and the run's own exit path takes over on the next step.
+                //
+                // SAFETY: the raw pointer is this agent's own `env` field, which outlives the
+                // script's evaluation (`code_outcome` returns before `execute_actions` does) and
+                // is not touched by anything else while the script runs. The `Send` wrapper only
+                // moves the pointer: the script's `bash` calls still run on the agent's own
+                // thread, one at a time, so there is no concurrent access to hide.
+                let env = SendPtr(&mut *self.env as *mut dyn Environment);
+                let mut ctx = crate::writing::CodeCtx {
+                    cwd,
+                    bash: Box::new(move |cmd: &str| match unsafe { env.execute(cmd) } {
+                        Outcome::Output(o) => o,
+                        Outcome::Submitted(_) | Outcome::Stopped => {
+                            json!({"output": "code: the run ended while this script was running a command", "returncode": -1, "exception_info": "action was not executed"})
+                        }
+                    }),
+                };
+                Some(crate::writing::code_outcome(&args, &mut ctx))
+            }
+            _ => None,
+        }
     }
 
     // ---- compaction ------------------------------------------------------------------
@@ -1082,14 +1112,29 @@ impl Agent {
     }
 }
 
+/// A raw pointer that claims `Send` so one closure can borrow the agent's environment. See the
+/// `code` arm of [`Agent::native_outcome`] for the safety argument.
+struct SendPtr(*mut dyn Environment);
+unsafe impl Send for SendPtr {}
+impl SendPtr {
+    /// # Safety
+    /// The pointer must still point at a live environment, and nothing else may use it while
+    /// this runs.
+    unsafe fn execute(&self, cmd: &str) -> Outcome {
+        unsafe { (*self.0).execute(cmd) }
+    }
+}
+
 /// How many of a step's actions may run at once. The commands of one response are executed
 /// in order and every result is observed before the next response, but actions the model
 /// issued together do not need to *finish* one after the other: pi runs a whole tool batch
 /// with `Promise.all` (`executeToolCallsParallel`), and the same overlap is what makes a
-/// multi-action step cost its longest command instead of the sum of them. 1 restores the
-/// strictly serial behaviour (`MINI_AGENT_PARALLEL_ACTIONS=0`).
+/// multi-action step cost its longest command instead of the sum of them. 4 since the round-2
+/// benchmark work (the round-1 ceiling of 2 capped a read+edit+edit+test batch, which is the
+/// common shape now that `read`/`write`/`edit` are native). 1 restores the strictly serial
+/// behaviour (`MINI_AGENT_PARALLEL_ACTIONS=0`).
 pub(crate) fn action_concurrency(actions: usize) -> usize {
-    let cfg = std::env::var("MINI_AGENT_PARALLEL_ACTIONS").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(2);
+    let cfg = std::env::var("MINI_AGENT_PARALLEL_ACTIONS").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(4);
     cfg.max(1).min(actions.max(1))
 }
 

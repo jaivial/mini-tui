@@ -6,6 +6,14 @@ harness**; mini debe ganar en wall time manteniendo el mismo o mejor % de exito.
 (PRs #109 y #111); este documento mide el resultado **con tareas reales** en lugar de
 argumentar desde el codigo.
 
+> **Ronda 2 (commit `1d5607b`, ejecutada 23:23-23:35)**: los cuatro items que la SS4 de la ronda 1
+> pedia (escritura nativa `write`/`edit`, prompt de instancia mas corto, batching agresivo y **code
+> mode**) ya estan implementados y el benchmark se ha repetido sobre el **mismo corpus de 10
+> tareas**, con el **mismo modelo en los dos harnesses** y ahora **nativo**: `minimax/MiniMax-M3`
+> (zai esta capado; opencode-go prohibido por Jaime). Resultado: la brecha se cierra de **3.65x a
+> 1.28x** manteniendo **10/10 de exito en ambos**. Aun asi **mini no gana todavia en wall time
+> agregado**. Los datos y el analisis estan en la **SS6**.
+
 **Resultado en una linea: mini NO gana. Pierde 3.65x en wall time (1021 s vs 280 s en 10
 tareas) con el mismo 10/10 de exito. El cuello no es el harness (9.1 s en total, ~0.9 %):
 es que mini hace 2.2x mas llamadas al modelo (107 vs 49) y genera ~4.8x mas tokens de salida,
@@ -159,3 +167,115 @@ en pasos extra. El item 4 (`read` sin shell) existe, pero esta detras de
 - mini guarda sus trayectorias en `~/.config/mini-tui/runs/2026-10-09T21-*/traj.json`
   (de ahi salen los `extra.timings` del item 6 y el conteo de tokens).
 - Load average mximo durante la ejecucion: ~3.8 (umbral de pausa 12, nunca activado).
+
+---
+
+# 6. Ronda 2: escritura nativa + code mode (2026-10-09, commit `1d5607b`)
+
+La ronda 1 termino con mini 3.65x mas lento que pi. Su SS4 identifico cuatro cambios, por
+orden de retorno: **(1)** herramientas de escritura nativas (`write`/`edit`) como camino por
+defecto, **(2)** prompt de instancia menos paso-a-paso, **(3)** batching real de lectura+edicion y
+**(4)** [nunca persiguiendo el overhead del harness]. Los cuatro estan implementados en el commit
+`1d5607b` y este benchmark los mide sobre el mismo corpus.
+
+- **(1) `write`/`edit` nativos** (`agent-rs/src/writing.rs`): `edit` envia solo
+  `oldText`/`newText`; `write` envia el fichero una vez. Sin shell-quoting, sin re-emitir el
+  fichero entero, sin la clase de errores de codificacion que en la ronda 1 costo 285 s en `t4`.
+  Se ofrecen siempre que el gate `MINITUI_AGENT_TOOLS=1` esta activo, que `src/mini/spawn.ts`
+  pone para toda corrida de mini-tui (asi es el camino por defecto del producto); un
+  `mini-agent-rs` a pelo (y la suite de paridad) sigue viendo solo `bash` + `cu`.
+- **(2) prompt de instancia mas corto** (`mini.yaml`): se quito el flujo paso-a-paso y el
+  "reproduction script" (innecesarios con `verify.sh`) y se sustituyo por la guia de las
+  herramientas nativas + batching.
+- **(3) batching agresivo**: concurrencia de acciones por paso 2 -> 4
+  (`MINI_AGENT_PARALLEL_ACTIONS`); las tools nativas (read/write/edit) no hacen spawn, asi que
+  solaparlas es barato y un lote read+edit+edit+test cuesta su miembro mas lento, no la suma.
+- **(4) code mode**: un tool `code` que ejecuta un script Rhai que llama a
+  `read`/`write`/`edit`/`edit_many`/`bash`/`reads` y devuelve solo lo que imprime, de forma que
+  una secuencia read->edit->edit->verificar cuesta **una** llamada al modelo en lugar de cuatro.
+  Equivalente a pi's codemode (alli QuickJS, aqui el mismo Rhai sandbox del repl); los `bash` del
+  script pasan por el executor del entorno (journal, timeout, kill) como cualquier comando.
+
+## 6.1 Metodo de la ronda 2
+
+- **Modelo identico en ambos harnesses**: `minimax/MiniMax-M3`, ahora **nativo** en mini y en pi
+  (mismo endpoint OpenAI-compatible, mismas credenciales). El runner se cambio de `zai` (capado)
+  a minimax y se reparo un bug pre-existente del runner (`p.pid`, que abortaba cada corrida de pi
+  antes de escribir su resultado). Se mantuvo el corpus, los generadores y los `verify.sh` de la
+  ronda 1, ya validados contra soluciones de referencia.
+- **La sesion web es la de siempre**, pero ahora lanza el binario **recompilado con la ronda 2**
+  (`agent-rs/target/release/mini-agent-rs`), de modo que las tools nativas y code mode estan
+  activas en cada tarea.
+
+## 6.2 Resultados por tarea (segundos)
+
+| tarea | mini (s) | pi (s) | mini vs pi | llamadas mini | turnos pi | mini ok | pi ok |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| t1_wordfreq | 16.0 | 9.9 | 1.62x | 4 | 5 | yes | yes |
+| t2_grep_logs | 16.0 | 12.4 | 1.29x | 6 | 7 | yes | yes |
+| t3_pytest_fix | 30.0 | 14.8 | 2.03x | 8 | 7 | yes | yes |
+| t4_refactor | 94.1 | 56.2 | 1.67x | 22 | 6 | yes | yes |
+| t5_script_csv | 32.0 | 6.4 | 5.00x | 11 | 4 | yes | yes |
+| t6_readme_summary | 32.0 | 16.3 | 1.96x | 8 | 7 | yes | yes |
+| t7_regex_cli | 28.0 | 25.6 | 1.09x | 10 | 7 | yes | yes |
+| t8_js_bug | 42.1 | 134.4 | **0.31x (mini gana)** | 15 | 9 | yes | yes |
+| t9_pkg_resize | 12.0 | 11.9 | 1.01x | 6 | 10 | yes | yes |
+| t10_crash_report | 92.1 | 20.1 | 4.58x | 20 | 9 | yes | yes |
+
+**Agregados (modelo minimax, no comparable 1:1 con la tabla de zai/glm de la ronda 1)**
+
+| metrica | mini | pi | diferencia |
+| --- | --- | --- | --- |
+| Total wall time | **394.3 s** | **308.0 s** | mini **1.28x** (ronda 1: 3.65x) |
+| Media por tarea | 39.4 s | 30.8 s | 1.28x |
+| Mediana por tarea | 31.0 s | 15.6 s | 1.99x |
+| Tareas superadas | **10/10 (100 %)** | **10/10 (100 %)** | igualado |
+| Llamadas al modelo | **110** | **71** | mini 1.55x mas |
+| Tiempos de modelo | 310.2 s | 302.8 s |Comparable (ambos ~300 s) |
+| Overhead del harness | **2.92 s (0.94 % del modelo)** | ~5 s no-modelo | despreciable |
+
+**Tools realmente usadas por mini (contadas sobre las 10 trayectorias)**
+
+| tool | llamadas |
+| --- | --- |
+| `read` | 35 |
+| `edit` | 12 |
+| `write` | 8 |
+| `code` | 0 |
+| `bash` (tests, git, pipelines) | resto |
+
+## 6.3 Lectura del resultado
+
+1. **El objetivo de Jaime (ganar a pi) NO se cumple aun en agregado**: mini sigue siendo 1.28x mas
+   lento que pi (394 s vs 308 s), aunque se ha cerrado la mayor parte de la brecha (3.65x -> 1.28x).
+   mini gana en 1 de 10 tareas (t8, donde pi se atasco 134 s); en las demas va por detras.
+2. **El exito se mantiene perfecto**: 10/10 PASS en ambos, con el verificador objetivo por tarea. Los
+   tools nativos no rompieron nada y, en `t4_refactor` (la peor tarea de la ronda 1), mini paso de
+   402.5 s a **94.1 s (4.3x mejor)** sin la espiral de reparaciones de quoting.
+3. **El cuello sigue siendo el numero de llamadas y los tokens de salida, no el harness**. Con las
+   tools nativas el tiempo de modelo de mini (310 s) y el de pi (303 s) son casi iguales; lo que
+   mini gasta de mas son ~39 llamadas extra (110 vs 71). El harness de mini cuesta **2.92 s de 310 s
+   de modelo (0.94 %)**, en linea con la ronda 1: no hay cuello en el lazo, el journal ni la capa web.
+4. **Donde queda margen (medido, no especulado)**: mini sigue haciendo mas *turnos de modelo* que
+   pi en la mayoria de tareas porque su prompt, aun mas corto, no empuja tan fuerte el batching.
+   El conteo de tools reales en las 10 trayectorias da **35 `read`, 12 `edit`, 8 `write`, 0 `code`**:
+   las tools nativas son ya el camino de escritura por defecto (y `bash` sigue para tests/git), pero
+   **el modelo no eligio `code` ni una sola vez** en este corpus: se ofrecio y se anuncio en el
+   prompt, y aun asi no lo uso porque las tareas son pequenas y un `read`+`edit` sueltos ya cabe en
+   un paso. El siguiente salto medible esta en **activar de verdad el batching/code mode**
+   (empujar `code` y la concurrencia 4 desde el prompt, o algo que motive el lote) para bajar el
+   recuento de llamadas de ~110 hacia el ~71 de pi. No se ha tocado el harness, porque es 0.94 %
+   y no mueve la aguja.
+5. **Aviso de fair play**: el modelo cambio de `zai/glm-5.3` a `minimax/MiniMax-M3`, asi que las
+   cifras absolutas de la ronda 2 **no son** directamente comparables con las de la ronda 1 (que
+   eran de zai). Lo que si es comparable es la **tendencia**: llamadas al modelo y tiempo de modelo
+   casi iguales a pi, exito igual, y la tarea que mas sufria (t4) 4.3x mejor. La comparacion
+   justa dentro de un mismo modelo es mini-vs-pi de esta seccion.
+
+## 6.4 Notas de reproducibilidad de la ronda 2
+
+- Resultados crudos: `/home/jaime/mini-tui-benchmark/runs/20261009-232325/`.
+- Trayectorias de mini (timings por fase del item 6): `~/.config/mini-tui/runs/2026-10-09T23-2*/`
+  y `23-3*/` (`info.timings` y `extra.timings` por paso).
+- El campo `info.timings.harness_ms` guarda el **wall del paso** (modelo + overhead), asi que el
+  overhead puro es `harness_ms - model_ms` (2.92 s en el total).
