@@ -192,7 +192,11 @@ extern "C" fn on_signal(sig: libc::c_int) {
     if sig == libc::SIGTERM {
         // Python dies on SIGTERM without saving: do the same at once, whatever we are blocked in
         // (a model call's socket read included). Only the running command's process group is
-        // taken down with us, as the stop path would do.
+        // taken down with us, as the stop path would do. But stop the subagents first: the raise
+        // below skips destructors, and without this a web `session.close` (or a service restart)
+        // left the children orphaned at their control file and `subagents/index.json` frozen at
+        // running/waiting -- the panel showed work that had been dead for hours.
+        crate::subagents::shutdown_from_signal();
         let pg = CHILD_GROUP.load(Ordering::SeqCst);
         unsafe {
             if pg > 0 {

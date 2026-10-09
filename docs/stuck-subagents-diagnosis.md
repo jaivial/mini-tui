@@ -111,3 +111,20 @@ reiniciar nada: son cambios de codigo en rama + PR.
 * Fix 1: `cargo build --release` en `agent-rs/` (compila limpio).
 * Fix 2: suite existente de `tests/subagents-sync.test.ts` sigue pasando (no se escriben tests
   nuevos: regla dura del encargo).
+
+Reproducido y verificado en vivo (2026-10-09, /tmp/stuck-repro, binario viejo del servicio vs
+binario de la rama; nada del servicio ni de otros runs se toco):
+
+1. PADRE VIEJO + hijo `worker` running + `kill -TERM <padre>`:
+   padre muere, hijo muere (iba en el grupo del padre), pero `subagents/index.json` queda
+   congelado con `worker: running, exit_code: null` y `/tmp/mini-agent-<pid>-<hex>` no se
+   limpia. Exactamente el sintoma del incidente (72 fantasmas escaneados).
+2. PADRE NUEVO (con Fix 1) + hijo `worker` running + `kill -TERM <padre>` (x2 escenarios):
+   padre muere en ~0.4 s (muy por debajo del SIGKILL de respaldo de 5 s del web), el hijo
+   muere, `index.json` se reescribe con `worker: stopped` y el directorio runtime se elimina.
+3. Fix 2 evaluado directamente: `toView` con pid muerto y estado `waiting` devuelve `dead`;
+   con pid vivo devuelve `waiting`; `exited` no se toca. `bun x tsc --noEmit` y
+   `bun run check` (web) limpios (el unico warning es un CSS preexistente).
+
+Coste en el caso feliz: un `kill(pid, 0)` por entrada cuyo estado cambia de todas formas en
+cada tick del monitor; sin I/O extra mientras el estado no cambia.

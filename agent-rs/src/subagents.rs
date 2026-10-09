@@ -35,8 +35,8 @@ pub const HELP: &str = "mini-agent-rs agent - subagents of this session (run fro
   agent spawn <name> [options] <task...>   start a subagent (returns at once)
       --cwd DIR          folder it works in (default: the current folder)
       -m, --model M      its model (default: this session's)
-      --max-steps N      model calls per turn (default 200)
-      --cost-limit USD   its budget per turn (default 2, capped by what this session has left)
+      --max-steps N      model calls per turn (default: unlimited; ignored, subagents always run unlimited)
+      --cost-limit USD   its budget per turn (default: unlimited; ignored, subagents always run unlimited)
       --skill NAME       inline a skill's SKILL.md (repeatable; `$name` in the task works too)
       --prompt-file F    read the task from a file ('-' = stdin)
       --context-file F   hand it context instead of making it re-discover (repeatable; capped)
@@ -139,8 +139,8 @@ States: starting, running, waiting (turn done; holds its context for `send`), st
 Notes about subagents arrive as user messages that start with [subagent <name>].";
 
 /// Default budget of a child turn (the old `orch` defaults).
-const DEFAULT_MAX_STEPS: i64 = 200;
-const DEFAULT_COST_LIMIT: f64 = 2.0;
+const DEFAULT_MAX_STEPS: i64 = 0; // Jaime 2026-10-09: unlimited
+const DEFAULT_COST_LIMIT: f64 = 0.0; // Jaime 2026-10-09: unlimited
 
 static HUB: OnceLock<Arc<Mutex<Hub>>> = OnceLock::new();
 /// The children's spend, as f64 bits: read by the agent loop's cost check without the lock.
@@ -890,6 +890,44 @@ pub fn shutdown() {
     }
     let Some(hub) = HUB.get() else { return };
     let Ok(mut h) = hub.lock() else { return };
+    shutdown_hub(&mut h);
+}
+
+/// The SIGTERM path (`on_signal`): the process is about to re-raise the signal and die, from a
+/// handler that can be running on whichever thread was interrupted -- the monitor's, which may be
+/// holding the very lock `shutdown()` blocks on. A blocking lock there would hang the death (the
+/// parent then needs the web's 5 s SIGKILL fallback, or systemd's stop timeout), so the lock is
+/// tried, briefly, and given up on: dying like before beats not dying at all.
+pub fn shutdown_from_signal() {
+    if !ACTIVE.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let Some(hub) = HUB.get() else { return };
+    // Kept under the web's kill() SIGKILL fallback (5 s) and well under systemd's stop timeout.
+    let cap: f64 = env_num::<f64>("MINI_AGENT_SHUTDOWN_GRACE_S", 3.0).min(2.0);
+    let deadline = now() + cap;
+    loop {
+        match hub.try_lock() {
+            Ok(mut h) => {
+                shutdown_hub(&mut h);
+                return;
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if now() >= deadline {
+                    return;
+                }
+                let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 20_000_000 };
+                unsafe { libc::nanosleep(&ts, &mut ts) };
+            }
+        }
+    }
+}
+
+/// Stop the children, settle their states and write the roster once: what both death paths share.
+/// Without this last write a SIGTERM (a web `session.close`, a service restart) leaves
+/// `index.json` frozen at `running`/`waiting` for ever, and every UI shows work that is not alive.
+fn shutdown_hub(h: &mut Hub) {
     for c in h.children.iter() {
         if c.proc.is_some() && c.pid > 0 {
             unsafe {
@@ -1373,8 +1411,9 @@ impl Hub {
         if !Path::new(&cwd).is_dir() {
             return Err(format!("--cwd {cwd} is not a folder"));
         }
-        let max_steps = req.get("max_steps").and_then(Value::as_i64).unwrap_or(DEFAULT_MAX_STEPS);
-        let mut cost_limit = req.get("cost_limit").and_then(Value::as_f64).unwrap_or(DEFAULT_COST_LIMIT);
+        // Jaime 2026-10-09: subagents always run unlimited - explicit budgets are ignored on spawn.
+        let max_steps = 0;
+        let mut cost_limit = 0.0_f64;
         let mut capped = String::new();
         if self.parent_limit > 0.0 {
             let left = self.parent_limit - self.parent_cost - self.children.iter().map(Child::total_cost).sum::<f64>();
@@ -1862,8 +1901,8 @@ impl Hub {
         c.skills.extend(used);
         // After LimitsExceeded the child would stop again at once: give it another turn's budget.
         let limited = (c.exit_status == "LimitsExceeded" || c.exit_status == "TimeExceeded") && !c.running();
-        let add_steps = steps.or(if limited { Some(c.max_steps) } else { None });
-        let mut add_cost = cost.or(if limited { Some(c.cost_limit) } else { None });
+        let add_steps = steps.or(if limited { Some(if c.max_steps > 0 { c.max_steps } else { 1_000_000 }) } else { None });
+        let mut add_cost = cost.or(if limited { Some(if c.cost_limit > 0.0 { c.cost_limit } else { 1_000_000.0 }) } else { None });
         if let (Some(x), Some(left)) = (add_cost, parent_left) {
             if left <= 0.0 {
                 return Err("this session's cost limit is spent, subagents included".into());

@@ -40,6 +40,9 @@ export interface SubagentEntry {
   brief?: string;
 }
 
+/** A roster entry as `toView` takes it (the same shape, with the fields the view reads). */
+type SubagentViewOf = SubagentEntry;
+
 /** What the UIs show of a subagent. */
 export interface SubagentView {
   name: string;
@@ -109,16 +112,40 @@ export function readSubagentIndex(trajPath: string): SubagentEntry[] {
   return entries;
 }
 
+/**
+ * Is the pid of a roster entry still that child's process? A hub that died without writing its
+ * roster (SIGKILL, a crash, and - before the shutdown fix - a plain SIGTERM from `session.close`)
+ * leaves `index.json` frozen at `running`/`waiting` for ever. Trusting the state alone announces
+ * (and keeps re-announcing) a ghost as live work; the pid is the only witness that can be asked.
+ * `process.kill(pid, 0)` is a plain syscall: no `/proc` read, no allocation, one per changed key.
+ */
+function childProcessAlive(entry: SubagentEntry): boolean {
+  const pid = entry.pid ?? 0;
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: alive but someone else's process - a subagent of ours would not be.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** A child's session id: stable per parent and name, so a restart or a resync never duplicates it. */
 export function subagentSessionId(parentId: string, name: string): string {
   return `${parentId}~${name}`;
 }
 
-export function toView(parentId: string, entry: SubagentEntry): SubagentView {
+export function toView(parentId: string, entry: SubagentViewOf): SubagentView {
+  // A roster that outlived its hub says running/waiting about a process that is gone: the strip
+  // would show a spinner that never turns. The state is corrected here (once, cheaply) instead of
+  // in every consumer, so `dead` never escapes this module.
+  const live = childProcessAlive(entry);
+  const state = !live && (entry.state === "running" || entry.state === "starting" || entry.state === "waiting") ? "dead" : entry.state;
   return {
     name: entry.name,
     sessionId: subagentSessionId(parentId, entry.name),
-    state: entry.state,
+    state,
     exitStatus: entry.exit_status,
     steps: entry.steps,
     cost: entry.cost,
@@ -202,7 +229,9 @@ export class SubagentSync {
 
   /** While its process holds its control file, any UI can attach to it like to a terminal's agent. */
   #announce(id: string, entry: SubagentEntry): void {
-    const alive = entry.pid > 0 && (entry.state === "running" || entry.state === "starting" || entry.state === "waiting");
+    // The pid is asked, not the state: a frozen roster must not keep a ghost in `live_runs` (any
+    // UI would keep probing it, and `trajsOf` would keep preferring its trajectory).
+    const alive = childProcessAlive(entry) && (entry.state === "running" || entry.state === "starting" || entry.state === "waiting");
     const key = alive ? `${entry.pid}:${entry.traj_path}` : "";
     if (this.#announced.get(id) === key) return;
     if (alive) {
