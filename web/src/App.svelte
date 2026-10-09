@@ -27,7 +27,7 @@ import { windows } from "./lib/stores/windows.svelte";
   import { paneAt, type MoveDir, type Shape } from "./lib/paneLayout";
   import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "./lib/scale";
   import type { HistoryItem } from "./lib/types";
-  import { boardRows, type TaskWhere } from "./lib/tasks";
+  import { boardRows, windowTasks, type TaskWhere } from "./lib/tasks";
   import type { SessionPlan, SessionTask } from "./lib/types";
   import { FinishWatcher, finishMessage } from "./lib/finish";
 
@@ -359,6 +359,27 @@ import { windows } from "./lib/stores/windows.svelte";
   };
   /** The task board's rows: every session with a task card, with where it lives on screen. */
   const taskRows = $derived(boardRows(taskCards, (id) => store.sessions[id]?.title ?? "", whereOf));
+  /** The card of a session, by id: what each pane's row in the sidebar's popover reads. */
+  const taskOf = $derived.by(() => new Map(taskCards.map((t) => [t.id, t])));
+  /**
+   * Each window's own tasks, one for the icon on its sidebar row: its panes in reading order, each
+   * with the session it shows and that session's card (a pane with no session, or a session with no
+   * card yet, is a row that says so). The popover's title is the window's general task.
+   */
+  const tasksByWindow = $derived(
+    Object.fromEntries(
+      windows.list.map((w) => [
+        w.id,
+        windowTasks(
+          windows.label(w.id, (wid) => panes.paneCount(wid)),
+          panes.panesIn(w.id).map((p) => {
+            const s = p.sessionId ? store.sessions[p.sessionId] : null;
+            return { sessionId: p.sessionId, sessionTitle: s?.title || "New chat", task: (p.sessionId ? taskOf.get(p.sessionId) : undefined) ?? null };
+          }),
+        ),
+      ]),
+    ),
+  );
 
   /** The sidebar's window list: name or number, pane count, and which is on screen. */
   const windowRows = $derived(
@@ -498,7 +519,7 @@ import { windows } from "./lib/stores/windows.svelte";
           windows.remove(id);
         }}
         ontasks={() => (tasksOpen = true)}
-        {taskRows}
+        windowTasks={tasksByWindow}
         inOtherWindow={(id) => {
           const w = panes.windowOf(id);
           return w && w !== windows.activeId ? windows.label(w, (wid) => panes.paneCount(wid)) : "";
