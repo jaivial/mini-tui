@@ -132,7 +132,8 @@ export interface SessionState extends SessionSummary {
 export interface SubagentView {
   name: string;
   sessionId: string;
-  /** starting, running, waiting (turn done, context kept), stopped, exited */
+  /** starting, running, waiting (turn done, context kept), stopped, exited, dead (its process is
+   * gone while the roster still claims it - the hub died before writing its final index) */
   state: string;
   exitStatus: string;
   steps: number;

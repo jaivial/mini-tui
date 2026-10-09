@@ -120,6 +120,7 @@
     if (n.waitingChildren.length) return { label: `waiting on ${n.waitingChildren.length}`, tone: "wait" };
     if (n.awaiting) return { label: `waiting on ${n.awaiting}`, tone: "wait" };
     if (isLive(n)) return { label: n.state === "starting" ? "starting" : "working", tone: "live" };
+    if (n.state === "dead") return { label: "dead", tone: "err" };
     if (n.state === "waiting") return n.exitStatus && n.exitStatus !== "Submitted" ? { label: n.exitStatus, tone: "warn" } : { label: "done", tone: "ok" };
     if (n.state === "exited" && n.exitStatus && n.exitStatus !== "Submitted") return { label: "failed", tone: "err" };
     if (n.state === "stopped") return { label: "stopped", tone: "idle" };

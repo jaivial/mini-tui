@@ -890,6 +890,44 @@ pub fn shutdown() {
     }
     let Some(hub) = HUB.get() else { return };
     let Ok(mut h) = hub.lock() else { return };
+    shutdown_hub(&mut h);
+}
+
+/// The SIGTERM path (`on_signal`): the process is about to re-raise the signal and die, from a
+/// handler that can be running on whichever thread was interrupted -- the monitor's, which may be
+/// holding the very lock `shutdown()` blocks on. A blocking lock there would hang the death (the
+/// parent then needs the web's 5 s SIGKILL fallback, or systemd's stop timeout), so the lock is
+/// tried, briefly, and given up on: dying like before beats not dying at all.
+pub fn shutdown_from_signal() {
+    if !ACTIVE.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let Some(hub) = HUB.get() else { return };
+    // Kept under the web's kill() SIGKILL fallback (5 s) and well under systemd's stop timeout.
+    let cap: f64 = env_num::<f64>("MINI_AGENT_SHUTDOWN_GRACE_S", 3.0).min(2.0);
+    let deadline = now() + cap;
+    loop {
+        match hub.try_lock() {
+            Ok(mut h) => {
+                shutdown_hub(&mut h);
+                return;
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if now() >= deadline {
+                    return;
+                }
+                let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 20_000_000 };
+                unsafe { libc::nanosleep(&ts, &mut ts) };
+            }
+        }
+    }
+}
+
+/// Stop the children, settle their states and write the roster once: what both death paths share.
+/// Without this last write a SIGTERM (a web `session.close`, a service restart) leaves
+/// `index.json` frozen at `running`/`waiting` for ever, and every UI shows work that is not alive.
+fn shutdown_hub(h: &mut Hub) {
     for c in h.children.iter() {
         if c.proc.is_some() && c.pid > 0 {
             unsafe {

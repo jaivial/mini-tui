@@ -17,13 +17,14 @@
 
   function tone(c: SubagentView): string {
     if (c.state === "running" || c.state === "starting") return "bg-brand pulse-live";
+    if (c.state === "dead") return "bg-err";
     if (c.state === "waiting") return c.exitStatus && c.exitStatus !== "Submitted" ? "bg-warn" : "bg-ok";
     if (c.state === "exited" && c.exitStatus && c.exitStatus !== "Submitted") return "bg-err";
     return "bg-ink-faint";
   }
 
   function label(c: SubagentView): string {
-    const status = c.exitStatus && c.state !== "running" ? `${c.state}, ${c.exitStatus}` : c.state;
+    const status = c.state === "dead" ? "dead (its process is gone)" : c.exitStatus && c.state !== "running" ? `${c.state}, ${c.exitStatus}` : c.state;
     const mem = c.memAvg ? `, ${memFmt(c.memAvg)} avg / ${memFmt(c.memPeak)} peak memory` : "";
     return `Subagent ${c.name}: ${status}, ${c.steps} steps, ${cost(c.cost)}${mem}. ${c.task}`;
   }
