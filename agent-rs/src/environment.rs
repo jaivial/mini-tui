@@ -23,6 +23,11 @@ pub trait Environment {
     fn execute(&mut self, command: &str) -> Outcome;
     fn template_vars(&self) -> Obj;
     fn serialize(&self) -> Value;
+    /// The directory a relative path resolves against for the tools that do not shell out (the
+    /// `read` tool): the environment's own `cwd`, which is also where its commands run.
+    fn working_dir(&self) -> String {
+        String::new()
+    }
 
     /// Execute the commands of one model response and return their outcomes **in input order**.
     /// The default is the serial loop; an environment that can overlap work overrides this
@@ -469,6 +474,14 @@ impl Environment for LocalEnvironment {
     fn serialize(&self) -> Value {
         json!({"info": {"config": {"environment": self.config, "environment_type": "minisweagent.environments.local.LocalEnvironment"}}})
     }
+
+    fn working_dir(&self) -> String {
+        if self.cwd.is_empty() {
+            std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default()
+        } else {
+            self.cwd.clone()
+        }
+    }
 }
 
 pub struct DockerEnvironment {
@@ -558,6 +571,7 @@ impl Environment for DockerEnvironment {
     fn serialize(&self) -> Value {
         json!({"info": {"config": {"environment": self.config, "environment_type": "minisweagent.environments.docker.DockerEnvironment"}}})
     }
+
 }
 
 impl Drop for DockerEnvironment {
