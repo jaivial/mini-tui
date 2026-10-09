@@ -147,7 +147,12 @@ static HUB: OnceLock<Arc<Mutex<Hub>>> = OnceLock::new();
 static CHILD_COST: AtomicU64 = AtomicU64::new(0);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
+#[path = "subagents_chain.rs"]
+mod chain;
+
 pub struct Child {
+    /// Agent bookkeeping (definition, origin, peer routing, measured cache reuse): `chain`.
+    pub chain: chain::ChildChain,
     pub name: String,
     pub task: String,
     pub cwd: String,
@@ -236,6 +241,7 @@ impl Child {
             "mem_avg": self.mem_avg,
             "mem_peak": self.mem_peak,
         })
+        .tap_chain(&self.chain)
     }
 
     fn running(&self) -> bool {
@@ -978,6 +984,7 @@ impl Hub {
         }
         let mut notes = vec![];
         let mut finished: Vec<String> = vec![];
+        let (mut routes, mut quiet, mut notified): (Vec<(String, String)>, Vec<(String, String)>, Vec<String>) = (vec![], vec![], vec![]);
         for c in self.children.iter_mut() {
             for line in read_new(&c.journal, &mut c.offset, &mut c.partial) {
                 c.last_activity = now();
@@ -995,6 +1002,7 @@ impl Hub {
                         let content = content_text(m);
                         match role {
                             "assistant" => {
+                                c.chain.observe(m);
                                 c.steps += 1;
                                 if !content.trim().is_empty() {
                                     c.last_text = content;
@@ -1007,6 +1015,7 @@ impl Hub {
                                 }
                             }
                             "user" => {
+                                c.chain.observe_user(m);
                                 if m.pointer("/extra/interrupt_type").and_then(Value::as_str) == Some("UserNewTask") {
                                     c.state = "running".into();
                                     c.stall_reported = false;
@@ -1022,8 +1031,18 @@ impl Hub {
                                 c.state = if was_stop { "stopped".into() } else { "waiting".into() };
                                 c.stop_requested = false;
                                 if !was_stop {
-                                    notes.push((c.name.clone(), c.turns, finished_note(c)));
-                                    finished.push(c.name.clone());
+                                    match c.chain.on_turn_end() {
+                                        chain::TurnEnd::Notify => {
+                                            notes.push((c.name.clone(), c.turns, finished_note(c)));
+                                            notified.push(c.name.clone());
+                                            finished.push(c.name.clone());
+                                        }
+                                        // Mid-chain turn ends (a handoff, a question to a peer, an
+                                        // answer to one) are not the parent's business: no note, and
+                                        // no handshake/contract-check note that would wake it either.
+                                        chain::TurnEnd::Quiet(why) => quiet.push((c.name.clone(), why)),
+                                        chain::TurnEnd::Reply(to) => routes.push((c.name.clone(), to)),
+                                    }
                                 }
                             }
                             _ => {}
@@ -1095,6 +1114,9 @@ impl Hub {
             }
         }
         self.notes.extend(notes);
+        if !routes.is_empty() || !quiet.is_empty() || !notified.is_empty() {
+            self.after_turns(routes, quiet, notified);
+        }
         let total: f64 = self.children.iter().map(Child::total_cost).sum();
         CHILD_COST.store(total.to_bits(), Ordering::SeqCst);
         self.tick_plan();
@@ -1372,6 +1394,7 @@ impl Hub {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let mut child = Child {
+            chain: Default::default(),
             name: name.clone(),
             task: raw_task.clone(),
             cwd: cwd.clone(),
@@ -1427,6 +1450,15 @@ impl Hub {
         }
         let fork_label = fork.as_ref().map(|(_, l, _)| l.clone());
         let mut resume = None;
+        // An agent session (`agent_delegate` / `agent_handoff`): its history is a byte-for-byte
+        // copy of its source's conversation, replayed as its own (see subagents_chain.rs).
+        if let Some(copy) = req.get("inherit_messages").and_then(Value::as_array) {
+            let path = child.dir.join("inherit.json");
+            std::fs::write(&path, serde_json::to_string(&json!({"messages": copy})).unwrap()).map_err(|e| format!("{}: {e}", path.display()))?;
+            child.replaying = true;
+            child.resume_task = full_task.clone();
+            resume = Some(path);
+        }
         if let Some((msgs, label, k)) = fork {
             // Like the `send` restart: the seeded history is replayed into the child's own journal,
             // so every later turn continues it with everything in between.
@@ -1774,7 +1806,11 @@ impl Launcher {
         if let Some(r) = resume {
             cmd.arg("--resume").arg(r);
         }
-        cmd.arg("-t").arg(task);
+        // The task goes through a file, not argv (see main.rs `-t @file`): an agent that runs
+        // `pkill -f "<text>"` must not match the processes of the agents whose task mentions it.
+        let task_file = c.dir.join("task.txt");
+        std::fs::write(&task_file, task).map_err(|e| format!("{}: {e}", task_file.display()))?;
+        cmd.arg("-t").arg(format!("@{}", task_file.display())).env("MINI_AGENT_TASK_FILE", "1");
         let path = std::env::var("PATH").unwrap_or_default();
         cmd.env("MSWEA_CONTROL_FILE", &c.control)
             .env("MSWEA_SILENT_STARTUP", "1")
@@ -2442,6 +2478,14 @@ fn handle(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
             Ok(v)
         }
         "plan" => h.plan_cmd(req),
+        "delegate" => h.delegate_cmd(req),
+        "handoff" => h.handoff_cmd(req),
+        "message" => h.message_cmd(req),
+        "waits_on" => h.waits_on_cmd(req),
+        "agent_event" => {
+            h.event(&s(req, "kind"), &s(req, "from"), &s(req, "to"), &s(req, "text"), json!({}));
+            Ok(ok(String::new(), json!(null)))
+        }
         "send" => h.send(req).map(|o| ok(o, json!(null))),
         "model" => {
             let model = s(req, "model");
@@ -2688,7 +2732,7 @@ fn tail(journal: &Path, n: usize) -> String {
 
 // ---- the client: `mini-agent-rs agent …` ---------------------------------------------------
 
-fn request(socket: &str, req: &Value, timeout_s: u64) -> Result<Value, String> {
+pub(crate) fn request(socket: &str, req: &Value, timeout_s: u64) -> Result<Value, String> {
     let mut stream = UnixStream::connect(socket).map_err(|e| format!("cannot reach the session's agent ({socket}): {e}"))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(timeout_s)));
     writeln!(stream, "{req}").map_err(|e| e.to_string())?;
@@ -2705,6 +2749,9 @@ pub fn client(args: &[String]) -> i32 {
     if matches!(cmd, "help" | "-h" | "--help") {
         println!("{HELP}");
         return 0;
+    }
+    if let Some(code) = crate::agents::client(cmd, &args[1..]) {
+        return code;
     }
     // `orch` verbs keep working.
     let cmd = match cmd {
@@ -3047,5 +3094,17 @@ mod tests {
         // Explicit --repo wins outright.
         let explicit = repos_of(&serde_json::json!({"repos": ["go-api"]}), "/home/jaime/backend", "be-worker");
         assert_eq!(explicit, vec!["go-api"], "{explicit:?}");
+    }
+}
+
+trait TapChain {
+    fn tap_chain(self, c: &chain::ChildChain) -> Value;
+}
+impl TapChain for Value {
+    fn tap_chain(mut self, c: &chain::ChildChain) -> Value {
+        if !c.agent.is_empty() {
+            c.decorate(&mut self);
+        }
+        self
     }
 }

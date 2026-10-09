@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { GripVertical, PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Settings as SettingsIcon } from "@lucide/svelte";
+  import { GripVertical, PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Network, Settings as SettingsIcon } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import SubagentStrip from "./SubagentStrip.svelte";
@@ -10,6 +10,7 @@
   import PixelLoader from "./PixelLoader.svelte";
   import Spinner from "./Spinner.svelte";
   import NotesPanel from "./NotesPanel.svelte";
+  import AgentsPanel from "./AgentsPanel.svelte";
   // The terminal (xterm.js, ~290 KB) is loaded the first time a terminal is opened, not with the app.
   const TerminalPanel = () => import("./TerminalPanel.svelte");
   import PaneMenu from "./PaneMenu.svelte";
@@ -17,7 +18,7 @@
   import { rememberRecent } from "../folderPath";
   import { catalog } from "../stores/catalog.svelte";
   import { store } from "../stores/sessions.svelte";
-  import { panes, type Pane } from "../stores/panes.svelte";
+  import { panes, type Pane, type SideTab } from "../stores/panes.svelte";
 import { windows as windowStore } from "../stores/windows.svelte";
   import { toasts } from "../stores/toast.svelte";
   import { api } from "../api";
@@ -301,17 +302,20 @@ import { windows as windowStore } from "../stores/windows.svelte";
   }
 
   /** Opening moves focus into the panel (after it has rendered); closing leaves it on the button. */
-  async function toggleSide(tab: "notes" | "terminal") {
+  async function toggleSide(tab: SideTab) {
     panes.toggleSide(pane.id, tab);
     if (!pane.notesOpen) return;
     await tick();
-    (tab === "notes" ? notes : terminal)?.focus();
+    (tab === "notes" ? notes : tab === "agents" ? agentsPanel : terminal)?.focus();
   }
   const toggleNotes = () => toggleSide("notes");
   export function focusTerminal() {
     void toggleSide("terminal");
   }
-  const sideOpen = (tab: "notes" | "terminal") => pane.notesOpen && pane.sideTab === tab;
+  const sideOpen = (tab: SideTab) => pane.notesOpen && pane.sideTab === tab;
+  let agentsPanel = $state<{ focus: () => void } | null>(null);
+  /** Agents this session started (the strip's roster): the toolbar button shows how many work. */
+  const agentCount = $derived(session?.subagents?.length ?? 0);
 </script>
 
 {#snippet folder()}
@@ -360,6 +364,21 @@ import { windows as windowStore } from "../stores/windows.svelte";
     active={sideOpen("notes")}
     onclick={toggleNotes}
   />
+  <span class="relative inline-flex">
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      icon={Network}
+      title={sideOpen("agents") ? "Hide agents" : "Agents"}
+      aria-label={sideOpen("agents") ? "Hide agents" : `Show agents${agentCount ? ` (${agentCount})` : ""}`}
+      aria-pressed={sideOpen("agents")}
+      active={sideOpen("agents")}
+      onclick={() => toggleSide("agents")}
+    />
+    {#if agentCount}
+      <span class="pointer-events-none absolute -top-0.5 -right-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-brand px-0.5 text-[9px] font-bold text-brand-ink tnum">{agentCount}</span>
+    {/if}
+  </span>
   <Button
     variant="ghost"
     size="icon-sm"
@@ -535,11 +554,12 @@ import { windows as windowStore } from "../stores/windows.svelte";
     <div
       class="notes-slot flex min-h-0 shrink-0 flex-col border-l border-line/80 bg-surface"
       class:is-terminal={pane.sideTab === "terminal"}
+      class:is-agents={pane.sideTab === "agents"}
       style={sideWidthStyle(pane.sideWidth)}
     >
       <!-- Two tabs, one panel: Notes and Terminal. Arrow keys move between them (roving tabindex). -->
       <div class="flex shrink-0 items-center gap-0.5 border-b border-line/80 px-1.5 pt-1" role="tablist" aria-label="Side panel">
-        {#each [{ id: "notes", label: "Notes", icon: NotebookPen }, { id: "terminal", label: "Terminal", icon: SquareTerminal }] as tab (tab.id)}
+        {#each [{ id: "notes", label: "Notes", icon: NotebookPen }, { id: "agents", label: "Agents", icon: Network }, { id: "terminal", label: "Terminal", icon: SquareTerminal }] as tab (tab.id)}
           {@const Icon = tab.icon}
           <button
             type="button"
@@ -550,11 +570,13 @@ import { windows as windowStore } from "../stores/windows.svelte";
             tabindex={pane.sideTab === tab.id ? 0 : -1}
             class="interactive -mb-px flex min-h-9 cursor-pointer items-center gap-1.5 border-b-2 px-2.5 text-[12.5px] font-medium pointer-coarse:min-h-11
               {pane.sideTab === tab.id ? 'border-brand text-ink' : 'border-transparent text-ink-muted hover:text-ink'}"
-            onclick={() => panes.toggleSide(pane.id, tab.id as "notes" | "terminal", true)}
+            onclick={() => panes.toggleSide(pane.id, tab.id as SideTab, true)}
             onkeydown={(e) => {
               if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
               e.preventDefault();
-              const next = pane.sideTab === "notes" ? "terminal" : "notes";
+              const order: SideTab[] = ["notes", "agents", "terminal"];
+              const at = order.indexOf(pane.sideTab);
+              const next = order[(at + (e.key === "ArrowRight" ? 1 : order.length - 1)) % order.length]!;
               panes.toggleSide(pane.id, next, true);
               void tick().then(() => document.getElementById(`${pane.id}-side-${next}`)?.focus());
             }}
@@ -570,6 +592,8 @@ import { windows as windowStore } from "../stores/windows.svelte";
           {:catch}
             <div class="m-3 rounded-md bg-err/10 px-3 py-2 text-[12px] text-err" role="alert">Could not load the terminal. Reload the page and try again.</div>
           {/await}
+        {:else if pane.sideTab === "agents"}
+          <AgentsPanel bind:this={agentsPanel} sessionId={session?.id ?? null} onopen={openSubagent} onclose={() => panes.toggleSide(pane.id, "agents", false)} />
         {:else}
           <NotesPanel
             bind:this={notes}
@@ -604,6 +628,10 @@ import { windows as windowStore } from "../stores/windows.svelte";
   .notes-slot {
     /* The width the user dragged the panel to, else the panel's own default. */
     width: var(--side-w, clamp(16rem, 32%, 24rem));
+  }
+  /* The agent tree and its message timeline need room: wider than notes, unless dragged. */
+  .notes-slot.is-agents {
+    width: var(--side-w, clamp(20rem, 38%, 30rem));
   }
   /* A terminal needs columns: the sidebar is wider while it shows one. */
   .notes-slot.is-terminal {

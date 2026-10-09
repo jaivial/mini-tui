@@ -243,3 +243,73 @@ export interface ModelInfo {
   name: string;
   description: string;
 }
+
+/** Measured reuse of the inherited prefix: the first call's cached tokens, and the totals. */
+export interface AgentCache {
+  inherited_messages: number;
+  first_prompt: number;
+  first_cached: number;
+  prompt_total: number;
+  cached_total: number;
+  warm: string;
+}
+
+/** One agent session in a session's agent tree (children = its own subagents). */
+export interface AgentNode {
+  name: string;
+  path: string;
+  sessionId: string;
+  /** The agent definition it runs (`general`, `translator`...); empty for a plain spawn. */
+  agent: string;
+  /** `delegate`, `handoff`, or empty (a plain `agent spawn`). */
+  origin: string;
+  /** Who started it: `parent` or the agent that handed over. */
+  from: string;
+  state: string;
+  exitStatus: string;
+  model: string;
+  task: string;
+  steps: number;
+  cost: number;
+  lastCommand: string;
+  awaiting: string;
+  waitingChildren: string[];
+  startedAt: number;
+  lastActivity: number;
+  cache?: AgentCache;
+  children: AgentNode[];
+}
+
+export interface AgentEvent {
+  at: number;
+  /** delegate, handoff, message, reply, fanout, warmup, done, define, error */
+  kind: string;
+  from: string;
+  to: string;
+  text: string;
+  /** The hub that logged it: "" = this session's own, else the path of the agent whose hub it is. */
+  scope: string;
+  model?: string;
+  agent?: string;
+  inherited?: number;
+  status?: string;
+  chain?: string[];
+  seconds?: number;
+}
+
+export interface AgentDef {
+  name: string;
+  description: string;
+  when_to_use: string;
+  system_prompt: string;
+  model: string;
+  builtin: boolean;
+  created_by?: string;
+}
+
+export interface AgentsView {
+  sessionId: string;
+  nodes: AgentNode[];
+  events: AgentEvent[];
+  defs: AgentDef[];
+}

@@ -93,6 +93,9 @@ pub fn anthropic_cu_tool() -> Value {
 /// same concatenation `actions_toolcall.py` produces (unknown tool and/or the
 /// missing argument, back to back).
 fn command_for(name: &str, args: &Value) -> Result<Value, String> {
+    if crate::agents::is_tool(name) && crate::agents::tools_enabled() {
+        return Ok(crate::agents::command_for(name, args));
+    }
     let mut error = String::new();
     if name != "bash" && name != "cu" {
         error.push_str(&format!("Unknown tool '{name}'."));

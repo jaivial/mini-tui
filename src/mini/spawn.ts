@@ -143,8 +143,48 @@ export function setRunnerSupport(kind: RunnerKind | undefined): void {
 }
 
 /** Build the argv for an integrated runner; exported for deterministic tests. */
+/**
+ * Whether this Rust binary reads `-t @file` (it ships the agent tools with it: `agent agents`
+ * answers). An older installed binary would take `@<path>` as the task itself, so it keeps the
+ * prompt on argv. Probed once per binary (path + mtime).
+ */
+const taskFileSupport = new Map<string, boolean>();
+function rustReadsTaskFile(bin: string): boolean {
+  let key = bin;
+  try {
+    key = `${bin}:${statSync(bin).mtimeMs}`;
+  } catch {
+    // on PATH: probe by name
+  }
+  const hit = taskFileSupport.get(key);
+  if (hit !== undefined) return hit;
+  let ok = false;
+  try {
+    const r = Bun.spawnSync({ cmd: [bin, "agent", "agents", "--json"], stdout: "pipe", stderr: "ignore", env: { ...process.env, MINI_AGENT_SOCKET: "" } });
+    ok = r.exitCode === 0 && r.stdout.toString().trimStart().startsWith("[");
+  } catch {
+    ok = false;
+  }
+  taskFileSupport.set(key, ok);
+  return ok;
+}
+
 export function buildRunnerCommand(spec: TaskSpec, session: SessionPaths, kind: RunnerKind = "embedded"): string[] {
-  if (kind === "rust") return [rustAgentBin() ?? "mini-agent-rs", ...buildRunnerArgs(spec, session)];
+  if (kind === "rust") {
+    // The Rust agent reads `-t @file` (with MINI_AGENT_TASK_FILE=1, set in `buildRunEnv`): the
+    // prompt stays off argv, so an agent's `pkill -f "<words of the prompt>"` cannot match --
+    // and kill -- the session that asked for it (measured: a subagent's `pkill -f "server.py
+    // 8791"` SIGTERMed its whole agent tree, whose prompts mentioned that command).
+    const bin = rustAgentBin() ?? "mini-agent-rs";
+    const args = buildRunnerArgs(spec, session);
+    const t = args.lastIndexOf("-t");
+    if (t >= 0 && !spec.compactOnly && rustReadsTaskFile(bin)) {
+      const file = join(session.dir, "task.txt");
+      writeFileSync(file, spec.task);
+      args[t + 1] = `@${file}`;
+    }
+    return [bin, ...args];
+  }
   if (kind === "embedded") return [resolvePython(), "-m", TUI_RUNNER_MODULE, ...buildRunnerArgs(spec, session)];
   if (kind === "argv") {
     const launcher = resolveTuiRunner();
@@ -191,6 +231,11 @@ export function buildRunEnv(
     // The Rust binary may live outside this checkout (~/.local/lib/mini-tui): point it at the YAML
     // configs shipped with the bundled agent, unless the caller already chose a directory.
     ...(process.env.MINI_AGENT_CONFIG_DIR || extra.MINI_AGENT_CONFIG_DIR ? {} : { MINI_AGENT_CONFIG_DIR: BUNDLED_CONFIG_DIR }),
+    // The native agent tools (agent_define / route / delegate / message / handoff): mini-tui's
+    // runs get them; a bare `mini-agent-rs` run (and the parity suite) sends exactly bash + cu.
+    ...(process.env.MINITUI_AGENT_TOOLS || extra.MINITUI_AGENT_TOOLS ? {} : { MINITUI_AGENT_TOOLS: "1" }),
+    // `-t @file` is read as a file by the Rust agent only when this says so (see buildRunnerCommand).
+    MINI_AGENT_TASK_FILE: "1",
     // Empty = no control channel: the agent finishes its turn and exits (headless runs).
     MSWEA_CONTROL_FILE: control ? session.controlPath : "",
     MSWEA_SILENT_STARTUP: "1",

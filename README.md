@@ -588,6 +588,32 @@ compares every scenario byte for byte. `$orchestration`'s `orch` forwards its co
 session's subagents when it runs inside a Rust session. Its detached headless runs remain for your
 own terminal and the Python agent. Full reference: [`agent-rs/README.md`](agent-rs/README.md#subagents-mini-agent-rs-agent).
 
+### Agents (delegation, handoffs, fan-out)
+
+With the Rust agent, mini-tui gives the model five native tools on top of `bash`:
+`agent_define` (a named specialist: description, when to use it, its system prompt, its model),
+`agent_route` (which agent fits a task), `agent_delegate` (one task, or `tasks` to fan out),
+`agent_message` (to the parent, a sibling or a subagent) and `agent_handoff` (finish your part and
+pass the work to the next agent). A general-purpose agent, `general`, is built in; definitions the
+model creates live in `~/.config/mini-tui/agents/`.
+
+- **Every agent is a session.** It starts as a byte-for-byte copy of the session that started it
+  (the delegating one, or for a handoff the agent handing over) with the model switched to its
+  own, plus its task appended after the copy. The copy is the prefix the provider has cached: on
+  the same model the source's last call already wrote it; on another model the hub first warms
+  that model's cache with the copy (one call, `max_tokens` 1) and starts the agents once it is
+  written. Each agent's first-call cached tokens are measured and shown.
+- **Background, never blocking.** Delegating returns at once; the session keeps working and is
+  told when an agent finishes. Messages land before the recipient's next step, or wake it.
+- **Chains between peers.** `translator` hands off to `reviewer`; the reviewer messages the
+  translator its corrections and waits; the translator's answer goes back to the reviewer (not to
+  the parent); the reviewer hands off to `deployer`. The parent is woken when the chain ends.
+- **Recursive fan-out.** An agent can delegate to subagents of its own (`login` -> `backend` +
+  `frontend`); its turn end while they work is a wait, not a report.
+- **Agents panel (web).** The side panel's Agents tab draws the tree (parent -> children ->
+  grandchildren) with live state, model, steps, cost and cache reuse, and the timeline of
+  delegations, handoffs, corrections, replies and fan-outs. Any agent opens as its own session.
+
 ### The shared context (`ContextStore`)
 
 A subagent that re-reads what the orchestrator already read is the single biggest cost in a

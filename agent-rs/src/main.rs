@@ -5,6 +5,7 @@
 //! (`MSWEA_CONTROL_FILE`: `MODEL`, `MESSAGE`, `COMPACT`), the same YAML configs and `.env`.
 
 mod agent;
+mod agents;
 mod resources;
 mod compaction;
 mod context_store;
@@ -132,7 +133,15 @@ fn parse_args(argv: &[String]) -> Result<ParseResult, String> {
             return Err(format!("{name} requires a value\n\n{USAGE}"));
         }
         match dest {
-            "task" => o.task = Some(value),
+            // `-t @file`: the task is read from a file the hub wrote (`MINI_AGENT_TASK_FILE=1`
+            // marks it), so it is not on argv: a child's `pkill -f "<words of its task>"` would
+            // otherwise match -- and kill -- every agent of the tree whose task contains them.
+            "task" => {
+                o.task = Some(match value.strip_prefix('@').filter(|_| std::env::var("MINI_AGENT_TASK_FILE").is_ok_and(|v| v == "1")) {
+                    Some(path) => std::fs::read_to_string(path).map_err(|e| format!("-t @{path}: {e}"))?,
+                    None => value,
+                })
+            }
             "model_name" => o.model_name = Some(value),
             "model_class" => o.model_class = Some(value),
             "agent_class" => o.agent_class = Some(value),

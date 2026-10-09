@@ -12,6 +12,25 @@ metadata:
 
 # Subagents of this session
 
+## Agents: native tools (prefer these)
+
+mini-tui runs give the model five native tools, so delegation needs no shell syntax:
+
+- `agent_define {name, description, when_to_use, system_prompt, model?}`: a reusable specialist
+  (translator, reviewer, deployer...), saved in `~/.config/mini-tui/agents/`. `general` is built in.
+- `agent_route {task}`: which agent fits a task (ranked; `general` when none does).
+- `agent_delegate {agent, task}` or `{tasks: [...]}` (fan-out): each agent is a NEW SESSION that
+  starts as a byte-for-byte copy of yours, on its own model, plus its task. It runs in the
+  background; you are told when it finishes. Keep working, or end your turn to wait.
+- `agent_message {to, text}`: `parent`, your own subagent, or a sibling agent. The recipient reads
+  it before its next step (or wakes with its full context); its answer comes back to you.
+- `agent_handoff {agent, task}`: finish YOUR part and pass the work on (translate -> review ->
+  deploy). The next agent starts from a copy of your session; then end your turn.
+
+An agent can delegate (and fan out) to subagents of its own: the tree shows in the web's Agents
+panel with every message between them.
+
+
 Run these from your bash tool. They talk to the agent running this session (through
 `MINI_AGENT_SOCKET`), which starts and owns the children: they stop when this session stops, their
 spend counts toward its cost limit, and every one is saved as a session under this one.

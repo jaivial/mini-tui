@@ -91,6 +91,14 @@ export function openDb(path: string = DEFAULT_DB_PATH): Database {
   // The agent each UI is running for a session right now, so another UI (the web app, a second
   // terminal) can follow that same agent and talk to it instead of forking the conversation.
   db.exec(`
+    -- The run folders a session's agent journaled into (newest last): where its agent tree lives
+    -- (<run>/subagents/...), still readable after the run ended or the server restarted.
+    CREATE TABLE IF NOT EXISTS agent_runs (
+      session_id TEXT NOT NULL,
+      traj_path TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, traj_path)
+    );
     CREATE TABLE IF NOT EXISTS live_runs (
       session_id TEXT PRIMARY KEY,
       traj_path TEXT NOT NULL,
@@ -204,6 +212,16 @@ export function registerLiveRun(db: Database, run: Omit<LiveRunRecord, "started_
   db.query(
     `INSERT OR REPLACE INTO live_runs (session_id, traj_path, control_path, pid, owner, started_at) VALUES (?, ?, ?, ?, ?, ?)`,
   ).run(run.session_id, run.traj_path, run.control_path, run.pid, run.owner, run.started_at ?? Date.now());
+}
+
+/** Remember a run folder of a session (its agent tree is read from there, also after it ended). */
+export function rememberAgentRun(db: Database, sessionId: string, trajPath: string): void {
+  db.query("INSERT OR IGNORE INTO agent_runs (session_id, traj_path, started_at) VALUES (?, ?, ?)").run(sessionId, trajPath, Date.now());
+}
+
+/** The run folders of a session, newest first. */
+export function agentRuns(db: Database, sessionId: string): string[] {
+  return (db.query("SELECT traj_path FROM agent_runs WHERE session_id = ? ORDER BY started_at DESC").all(sessionId) as Array<{ traj_path: string }>).map((r) => r.traj_path);
 }
 
 /** Forget a session's live run, only if it is still this one (a newer run may have replaced it). */

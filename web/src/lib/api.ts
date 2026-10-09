@@ -14,6 +14,8 @@ import type {
   SettingsView,
   SkillInfo,
   WireSession,
+  AgentsView,
+  AgentDef,
 } from "./types";
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -43,6 +45,9 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  /** A session's agent tree, the messages between its agents, and the agent definitions. */
+  agents: (id: string) => call<AgentsView>(`/sessions/${encodeURIComponent(id)}/agents`),
+  agentDefs: () => call<AgentDef[]>("/agents"),
   /** Subfolders of `path` on this machine (`hostId` empty or "local") or on a saved remote host. */
   folders: (path: string, hostId = "local") =>
     call<FolderListing>(`/folders?${new URLSearchParams({ path, ...(hostId && hostId !== "local" ? { hostId } : {}) })}`),
