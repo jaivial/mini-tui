@@ -42,12 +42,15 @@ pub fn classify_status(status: u16, detail: &str, base: &str) -> ModelError {
         if status == 402 {
             message.push_str(" Top up your balance — retrying will not fix this.");
         }
-        return ModelError { message, status: Some(status), abort: true, kind: "ProviderAbortError".into(), connect_refused: false };
+        return ModelError { message, status: Some(status), abort: true, kind: "ProviderAbortError".into(), connect_refused: false, retry_after: None, };
     }
-    ModelError { message, status: Some(status), abort: false, kind: "ProviderError".into(), connect_refused: false }
+    ModelError { message, status: Some(status), abort: false, kind: "ProviderError".into(), connect_refused: false, retry_after: None, }
 }
 
-fn http_error(status: u16, text: &str, base: &str) -> ModelError {
+/// The error for an HTTP status, plus the response's `Retry-After` headers when it sent them
+/// (the retry policy honours those before any curve of ours). Pass `|_| None` when no headers
+/// are available.
+fn http_error_with_retry_after(status: u16, text: &str, base: &str, header: impl Fn(&str) -> Option<String>) -> ModelError {
     let detail = match serde_json::from_str::<Value>(text) {
         Ok(v) => match v.get("error") {
             Some(Value::Object(o)) => o.get("message").map(value_text).unwrap_or_else(|| value_text(&Value::Object(o.clone()))),
@@ -56,7 +59,65 @@ fn http_error(status: u16, text: &str, base: &str) -> ModelError {
         },
         Err(_) => text.to_string(),
     };
-    classify_status(status, &detail, base)
+    let mut e = classify_status(status, &detail, base);
+    if !e.abort {
+        e.retry_after = retry_after_seconds(&header);
+    }
+    e
+}
+
+/// `retry-after-ms` then `retry-after` (seconds, or an HTTP-date), like pi's
+/// `getRetryDelayMs` (packages/ai/src/utils/provider-retry.ts). None when absent or unusable.
+fn retry_after_seconds(header: impl Fn(&str) -> Option<String>) -> Option<f64> {
+    if let Some(ms) = header("retry-after-ms").and_then(|v| v.trim().parse::<f64>().ok()) {
+        return Some((ms / 1000.0).max(0.0));
+    }
+    let raw = header("retry-after")?;
+    let t = raw.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if let Ok(secs) = t.parse::<f64>() {
+        return Some(secs.max(0.0));
+    }
+    // HTTP-date: how far away is it? A date already past means "now".
+    httpdate_seconds(t)
+}
+
+/// `Sun, 06 Nov 1994 08:49:37 GMT` -> seconds from now (0 when in the past).
+fn httpdate_seconds(s: &str) -> Option<f64> {
+    // strptime-style without a dependency: the formats RFC 7231 allows.
+    let s = s.trim();
+    let bytes = s.as_bytes();
+    if bytes.len() < 24 {
+        return None;
+    }
+    // "Sun, 06 Nov 1994 08:49:37 GMT"
+    let day: u32 = s.get(5..7)?.parse().ok()?;
+    let month = match s.get(8..11)? {
+        "Jan" => 1, "Feb" => 2, "Mar" => 3, "Apr" => 4, "May" => 5, "Jun" => 6,
+        "Jul" => 7, "Aug" => 8, "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12,
+        _ => return None,
+    };
+    let year: i64 = s.get(12..16)?.parse().ok()?;
+    let hour: u32 = s.get(17..19)?.parse().ok()?;
+    let min: u32 = s.get(20..22)?.parse().ok()?;
+    let sec: u32 = s.get(23..25)?.parse().ok()?;
+    let days = days_from_civil(year, month, day);
+    let target = days * 86400 + hour as i64 * 3600 + min as i64 * 60 + sec as i64;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    Some((target - now).max(0) as f64)
+}
+
+/// Days since the Unix epoch from a civil date (Howard Hinnant's `days_from_civil`).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m as i64 + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
 }
 
 fn value_text(v: &Value) -> String {
@@ -73,7 +134,7 @@ fn transport_error(e: &dyn std::fmt::Display, base: &str) -> ModelError {
     if refused {
         message.push_str(&refused_hint(base));
     }
-    ModelError { message, status: None, abort: false, kind: "ProviderError".into(), connect_refused: refused }
+    ModelError { message, status: None, abort: false, kind: "ProviderError".into(), connect_refused: refused, retry_after: None }
 }
 
 /// What a refused connect means for a gateway mini talks to, and what to check first.
@@ -134,11 +195,11 @@ pub fn epoch_ms() -> u64 {
 }
 
 fn cancelled() -> ModelError {
-    ModelError { message: "cancelled".into(), status: None, abort: true, kind: "Cancelled".into(), connect_refused: false }
+    ModelError { message: "cancelled".into(), status: None, abort: true, kind: "Cancelled".into(), connect_refused: false, retry_after: None, }
 }
 
 fn stopped() -> ModelError {
-    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false }
+    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false, retry_after: None, }
 }
 
 /// Run a blocking HTTP call on a worker thread so a stop signal is seen at once: std's socket
@@ -209,15 +270,28 @@ fn post_json_blocking(base: &str, path: &str, body: &Value, headers: &[(String, 
                 message: format!("invalid JSON from {base}: {}", text.chars().take(300).collect::<String>()),
                 status: None,
                 abort: false,
-                kind: "ProviderError".into(), connect_refused: false,
+                kind: "ProviderError".into(), connect_refused: false, retry_after: None,
             })
         }
         Err(ureq::Error::Status(code, resp)) => {
+            let captured = retry_headers(&resp);
             let text = resp.into_string().unwrap_or_default();
-            Err(http_error(code, &text, base))
+            Err(http_error_with_retry_after(code, &text, base, |h| captured.get(h).cloned()))
         }
         Err(e) => Err(transport_error(&e, base)),
     }
+}
+
+/// The two headers the retry policy reads, copied off a response before its body is consumed
+/// (ureq's `into_string` takes the response, headers included).
+fn retry_headers(resp: &ureq::Response) -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    for h in ["retry-after-ms", "retry-after"] {
+        if let Some(v) = resp.header(h) {
+            m.insert(h.to_string(), v.to_string());
+        }
+    }
+    m
 }
 
 /// POST with `stream: true` and rebuild the chat-completions body from the SSE chunks
@@ -238,8 +312,9 @@ fn post_chat_stream_blocking(base: &str, body: &Value, headers: &[(String, Strin
     let resp = match request(&url, headers, timeout, "text/event-stream").send_string(&payload) {
         Ok(r) => r,
         Err(ureq::Error::Status(code, resp)) => {
+            let captured = retry_headers(&resp);
             let text = resp.into_string().unwrap_or_default();
-            return Err(http_error(code, &text, base));
+            return Err(http_error_with_retry_after(code, &text, base, |h| captured.get(h).cloned()));
         }
         Err(e) => return Err(transport_error(&e, base)),
     };
@@ -358,19 +433,70 @@ pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<
             Ok(v) => return Ok(v),
             Err(e) if e.abort || attempt >= attempts => return Err(e),
             Err(e) => {
-                // Jittered (x0.5-1.5): calls that hit a 429 together must not retry together
-                // (measured, speed7: 32 parallel calls retried in lockstep at 1/2/4/8 s and hit
-                // the provider's concurrency limit again every time).
-                let wait = retry_wait(attempt, min_wait).min(max_wait) * rand::Rng::gen_range(&mut rand::thread_rng(), 0.5..1.5);
-                let wait = if e.connect_refused { refused_wait(attempt, min_wait) } else { wait };
+                let wait = retry_delay(attempt, min_wait, max_wait, &e);
                 eprintln!("WARNING: Retrying in {wait:.1} seconds as it raised {}: {}.", e.kind, e.message);
                 if !crate::agent::interruptible_sleep(Duration::from_secs_f64(wait)) {
-                    return Err(ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false });
+                    return Err(ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false, retry_after: None, });
                 }
             }
         }
     }
 }
+
+/// The wait before the next attempt, in the order that matters:
+///
+/// 1. **What the server said** (`retry-after-ms` / `retry-after`, capped at
+///    [`SERVER_HINT_CAP`]). A 429 that answers "retry in 300 ms" must not cost 4 s of invented
+///    wait: measured, 73 retries spent 392 s waiting on the tenacity floor while the providers
+///    involved do send the header. pi does the same first (provider-retry.ts `getRetryDelayMs`).
+/// 2. **A refused connect** keeps its own cheap re-probe schedule ([`refused_wait`]).
+/// 3. **A rate limit** (429 or a provider's rate-limit wording) gets pi's fast shape
+///    ([`rate_limit_wait`]): the measured corpus waited 4 s on the first retry for a 429 that
+///    carries no header, which is 8x what the same answer costs in pi.
+/// 4. Otherwise the tenacity-shaped exponential curve, jittered x0.5-1.5 so calls that hit a
+///    429 together do not retry together (measured, speed7: 32 parallel calls retried in
+///    lockstep and re-hit the concurrency limit every time).
+///
+/// `MINI_AGENT_RETRY_MIN_WAIT` stays what it was: a floor for the *curve*, i.e. for a slow
+/// provider with no hint. It no longer delays a server that just told us the exact wait.
+fn retry_delay(attempt: u32, min_wait: f64, max_wait: f64, e: &ModelError) -> f64 {
+    if let Some(hint) = e.retry_after {
+        return hint.min(SERVER_HINT_CAP).max(0.0);
+    }
+    if e.connect_refused {
+        return refused_wait(attempt, min_wait);
+    }
+    if is_rate_limited(e) {
+        // pi's shape for a throttle: `min(0.5 x 2^i, 8) s`. A 429 means "not now", not "gone":
+        // the first retry is half a second, and the curve still reaches 8 s by attempt 5.
+        return rate_limit_wait(attempt).min(max_wait) * rand::Rng::gen_range(&mut rand::thread_rng(), 0.75..1.25);
+    }
+    retry_wait(attempt, min_wait).min(max_wait) * rand::Rng::gen_range(&mut rand::thread_rng(), 0.5..1.5)
+}
+
+/// A throttle answer: HTTP 429, or a 4xx the provider worded as a rate limit (some gateways
+/// use 400 for it, and `classify_status` keeps those retryable on purpose).
+fn is_rate_limited(e: &ModelError) -> bool {
+    if e.status == Some(429) {
+        return true;
+    }
+    let m = e.message.to_lowercase();
+    if m.contains("rate limit") || m.contains("too many requests") {
+        return true;
+    }
+    // "quota" alone is often a permanent billing error; only a status-carrying answer counts.
+    m.contains("quota") && e.status.is_some()
+}
+
+/// pi's throttle backoff (`provider-retry.ts`): 0.5, 1, 2, 4, then 8 s.
+fn rate_limit_wait(attempt: u32) -> f64 {
+    (0.5f64 * 2f64.powi(attempt as i32 - 1)).min(8.0)
+}
+
+/// Never sleep longer than this on a server's own hint: a provider that asks for more is
+/// misconfigured or under sustained load, and a fresh call would re-learn the wait anyway
+/// (pi throws above its 60 s `maxRetryDelayMs`; sleeping the full hint is enough here).
+const SERVER_HINT_CAP: f64 = 60.0;
 
 /// How long to wait between attempts when nothing is listening. The connect is refused
 /// instantly, so these are the only cheap retries there are, and the shared curve is the

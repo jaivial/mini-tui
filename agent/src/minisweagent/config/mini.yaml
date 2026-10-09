@@ -76,6 +76,10 @@ agent:
     - Never reply with plain text mid-task; the only plain-text response is the final answer
     - Directory or environment variable changes are not persistent. Every action is executed in a new subshell.
     - However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files
+    - Batch independent work: when several commands do not depend on each other's output, issue
+      them as several tool calls in ONE response instead of one per response. They all run, in
+      order, and you see every result before your next response — the same information, fewer
+      round trips. Never batch commands where you need to read one result to decide the next.
     - Submit your changes and finish your work by replying with your final answer as plain text and no tool call.
       Put everything the user needs in that message. <important>That response ends the run; nothing can follow it.</important>
 

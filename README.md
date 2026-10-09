@@ -780,6 +780,15 @@ peaks at **40 MB instead of 214 MB** and answers ~2.3 s sooner. Since 0.9.0 ever
 (DeepSeek, OpenAI, Anthropic, OpenCode Go included) talks to its base URL directly and litellm is
 an optional extra ([docs/PLAN-litellm-detach.md](docs/PLAN-litellm-detach.md)).
 
+**pi-parity speed work** ([docs/pi-speed-analysis.md](docs/pi-speed-analysis.md)): the loop's
+own overhead is 0.027 s/step (median, measured on 28 headless runs) while **83 % of wall time is
+the model**. Three of the remaining losses are now closed: retries honour `Retry-After` /
+`retry-after-ms` first and use pi's `min(0.5 × 2^i, 8) s` shape for throttles (measured corpus:
+392 s of waiting → ~136 s); a step's independent commands run overlapped (up to
+`MINI_AGENT_PARALLEL_ACTIONS`, default 2) instead of strictly serially, results kept in input
+order; and the journal no longer clones the whole conversation per step (`serialize_info` +
+the unjournaled tail, `max(20, len/10)` messages or 60 s between full exports).
+
 **0.13.0 integrated-runner benchmark** (`scripts/benchmark-runtime.py`, seven fresh Python 3.10
 processes, deterministic one-step run, no network): public `mini` **~205–212 ms / ~39 MiB peak RSS**;
 bundled `mini-swe-agent-tui` **~160–170 ms / ~34 MiB** — about **20% faster and roughly 5 MiB less resident

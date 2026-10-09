@@ -205,7 +205,7 @@ extern "C" fn on_signal(sig: libc::c_int) {
             // The e2e coordinator's worker subagents and browsers (each in its own process
             // group). Workers get SIGTERM first: their handler kills their running command's
             // group (which a SIGKILL of the worker would orphan), then everything is killed.
-            for g in e2e::worker::GROUPS.iter() {
+            for g in e2e::worker::GROUPS.iter().chain(environment::BATCH_GROUPS.iter()) {
                 let g = g.load(Ordering::SeqCst);
                 if g > 0 {
                     libc::kill(g, libc::SIGTERM);
@@ -213,7 +213,7 @@ extern "C" fn on_signal(sig: libc::c_int) {
             }
             let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 300_000_000 };
             libc::nanosleep(&ts, &mut ts);
-            for g in e2e::worker::GROUPS.iter() {
+            for g in e2e::worker::GROUPS.iter().chain(environment::BATCH_GROUPS.iter()) {
                 let g = g.load(Ordering::SeqCst);
                 if g > 0 {
                     libc::killpg(g, libc::SIGKILL);

@@ -424,7 +424,7 @@ impl Agent {
                 self.add_messages(vec![Self::user_task_message(task)]);
             }
         } else if compact_only {
-            return Err(ModelError { message: "compact_only requires resume_messages".into(), status: None, abort: true, kind: "ValueError".into(), connect_refused: false });
+            return Err(ModelError { message: "compact_only requires resume_messages".into(), status: None, abort: true, kind: "ValueError".into(), connect_refused: false, retry_after: None, });
         } else {
             self.messages.clear();
             let vars = self.template_vars();
@@ -529,6 +529,10 @@ impl Agent {
         let interval: f64 = std::env::var("MSWEA_PARTIAL_INTERVAL").ok().and_then(|s| s.parse().ok()).unwrap_or(0.2);
         let mut last = 0.0;
         let mut buf = String::new();
+        // One handle for the whole call instead of an open/close per flush: a streamed reply
+        // flushes every `interval` (0.2 s), so a long generation was paying dozens of
+        // open+create syscalls to append to the file it already owns.
+        let mut journal_file = std::fs::OpenOptions::new().append(true).create(true).open(&journal).ok();
         let mut sink = |kind: &str, text: &str| {
             buf.push_str(text);
             let t = now();
@@ -538,11 +542,14 @@ impl Agent {
             last = t;
             let chunk = std::mem::take(&mut buf);
             let line = py_json(&json!({"t": "delta", "k": kind, "x": chunk}), true);
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&journal) {
+            if let Some(f) = journal_file.as_mut() {
                 let _ = writeln!(f, "{line}");
             }
         };
-        self.model.query(view, Some(&mut sink))
+        let reply = self.model.query(view, Some(&mut sink));
+        drop(sink);
+        drop(journal_file); // release before `save` reopens/appends the same file
+        reply
     }
 
     fn query_model(&mut self) -> Result<Value, Flow> {
@@ -585,16 +592,44 @@ impl Agent {
     fn execute_actions(&mut self, message: &Value) -> Result<(), Flow> {
         let actions: Vec<Value> = message.pointer("/extra/actions").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut outputs = Vec::new();
-        for action in &actions {
-            if STOP.load(Ordering::SeqCst) {
-                break;
+        // A single action, or concurrency disabled: the plain serial loop, unchanged.
+        if actions.len() < 2 || action_concurrency(actions.len()) < 2 {
+            for action in &actions {
+                if STOP.load(Ordering::SeqCst) {
+                    break;
+                }
+                let command = action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default();
+                match self.env.execute(&command) {
+                    Outcome::Output(o) => outputs.push(o),
+                    Outcome::Submitted(s) => {
+                        let s = match crate::subagents::join_wave() {
+                            Some(joined) => {
+                                let _ = crate::subagents::take_notes();
+                                format!("{s}\n{joined}")
+                            }
+                            None => s,
+                        };
+                        return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", &s, &s)]));
+                    }
+                    Outcome::Stopped => return Err(Flow::Interrupt(vec![])),
+                }
             }
-            let command = action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default();
-            match self.env.execute(&command) {
+            return self.finish_step(message, outputs);
+        }
+        // More than one action: run them overlapped on worker threads, then collect them back
+        // **in the order they were issued**, so the observation messages the model sees are
+        // identical to the serial path's. Execution overlaps; the transcript does not change.
+        let commands: Vec<String> = actions
+            .iter()
+            .map(|action| {
+                action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default()
+            })
+            .collect();
+        let results = self.env.execute_batch(&commands);
+        for r in results {
+            match r {
                 Outcome::Output(o) => outputs.push(o),
                 Outcome::Submitted(s) => {
-                    // `agent dispatch --join` submitted on the dispatch itself: the hub joins the
-                    // wave and the answer is the wave's, with no model step in between.
                     let s = match crate::subagents::join_wave() {
                         Some(joined) => {
                             let _ = crate::subagents::take_notes();
@@ -607,6 +642,11 @@ impl Agent {
                 Outcome::Stopped => return Err(Flow::Interrupt(vec![])),
             }
         }
+        self.finish_step(message, outputs)
+    }
+
+    /// The tail of a step, shared by the serial and overlapped paths: render the observations.
+    fn finish_step(&mut self, message: &Value, outputs: Vec<Value>) -> Result<(), Flow> {
         let vars = self.template_vars();
         let obs = self.model.format_observation_messages(message, &outputs, &vars).map_err(|e| Flow::Fatal(template_error(e)))?;
         self.add_messages(obs);
@@ -629,24 +669,36 @@ impl Agent {
     }
 
     pub fn context_messages(&self) -> Vec<Value> {
-        self.context_indices().into_iter().map(|i| &self.messages[i]).filter(|m| role(m) != "exit").cloned().collect()
+        self.context_view().cloned().collect()
+    }
+
+    /// The messages the model would see, by reference: the same selection as
+    /// [`Self::context_messages`] without cloning it. Everything that only reads (the compaction
+    /// estimate, the token calibration) uses this; a clone is reserved for the request itself.
+    pub fn context_view(&self) -> impl Iterator<Item = &Value> {
+        self.context_indices().into_iter().map(|i| &self.messages[i]).filter(|m| role(m) != "exit")
     }
 
     fn tokens_per_char(&self, view: &[Value]) -> f64 {
+        let refs: Vec<&Value> = view.iter().collect();
+        self.tokens_per_char_refs(&refs)
+    }
+
+    fn tokens_per_char_refs(&self, view: &[&Value]) -> f64 {
         if let Some(c) = self.calibration.filter(|c| *c != 0.0) {
             return c;
         }
         let compacted = view.iter().any(|m| has_extra_key(m, "compaction"));
         for j in (1..view.len()).rev() {
-            if role(&view[j]) != "assistant" {
+            if role(view[j]) != "assistant" {
                 continue;
             }
-            let Some(tokens) = cmp::prompt_tokens(&view[j]).filter(|t| *t != 0) else { continue };
-            if let Some(chars) = extra(&view[j]).get("context_chars").and_then(Value::as_i64).filter(|c| *c != 0) {
+            let Some(tokens) = cmp::prompt_tokens(view[j]).filter(|t| *t != 0) else { continue };
+            if let Some(chars) = extra(view[j]).get("context_chars").and_then(Value::as_i64).filter(|c| *c != 0) {
                 return tokens as f64 / chars as f64;
             }
             if !compacted {
-                return tokens as f64 / cmp::messages_chars(&view[..j]).max(1) as f64;
+                return tokens as f64 / view[..j].iter().map(|m| cmp::message_chars(m)).sum::<i64>().max(1) as f64;
             }
         }
         1.0 / cmp::DEFAULT_CHARS_PER_TOKEN
@@ -669,8 +721,14 @@ impl Agent {
         if !self.config.compaction_enabled {
             return;
         }
-        let view = self.context_messages();
-        let estimate = (cmp::messages_chars(&view) as f64 * self.tokens_per_char(&view)) as i64;
+        // References only: this runs every step, and the estimate needs the char total and the
+        // calibration, neither of which requires a copy of the conversation. One borrowed view
+        // feeds both: the calibration scan reads it, and so must the char sum — an iterator
+        // handed to the scan is consumed by it.
+        let view: Vec<&Value> = self.context_view().collect();
+        let tpc = self.tokens_per_char_refs(&view);
+        let chars: i64 = view.iter().map(|m| cmp::message_chars(m)).sum();
+        let estimate = (chars as f64 * tpc) as i64;
         if estimate >= self.compaction_trigger() {
             self.compact("auto", estimate, false);
         }
@@ -762,6 +820,15 @@ impl Agent {
     // ---- saving ------------------------------------------------------------------------
 
     pub fn serialize(&self) -> Value {
+        let mut data = self.serialize_info();
+        data.as_object_mut().unwrap().insert("messages".into(), Value::Array(self.messages.clone()));
+        data
+    }
+
+    /// The trajectory document without the messages: everything the journal's `info` line and
+    /// the throttled export's bookkeeping need. `serialize` reuses it and adds the messages,
+    /// so a step that only journals (the common case) never clones the conversation.
+    fn serialize_info(&self) -> Value {
         let last_extra = self.messages.last().map(extra).unwrap_or_default();
         let mut data = json!({
             "info": {
@@ -772,7 +839,6 @@ impl Agent {
                 "submission": last_extra.get("submission").cloned().unwrap_or(json!("")),
                 "compacting": self.compacting.clone().unwrap_or_default(),
             },
-            "messages": self.messages,
             "trajectory_format": "mini-swe-agent-1.1",
         });
         // Only when this session started subagents: a run without any stays byte-identical to
@@ -788,17 +854,24 @@ impl Agent {
     }
 
     /// Journal always; the full export when forced, at exit, or on the throttle.
+    ///
+    /// The journal line only needs `info` plus the messages not written yet, so a step that does
+    /// not export builds just that: no clone of the whole conversation. The full document (with
+    /// `messages`) is materialized only when the throttled export actually fires, which is
+    /// `max(20, len/10)` messages or 60 s apart — the O(steps x messages) term that dominated
+    /// `serialize()` on long runs is gone.
     pub fn save(&mut self, force: bool) {
         let Some(path) = self.config.output_path.clone() else { return };
-        let data = self.serialize();
+        let t = now();
+        let is_exit = self.messages.last().map(role) == Some("exit");
+        let every = 20usize.max(self.messages.len() / 10);
+        let export = force || is_exit || self.messages.len().saturating_sub(self.export_messages) >= every || t - self.export_at >= 60.0;
+        let data = if export { self.serialize() } else { self.serialize_info() };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         self.append_journal(&path, &data);
-        let t = now();
-        let is_exit = self.messages.last().map(role) == Some("exit");
-        let every = 20usize.max(self.messages.len() / 10);
-        if force || is_exit || self.messages.len().saturating_sub(self.export_messages) >= every || t - self.export_at >= 60.0 {
+        if export {
             let tmp = path.with_file_name(format!("{}.tmp", path.file_name().unwrap().to_string_lossy()));
             if std::fs::write(&tmp, py_json(&data, true)).is_ok() {
                 let _ = std::fs::rename(&tmp, &path);
@@ -834,17 +907,28 @@ impl Agent {
     }
 }
 
+/// How many of a step's actions may run at once. The commands of one response are executed
+/// in order and every result is observed before the next response, but actions the model
+/// issued together do not need to *finish* one after the other: pi runs a whole tool batch
+/// with `Promise.all` (`executeToolCallsParallel`), and the same overlap is what makes a
+/// multi-action step cost its longest command instead of the sum of them. 1 restores the
+/// strictly serial behaviour (`MINI_AGENT_PARALLEL_ACTIONS=0`).
+pub(crate) fn action_concurrency(actions: usize) -> usize {
+    let cfg = std::env::var("MINI_AGENT_PARALLEL_ACTIONS").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(2);
+    cfg.max(1).min(actions.max(1))
+}
+
 fn template_error(e: String) -> ModelError {
-    ModelError { message: e, status: None, abort: true, kind: "UndefinedError".into(), connect_refused: false }
+    ModelError { message: e, status: None, abort: true, kind: "UndefinedError".into(), connect_refused: false, retry_after: None, }
 }
 
 fn interrupted() -> ModelError {
-    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false }
+    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false, retry_after: None, }
 }
 
 /// Stopped while holding at exit: Python dies in `time.sleep` without saving again.
 fn interrupted_idle() -> ModelError {
-    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterruptIdle".into(), connect_refused: false }
+    ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterruptIdle".into(), connect_refused: false, retry_after: None, }
 }
 
 /// `<traj>.json` -> `<traj>.jsonl` (Python's `with_suffix`).
