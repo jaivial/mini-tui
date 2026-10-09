@@ -5,7 +5,6 @@
   import { api } from "../api";
   import { cost } from "../format";
   import type { AgentEvent, AgentNode, AgentsView } from "../types";
-  import AgentGraph from "./AgentGraph.svelte";
 
   /**
    * The agents of a session: the tree of agent sessions it started (each a session of its own,
@@ -27,7 +26,7 @@
   let view = $state<AgentsView | null>(null);
   let error = $state("");
   let selected = $state<string | null>(null);
-  let tab = $state<"graph" | "activity" | "defs">("graph");
+  let tab = $state<"agents" | "graph" | "activity" | "defs">("graph");
   let now = $state(Date.now() / 1000);
   let panel = $state<HTMLElement | null>(null);
 
@@ -196,7 +195,28 @@
     {#if error}
       <div class="m-3 rounded-md bg-err/10 px-3 py-2 text-[12px] text-err" role="alert">{error}</div>
     {/if}
-    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <!-- activity / definitions -->
+      <div class="flex shrink-0 items-center gap-0.5 border-y border-line/70 bg-surface px-2" role="tablist" aria-label="Agents view">
+        {#each [{ id: "agents", label: `Agents${rows.length ? ` · ${rows.length}` : ""}` }, { id: "graph", label: "Graph" }, { id: "activity", label: sel ? `Messages · ${sel.name}` : "Messages" }, { id: "defs", label: `Definitions${view ? ` · ${view.defs.length}` : ""}` }] as t (t.id)}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            class="interactive -mb-px min-h-8 cursor-pointer border-b-2 px-2 text-[12px] font-medium {tab === t.id ? 'border-brand text-ink' : 'border-transparent text-ink-muted hover:text-ink'}"
+            onclick={() => (tab = t.id as "agents" | "graph" | "activity" | "defs")}
+          >{t.label}</button>
+        {/each}
+      </div>
+
+      {#if tab === "graph" && view}
+        <div class="min-h-0 flex-1">
+          {#await import("./AgentGraph.svelte") then m}
+            <m.default {view} {onopen} />
+          {/await}
+        </div>
+      {:else}
+        <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {#if tab === "agents"}
       <!-- the tree -->
       <div class="px-2 pt-2 pb-1">
         <button
@@ -290,24 +310,7 @@
         </div>
       {/if}
 
-      <!-- activity / definitions -->
-      <div class="sticky top-0 z-10 flex items-center gap-0.5 border-y border-line/70 bg-surface px-2" role="tablist" aria-label="Agents view">
-        {#each [{ id: "graph", label: "Graph" }, { id: "activity", label: sel ? `Messages · ${sel.name}` : "Messages" }, { id: "defs", label: `Definitions${view ? ` · ${view.defs.length}` : ""}` }] as t (t.id)}
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            class="interactive -mb-px min-h-8 cursor-pointer border-b-2 px-2 text-[12px] font-medium {tab === t.id ? 'border-brand text-ink' : 'border-transparent text-ink-muted hover:text-ink'}"
-            onclick={() => (tab = t.id as "graph" | "activity" | "defs")}
-          >{t.label}</button>
-        {/each}
-      </div>
-
-      {#if tab === "graph" && view}
-        <div class="graph-host p-2">
-          <AgentGraph {view} {onopen} />
-        </div>
-      {/if}
+          {/if}
       {#if tab === "activity"}
         <ol class="timeline px-3 py-2" aria-label="Messages between agents">
           {#if !events.length}
@@ -350,7 +353,7 @@
             <li class="flex items-center gap-2 pl-0.5 text-[11.5px] text-ink-faint"><Hourglass size={12} strokeWidth={1.75} /> {live} working in the background</li>
           {/if}
         </ol>
-      {:else}
+      {:else if tab === "defs"}
         <ul class="flex flex-col gap-2 px-3 py-2.5">
           {#each view?.defs ?? [] as d (d.name)}
             <li class="rounded-lg border border-line/80 p-2.5">
@@ -367,14 +370,12 @@
           {/each}
         </ul>
       {/if}
-    </div>
+        </div>
+      {/if}
   {/if}
 </section>
 
 <style>
-  .graph-host {
-    height: 460px;
-  }
   /* Tree guides: one indent per depth, an elbow into each row. */
   .tree li {
     position: relative;
