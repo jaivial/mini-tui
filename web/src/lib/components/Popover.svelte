@@ -57,8 +57,6 @@
   // Plain, not reactive: the card's element is only ever read while placing, and making it state
   // would mean every placement re-rendered the card that is being placed.
   let card: HTMLElement | null = null;
-  /** Set from the anchor: the container the card must open beside, not over. */
-  let edge: HTMLElement | null = null;
   let portal: HTMLDivElement | null = null;
   let app: Record<string, unknown> | null = null;
 
@@ -76,7 +74,8 @@
     // No room that way: take the other side rather than run off the edge.
     if (l + w > vw - MARGIN) l = placement === "right" ? r.left - GAP - w : vw - MARGIN - w;
     // Over the rail it was opened from: step out of it, or take the far side of the anchor instead.
-    const box = (clear?.() ?? edge ?? el.closest("aside"))?.getBoundingClientRect();
+    // With no `clear` given, the anchor's own `<aside>` (the sidebar) is the one it must not cover.
+    const box = (clear?.() ?? el.closest("aside"))?.getBoundingClientRect();
     if (box && l < box.right && l + w > box.left) {
       const out = box.right + GAP;
       l = out + w <= vw - MARGIN ? out : Math.max(MARGIN, r.left - GAP - w);
