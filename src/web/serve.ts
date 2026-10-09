@@ -22,6 +22,7 @@ import { listAgentDefs } from "../mini/agentDefs";
 import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
 import { homedir } from "node:os";
 import { sshArgs } from "./ssh";
+import { log } from "./log";
 import { syncAllSkills } from "../skills";
 import {
   COMMANDS,
@@ -35,6 +36,10 @@ import {
   skillList,
 } from "./config";
 import type { RemoteHost } from "../../web/src/lib/types";
+
+// Shared modules (spawn, sessions) log only when this says they serve the web app
+// (src/web/log.ts): the terminal UI must not get their stderr noise.
+process.env.MINITUI_WEB ??= "1";
 
 const args = process.argv.slice(2);
 function flag(name: string, fallback: string): string {
@@ -364,6 +369,7 @@ const server = Bun.serve({
       if (path === "/sessions" && request.method === "GET") return json(sessions.list().map(summarize));
       if (path === "/sessions" && request.method === "POST") {
         const body = await readJson(request);
+        log("api.session.create", { cwd: body.cwd ?? "", model: body.model ?? "", target: body.target ?? "local" });
         let session;
         try {
           session = await sessions.create({
@@ -394,6 +400,7 @@ const server = Bun.serve({
         const action = sessionMatch[2];
         if (action === "/prompt" && request.method === "POST") {
           const body = await readJson(request);
+          log("api.session.prompt", { id, len: String(body.prompt ?? "").length });
           try {
             await sessions.send(id, String(body.prompt ?? ""));
           } catch (error) {
@@ -407,12 +414,14 @@ const server = Bun.serve({
           const model = String(body.model ?? "").trim();
           if (!model) return json({ error: "a model name is required" }, 400);
           if (!sessions.get(id)) return json({ error: "unknown session" }, 404);
+          log("api.session.model", { id, model });
           sessions.setModel(id, model);
           return json({ ok: true });
         }
         if (action === "/compact" && request.method === "POST") {
           if (!sessions.get(id)) return json({ error: "unknown session" }, 404);
           try {
+            log("api.session.compact", { id });
             sessions.compact(id);
             return json({ ok: true });
           } catch (error) {
@@ -420,6 +429,7 @@ const server = Bun.serve({
           }
         }
         if (action === "/interrupt" && request.method === "POST") {
+          log("api.session.interrupt", { id });
           sessions.interrupt(id);
           return json({ ok: true });
         }

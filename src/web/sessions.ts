@@ -201,8 +201,12 @@ function viewsChanged(before: SubagentView[] | undefined, after: SubagentView[])
   return false;
 }
 
+import { log } from "./log";
+
 export class SessionManager {
   #live = new Map<string, Internal>();
+  /** Last logged plan status per session and task, for transition-only logging. */
+  #planStatus = new Map<string, Map<string, string>>();
   #db: ReturnType<typeof openDb> | null = null;
   #onChange: (session: LiveSession) => void;
 
@@ -266,6 +270,7 @@ export class SessionManager {
       // per session per tick: at 100 children that was the largest cost of an idle tick.
       if (!viewsChanged(entry.session.subagents, views)) continue;
       entry.session.subagents = views;
+      log("session.subagents", { id: entry.session.id, children: views.map((v) => `${v.name}:${v.state}`).join(",") });
       this.#emit(entry);
     }
   }
@@ -278,12 +283,27 @@ export class SessionManager {
       if (!traj) continue;
       try {
         const doc = readPlan(entry.session.id, traj);
-        if (doc) out.push(doc);
+        if (doc) {
+          this.#logPlanTransitions(entry.session.id, doc);
+          out.push(doc);
+        }
       } catch {
         // a busy disk is checked again on the next poll
       }
     }
     return out;
+  }
+
+  /** One log line per plan-task status change: the orchestration path at a glance. */
+  #logPlanTransitions(id: string, doc: SessionPlan): void {
+    const prev = this.#planStatus.get(id) ?? new Map<string, string>();
+    const next = new Map<string, string>();
+    for (const t of doc.tasks) {
+      next.set(t.id, t.status);
+      const before = prev.get(t.id);
+      if (before !== t.status) log("plan.task", { session: id, task: t.id, title: t.title.slice(0, 80), from: before ?? "new", to: t.status });
+    }
+    this.#planStatus.set(id, next);
   }
 
   /** Stop the background sync (tests, shutdown). */
@@ -556,6 +576,7 @@ export class SessionManager {
       parseState: createParseState(),
     };
     this.#live.set(id, entry);
+    log("session.created", { id, pid: run.pid, model: effective, cwd, target: "local", task: prompt.slice(0, 120) });
 
     try {
       createSession(this.db(), { id, title, cwd, model: effective, task: prompt });
@@ -629,6 +650,7 @@ export class SessionManager {
     };
     const entry: Internal = { session, consumed: 0, parseState: createParseState() };
     this.#live.set(id, entry);
+    log("session.created", { id, host: host.id, model, cwd: workdir, target: "remote", task: prompt.slice(0, 120) });
     // A remote chat is saved like a local one. Every later save is an UPDATE of this row; without it they
     // all updated nothing, so remote chats never reached the history (nor the sidebar's folders).
     try {
@@ -707,6 +729,7 @@ export class SessionManager {
 
   #finish(entry: Internal, status: SessionStatus, code: number | null): void {
     const session = entry.session;
+    log("session.finish", { id: session.id, status, code, cost: session.cost, apiCalls: session.apiCalls });
     if (status === "interrupted") session.exitStatus = session.exitStatus || "Interrupted";
     session.status = status;
     session.info = { ...session.info, exitStatus: session.exitStatus };
@@ -917,6 +940,7 @@ export class SessionManager {
       if (!(await this.#attachExternal(entry))) this.#refreshIfStale(entry);
     }
     const running = !!entry.run && !entry.exited;
+    log("session.send", { id, len: text.length, running, target: entry.session.target });
     if (!running && entry.session.target === "local" && entry.session.messages.length === 0) {
       // Nothing was saved to continue from (the session never made a model call). Say so instead of
       // starting an agent with no context that would answer as if the conversation had never happened.
@@ -980,6 +1004,7 @@ export class SessionManager {
       compactOnly: true,
       control: true,
     });
+    log("session.compact_spawn", { id: session.id, pid: run.pid, model, cwd });
     entry.run = run;
     entry.exited = false;
     entry.trajPath = run.session.trajPath;
@@ -1038,6 +1063,7 @@ export class SessionManager {
       resumePath,
       control: true,
     });
+    log("session.resumed", { id: session.id, pid: run.pid, model, cwd });
     entry.run = run;
     entry.exited = false;
     entry.trajPath = run.session.trajPath;
@@ -1095,6 +1121,7 @@ export class SessionManager {
     if (!name) throw new Error("a model name is required");
 
     entry.session.model = name;
+    log("session.model", { id, model: name });
     saveLastModel(name);
 
     // A model change is only a model change: it never starts, resumes or wakes a run, and it never
@@ -1139,6 +1166,7 @@ export class SessionManager {
   compact(id: string): void {
     const entry = this.#live.get(id);
     if (!entry) throw new Error("unknown session");
+    log("session.compact", { id });
     if (entry.run && !entry.exited) {
       entry.run.requestCompact();
       entry.session.events.push({ type: "notice", text: "compacting the conversation before the next step", interruptType: "context" });
@@ -1236,6 +1264,7 @@ export class SessionManager {
   interrupt(id: string): void {
     const entry = this.#live.get(id);
     if (!entry) throw new Error("unknown session");
+    log("session.interrupt", { id });
     entry.session.status = "interrupted";
     entry.session.exitStatus = "Interrupted";
     if (entry.run) entry.run.interrupt();
@@ -1251,6 +1280,7 @@ export class SessionManager {
   close(id: string): void {
     const entry = this.#live.get(id);
     if (!entry) return;
+    log("session.close", { id });
     entry.watch?.stop();
     entry.run?.kill();
     entry.remote?.stop();
@@ -1265,6 +1295,7 @@ export class SessionManager {
    * deliberate action from closing.
    */
   deleteHistory(id: string): boolean {
+    log("session.delete", { id });
     const entry = this.#live.get(id);
     if (entry) {
       entry.watch?.stop();

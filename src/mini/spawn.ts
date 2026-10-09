@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { miniBin, createSessionDir, type SessionPaths } from "../config";
 import { gitIdentityEnv } from "../gitIdentity";
 import { resolveCommand, resolvePython } from "../helpers";
+import { log } from "../web/log";
 
 export interface TaskSpec {
   task: string;
@@ -128,7 +129,10 @@ export function detectRunner(): RunnerKind {
 }
 
 function selectRunner(): RunnerKind {
-  if (runnerSupport === undefined) runnerSupport = detectRunner();
+  if (runnerSupport === undefined) {
+    runnerSupport = detectRunner();
+    log("agent.runner", { kind: runnerSupport, bin: runnerSupport === "rust" ? rustAgentBin() : "" });
+  }
   return runnerSupport;
 }
 
@@ -253,6 +257,7 @@ export function spawnMini(spec: TaskSpec): MiniRun {
   const proc = Bun.spawn({ cmd, cwd: spec.cwd ?? process.cwd(), stdin: "ignore", stdout: logFd, stderr: logFd, env });
   closeSync(logFd);
   writeFileSync(session.pidPath, `${proc.pid}\n`);
+  log("agent.spawn", { pid: proc.pid, runner, model: spec.model ?? "", cwd: spec.cwd ?? process.cwd(), dir: session.dir, resume: spec.resumePath ? "1" : "", compactOnly: spec.compactOnly ? "1" : "", task: spec.task.slice(0, 120) });
 
   let exiting = false;
   const onExit = () => {
@@ -265,6 +270,7 @@ export function spawnMini(spec: TaskSpec): MiniRun {
   process.once("exit", onExit);
   const exited = proc.exited.then((code) => {
     process.removeListener("exit", onExit);
+    log("agent.exit", { pid: proc.pid, code });
     return code as number | null;
   });
 
@@ -399,6 +405,7 @@ export function attachMini(foreign: ForeignRun, options: { pollMs?: number } = {
       // already gone
     }
   };
+  log("agent.attach", { pid: foreign.pid, traj: foreign.trajPath });
   return {
     session,
     pid: foreign.pid,
