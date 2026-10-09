@@ -394,6 +394,55 @@ const server = Bun.serve({
         return json(agentsView(id, sessions.trajsOf(id)));
       }
       if (path === "/agents" && request.method === "GET") return json(listAgentDefs());
+      // Live agents view: snapshot, then a push whenever the tree or its events change. The
+      // state lives on disk (each agent hub writes its own files), so a light poll while someone
+      // watches is what notices it.
+      const agentsStreamMatch = path.match(/^\/sessions\/([^/]+)\/agents\/stream$/);
+      if (agentsStreamMatch && request.method === "GET") {
+        const streamId = decodeURIComponent(agentsStreamMatch[1] as string);
+        const encoder = new TextEncoder();
+        let cleanup = () => {};
+        const stream = new ReadableStream({
+          start(controller) {
+            let last = "";
+            const push = () => {
+              try {
+                const payload = JSON.stringify(agentsView(streamId, sessions.trajsOf(streamId)));
+                if (payload === last) return;
+                last = payload;
+                controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
+              } catch {
+                cleanup();
+              }
+            };
+            push();
+            const poll = setInterval(push, 2000);
+            const ping = setInterval(() => {
+              try {
+                controller.enqueue(encoder.encode(`: ping\n\n`));
+              } catch {
+                cleanup();
+              }
+            }, 25_000);
+            cleanup = () => {
+              clearInterval(poll);
+              clearInterval(ping);
+            };
+            request.signal.addEventListener("abort", cleanup);
+          },
+          cancel() {
+            cleanup();
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache, no-transform",
+            connection: "keep-alive",
+            ...CORS,
+          },
+        });
+      }
       const sessionMatch = path.match(/^\/sessions\/([^/]+)(\/prompt|\/model|\/interrupt|\/compact)?$/);
       if (sessionMatch) {
         const id = decodeURIComponent(sessionMatch[1] as string);

@@ -5,6 +5,7 @@
   import { api } from "../api";
   import { cost } from "../format";
   import type { AgentEvent, AgentNode, AgentsView } from "../types";
+  import AgentGraph from "./AgentGraph.svelte";
 
   /**
    * The agents of a session: the tree of agent sessions it started (each a session of its own,
@@ -26,7 +27,7 @@
   let view = $state<AgentsView | null>(null);
   let error = $state("");
   let selected = $state<string | null>(null);
-  let tab = $state<"activity" | "defs">("activity");
+  let tab = $state<"graph" | "activity" | "defs">("graph");
   let now = $state(Date.now() / 1000);
   let panel = $state<HTMLElement | null>(null);
 
@@ -42,22 +43,39 @@
     if (!id) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const v = await api.agents(id);
-        if (!alive) return;
-        view = v;
-        error = "";
-      } catch (e) {
-        if (alive) error = (e as Error).message;
-      }
-      now = Date.now() / 1000;
-      if (alive) timer = setTimeout(poll, document.hidden ? 4000 : 1200);
+    let es: EventSource | null = null;
+    // Live first: the SSE stream pushes every change as it happens; polling only if it drops.
+    const poll = () => {
+      if (!alive || es) return;
+      timer = setTimeout(async () => {
+        try {
+          const v = await api.agents(id);
+          if (!alive) return;
+          view = v;
+          error = "";
+        } catch (e) {
+          if (alive) error = (e as Error).message;
+        }
+        now = Date.now() / 1000;
+        poll();
+      }, document.hidden ? 4000 : 1500);
     };
-    void poll();
+    es = new EventSource(`/api/sessions/${encodeURIComponent(id)}/agents/stream`);
+    es.onmessage = (m) => {
+      if (!alive) return;
+      view = JSON.parse(m.data);
+      error = "";
+      now = Date.now() / 1000;
+    };
+    es.onerror = () => {
+      es?.close();
+      es = null;
+      if (alive) poll();
+    };
     return () => {
       alive = false;
       clearTimeout(timer);
+      es?.close();
     };
   });
 
@@ -274,17 +292,22 @@
 
       <!-- activity / definitions -->
       <div class="sticky top-0 z-10 flex items-center gap-0.5 border-y border-line/70 bg-surface px-2" role="tablist" aria-label="Agents view">
-        {#each [{ id: "activity", label: sel ? `Messages · ${sel.name}` : "Messages" }, { id: "defs", label: `Definitions${view ? ` · ${view.defs.length}` : ""}` }] as t (t.id)}
+        {#each [{ id: "graph", label: "Graph" }, { id: "activity", label: sel ? `Messages · ${sel.name}` : "Messages" }, { id: "defs", label: `Definitions${view ? ` · ${view.defs.length}` : ""}` }] as t (t.id)}
           <button
             type="button"
             role="tab"
             aria-selected={tab === t.id}
             class="interactive -mb-px min-h-8 cursor-pointer border-b-2 px-2 text-[12px] font-medium {tab === t.id ? 'border-brand text-ink' : 'border-transparent text-ink-muted hover:text-ink'}"
-            onclick={() => (tab = t.id as "activity" | "defs")}
+            onclick={() => (tab = t.id as "graph" | "activity" | "defs")}
           >{t.label}</button>
         {/each}
       </div>
 
+      {#if tab === "graph" && view}
+        <div class="graph-host p-2">
+          <AgentGraph {view} {onopen} />
+        </div>
+      {/if}
       {#if tab === "activity"}
         <ol class="timeline px-3 py-2" aria-label="Messages between agents">
           {#if !events.length}
@@ -349,6 +372,9 @@
 </section>
 
 <style>
+  .graph-host {
+    height: 460px;
+  }
   /* Tree guides: one indent per depth, an elbow into each row. */
   .tree li {
     position: relative;
