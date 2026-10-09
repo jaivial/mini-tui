@@ -64,7 +64,7 @@ impl AgentConfig {
             system_template: s("system_template")?,
             instance_template: s("instance_template")?,
             step_limit: num(o, "step_limit").unwrap_or(0.0) as i64,
-            cost_limit: num(o, "cost_limit").unwrap_or(3.0),
+            cost_limit: num(o, "cost_limit").unwrap_or(0.0), // Jaime 2026-10-09: no default cost limit
             wall_time_limit_seconds: num(o, "wall_time_limit_seconds").unwrap_or(0.0) as i64,
             max_consecutive_format_errors: num(o, "max_consecutive_format_errors").unwrap_or(3.0) as i64,
             output_path: o.get("output_path").and_then(Value::as_str).map(PathBuf::from),
