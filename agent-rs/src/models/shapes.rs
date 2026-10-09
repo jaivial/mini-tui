@@ -88,17 +88,15 @@ pub fn anthropic_cu_tool() -> Value {
     })
 }
 
-/// The command a parsed tool call runs: `bash` passes its `command` through,
-/// `cu` becomes `cu <args>`, `read` stays a read (the agent loop executes it without a shell).
-/// Anything else is unknown. The error text is the same concatenation `actions_toolcall.py`
-/// produces (unknown tool and/or the missing argument, back to back).
-/// The action a parsed tool call becomes. A `read` call carries structured arguments rather
-/// than a command string; everything else is the command the shell will run.
+/// The action a parsed tool call becomes. A native tool call (`read`, `write`, `edit`, `code`)
+/// carries structured arguments rather than a command string, so the agent loop can execute it
+/// without a shell; everything else is the command the shell will run.
 fn action_value(command: &Value, tool_call_id: Value) -> Value {
     let mut a = Obj::new();
     match command {
-        Value::Object(fields) if fields.get("tool").and_then(Value::as_str) == Some("read") => {
-            a.insert("tool".into(), json!("read"));
+        Value::Object(fields) if fields.get("tool").and_then(Value::as_str).is_some_and(|t| is_native_tool(t)) => {
+            let tool = fields.get("tool").and_then(Value::as_str).unwrap_or_default().to_string();
+            a.insert("tool".into(), json!(tool));
             if let Some(args) = fields.get("args") {
                 a.insert("args".into(), args.clone());
             }
@@ -114,6 +112,13 @@ fn action_value(command: &Value, tool_call_id: Value) -> Value {
     Value::Object(a)
 }
 
+/// The tools the agent loop executes itself, without a shell. All of them are behind the
+/// `MINITUI_AGENT_TOOLS=1` gate, so a bare run --- and the parity suite --- still sees only
+/// `bash` + `cu`, and a call to any of these without the gate is the usual unknown-tool error.
+pub fn is_native_tool(name: &str) -> bool {
+    matches!(name, "read") || (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled())
+}
+
 fn command_for(name: &str, args: &Value) -> Result<Value, String> {
     if crate::agents::is_tool(name) && crate::agents::tools_enabled() {
         return Ok(crate::agents::command_for(name, args));
@@ -126,6 +131,20 @@ fn command_for(name: &str, args: &Value) -> Result<Value, String> {
             return Err("Missing 'path' argument in read tool call.".into());
         }
         return Ok(json!({"tool": "read", "args": args}));
+    }
+    if matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled() {
+        // The same shape for the writing tools: the loop executes them natively.
+        let empty = |k: &str| !args.get(k).and_then(Value::as_str).map(|v| !v.trim().is_empty()).unwrap_or(false);
+        if name != "code" && empty("path") {
+            return Err(format!("Missing 'path' argument in {name} tool call."));
+        }
+        if name == "write" && args.get("content").and_then(Value::as_str).is_none() {
+            return Err("Missing 'content' argument in write tool call.".into());
+        }
+        if name == "code" && args.get("code").and_then(Value::as_str).map(|c| c.trim().is_empty()).unwrap_or(true) {
+            return Err("Missing 'code' argument in code tool call.".into());
+        }
+        return Ok(json!({"tool": name, "args": args}));
     }
     let mut error = String::new();
     if name != "bash" && name != "cu" {

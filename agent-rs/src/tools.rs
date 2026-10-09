@@ -38,9 +38,9 @@ pub const READ_MAX_LINES: usize = 2000;
 pub const READ_MAX_BYTES: usize = 50 * 1024;
 /// The largest file `read` will open at all, so a runaway path cannot allocate unbounded memory
 /// before the budget has a chance to apply.
-const READ_HARD_CAP: usize = 64 * 1024 * 1024;
+pub const READ_HARD_CAP: usize = 64 * 1024 * 1024;
 
-pub const READ_DESCRIPTION: &str = "Read the contents of a text file directly (no shell, no process spawn). Use this instead of cat/sed -n/head/tail for reading files: it is faster and its output is bounded. Output is truncated to 2000 lines or 50KB (whichever is hit first); use offset/limit to page through a large file, and continue with offset until complete when you need the whole file. Reading never modifies anything; to change files use bash.";
+pub const READ_DESCRIPTION: &str = "Read the contents of a text file directly (no shell, no process spawn). Use this instead of cat/sed -n/head/tail for reading files: it is faster and its output is bounded. Output is truncated to 2000 lines or 50KB (whichever is hit first); use offset/limit to page through a large file, and continue with offset until complete when you need the whole file. Reading never modifies anything; to change files use the edit or write tool.";
 
 fn read_params() -> Value {
     json!({
