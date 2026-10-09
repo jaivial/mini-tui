@@ -340,6 +340,9 @@ const server = Bun.serve({
             "content-type": "text/event-stream",
             "cache-control": "no-cache, no-transform",
             connection: "keep-alive",
+            // SSE through nginx: without this, a buffering proxy holds the first
+            // agent view back and the panel sits on "Loading agents".
+            "x-accel-buffering": "no",
             ...CORS,
           },
         });
@@ -440,6 +443,9 @@ const server = Bun.serve({
             "content-type": "text/event-stream",
             "cache-control": "no-cache, no-transform",
             connection: "keep-alive",
+            // SSE through nginx: without this, a buffering proxy holds the first
+            // agent view back and the panel sits on "Loading agents".
+            "x-accel-buffering": "no",
             ...CORS,
           },
         });
