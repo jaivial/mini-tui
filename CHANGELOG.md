@@ -2,6 +2,38 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.40.0 — 2026-10-09
+
+The web UI gets its agents panel (live graph, tabs, session persistence), the agent drops its
+default budgets, and the Rust agent closes most of the speed gap with the pi harness.
+
+### Added
+
+- **Agents panel in the web UI** (#102, #103, #104, #105, #106, #107). A real-time graph of the
+  session's agents (@xyflow/svelte over SSE), tabs for Agents/Graph/Messages/Definitions, session
+  tasks per window in the sidebar, sessions that survive a server restart, no more redirect when
+  clicking stopped sessions, `x-accel-buffering: no` on the agent stream, and structured debug
+  logging across the orchestration path.
+- **Shell-free `read` tool in agent-rs** (#111, pi-speed item 4). Reads a file directly - no
+  `/bin/sh` spawn - paginated by `offset`/`limit` with a 2000-line / 50KB budget and a
+  continuation note; `bash` stays the only mutating path. Gated by `MINITUI_AGENT_TOOLS=1`.
+- **Prompt-cache warmer** (#111, pi-speed item 5). Refreshes at `max(1, min(0.9 x TTL, TTL - 10s))`
+  when `MSWEA_CACHE_TTL` is set, only when pi's economics say it pays (>= $0.05 expected saving
+  from the model's own price row).
+- **Per-phase step timings** (#111, pi-speed item 6). PI_TIMING-style timings recorded in `extra`.
+- **`skills/villa-release`** skill.
+
+### Changed
+
+- **Unlimited by default** (#108). No more 200-step / $2 subagent / $3 parent caps; spawn-requested
+  budgets are ignored and auto-extend is generous.
+- **agent-rs speed, items 1-3** (#109). Retry clock, overlapped tool actions, no per-step clone.
+
+### Fixed
+
+- **Stuck subagents on SIGTERM** (#110). Children are stopped and recorded on SIGTERM, and dead
+  pids are reported as dead instead of blocking the parent.
+
 ## 0.39.0 — 2026-10-07
 
 Claude Haiku 5.5 is in the curated model picker, and `agent dispatch` can end the parent's turn
