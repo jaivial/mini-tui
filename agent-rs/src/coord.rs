@@ -22,6 +22,14 @@
 //!     spare slot, and losers are cancelled (their streams closed, freeing the provider's slot);
 //!   - an edit that does not apply is asked again in the same session, for the failed files only;
 //!   - deterministic Go import repair runs before the gate and the review (`repair_go_imports`).
+//!
+//! speed11 (fast path, approved by Jaime: the review is skipped ONLY for FAST plans):
+//!   - the plan's first line is `MODE: FAST` or `MODE: FULL`. FAST = a tiny, riskless change (<= 3
+//!     files, mechanical additions fully named in the orders). If in doubt, FULL;
+//!   - a FAST plan runs its workers as usual, then only deterministic checks: Go import repair +
+//!     gofmt, every worker changed its file, every backticked name of an order is in its file
+//!     (`fast_guard`), and the gate. All pass = done, no coordinator review (saves 1.3-2.8 s of a
+//!     6-10 s run). Any check fails = the normal review loop (FULL), so a bad FAST never ships unseen.
 use crate::shard::{dump, parse_answer, parse_group, record, sh, Ctx, Lat, Slots};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
@@ -33,7 +41,10 @@ const COORD_SYSTEM: &str = "You are the coordinator of a team of coding agents: 
 You investigate, find the bug or understand the refactor, decide which files change and how, and split the work into tasks for workers. \
 Workers are copies of this very session running a cheaper model: they see everything you see, and your plan. You never write the code yourself.";
 
-const PLAN_ASK: &str = "Split the work into tasks for the workers. Write ONLY the plan, starting at once (no preamble), one block per task:
+const PLAN_ASK: &str = "Split the work into tasks for the workers. Write ONLY the plan, starting at once (no preamble). The first line is the mode:
+MODE: FAST   only for a TINY change with no risk: at most 3 files, each file gets a mechanical addition fully named in its order (a field, a type member, a small function or route over existing data, a doc line), no rename, no removal, no new error path or validation, no logic another file depends on beyond the names you give. FAST work is not reviewed by you: the workers' output goes straight to the gate.
+MODE: FULL   everything else. If in doubt, FULL.
+Then one block per task:
 TASK <n>: <path>[, <path>, ...]
 <order>
 END
@@ -42,7 +53,8 @@ Rules:
 - Orders are short: 1-4 lines.
 - When several files get the same order up to the entity, write ONE task listing them all and write the order once with <e>/<E> standing for each file's own entity; each file gets its own worker.
 - Only files that must change (a new file is fine: give its path). A file the task does not require stays out.
-- Order the tasks so the ones with the most work come first.";
+- Order the tasks so the ones with the most work come first.
+- In a FAST plan, put every exact name, tag, route and text the file must contain between backticks: they are checked in the result.";
 
 fn session(repo: &str, task: &str) -> Vec<Value> {
     vec![
@@ -727,9 +739,56 @@ fn repair_go_imports(root: &Path) -> Vec<String> {
     changed
 }
 
+/// Most files a FAST plan may touch; a plan labelled FAST over more files goes to review.
+const FAST_MAX_FILES: usize = 3;
+
+/// The plan's first non-empty line is `MODE: FAST`.
+fn fast_mode(plan: &str) -> bool {
+    plan.lines().map(|l| l.trim().trim_matches('*').trim()).find(|l| !l.is_empty()).is_some_and(|l| {
+        let l = l.to_ascii_uppercase().replace(' ', "");
+        l == "MODE:FAST"
+    })
+}
+
+/// Deterministic checks that replace the coordinator's review on a FAST plan (Jaime, speed11:
+/// "el coordinador revisa" is relaxed only for FAST). None = accept; Some(reason) = review it.
+///   - at most `FAST_MAX_FILES` files, every worker answered and changed its file;
+///   - every backticked name in a task's order (without <e>/<E>) is in each of its files after
+///     the change (whitespace-insensitive, a trailing `;` or `,` ignored).
+fn fast_guard(root: &Path, files: &[String], plan: &str, targets: &[String], status: &[String]) -> Option<String> {
+    if targets.is_empty() || targets.len() > FAST_MAX_FILES {
+        return Some(format!("{} files planned (FAST allows 1-{FAST_MAX_FILES})", targets.len()));
+    }
+    if let Some(s) = status.iter().find(|s| !s.ends_with(": changed")) {
+        return Some(format!("worker: {s}"));
+    }
+    let norm = |x: &str| x.split_whitespace().collect::<String>();
+    let tick = regex::Regex::new(r"`([^`\n]+)`").unwrap();
+    let blocks = tasks(plan, files, true);
+    for (k, (_, paths, upto)) in blocks.iter().enumerate() {
+        let start = if k == 0 { 0 } else { blocks[k - 1].2.len() };
+        let order = upto.get(start..).unwrap_or("");
+        let order = order.split_once("TASK").and_then(|x| x.1.split_once('\n')).map_or("", |x| x.1);
+        for p in paths {
+            let body = norm(&std::fs::read_to_string(root.join(p)).unwrap_or_default());
+            for c in tick.captures_iter(order) {
+                let n = c[1].trim().trim_end_matches([';', ',']);
+                if n.is_empty() || n.contains('<') || n.contains("...") {
+                    continue;
+                }
+                if !body.contains(&norm(n)) {
+                    return Some(format!("{p} lacks `{n}`"));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// The whole run: plan + workers, then gate + coordinator review rounds. Returns the stats lines,
-/// the files written, whether the gate passes, and how many review rounds sent fixes.
-pub(crate) fn run(w: &Ctx, root: &Path, files: &[String], o: &Opts, t0: Instant, slots: &Arc<Slots>) -> (Vec<Value>, Vec<String>, bool, u32) {
+/// the files written, whether the gate passes, how many review rounds sent fixes, and the path
+/// taken ("fast", "full", or "fast->full" when a FAST plan failed its deterministic checks).
+pub(crate) fn run(w: &Ctx, root: &Path, files: &[String], o: &Opts, t0: Instant, slots: &Arc<Slots>) -> (Vec<Value>, Vec<String>, bool, u32, &'static str) {
     let mut msgs = session(&dump(root, files), &w.task);
     let warm = o.warmup.then(|| warmup(w, &msgs, slots, t0));
     let (plan, st, hs, mut targets) = coordinate(w, root, files, &msgs, false, o, t0, slots, "(coordinator plan)");
@@ -741,7 +800,35 @@ pub(crate) fn run(w: &Ctx, root: &Path, files: &[String], o: &Opts, t0: Instant,
     for (n, h) in hs {
         collect(root, vec![h], t0, &n, &mut stats, &mut status);
     }
-    msgs.push(json!({"role": "assistant", "content": plan}));
+    msgs.push(json!({"role": "assistant", "content": plan.clone()}));
+    let mut path = "full";
+    if fast_mode(&plan) {
+        let fs = Instant::now();
+        if files.iter().chain(&targets).any(|f| f.ends_with(".go")) {
+            gofmt(root);
+        }
+        let mut why = fast_guard(root, files, &plan, &targets, &status);
+        if why.is_none() && !o.verify.is_empty() {
+            let (ok, err) = sh(root, &o.verify);
+            if !ok {
+                why = Some(format!("gate fails: {}", err.chars().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect::<String>()));
+            }
+        }
+        let secs = (fs.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+        let at = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+        match why {
+            None => {
+                eprintln!("fast path: gate + name check pass, no review");
+                stats.push(json!({"file": "(fast path)", "calls": 0, "call_s": secs, "at_s": at, "result": "pass"}));
+                return (stats, targets, true, 0, "fast");
+            }
+            Some(e) => {
+                eprintln!("fast path rejected, coordinator review: {e}");
+                stats.push(json!({"file": "(fast path)", "calls": 0, "call_s": secs, "at_s": at, "result": "escalated", "why": e}));
+                path = "fast->full";
+            }
+        }
+    }
     let mut rounds = 0;
     loop {
         if files.iter().chain(&targets).any(|f| f.ends_with(".go")) {
@@ -749,7 +836,7 @@ pub(crate) fn run(w: &Ctx, root: &Path, files: &[String], o: &Opts, t0: Instant,
         }
         let (ok, err) = if o.verify.is_empty() { (true, String::new()) } else { sh(root, &o.verify) };
         if rounds >= o.reviews {
-            return (stats, targets, ok, rounds);
+            return (stats, targets, ok, rounds, path);
         }
         let gate = if o.verify.is_empty() {
             "No gate command was given.".to_string()
@@ -778,7 +865,7 @@ pub(crate) fn run(w: &Ctx, root: &Path, files: &[String], o: &Opts, t0: Instant,
                 rounds += 1;
                 continue;
             }
-            return (stats, targets, ok, rounds);
+            return (stats, targets, ok, rounds, path);
         }
         rounds += 1;
         status.clear();
@@ -797,7 +884,7 @@ pub(crate) fn run(w: &Ctx, root: &Path, files: &[String], o: &Opts, t0: Instant,
             gofmt(root);
         }
         if o.verify.is_empty() || sh(root, &o.verify).0 {
-            return (stats, targets, true, rounds);
+            return (stats, targets, true, rounds, path);
         }
     }
 }
