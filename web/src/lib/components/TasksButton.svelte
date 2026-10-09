@@ -23,6 +23,8 @@
     onopen: () => void;
   } = $props();
 
+  /** Both cards of this icon — the window's and the hovered pane's — are one family. */
+  const family = $props.id();
   let open = $state(false);
   /** The pane whose own card is showing, by pane number; 0 while none is. */
   let peek = $state(0);
@@ -43,7 +45,26 @@
   function showPeek(n: number, el: HTMLElement) {
     row = el;
     peek = n;
+    clearTimeout(peekTimer);
   }
+
+  /**
+   * Closing the pane's card: not the moment the pointer leaves the row, but a moment after it has left
+   * the card too. The pointer crosses a gap from one to the other, and dismissing on that crossing
+   * would make the card unreachable — so a short grace period, cancelled by arriving on either.
+   */
+  let peekTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function hidePeekSoon() {
+    clearTimeout(peekTimer);
+    peekTimer = setTimeout(() => (peek = 0), 180);
+  }
+  function keepPeek() {
+    clearTimeout(peekTimer);
+  }
+
+  // A card closed mid-grace must not fire later against a window that has since gone.
+  $effect(() => () => clearTimeout(peekTimer));
 </script>
 
 <button
@@ -67,7 +88,7 @@
   {/if}
 </button>
 
-<Popover open={open} anchor={() => button} placement="right" label="Tasks of {tasks.window}" onclose={() => { open = false; peek = 0; }}>
+<Popover open={open} anchor={() => button} placement="right" family={family} label="Tasks of {tasks.window}" onclose={() => { clearTimeout(peekTimer); open = false; peek = 0; }}>
   <div class="px-1 pb-1.5">
     <!-- The title is the window's general task: the one line saying what this whole window is for. -->
     <div class="truncate text-[11.5px] leading-4 font-semibold text-ink" title={tasks.title}>{tasks.title}</div>
@@ -75,7 +96,7 @@
   </div>
 
   <!-- The rows are a list of the window's panes: the label says so, and the list is announced. -->
-  <ul class="flex flex-col" aria-label="Panes of {tasks.window}" onmouseleave={() => (peek = 0)}>
+  <ul class="flex flex-col" aria-label="Panes of {tasks.window}" onmouseleave={hidePeekSoon}>
     {#each tasks.panes as pane (pane.pane)}
       <!--
         One row per pane, and that pane's own card opens on hover (and on focus, so the keyboard
@@ -116,7 +137,7 @@
   Popover places it) and its content is what the hovered pane is doing right now.
 -->
 {#if peeked}
-  <Popover open anchor={() => row} placement="right" width="w-64" label="Pane {peeked.pane} of {tasks.window}">
+  <Popover open anchor={() => row} placement="right" family={family} onhover={keepPeek} width="w-64" label="Pane {peeked.pane} of {tasks.window}">
     <div class="flex items-start gap-1.5 px-1 pb-1.5">
       <span class="tnum mt-px grid size-4 shrink-0 place-items-center rounded-sm bg-overlay text-[9.5px] font-semibold text-ink-muted">{peeked.pane}</span>
       <div class="min-w-0 flex-1">

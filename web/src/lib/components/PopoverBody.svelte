@@ -12,6 +12,7 @@
     label,
     width = "w-72",
     oncard,
+    onhover = () => {},
     children,
   }: {
     /** Live position in viewport pixels: a function, so the card follows every re-place. */
@@ -21,6 +22,8 @@
     width?: string;
     /** Hands the card element up, so the parent can measure and place against it. */
     oncard: (el: HTMLElement | null) => void;
+    /** Reported while the pointer is over the card. */
+    onhover?: () => void;
     children: Snippet;
   } = $props();
   // The element is handed up once, the first time it exists, and again when it is torn down. A guard
@@ -43,6 +46,7 @@
   role={role}
   aria-label={label}
   tabindex="-1"
+  onmouseenter={() => onhover()}
 >
   {@render children()}
 </div>

@@ -17,6 +17,7 @@
    * not sit over (the sidebar rail): a card opened from inside it opens over the content instead, which
    * is the whole reason it left the rail in the first place.
    */
+  const uid = $props.id();
   let {
     open = false,
     anchor,
@@ -25,7 +26,9 @@
     label,
     onclose,
     oncard,
+    onhover,
     clear,
+    family: own,
     width = "w-72",
     children,
   }: {
@@ -38,6 +41,14 @@
     onclose?: () => void;
     /** The card element, handed up as soon as it exists (to measure it, or to place a card beside it). */
     oncard?: (el: HTMLElement | null) => void;
+    /** Reported while the pointer is over the card, so a caller can keep it open across a gap. */
+    onhover?: () => void;
+    /**
+     * The family a nested card belongs to. A press anywhere in the family counts as inside, so a click
+     * on a card that hangs off this one never dismisses this one. A card that opens no family of its
+     * own is independent, as any other popover is.
+     */
+    family?: string;
     /** An element the card must clear (the sidebar rail), read fresh on every move like the anchor. */
     clear?: () => HTMLElement | null;
     /** Card width, so a nested card can be narrower than the one it hangs off. */
@@ -57,6 +68,8 @@
   // Plain, not reactive: the card's element is only ever read while placing, and making it state
   // would mean every placement re-rendered the card that is being placed.
   let card: HTMLElement | null = null;
+  /** Every portal of one card's family carries this name, so a nested card is still "inside". */
+  const family = $derived(own ?? uid);
   let portal: HTMLDivElement | null = null;
   let app: Record<string, unknown> | null = null;
 
@@ -90,7 +103,7 @@
   $effect(() => {
     if (!open) return;
     portal = document.createElement("div");
-    portal.dataset.popover = "";
+    portal.dataset.popover = family;
     document.body.appendChild(portal);
     app = mount(PopoverBody, {
       target: portal,
@@ -100,6 +113,7 @@
         label,
         width,
         children,
+        onhover,
         oncard: (el: HTMLElement | null) => {
           card = el;
           oncard?.(el);
@@ -125,8 +139,12 @@
     };
   });
 
-  // Escape closes, and so does a press outside both the card and its anchor: the card lives in the
-  // portal, so "outside" has to be tested against the anchor as well as against the card.
+  // Escape closes, and so does a press outside the card: the card lives in the portal, so "inside"
+  // means the card itself, its anchor, and every other card of the same family (the nested per-pane
+  // card is a portal of its own, and a press on it must not dismiss the card it hangs off).
+  //
+  // Both of these close the whole family at once, deliberately: a popover is one thing the user opened,
+  // so Escape takes the whole of it rather than peeling off one layer per press.
   $effect(() => {
     if (!open) return;
     function onkey(e: KeyboardEvent) {
@@ -135,9 +153,7 @@
       onclose?.();
     }
     function onpress(e: PointerEvent) {
-      const t = e.target as Node | null;
-      if (!t || card?.contains(t) || anchor()?.contains(t)) return;
-      onclose?.();
+      if (!inside(e.target as Node | null)) onclose?.();
     }
     document.addEventListener("keydown", onkey, true);
     document.addEventListener("pointerdown", onpress, true);
@@ -146,6 +162,17 @@
       document.removeEventListener("pointerdown", onpress, true);
     };
   });
+
+  /**
+   * Whether a press landed in this card, in the anchor, or in any card of the same family. Only this
+   * card's own family counts: an unrelated popover elsewhere on the page is somebody else's press.
+   */
+  function inside(t: Node | null): boolean {
+    if (!t) return false;
+    if (card?.contains(t) || anchor()?.contains(t)) return true;
+    const el = t instanceof Element ? t : t.parentElement;
+    return !!el?.closest(`[data-popover="${family}"]`);
+  }
 
   /** The card element itself, so a caller can measure it or place a nested card against it. */
   export function element(): HTMLElement | null {
