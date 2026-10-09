@@ -104,3 +104,8 @@ pub fn get_model(name: Option<&str>, config: &Obj) -> Result<Box<dyn Model>, Str
     let class = config.shift_remove("model_class").and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     catalog::build(&resolved, &class, config)
 }
+
+/// The read tool's wire shapes, re-exported for the clients that build tool lists.
+pub mod read_tools {
+    pub use crate::tools::{with_read, with_read_anthropic, with_read_responses};
+}

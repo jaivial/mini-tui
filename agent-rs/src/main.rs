@@ -24,6 +24,7 @@ mod coord;
 mod hybrid;
 mod subagents;
 mod templates;
+mod tools;
 mod util;
 
 use agent::{Agent, AgentConfig, CHILD_GROUP, SIGNAL, STOP};

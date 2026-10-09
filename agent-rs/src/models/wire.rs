@@ -5,6 +5,7 @@
 use super::cache_control::set_cache_control;
 use super::http::{post_chat_stream, post_json, usage_of, with_retry};
 use super::prices;
+use super::read_tools as read;
 use super::shapes::{anthropic_bash_tool, anthropic_cu_tool, bash_tool, bash_tool_responses, cu_tool, cu_tool_responses, expand_multimodal, parse_response_actions, parse_toolcall_actions, response_observations, toolcall_observations};
 use super::{DeltaSink, Model, ModelError, Reply};
 use crate::util::{get, get_str, now, Obj};
@@ -163,7 +164,7 @@ impl WireModel {
     fn query_chat(&mut self, messages: &[Value], sink: &mut Option<DeltaSink>) -> Result<Value, ModelError> {
         let (params, mut headers) = self.params();
         headers.extend(self.auth_headers());
-        let mut body = json!({"model": self.wire_name, "messages": self.chat_messages(messages), "tools": with_agent_tools(vec![bash_tool(), cu_tool()], crate::agents::chat_tools())});
+        let mut body = json!({"model": self.wire_name, "messages": self.chat_messages(messages), "tools": with_agent_tools(read::with_read(vec![bash_tool(), cu_tool()]), crate::agents::chat_tools())});
         for (k, v) in params {
             body[k] = v;
         }
@@ -190,7 +191,7 @@ impl WireModel {
         headers.extend(self.auth_headers());
         let tool_choice = tool_choice(params.shift_remove("tool_choice"), params.shift_remove("parallel_tool_calls"));
         let max_tokens = params.shift_remove("max_tokens").unwrap_or_else(|| self.config.get("max_tokens").cloned().unwrap_or(json!(8192)));
-        let mut body = json!({"model": self.wire_name, "messages": wire, "tools": with_agent_tools(vec![anthropic_bash_tool(), anthropic_cu_tool()], crate::agents::anthropic_tools()), "max_tokens": max_tokens});
+        let mut body = json!({"model": self.wire_name, "messages": wire, "tools": with_agent_tools(read::with_read_anthropic(vec![anthropic_bash_tool(), anthropic_cu_tool()]), crate::agents::anthropic_tools()), "max_tokens": max_tokens});
         for (k, v) in params {
             body[k] = v;
         }
@@ -233,7 +234,7 @@ impl WireModel {
     fn query_responses(&mut self, messages: &[Value]) -> Result<Value, ModelError> {
         let (params, mut headers) = self.params();
         headers.extend(self.auth_headers());
-        let mut body = json!({"model": self.wire_name, "input": self.responses_input(messages), "tools": with_agent_tools(vec![bash_tool_responses(), cu_tool_responses()], crate::agents::responses_tools())});
+        let mut body = json!({"model": self.wire_name, "input": self.responses_input(messages), "tools": with_agent_tools(read::with_read_responses(vec![bash_tool_responses(), cu_tool_responses()]), crate::agents::responses_tools())});
         for (k, v) in params {
             body[k] = v;
         }

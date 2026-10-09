@@ -598,6 +598,10 @@ impl Agent {
                 if STOP.load(Ordering::SeqCst) {
                     break;
                 }
+                if let Some(read) = self.read_outcome(action) {
+                    outputs.push(read);
+                    continue;
+                }
                 let command = action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default();
                 match self.env.execute(&command) {
                     Outcome::Output(o) => outputs.push(o),
@@ -619,28 +623,49 @@ impl Agent {
         // More than one action: run them overlapped on worker threads, then collect them back
         // **in the order they were issued**, so the observation messages the model sees are
         // identical to the serial path's. Execution overlaps; the transcript does not change.
-        let commands: Vec<String> = actions
-            .iter()
-            .map(|action| {
-                action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default()
-            })
-            .collect();
-        let results = self.env.execute_batch(&commands);
-        for r in results {
-            match r {
-                Outcome::Output(o) => outputs.push(o),
-                Outcome::Submitted(s) => {
-                    let s = match crate::subagents::join_wave() {
-                        Some(joined) => {
-                            let _ = crate::subagents::take_notes();
-                            format!("{s}\n{joined}")
-                        }
-                        None => s,
-                    };
-                    return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", &s, &s)]));
-                }
-                Outcome::Stopped => return Err(Flow::Interrupt(vec![])),
+        // Reads never spawn: they run inline (a file open plus a bounded copy, microseconds), in
+        // input order, and only the shell commands go to the overlapped batch. Results land back
+        // in the order the actions were issued, so the observation messages stay byte-identical
+        // to the serial path's.
+        let mut slots: Vec<Option<Value>> = (0..actions.len()).map(|_| None).collect();
+        let mut batch: Vec<(usize, String)> = Vec::new();
+        for (i, action) in actions.iter().enumerate() {
+            match self.read_outcome(action) {
+                Some(read) => slots[i] = Some(read),
+                None => batch.push((i, action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default())),
             }
+        }
+        let results = self.env.execute_batch(&batch.iter().map(|(_, c)| c.clone()).collect::<Vec<String>>());
+        let mut submitted: Option<String> = None;
+        let mut stopped = false;
+        for ((i, _), r) in batch.iter().zip(results) {
+            match r {
+                Outcome::Output(o) => slots[*i] = Some(o),
+                Outcome::Submitted(s) => {
+                    submitted = Some(s);
+                    break;
+                }
+                Outcome::Stopped => {
+                    stopped = true;
+                    break;
+                }
+            }
+        }
+        if let Some(s) = submitted {
+            let s = match crate::subagents::join_wave() {
+                Some(joined) => {
+                    let _ = crate::subagents::take_notes();
+                    format!("{s}\n{joined}")
+                }
+                None => s,
+            };
+            return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", &s, &s)]));
+        }
+        if stopped {
+            return Err(Flow::Interrupt(vec![]));
+        }
+        for slot in slots {
+            outputs.push(slot.unwrap_or_else(crate::models::shapes::not_executed));
         }
         self.finish_step(message, outputs)
     }
@@ -651,6 +676,18 @@ impl Agent {
         let obs = self.model.format_observation_messages(message, &outputs, &vars).map_err(|e| Flow::Fatal(template_error(e)))?;
         self.add_messages(obs);
         Ok(())
+    }
+
+    /// The observation for a `read` action, or `None` when the action is a shell command.
+    /// Reads go straight to the filesystem --- no `/bin/sh`, no process, no timeout --- which is
+    /// the point of plan item 4: a read costs an open and a bounded copy instead of a spawn, and
+    /// its output is bounded before it ever reaches the prompt.
+    fn read_outcome(&self, action: &Value) -> Option<Value> {
+        if action.get("tool").and_then(Value::as_str) != Some("read") {
+            return None;
+        }
+        let args = action.get("args").cloned().unwrap_or(json!({}));
+        Some(crate::tools::read_outcome(&args, &self.env.working_dir()))
     }
 
     // ---- compaction ------------------------------------------------------------------

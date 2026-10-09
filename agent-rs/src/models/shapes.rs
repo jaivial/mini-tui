@@ -89,12 +89,43 @@ pub fn anthropic_cu_tool() -> Value {
 }
 
 /// The command a parsed tool call runs: `bash` passes its `command` through,
-/// `cu` becomes `cu <args>`. Anything else is unknown. The error text is the
-/// same concatenation `actions_toolcall.py` produces (unknown tool and/or the
-/// missing argument, back to back).
+/// `cu` becomes `cu <args>`, `read` stays a read (the agent loop executes it without a shell).
+/// Anything else is unknown. The error text is the same concatenation `actions_toolcall.py`
+/// produces (unknown tool and/or the missing argument, back to back).
+/// The action a parsed tool call becomes. A `read` call carries structured arguments rather
+/// than a command string; everything else is the command the shell will run.
+fn action_value(command: &Value, tool_call_id: Value) -> Value {
+    let mut a = Obj::new();
+    match command {
+        Value::Object(fields) if fields.get("tool").and_then(Value::as_str) == Some("read") => {
+            a.insert("tool".into(), json!("read"));
+            if let Some(args) = fields.get("args") {
+                a.insert("args".into(), args.clone());
+            }
+            if let Some(path) = fields.get("args").and_then(|x| x.get("path")).cloned() {
+                a.insert("command".into(), path);
+            }
+        }
+        other => {
+            a.insert("command".into(), other.clone());
+        }
+    }
+    a.insert("tool_call_id".into(), tool_call_id);
+    Value::Object(a)
+}
+
 fn command_for(name: &str, args: &Value) -> Result<Value, String> {
     if crate::agents::is_tool(name) && crate::agents::tools_enabled() {
         return Ok(crate::agents::command_for(name, args));
+    }
+    if name == "read" && crate::tools::read_enabled() {
+        // The action keeps its parsed arguments (not a flattened command) so the loop can page
+        // through the file directly; `tool` records which path executes it.
+        let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+        if path.trim().is_empty() {
+            return Err("Missing 'path' argument in read tool call.".into());
+        }
+        return Ok(json!({"tool": "read", "args": args}));
     }
     let mut error = String::new();
     if name != "bash" && name != "cu" {
@@ -182,7 +213,7 @@ pub fn parse_toolcall_actions(tool_calls: &[Value], format_error_template: &str,
             let text = format_error_text(format_error_template, error.trim(), true, finish_reason).unwrap_or_else(|e| e);
             return Err(err(text));
         }
-        actions.push(json!({"command": command, "tool_call_id": get(call, "id").cloned().unwrap_or(Value::Null)}));
+        actions.push(action_value(&command, get(call, "id").cloned().unwrap_or(Value::Null)));
     }
     Ok(actions)
 }
@@ -216,12 +247,12 @@ pub fn parse_response_actions(output: &[Value], format_error_template: &str, fin
             return Err(err(text));
         }
         let id = get(call, "call_id").filter(|v| !v.is_null() && v.as_str() != Some("")).or_else(|| get(call, "id")).cloned().unwrap_or(Value::Null);
-        actions.push(json!({"command": command, "tool_call_id": id}));
+        actions.push(action_value(&command, id));
     }
     Ok(actions)
 }
 
-pub(crate) fn not_executed() -> Value {
+pub fn not_executed() -> Value {
     json!({"output": "", "returncode": -1, "exception_info": "action was not executed"})
 }
 
