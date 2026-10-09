@@ -24,6 +24,8 @@ mod coord;
 mod hybrid;
 mod subagents;
 mod templates;
+mod cache_warmer;
+mod timings;
 mod tools;
 mod util;
 

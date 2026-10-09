@@ -127,6 +127,16 @@ pub struct Agent {
     /// The model name as asked for (`-m`, the config, then `MODEL` switches): routable, unlike the
     /// client's own id (which drops the provider prefix). Subagents start on it.
     pub requested_model: String,
+    /// Run-wide timing totals (plan item 6): harness milliseconds vs model milliseconds.
+    harness_ms: f64,
+    model_ms: f64,
+    /// The context-view build and the model call of the step in flight (ms), handed from
+    /// `query_model` / `query` to the stamping that happens after the observations render.
+    last_view_ms: f64,
+    last_model_ms: f64,
+    last_save_ms: f64,
+    /// The prompt-cache warmer (plan item 5), ticking from the idle waits.
+    warmer: crate::cache_warmer::Warmer,
 }
 
 impl Agent {
@@ -150,6 +160,12 @@ impl Agent {
             control_model: None,
             calibration: None,
             requested_model: String::new(),
+            harness_ms: 0.0,
+            model_ms: 0.0,
+            last_view_ms: 0.0,
+            last_model_ms: 0.0,
+            last_save_ms: 0.0,
+            warmer: crate::cache_warmer::Warmer::new(),
         }
     }
 
@@ -254,6 +270,12 @@ impl Agent {
 
     fn control_file() -> Option<String> {
         std::env::var("MSWEA_CONTROL_FILE").ok().filter(|s| !s.is_empty())
+    }
+
+    /// Whether anyone can send this run a follow-up: the cache warmer only makes sense for a run
+    /// that can still be continued (`MINI_AGENT_CACHE_WARMER=auto`, the default).
+    pub fn control_file_exists() -> bool {
+        Self::control_file().is_some()
     }
 
     fn drain_control(&mut self) -> (Option<String>, Vec<String>) {
@@ -377,6 +399,7 @@ impl Agent {
                     self.save(false);
                     return Ok(true);
                 }
+                self.warm_cache();
                 interruptible_sleep(std::time::Duration::from_millis(200));
             }
             return Ok(self.add_subagent_notes());
@@ -402,7 +425,34 @@ impl Agent {
                 self.save(false);
                 return Ok(true);
             }
+            self.warm_cache();
             interruptible_sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    /// One cache-warmer tick from an idle wait (plan item 5). A refresh replays the request that
+    /// produced the last assistant message with a one-token cap, so the prompt prefix the next
+    /// real call needs is still cached. The note it returns is appended to the journal (a
+    /// `cache_warm` line), never to the conversation: warming is not a turn, and its cost stays
+    /// out of `model_stats` because it did no work.
+    fn warm_cache(&mut self) {
+        if !crate::cache_warmer::active() {
+            return;
+        }
+        let view: Vec<Value> = self.context_view().cloned().collect();
+        let prompt_tokens = view.last().and_then(|m| crate::compaction::prompt_tokens(m)).unwrap_or(0);
+        let prices = self.model.cache_prices();
+        let ttl = self.model.cache_ttl_secs();
+        let model = &mut self.model;
+        let note = self.warmer.tick(prompt_tokens, prices, ttl, |max_tokens| {
+            let _ = max_tokens; // the cap is the model's own business (it owns `max_tokens`)
+            model.warm_cache(&view)
+        });
+        if let Some(note) = note {
+            self.journal_note(&note);
+            // Re-save so the journal's `info` line (and `traj.json`) carry the warmer's count and
+            // cost: a run inspected or resumed after an idle stretch sees what warming spent.
+            self.save(false);
         }
     }
 
@@ -470,7 +520,9 @@ impl Agent {
                     return Err(e);
                 }
             }
+            let save_started = std::time::Instant::now();
             self.save(false);
+            self.last_save_ms = save_started.elapsed().as_secs_f64() * 1000.0;
             if self.messages.last().map(role) == Some("exit") {
                 let exit = self.messages.pop().unwrap();
                 self.journaled = self.journaled.min(self.messages.len());
@@ -491,15 +543,60 @@ impl Agent {
     }
 
     fn step(&mut self) -> Result<(), Flow> {
-        let message = self.query()?;
+        let mut t = crate::timings::StepTimings::start();
+        let save_ms = std::mem::take(&mut self.last_save_ms);
+        t.add_phase("save", save_ms);
+        t.mark("control");
+        let message = self.query(Some(&mut t))?;
+        // `query` appends the assistant message last, so this is its index for the rest of the
+        // step (the observations go after it).
+        let at = self.messages.len().saturating_sub(1);
         if let Some(sub) = get(&message, "extra").and_then(|e| e.get("submission")).and_then(Value::as_str) {
+            self.record_timings(&mut t, at);
             return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", sub, sub)]));
         }
-        self.execute_actions(&message)
+        // Closes the open `model` label and opens `actions`.
+        t.mark("actions");
+        let r = self.execute_actions(&message);
+        t.mark("observe");
+        self.record_timings(&mut t, at);
+        r
     }
 
-    fn query(&mut self) -> Result<Value, Flow> {
+    /// Close the clock and stamp it: onto the assistant message the step produced, and into the
+    /// run's totals (`serialize_info` reports them). The stamp happens after the observations are
+    /// rendered so `observe` is measured, and before `save` so the journal line that carries the
+    /// message already has the timings on it.
+    fn record_timings(&mut self, t: &mut crate::timings::StepTimings, at: usize) {
+        if !crate::timings::enabled() {
+            return;
+        }
+        t.close();
+        let mut t = std::mem::replace(t, crate::timings::StepTimings::start());
+        // The view build happens inside the model phase (before the call); pulling it out is
+        // what distinguishes "the harness cloned the conversation again" from "the model thought".
+        t.add_phase("view", std::mem::take(&mut self.last_view_ms));
+        self.harness_ms += t.total();
+        self.model_ms += self.last_model_ms;
+        let Some(m) = self.messages.get_mut(at) else { return };
+        if role(m) != "assistant" || m.get("extra").and_then(|e| e.get("timings")).is_some() {
+            return;
+        }
+        crate::timings::stamp(m, &t, self.last_model_ms);
+    }
+
+    fn query(&mut self, t: Option<&mut crate::timings::StepTimings>) -> Result<Value, Flow> {
+        let mut owned;
+        let t = match t {
+            Some(t) => t,
+            None => {
+                owned = crate::timings::StepTimings::start();
+                &mut owned
+            }
+        };
+        t.mark("control");
         self.apply_control_commands();
+        t.mark("model");
         let c = &self.config;
         let spent = self.cost + crate::subagents::children_cost();
         if (c.step_limit > 0 && c.step_limit <= self.n_calls) || (c.cost_limit > 0.0 && c.cost_limit <= spent) {
@@ -511,6 +608,10 @@ impl Agent {
         self.n_calls += 1;
         let started = now();
         let mut message = self.query_model()?;
+        self.last_model_ms = (now() - started) * 1000.0;
+        // A completed call is what the warmer keeps warm: the entry it wrote is the one the next
+        // call (a follow-up, a compaction) would otherwise rebuild from scratch.
+        self.warmer.observed_call();
         self.cost += extra(&message).get("cost").and_then(Value::as_f64).unwrap_or(0.0);
         if !message.get("extra").is_some_and(Value::is_object) {
             message["extra"] = json!({});
@@ -553,8 +654,14 @@ impl Agent {
     }
 
     fn query_model(&mut self) -> Result<Value, Flow> {
+        // The compaction estimate and the context build are the two passes a step makes over the
+        // whole conversation before any bytes go to the provider; timing them separately from the
+        // call is what showed the per-step clone (plan item 3, ~27 ms/step).
+        let view_started = std::time::Instant::now();
         self.maybe_compact();
         let mut view = self.context_messages();
+        let view_ms = view_started.elapsed().as_secs_f64() * 1000.0;
+        self.last_view_ms = view_ms;
         let reply = match self.model_query(&view) {
             Ok(r) => r,
             Err(e) => {
@@ -875,6 +982,8 @@ impl Agent {
                 "exit_status": last_extra.get("exit_status").cloned().unwrap_or(json!("")),
                 "submission": last_extra.get("submission").cloned().unwrap_or(json!("")),
                 "compacting": self.compacting.clone().unwrap_or_default(),
+                "timings": crate::timings::run_summary(self.harness_ms, self.model_ms, self.n_calls),
+                "cache_warmer": self.warmer.summary(),
             },
             "trajectory_format": "mini-swe-agent-1.1",
         });
@@ -935,6 +1044,20 @@ impl Agent {
         let file = if fresh { std::fs::File::create(&journal) } else { std::fs::OpenOptions::new().append(true).create(true).open(&journal) };
         if let Ok(mut f) = file {
             let _ = f.write_all((lines.join("\n") + "\n").as_bytes());
+        }
+    }
+
+    /// Append one non-message line to the journal (the cache warmer's `cache_warm` note): it is
+    /// bookkeeping about the run, not part of the conversation, so it goes straight to the
+    /// journal file the way the streamed deltas do and never into `messages`.
+    fn journal_note(&mut self, note: &Value) {
+        let Some(path) = self.config.output_path.clone() else { return };
+        let journal = journal_path(&path);
+        if let Some(parent) = journal.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&journal) {
+            let _ = writeln!(f, "{}", py_json(note, true));
         }
     }
 
