@@ -27,6 +27,10 @@ pub struct ModelError {
     /// start the service, and a local gateway comes back (or not) within seconds rather than
     /// minutes, so the retry policy treats it differently from a remote transport error.
     pub connect_refused: bool,
+    /// Seconds the provider asked us to wait before trying again (`retry-after-ms` /
+    /// `retry-after` on the error response), when it sent one. The server's own number beats
+    /// any curve we could invent, so `with_retry` honours it verbatim (capped).
+    pub retry_after: Option<f64>,
 }
 
 impl std::fmt::Display for ModelError {
@@ -76,7 +80,7 @@ pub fn global_stats_add(cost: f64) -> Result<(), ModelError> {
             message: format!("Global cost/call limit exceeded: ${:.4} / {}", st.0, st.1),
             status: None,
             abort: true,
-            kind: "RuntimeError".into(), connect_refused: false,
+            kind: "RuntimeError".into(), connect_refused: false, retry_after: None,
         });
     }
     Ok(())

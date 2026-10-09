@@ -221,7 +221,7 @@ pub fn parse_response_actions(output: &[Value], format_error_template: &str, fin
     Ok(actions)
 }
 
-fn not_executed() -> Value {
+pub(crate) fn not_executed() -> Value {
     json!({"output": "", "returncode": -1, "exception_info": "action was not executed"})
 }
 

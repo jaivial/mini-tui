@@ -23,6 +23,16 @@ pub trait Environment {
     fn execute(&mut self, command: &str) -> Outcome;
     fn template_vars(&self) -> Obj;
     fn serialize(&self) -> Value;
+
+    /// Execute the commands of one model response and return their outcomes **in input order**.
+    /// The default is the serial loop; an environment that can overlap work overrides this
+    /// (`LocalEnvironment` does, with up to `action_concurrency` commands running at once).
+    /// Semantics the serial loop guarantees must hold here too: input order is preserved, a
+    /// spawn failure is an observation (not the end of the batch), a submit marker ends the
+    /// run with that command's submission, and `STOP` kills whatever is still running.
+    fn execute_batch(&mut self, commands: &[String]) -> Vec<Outcome> {
+        commands.iter().map(|c| self.execute(c)).collect()
+    }
 }
 
 /// An ordered string map (YAML order is kept, as pydantic's dict keeps it).
@@ -62,11 +72,55 @@ fn uname() -> Obj {
     o
 }
 
-/// Run `argv` in its own session with merged stdout/stderr, killing the group on timeout.
-/// Returns (output, returncode) or (partial output, error text) on timeout/spawn failure.
+/// Process groups of a batch's spawned-but-unwaited commands (async-signal-safe to read from
+/// the signal handler, like `e2e::worker::GROUPS`). A serial run has one running command and
+/// `CHILD_GROUP` covers it; an overlapped batch has several, so it needs its own registry.
+pub static BATCH_GROUPS: [std::sync::atomic::AtomicI32; 128] = [const { std::sync::atomic::AtomicI32::new(0) }; 128];
+
+pub fn register_group(pid: i32) {
+    for g in BATCH_GROUPS.iter() {
+        if g.compare_exchange(0, pid, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_ok() {
+            return;
+        }
+    }
+}
+
+pub fn unregister_group(pid: i32) {
+    for g in BATCH_GROUPS.iter() {
+        let _ = g.compare_exchange(pid, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// One running command of a batch: the process group leader plus its output reader.
+pub struct Child {
+    pid: i32,
+    process: std::process::Child,
+    reader: Option<std::thread::JoinHandle<Vec<u8>>>,
+}
+
+/// The marker that ends a run. Shared with `check_finished`, which looks for it in *output*;
+/// here we only need it as a cheap pre-check on the command itself (the authoritative check is
+/// on the output, after the command runs).
+pub const SUBMIT_MARKER: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT";
+
 fn run(argv: &[String], cwd: Option<&str>, env: Option<&BTreeMap<String, String>>, timeout: u64, label: &str) -> Result<(String, i64), (String, String, String)> {
-    use crate::agent::STOP;
     use std::sync::atomic::Ordering;
+    let mut child = spawn(argv, cwd, env)?;
+    // The signal handler kills this group on SIGTERM; a batch tracks its own groups instead.
+    crate::agent::CHILD_GROUP.store(child.pid, Ordering::SeqCst);
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            crate::agent::CHILD_GROUP.store(0, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _clear = Clear;
+    child.wait_collect(label, timeout)
+}
+
+/// Spawn `argv` in its own session with merged stdout/stderr, without waiting for it. The
+/// caller owns the [`Child`] and must call [`Child::wait_collect`] exactly once.
+fn spawn(argv: &[String], cwd: Option<&str>, env: Option<&BTreeMap<String, String>>) -> Result<Child, (String, String, String)> {
     let (reader, writer) = match pipe() {
         Ok(p) => p,
         Err(e) => return Err((String::new(), "OSError".into(), e)),
@@ -89,7 +143,7 @@ fn run(argv: &[String], cwd: Option<&str>, env: Option<&BTreeMap<String, String>
             Ok(())
         });
     }
-    let mut child = match cmd.spawn() {
+    let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             let kind = if e.kind() == std::io::ErrorKind::NotFound { "FileNotFoundError" } else { "OSError" };
@@ -102,59 +156,72 @@ fn run(argv: &[String], cwd: Option<&str>, env: Option<&BTreeMap<String, String>
     };
     drop(cmd); // closes our copies of the pipe's write end
     let pid = child.id() as i32;
-    crate::agent::CHILD_GROUP.store(pid, Ordering::SeqCst);
-    struct Clear;
-    impl Drop for Clear {
-        fn drop(&mut self) {
-            crate::agent::CHILD_GROUP.store(0, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    let _clear = Clear;
     let reader_thread = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let mut r = reader;
         let _ = r.read_to_end(&mut buf);
         buf
     });
-    let deadline = Instant::now() + Duration::from_secs(timeout.max(1));
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) => {}
-            Err(_) => break None,
-        }
-        if STOP.load(Ordering::SeqCst) {
-            unsafe { libc::killpg(pid, libc::SIGKILL) };
-            let _ = child.wait();
-            let _ = reader_thread.join();
-            return Err((String::new(), "Stopped".into(), String::new()));
-        }
-        if Instant::now() >= deadline {
-            unsafe { libc::killpg(pid, libc::SIGKILL) };
-            let _ = child.wait();
-            let out = String::from_utf8_lossy(&reader_thread.join().unwrap_or_default()).into_owned();
-            return Err((out, "TimeoutExpired".into(), format!("Command '{label}' timed out after {timeout} seconds")));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    // The command's own children may still hold the pipe open: Python's communicate() waits
-    // for EOF too, so do the same (bounded by the same deadline).
-    let bytes = loop {
-        if reader_thread.is_finished() {
-            break reader_thread.join().unwrap_or_default();
-        }
-        if Instant::now() >= deadline {
-            unsafe { libc::killpg(pid, libc::SIGKILL) };
-            let out = String::from_utf8_lossy(&reader_thread.join().unwrap_or_default()).into_owned();
-            return Err((out, "TimeoutExpired".into(), format!("Command '{label}' timed out after {timeout} seconds")));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let code = status.map(|s| {
-        use std::os::unix::process::ExitStatusExt;
-        s.code().map(|c| c as i64).unwrap_or_else(|| -(s.signal().unwrap_or(0) as i64))
-    });
-    Ok((String::from_utf8_lossy(&bytes).into_owned(), code.unwrap_or(-1)))
+    Ok(Child { pid, process: child, reader: Some(reader_thread) })
+}
+
+impl Child {
+    /// Kill the whole process group without waiting (a stop signal: `wait_collect` is skipped).
+    fn kill_group(&mut self) {
+        unsafe { libc::killpg(self.pid, libc::SIGKILL) };
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
+
+    /// Drain the reader thread's buffer (killing the group first is the caller's job).
+    fn take_output(&mut self) -> String {
+        String::from_utf8_lossy(&self.reader.take().and_then(|r| r.join().ok()).unwrap_or_default()).into_owned()
+    }
+
+    /// Wait for the command (bounded by `timeout`), kill its group on timeout or stop, and
+    /// collect its merged output. The command's own children may still hold the pipe open:
+    /// Python's `communicate()` waits for EOF too, so do the same (bounded by the deadline).
+    fn wait_collect(&mut self, label: &str, timeout: u64) -> Result<(String, i64), (String, String, String)> {
+        use crate::agent::STOP;
+        use std::sync::atomic::Ordering;
+        let deadline = Instant::now() + Duration::from_secs(timeout.max(1));
+        let status = loop {
+            match self.process.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) => {}
+                Err(_) => break None,
+            }
+            if STOP.load(Ordering::SeqCst) {
+                unsafe { libc::killpg(self.pid, libc::SIGKILL) };
+                let _ = self.process.wait();
+                let _ = self.reader.take().map(|r| r.join());
+                return Err((String::new(), "Stopped".into(), String::new()));
+            }
+            if Instant::now() >= deadline {
+                unsafe { libc::killpg(self.pid, libc::SIGKILL) };
+                let _ = self.process.wait();
+                let out = self.take_output();
+                return Err((out, "TimeoutExpired".into(), format!("Command '{label}' timed out after {timeout} seconds")));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let bytes = loop {
+            if self.reader.as_ref().is_some_and(|r| r.is_finished()) {
+                break self.reader.take().and_then(|r| r.join().ok()).unwrap_or_default();
+            }
+            if Instant::now() >= deadline {
+                unsafe { libc::killpg(self.pid, libc::SIGKILL) };
+                let out = self.take_output();
+                return Err((out, "TimeoutExpired".into(), format!("Command '{label}' timed out after {timeout} seconds")));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let code = status.map(|s| {
+            use std::os::unix::process::ExitStatusExt;
+            s.code().map(|c| c as i64).unwrap_or_else(|| -(s.signal().unwrap_or(0) as i64))
+        });
+        Ok((String::from_utf8_lossy(&bytes).into_owned(), code.unwrap_or(-1)))
+    }
 }
 
 fn pipe() -> Result<(std::fs::File, std::fs::File), String> {
@@ -245,6 +312,8 @@ fn split_first_line(s: &str) -> (&str, &str) {
     (s, "")
 }
 
+/// A spawn failure inside a batch: the failing command's error, everything before it already
+/// collected by the caller, everything after it not run — the shape the serial loop produces.
 pub struct LocalEnvironment {
     config: Obj,
     cwd: String,
@@ -281,6 +350,109 @@ impl Environment for LocalEnvironment {
             Some(s) => Outcome::Submitted(s),
             None => Outcome::Output(out),
         }
+    }
+
+    /// The commands of one model response, overlapped: every process is spawned first, then
+    /// waited for. Two independent commands therefore cost the slower of the two rather than
+    /// the sum — pi's `executeToolCallsParallel` does the same for a tool batch — while the
+    /// *results* stay in input order and each command still runs in its own subshell, so the
+    /// observation messages are byte-identical to the serial path's.
+    ///
+    /// Ordering caveats the serial loop does not have, both deliberate and both visible to the
+    /// model rather than hidden from it: the commands may *write* in an interleaved way when
+    /// they touch the same file (the prompt tells the model to batch only independent commands),
+    /// and a timeout kills only its own process group. `STOP` kills every group, as before.
+    /// A command's timeout is measured from when it is *waited for* (as Python's would be from
+    /// when it starts in a serial run), so the step's total budget is bounded by the serial
+    /// sum, never above it; a command that hangs may simply have produced more output by the
+    /// time it is killed. Symmetrically, a submit marker discovered only in a command's
+    /// *output* (not in its text) can let up to `concurrency - 1` later commands run that the
+    /// serial loop would not have — the commands were issued together, which is what the
+    /// prompt reserves for independent work, and pi runs the whole batch unconditionally.
+    fn execute_batch(&mut self, commands: &[String]) -> Vec<Outcome> {
+        use crate::agent::STOP;
+        use std::sync::atomic::Ordering;
+        let cwd = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
+        let mut env: BTreeMap<String, String> = std::env::vars().collect();
+        env.extend(self.env.clone());
+        // Spawned-but-unwaited commands of the current batch, in input order. The SIGTERM
+        // handler kills these (a serial run has exactly one running command, and
+        // `CHILD_GROUP` covers it; a batch has several, so it needs its own registry).
+        let mut batch_groups: Vec<(usize, Child)> = Vec::with_capacity(commands.len());
+        let mut slots: Vec<Option<Value>> = (0..commands.len()).map(|_| None).collect();
+        // The serial loop's shape: spawn+wait one at a time, in order; a stop stops the run.
+        // Overlap: keep at most `concurrency` commands running at once, so a batch costs
+        // its slowest lane and never more wall time than the serial sum.
+        let concurrency = crate::agent::action_concurrency(commands.len());
+        let mut next = 0usize;
+        let mut stopped = false;
+        let mut stopped_at: Option<usize> = None;
+        loop {
+            while !stopped && next < commands.len() && batch_groups.len() < concurrency {
+                if STOP.load(Ordering::SeqCst) {
+                    stopped = true;
+                    break;
+                }
+                match spawn(&lane_argv(&commands[next]), Some(&cwd), Some(&env)) {
+                    Ok(child) => {
+                        register_group(child.pid);
+                        batch_groups.push((next, child));
+                    }
+                    // A failed spawn is a normal observation, not the end of the batch: the
+                    // serial loop reports it and moves on to the next command.
+                    Err((out, kind, msg)) => slots[next] = Some(result_value(Err((out, kind, msg)))),
+                }
+                next += 1;
+                // A submit marker in the command itself ends the run here: the serial loop
+                // would not run any later command either, so stop spawning for good (a plain
+                // `break` would only leave this `while`; the outer loop would come back).
+                // `check_finished` (on the output) stays authoritative; this is a conservative
+                // pre-check — a command that merely mentions the marker stops the batch one
+                // command early, which the model sees as "action was not executed" and redo.
+                if slots[next - 1].is_none() && commands[next - 1].contains(SUBMIT_MARKER) {
+                    next = commands.len();
+                    break;
+                }
+            }
+            if batch_groups.is_empty() {
+                break;
+            }
+            // Wait in input order for the head of the batch to finish, then slot its result.
+            // A stop while it runs is `wait_collect`'s own `Err(Stopped)`: the head ends the
+            // step with `Outcome::Stopped` (no observation messages), exactly as the serial
+            // loop does — and whatever is still running is killed by the cleanup below.
+            let (i, mut child) = batch_groups.remove(0);
+            unregister_group(child.pid);
+            let r = child.wait_collect(&commands[i], self.timeout);
+            if is_stopped(&r) {
+                stopped_at = Some(i);
+                break;
+            }
+            slots[i] = Some(result_value(r));
+        }
+        // Cleanup: kill whatever is still running (stop or a submit cut the batch short).
+        for (_, mut child) in batch_groups {
+            child.kill_group();
+        }
+        let mut outcomes = Vec::with_capacity(commands.len());
+        for (i, slot) in slots.into_iter().enumerate() {
+            if stopped_at == Some(i) {
+                outcomes.push(Outcome::Stopped);
+                continue;
+            }
+            let out = match slot {
+                Some(v) => v,
+                // Never started (a stop between commands, or a submit marker cut the batch
+                // short): the observation renderer reports these as "action was not
+                // executed", the same padding the serial loop's short `outputs` gets.
+                None => crate::models::shapes::not_executed(),
+            };
+            match check_finished(&out) {
+                Some(s) => outcomes.push(Outcome::Submitted(s)),
+                None => outcomes.push(Outcome::Output(out)),
+            }
+        }
+        outcomes
     }
 
     fn template_vars(&self) -> Obj {
