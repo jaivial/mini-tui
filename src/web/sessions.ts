@@ -28,6 +28,8 @@ import {
   deleteSession,
   clearLiveRun,
   getLiveRun,
+  rememberAgentRun,
+  agentRuns,
   getSession,
   registerLiveRun,
   sessionStamps,
@@ -43,7 +45,7 @@ import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 import { probeHost, startRemoteRun, type RemoteRun, type SshTarget } from "./ssh";
 import { readPlan, type SessionPlan } from "../mini/plans";
-import { SubagentSync, subagentIndexFresh, type SubagentView } from "../mini/subagents";
+import { SubagentSync, readSubagentIndex, subagentIndexFresh, type SubagentView } from "../mini/subagents";
 
 /** One saved session in the history list: metadata only, no transcript. */
 export interface HistoryItem {
@@ -359,6 +361,44 @@ export class SessionManager {
     return [...this.#live.values()]
       .map((entry) => entry.session)
       .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  /**
+   * The trajectory a session's agent journals into, when this server knows it: its own run or an
+   * attached one, the live run another UI announced, or -- for an agent session -- its entry in its
+   * parent's roster (`<parent>~<name>`). The agents panel reads the tree from there.
+   */
+  trajOf(id: string): string | undefined {
+    return this.trajsOf(id)[0];
+  }
+
+  /**
+   * Every run folder of a session, newest first: a session continued after a restart journals into
+   * a new folder, and the agents its earlier runs started stay under the earlier one.
+   */
+  trajsOf(id: string): string[] {
+    const out: string[] = [];
+    const add = (p: string | undefined) => {
+      if (p && !out.includes(p)) out.push(p);
+    };
+    add(this.#live.get(id)?.trajPath);
+    try {
+      add(getLiveRun(this.db(), id)?.traj_path);
+      for (const p of agentRuns(this.db(), id)) add(p);
+    } catch {
+      // busy database: the next poll asks again
+    }
+    if (out.length) return out;
+    const cut = id.lastIndexOf("~");
+    if (cut > 0) {
+      const parentTraj = this.trajsOf(id.slice(0, cut))[0];
+      if (parentTraj) {
+        const name = id.slice(cut + 1);
+        const child = readSubagentIndex(parentTraj).find((e) => e.name === name);
+        if (child?.traj_path) return [child.traj_path];
+      }
+    }
+    return [];
   }
 
   get(id: string): LiveSession | undefined {
@@ -712,6 +752,11 @@ export class SessionManager {
   /** Tell the other UIs which agent runs this session, so they follow it instead of forking it. */
   #announce(entry: Internal, run: MiniRun): void {
     if (run.attached || !run.pid) return;
+    try {
+      rememberAgentRun(this.db(), entry.session.id, run.session.trajPath);
+    } catch {
+      // best-effort: the agents panel falls back to the live entry
+    }
     try {
       registerLiveRun(this.db(), {
         session_id: entry.session.id,

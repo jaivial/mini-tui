@@ -21,6 +21,9 @@ import { shallowEqual } from "../equal";
 import { clampSideWidth } from "../sidePanel";
 import { saveParts, startingDoc, workspace } from "../workspace";
 
+/** The right side panel's tabs. */
+export type SideTab = "notes" | "terminal" | "agents";
+
 export interface Pane {
   id: string;
   /** The session shown, or null for a new chat (created by its first message). */
@@ -31,7 +34,7 @@ export interface Pane {
   chips: Chip[];
   notesOpen: boolean;
   /** Which tab the right sidebar shows while it is open. */
-  sideTab: "notes" | "terminal";
+  sideTab: SideTab;
   /** The width the user dragged the side panel to (null: the panel's own default). */
   sideWidth: number | null;
   /** ↑/↓ prompt recall. Not reactive state: it is read on a key press, never rendered. */
@@ -71,7 +74,7 @@ function renameLeaves(node: Node, to: Map<string, string>): Node {
 /** What is written to localStorage for one window: the tree, what each pane shows, where the focus was. */
 interface Saved {
   tree: Node;
-  panes: Record<string, { sessionId: string | null; notesOpen: boolean; sideTab: "notes" | "terminal"; sideWidth?: number | null; liveTurn?: number | null; seenTurn?: number | null }>;
+  panes: Record<string, { sessionId: string | null; notesOpen: boolean; sideTab: SideTab; sideWidth?: number | null; liveTurn?: number | null; seenTurn?: number | null }>;
   focused: string;
 }
 
@@ -478,7 +481,7 @@ class PaneStore {
    * The right sidebar, opened on `tab`. Pressing the button of the tab already showing closes it; the
    * other tab's button switches to that tab instead of closing (one button per tab, one panel).
    */
-  toggleSide(paneId: string, tab: "notes" | "terminal", open?: boolean) {
+  toggleSide(paneId: string, tab: SideTab, open?: boolean) {
     const pane = this.panes[paneId];
     if (!pane) return;
     if (open === undefined) open = !(pane.notesOpen && pane.sideTab === tab);
@@ -575,7 +578,7 @@ class PaneStore {
             ...(had && had.sessionId === sessionId ? had : blank(nid)),
             sessionId,
             notesOpen: saved?.notesOpen === true,
-            sideTab: saved?.sideTab === "terminal" ? "terminal" : "notes",
+            sideTab: saved?.sideTab === "terminal" || saved?.sideTab === "agents" ? saved.sideTab : "notes",
             sideWidth: clampSideWidth(saved?.sideWidth),
             liveTurn: turn(saved?.liveTurn),
             seenTurn: turn(saved?.seenTurn),

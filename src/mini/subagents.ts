@@ -36,6 +36,8 @@ export interface SubagentEntry {
   /** Its rolling mean and peak (MiB): what a new child is charged for. */
   mem_avg: number;
   mem_peak: number;
+  /** An agent session's own task, without the `<agent>` header the hub wraps it in. */
+  brief?: string;
 }
 
 /** What the UIs show of a subagent. */
@@ -120,7 +122,7 @@ export function toView(parentId: string, entry: SubagentEntry): SubagentView {
     exitStatus: entry.exit_status,
     steps: entry.steps,
     cost: entry.cost,
-    task: entry.task,
+    task: taskText(entry),
     lastCommand: entry.last_command,
     memRss: entry.mem_rss ?? 0,
     memAvg: entry.mem_avg ?? 0,
@@ -152,12 +154,12 @@ export class SubagentSync {
         // The session row only changes when the roster entry itself does: a child that is only
         // ticking its cost or state changes the transcript below, not this row. At 100 children
         // this is the difference between 100 writes a second and none.
-        const rowKey = `${entry.cwd}${entry.model}${entry.task}`;
+        const rowKey = `${entry.cwd}${entry.model}${taskText(entry)}`;
         if (this.#rows.get(id) !== rowKey) {
           upsertSubagentSession(this.db(), {
             id,
             parentId,
-            title: `${entry.name} · ${firstLine(entry.task)}`,
+            title: `${entry.name} · ${firstLine(taskText(entry))}`,
             cwd: entry.cwd,
             model: entry.model,
             task: entry.task,
@@ -210,6 +212,11 @@ export class SubagentSync {
     }
     this.#announced.set(id, key);
   }
+}
+
+/** What a child was asked: an agent's delegated task (`brief`), else its spawn task. */
+function taskText(entry: SubagentEntry): string {
+  return entry.brief || entry.task;
 }
 
 function firstLine(text: string): string {

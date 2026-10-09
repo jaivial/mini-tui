@@ -194,7 +194,7 @@ impl Agent {
             .collect()
     }
 
-    fn repair_tool_call_history(messages: Vec<Value>) -> Vec<Value> {
+    pub(crate) fn repair_tool_call_history(messages: Vec<Value>) -> Vec<Value> {
         let mut out = Vec::new();
         let mut pending = std::collections::BTreeSet::new();
         for m in messages {

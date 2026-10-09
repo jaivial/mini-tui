@@ -17,6 +17,8 @@ import { NOTE_MAX, getNote, listTasks, saveNote } from "../sessions";
 import { FolderError, listLocal, listRemote } from "./folders";
 import { Hub, type HubClient } from "./hub";
 import { Terminals } from "./terminals";
+import { agentsView } from "./agents";
+import { listAgentDefs } from "../mini/agentDefs";
 import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
 import { homedir } from "node:os";
 import { sshArgs } from "./ssh";
@@ -377,6 +379,15 @@ const server = Bun.serve({
         }
         return json(toWire(session), 201);
       }
+      // ---------------------------------------------------------- agents
+      // The agent tree of a session (every agent session it started, recursively), their state,
+      // measured cache reuse and the messages between them. Polled by the Agents panel.
+      const agentsMatch = path.match(/^\/sessions\/([^/]+)\/agents$/);
+      if (agentsMatch && request.method === "GET") {
+        const id = decodeURIComponent(agentsMatch[1] as string);
+        return json(agentsView(id, sessions.trajsOf(id)));
+      }
+      if (path === "/agents" && request.method === "GET") return json(listAgentDefs());
       const sessionMatch = path.match(/^\/sessions\/([^/]+)(\/prompt|\/model|\/interrupt|\/compact)?$/);
       if (sessionMatch) {
         const id = decodeURIComponent(sessionMatch[1] as string);
