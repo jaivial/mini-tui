@@ -99,9 +99,11 @@ export const agents = {
 } as const;
 
 /**
- * Round 5 of the pi benchmark: the round mini first won the aggregate. Same corpus and model as
- * rounds 1-4 (`minimax/MiniMax-M3`), sequential, no orchestration. Shown on the home page; the full
- * report is in `docs/pi-vs-mini-benchmark.md` in the repository.
+ * The pi benchmark, reported honestly. Same corpus and model as every round
+ * (`minimax/MiniMax-M3`), sequential, no orchestration. Round 6 repeated the whole ten-task run
+ * three more times: the round-5 headline of 0.69x did not reproduce, so this shows the median over
+ * four reps and calls the speed a tie. Quality is the solid result: 10/10 PASS on both sides on
+ * every run, 40/40 here. The full report is in `docs/pi-vs-mini-benchmark.md` in the repository.
  */
 export const benchmark = {
   rounds: [
@@ -109,19 +111,21 @@ export const benchmark = {
     { round: "R2", ratio: "1.28x", won: "3/10", note: "native write/edit, leaner prompt" },
     { round: "R3", ratio: "0.95x", won: "7/10", note: "median flips to mini" },
     { round: "R4", ratio: "1.07x", won: "4/10", note: "the reasoning front appears" },
-    { round: "R5", ratio: "0.69x", won: "8/10", note: "first aggregate win, quality intact" },
+    { round: "R5", ratio: "0.69x", won: "8/10", note: "one run; R6 shows it was variance" },
+    { round: "R6", ratio: "0.98x", won: "5/10", note: "median of 3 new reps: a tie with pi" },
   ],
   rows: [
-    { label: "Total wall time", pi: "295.0 s", mini: "204.5 s" },
-    { label: "Median per task", pi: "22.1 s", mini: "18.1 s" },
-    { label: "Tasks won", pi: "2/10", mini: "8/10" },
-    { label: "Quality", pi: "10/10", mini: "10/10" },
+    { label: "Quality, 4 runs", pi: "10/10", mini: "10/10" },
+    { label: "Quality, all 40 checks", pi: "40/40", mini: "40/40" },
+    { label: "Speed, median of 4 reps", pi: "1.00x", mini: "0.98x" },
+    { label: "Speed, range over 4 reps", pi: "1.00x", mini: "0.93x – 1.13x" },
+    { label: "Faster task, median of 4", pi: "5/10", mini: "5/10" },
   ],
   points: [
-    "The front was never the number of turns but the length of the worst one: over the round-4 corpus the longest single turn was a median 30 % of a run's wall time, and those turns are almost entirely reasoning.",
-    "Capping the per-turn output at 4096 (from an unstated 8192) was measured back to back over the whole corpus: 0.73x the wall time on 7 of 10 tasks and zero turns truncated. 2048 was not faster enough to pay and truncated a turn; 3072 lost a task outright.",
-    "The two tasks that led round 4 moved: t10_crash_report 62.1 s -> 12.0 s, t8_js_bug 72.2 s -> 28.1 s.",
-    "Nothing was removed from the work. The speed was not bought with correctness: 10/10 PASS on both sides.",
+    "Quality is the solid result: 10/10 PASS on both harnesses on every one of the four complete runs, 40 of 40 checks per side, never a failing verify.sh.",
+    "Speed is a tie. Round 5 read 0.69x, but three fresh repetitions of the whole corpus gave 1.13x, 0.98x and 0.93x. The median over all four runs is 0.98x, so mini and pi stand level, within the range of the corpus itself.",
+    "We shipped the 0.69x before repeating the run, and the repetition did not support it. The figure survived because it was already in the release notes, so this page now shows the median and the range instead of the one lucky run.",
+    "78 to 81 % of a run's wall time is model time and the harness is about 1 %, so both harnesses are mostly waiting on the same model. What mini does control it does well: a runner starts in ~1 ms instead of ~65 ms and holds ~4.5 MB per waiting session instead of ~36 MB.",
   ],
 } as const;
 

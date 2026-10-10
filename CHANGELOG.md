@@ -4,37 +4,40 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ## 0.41.0 — 2026-10-10
 
-mini wins the pi benchmark for the first time: **0.69x** the wall time end to end, 8 of 10 tasks
-faster, quality unchanged at 10/10 on both sides. Jev arrives as two optional toggles, and a
-truncated turn can no longer be read as a run's final answer.
+Quality is perfect on the pi benchmark — 10/10 PASS on both sides, on every one of the four complete
+runs (40 of 40 checks per side) — and mini's speed is **a tie with pi**: a median of **0.98x** over
+four full repetitions of the corpus. An earlier note in this file claimed a 0.69x speed win; that
+was one run inside the variance and the repetitions did not support it, so it is corrected here.
+Jev arrives as two optional toggles, and a truncated turn can no longer be read as a run's final
+answer.
 
 ### Measured
 
-- **Round 5 of the pi benchmark: mini 0.69x aggregate, the first round mini wins** (#116). Same
-  corpus as rounds 1-4, same model on both sides (`minimax/MiniMax-M3`), sequential, no
-  orchestration. **204.5 s against pi's 295.0 s** — 30% less wall time — and **8 of 10 tasks** won,
-  the best of any round (R1 3.65x with 2/10, R2 1.28x, R3 0.95x with 7/10, R4 1.07x with 4/10). The
-  quality verdict is **10/10 PASS on both sides**: the speed was not bought with correctness.
-  The two tasks that led round 4 moved: `t10_crash_report` 62.1 s -> **12.0 s** (5.2x) and
-  `t8_js_bug` 72.2 s -> **28.1 s** (2.6x). Median per task 20.0 s -> **18.1 s**; model time
-  279.1 s -> **179.1 s**; the longest single turn fell from ~30% of a run's wall time to a median
-  **4.9 s**. Nothing was removed from the work: median generated characters went ~2 500 -> 1 667
-  because the model stopped writing essays to emit a 193-character tool call.
-  - The cause was the front, not the number of turns. Over the round-4 corpus the longest single
-    turn of a run was a median **30%** of that run's wall time, and those turns are almost
-    entirely reasoning: the worst one wrote **19 427 chars of `<think>` to emit a 193-char tool
-    call**, while the longest non-reasoning payload across 73 turns was 1 241 chars. Capping the
-    per-turn output at **4096** was measured back to back per task over the whole corpus: **0.73x**
-    the wall time of the old 8192 on 7 of 10 tasks, **zero** turns truncated, median longest turn
-    8.0 s -> 3.5 s and median generated text 2 513 -> 1 266 chars. 4096 is where the measurement
-    is, not a round number: 2048 was not faster enough to pay (0.69x) *and* truncated a turn, and
-    3072 lost `t8_js_bug` outright to a truncation. Override with `MSWEA_MAX_TOKENS` or
-    `model.max_tokens` (an explicit `model_kwargs.max_tokens` still wins).
-  - Where mini still loses (`t2_grep_logs` 1.90x, `t9_pkg_resize` 1.24x) is variance out of
-    `t8`/`t10`: mini spends 6 and 7 turns where pi spends 7 and 12, and on those two tasks the
-    automatic pilot overruns a turn. The honest limit of this round: **one rep is not a trend**.
-    The aggregate is real (8/10 won, 204.5 s), but the full run still has to be repeated a couple
-    of times before 0.69x can be called a standing result.
+- **Round 6: three fresh repetitions of the whole pi benchmark. The 0.69x of round 5 did not
+  reproduce, and the honest result is a tie, not a win** (#118). Same corpus and model on both
+  sides (`minimax/MiniMax-M3`), sequential, no orchestration. The four complete runs read
+  **0.69x, 1.13x, 0.98x and 0.93x** (mini 204.5 / 254.5 / 284.8 / 246.7 s against pi's
+  295.3 / 225.1 / 291.0 / 265.7 s): a **median of 0.98x** over all four, 0.98x over the three new
+  ones, and a range that straddles 1x. **Quality is the solid part: 10/10 PASS on both sides on
+  every run**, 40/40 per side, no failing `verify.sh` in 80 checks.
+  - Where the speed actually comes from, measured over the 40 runs: **78–81 % of a run's wall time
+    is model time** and the harness itself is ~1–2 s of a ~250 s run (about 1 %). The remaining
+    variable is how many turns the model takes and how long it reasons on each one — e.g.
+    `t10_crash_report` ranged 12.0–94.2 s across four runs at constant quality. There is no
+    harness lever left to close a 0.98x; chasing the single 0.69x run would be optimising a
+    report number, not the software.
+  - Per task, medians over the four runs, the winners are `t1_wordfreq` 0.65x, `t5_script_csv`
+    0.70x, `t6_readme_summary` 0.72x, `t8_js_bug` 0.68x and `t4_refactor` 0.87x; the three worst
+    are `t10_crash_report` 1.64x, `t9_pkg_resize` 1.58x and `t7_regex_cli` 1.50x — all variance
+    in how the model spends its turns, not a defect in either harness.
+  - What the round-5 run *did* establish, and what survives: capping the per-turn output at
+    **4096** removed the pathological long reasoning turns without losing correctness. It stays as
+    the default. It does not, by itself, make mini beat pi in wall time.
+  - Round 5 as first recorded: mini 204.5 s against pi's 295.3 s (0.69x), 8 of 10 tasks, 10/10
+    quality on both sides. It is kept in the table above for honesty, labelled as the single run it
+    was, and superseded by the four-run median. Full detail, including the variance analysis and
+    the note that `overhead_ms` is not a valid "harness costs nothing" field, is in
+    `docs/pi-vs-mini-benchmark.md` §9.
 
 ### Changed
 
