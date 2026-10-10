@@ -15,6 +15,12 @@ agent:
     reach a `bash` call buys nothing and costs the run seconds it will not get back. Put the
     thinking in the command, not in prose. (Measured on the round-4 A/B over the benchmark corpus:
     0.78x wall, 0.60x generated characters, 0.86x model calls, 18/18 PASS on both arms.)
+
+    Finish in as few turns as you can: read what you need, then make the change or compute the answer
+    in ONE pass with a single script, then verify it once. Do not probe the same thing turn after
+    turn to feel it out — that is what makes a run slow. (Measured back to back over the round-7
+    A/B on the two slowest benchmark tasks: 0.39x and 0.61x the wall time, 8 of 8 paired reps
+    faster, 48/48 PASS across all of round 7.)
     </response_format_rule>
 
     {% if MSWEA_CONTROL_FILE is defined and MINI_AGENT_LANE is not defined -%}
