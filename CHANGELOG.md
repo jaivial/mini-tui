@@ -6,6 +6,23 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ### Changed
 
+- **The per-turn output budget is now capped at 4096** (it was an unstated 8192), and a turn that
+  hits the cap is a retryable format error instead of an answer. Round 5 of the pi benchmark showed
+  the front was never the *number* of turns but the length of the worst one: over the round-4
+  corpus the longest single turn of a run was a median **30 %** of that run's wall time, and those
+  turns are almost entirely reasoning — the worst turn wrote **19 427 chars of `<think>` to emit a
+  193-char tool call**, while the longest non-reasoning payload across 73 turns was 1 241 chars.
+  Measured over the whole corpus, back to back per task: 4096 is **0.73x** the wall time of 8192 on
+  7 of 10 tasks, truncates **zero** turns, and halves both the median longest turn (8.0 s → 3.5 s)
+  and the median generated text (2 513 → 1 266 chars). 2048 is not faster enough to pay (0.69x) and
+  did truncate a turn; 3072 lost a task outright. Override with `MSWEA_MAX_TOKENS` or
+  `model.max_tokens` (an explicit `model_kwargs.max_tokens` still wins).
+  - **A truncated turn is never read as the final answer.** It has no `tool_calls` and minimax puts
+    its reasoning in `content`, so the `tool_calls.is_empty()` arm was reading that reasoning as the
+    run's result and submitting a run that had done nothing — measured, that is how a run lost a
+    task it would otherwise have passed. It now falls through to `parse_toolcall_actions`, whose
+    "no tool call" branch is already a format error the loop retries, so the model finishes the
+    thought it was cut off in and only a turn that emitted a real tool call is spent.
 - **The verifier phase now runs in the agent, not only in the terminal UI** (#115 shipped it in
   `src/ui/App.tsx`, so a run started by the web app, by `mini-tui -p` or by a subagent — the surfaces
   the pi benchmark measures — never got a verdict). `agent-rs/src/jev.rs` runs it once the loop has
