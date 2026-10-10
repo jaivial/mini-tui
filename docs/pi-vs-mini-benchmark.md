@@ -636,3 +636,171 @@ overhead del harness ya estaba resuelto en la ronda 3, solo faltaba medirlo bien
    pidio mas tool calls antes de asumir que el acotamiento es neutro.
 4. **La calidad sigue en 10/10 PASS en ambos lados**, asi que ninguna de las cifras de aqui se
    compro a costa de la calidad. Es lo que se pedia: mini ganando en velocidad **y** calidad.
+## 8.9 Ronda 5: donde se va el tiempo, de verdad
+
+La ronda 4 dejo el mismo sitio por dos vias: el arranque (~1,2 s, TLS + TTFB) y las dos tareas
+largas, `t8` y `t10`. Antes de mover nada, la pregunta era otra: **de los 279,1 s de modelo de la
+ronda 4, cuanto era razonamiento y cuanto trabajo**. Reconstruyendo las trayectorias de las 10
+corridas de la ronda 4 (`analyze_traj.py`, `grader_scan.py`):
+
+- **39 % del tiempo de modelo (107,5 s) y 45 % de los caracteres generados se fueron en pensar
+  sobre `verify.sh`**, en 7 de 10 tareas. En `t10` fueron 45,1 s de 60,1 s; en `t4`, 27,9 s de
+  44,3 s.
+- Pero el numero que de verdad manda no es el total: **es el turno mas largo**. Sobre la ronda 4, el
+  turno mas largo de una corrida fue de mediana el **30 % del wall de esa corrida**. En `t8` el
+  peor turno fueron 55,1 s de 72,2 s, y en un A/B hubo un turno de 101,3 s dentro de una corrida de
+  108,3 s.
+- Y esos turnos son **casi todo razonamiento**: el peor turno de `t8` en la ronda 4 escribio
+  **19 427 caracteres de `<think>` para emitir una tool call de 193**. El payload sin razonamiento
+  mas largo de las 73 trayectorias fue de 1 241 caracteres (~400 tokens).
+
+O sea: **no es un problema de turnos, es un problema de longitud de turno**. La palanca no es
+"razonar menos" en general, es que **un turno no puede Emitir una novela**.
+
+## 8.10 Lo que se midio antes de tocar nada
+
+Dos controles negativos, porque sinon cualquier numero parece bueno:
+
+**No existe perilla de razonamiento en minimax.** `reasoning_effort`, `thinking_budget`,
+`enable_thinking` y `reasoning_split` se aceptan y se **ignoran en silencio**; `thinking.type` solo
+admite `adaptive` o `disabled`. Y `adaptive` fue **peor** (20,0 s contra 4,6 - 8,7 s de base).
+`max_tokens` es la unica perilla real.
+
+**El arranque no es del agente.** `measure_startup.sh`: el hueco de arranque del proceso es de
+**0,02 s**. Los ~1,2 s estan dentro de la primera llamada al modelo. Medicion directa de TLS:
+conexion en frio 0,88 - 1,25 s contra keep-alive 0,54 - 0,76 s, o sea **0,3 - 0,5 s por llamada**
+(~3 - 5 s por corrida). El agente ya hace pool con `OnceLock<ureq::Agent>`.
+
+## 8.11 La palanca que funciono: el techo de salida por turno
+
+El techo era un 8192 sin escribir. Ahora es `DEFAULT_MAX_TOKENS = 4096` en `agent-rs/src/models/wire.rs`,
+aplicado donde se construye el body del chat (un `model_kwargs.max_tokens` explicito sigue
+ganando), con `MSWEA_MAX_TOKENS` / `model.max_tokens` como override.
+
+Barrido sobre **todo el corpus**, las tres locales encadenadas tarea por tarea
+(`cap_bench.py`, 10 tareas x 3 techos), load 1,9 - 2,9:
+
+| tarea | 8192 | 4096 | 2048 |
+| --- | --- | --- | --- |
+| t10_crash_report | 54,8 | **14,5** | 14,1 |
+| t1_wordfreq | 22,9 | **9,3** | **8,5** |
+| t2_grep_logs | 21,2 | **7,7** | 16,6 |
+| t3_pytest_fix | 38,2 | **7,7** | **12,4** |
+| t4_refactor | **31,1** | 42,5 | 22,1 (FAIL) |
+| t5_script_csv | 11,1 | **7,8** | 8,6 |
+| t6_readme_summary | 45,6 | **20,0** | 29,0 |
+| t7_regex_cli | **9,0** | 10,1 | 17,9 |
+| t8_js_bug | **17,6** | 62,5 | 31,5 |
+| t9_pkg_resize | **13,3** | 12,0 | 21,1 |
+
+| techo | wall (medianas) | ratio | turno mas largo | turnos | chars | trunc | PASS |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 8192 | 264,8 s | 1,00 | 8,0 s | 7,0 | 2 513 | 0 | 10/10 |
+| **4096** | **194,1 s** | **0,73** | **3,5 s** | 6,5 | **1 266** | **0** | **10/10** |
+| 2048 | 181,8 s | 0,69 | 6,1 s | 6,5 | 2 328 | 1 | **9/10** |
+
+**4096 esta en el punto medido, no en un numero redondo.** 7 de 10 tareas mas rapidas, **cero
+turnos truncados**, turno mas largo de mediana 8,0 -> 3,5 s y texto generado 2 513 -> 1 266 chars.
+2048 no es mas rapido de forma que compense (0,69x) y **trunco un turno**. 3072, que sugeria el
+primer barrido, **perdio `t8_js_bug` por una truncacion**, asi que nunca fue una opcion real.
+
+## 8.12 El bug que encontro el propio barrido
+
+`cap_bench.py` no cuenta solo el tiempo: cuenta los turnos que **llegaron al techo**, y cuantos de
+esos salieron **sin tool call**. En `t4_refactor` con 2048 hubo uno: turno 2 con
+`finish_reason: "length"` y **cero acciones**, y la corrida **termino ahi**. `verify.sh` FAILED.
+
+La causa estaba en `chat_reply`: un turno truncado no trae `tool_calls`, y minimax mete el
+razonamiento en `content`, asi que la rama `else if tool_calls.is_empty()` leia ese razonamiento
+como **respuesta final** y el bucle entregaba una corrida que no habia hecho el trabajo. Esa rama
+devuelve ahora `None` cuando `finish_reason == "length"`, con lo que cae en
+`parse_toolcall_actions`, cuya rama "no tool call" ya es un error de formato que **el bucle
+reintenta**. El modelo al que le cortaron el pensamiento lo termina; solo se gasta un turno que
+llego a emitir una tool call.
+
+Reejecutado el caso exacto que fallaba: `t4_refactor` a 2048 pasa de FAIL a **PASS**, con 7
+turnos limpios terminando en `stop`.
+
+## 8.13 La palanca que se midio y se **tiro**
+
+Antes del techo se probo acotar el razonamiento **por prompt**, anadiendo una regla al system
+template: ejecutar el checker, no leerlo. Sobre `t8` bajo funcionaba: **41,5 s -> 8,2 s** de
+razonamiento sobre el grader. Pero el agregado fue **1,73x mas lento**, con **64 % mas de
+caracteres** y un `verify.sh` en FAILED. Arma B (mas turnos, una prosa gigante) contra arma A. No
+se quedo; **solo se queda el techo**, que actua donde de verdad estaba el problema.
+
+## 8.14 Jev: el verificador pasa al agente
+
+La fase de PR #115 vivia **solo en `src/ui/App.tsx`**, asi que una corrida lanzada por la web, por
+`mini-tui -p` o por un subagente — las superficies que mide este benchmark — **nunca recibia un
+veredicto**. Ahora `agent-rs/src/jev.rs` la corre al terminar el bucle: el **modelo de la propia
+corrida** propone candidatos sobre `git diff HEAD` mas los ficheros sin trackear, y Jev responde a
+las tres preguntas tipadas. `info.jev_verifier` en `traj.json` lleva el informe estructurado.
+
+Medido: un diff con un `import` sin usar devolvio **1 candidato, juzgado por `jev-1.13.0` en
+274 ms**, con P(real)=0,46 / P(serious)=0,03 -> `ignore`. Correcto: no era un defecto. Pero
+**no es un buen lector**: sobre un `safe_div` con `except` a pelo escrito a mano, MiniMax-M3 no
+propuso ningun candidato. Ese es el limite honesto de esta configuracion: el lector es el modelo de
+la corrida porque pedir una segunda credencial era el peor trato.
+
+**El veredicto tipado no ayudo a podar trabajo inutil**: la fase corre *despues* del bucle, asi que
+para cuando hay veredicto ya se gasto el trabajo. Medir si Helps seria trabajo de otra ronda.
+
+## 8.15 Resultados de la ronda 5
+
+Corrida completa: `/home/jaime/mini-tui-benchmark/runs/20261010-134052`, mismas condiciones que las
+rondas anteriores (mismo modelo en los dos lados, `minimax/MiniMax-M3`, secuencial, sin orquestacion),
+load 1,6 - 2,4 anotado en cada linea del log. Techo 4096 (el default recien compilado), Jev off
+para no contaminar la medicion de tiempo.
+
+| tarea | mini R4 | pi R4 | ratio R4 | mini R5 | pi R5 | ratio R5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| t10_crash_report | 62,1 | 65,4 | 0,95 | **12,0** | 46,6 | **0,26** |
+| t1_wordfreq | 20,0 | 7,7 | 2,60 | 12,0 | 12,5 | 0,96 |
+| t2_grep_logs | 10,0 | 25,5 | 0,39 | 16,0 | 8,4 | **1,90** |
+| t3_pytest_fix | 20,0 | 12,6 | 1,59 | **10,0** | 14,2 | 0,70 |
+| t4_refactor | 46,1 | 45,3 | 1,02 | 44,1 | 51,8 | 0,85 |
+| t5_script_csv | 8,0 | 7,1 | 1,13 | 8,0 | 9,1 | 0,88 |
+| t6_readme_summary | 28,1 | 14,5 | 1,94 | **20,1** | 23,2 | 0,87 |
+| t7_regex_cli | 18,0 | 20,0 | 0,90 | 28,1 | 32,6 | 0,86 |
+| t8_js_bug | 72,2 | 55,8 | 1,29 | **28,1** | 75,8 | **0,37** |
+| t9_pkg_resize | 10,0 | 22,2 | 0,45 | 26,1 | 21,1 | **1,24** |
+
+| | R1 | R2 | R3 | R4 | **R5** |
+| --- | --- | --- | --- | --- | --- |
+| ratio agregado | 3,65x | 1,28x | 0,95x | 1,07x | **0,69x** |
+| mini total | - | - | 410,6 s | 293,7 s | **204,5 s** |
+| mini mediana | - | - | 27,1 s | 20,0 s | **18,1 s** |
+| pi total | - | - | 430,1 s | 276,0 s | 295,0 s |
+| pi mediana | - | - | 23,3 s | 21,1 s | 22,1 s |
+| tasks ganadas | - | - | 7/10 | 4/10 | **8/10** |
+| llamadas / turnos | - | - | 70 / 70 | 73 / 81 | **65 / 64** |
+| calidad | - | - | 10/10 | 10/10 | **10/10** |
+
+**La primera vez que mini gana el agregado.** 0,69x son 204,5 s contra 295,0 s de pi: -30 % de
+tiempo, con la calidad intacta (**10/10 PASS en los dos lados**). Y las dos tareas del frente de la
+ronda 4 se Movieron: `t10` de 62,1 s a **12,0 s** (5,2x) y `t8` de 72,2 s a **28,1 s** (2,6x).
+
+El detalle que hace que la cifra sea creible: **el tiempo de modelo bajo de 279,1 s a 179,1 s**, y
+el turno mas largo de mediana cayo de ~30 % del wall por corrida a **4,9 s**. No se gano nada
+quitando trabajo: los chars generados de mediana bajaron de ~2 500 a 1 667 **porque el modelo dejo
+de escribir ensayos para emitir una tool call de 193 caracteres**.
+
+Donde mini pierde (t2 1,90x, t9 1,24x) es varianza de `t8`/`t10`: mini tiene 6 y 7 turnos donde pi
+tiene 7 y 12, y en esas dos tareas el piloto automatico se pasa de turno.
+
+## 8.16 Lo que queda
+
+1. **El arranque (~1,2 s: TLS + TTFB)** sigue intacto, y ahora pesa mas en proporcion: con la
+   corrida a 18 s de mediana, 1,2 s de arranque es ~7 %. La medicion existe (0,3 - 0,5 s por llamada
+   de ahorro con keep-alive) pero el pool actual no lo estructura porque el proveedor manda
+   `Connection: close`. Es el siguiente frente, y es de la parte del proveedor, no del harness.
+2. **La varianza de `t8` y `t10`** es lo que todavia puede tirar el agregado. En el barrido, `t8`
+   fue 17,6 s a 8192 pero 62,5 s a 4096: una sola rep es ruido. El agregado de la ronda 5 es real
+   (8/10 ganadas, 204,5 s) pero **una rep no es una tendencia**; falta repetir la corrida completa
+   un par de veces para ver si 0,69x se sostiene.
+3. **`t6_readme_summary` se recupero** (1,94x -> 0,87x) sin tocar nada de esa tarea: era el sintoma
+   del mismo problema, no un problema de llamadas. La hipotesis de la ronda 4 ("termino en 8 llamadas
+   en vez de 4") era falsa; eran 7 turnos de razonamiento sobre el checker.
+4. **La calidad sigue en 10/10 en ambos lados.** La velocidad no se compro con calidad, que era lo
+   que se pedia.

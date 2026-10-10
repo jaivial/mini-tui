@@ -4,6 +4,44 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ## Unreleased
 
+### Changed
+
+- **The per-turn output budget is now capped at 4096** (it was an unstated 8192), and a turn that
+  hits the cap is a retryable format error instead of an answer. Round 5 of the pi benchmark showed
+  the front was never the *number* of turns but the length of the worst one: over the round-4
+  corpus the longest single turn of a run was a median **30 %** of that run's wall time, and those
+  turns are almost entirely reasoning — the worst turn wrote **19 427 chars of `<think>` to emit a
+  193-char tool call**, while the longest non-reasoning payload across 73 turns was 1 241 chars.
+  Measured over the whole corpus, back to back per task: 4096 is **0.73x** the wall time of 8192 on
+  7 of 10 tasks, truncates **zero** turns, and halves both the median longest turn (8.0 s → 3.5 s)
+  and the median generated text (2 513 → 1 266 chars). 2048 is not faster enough to pay (0.69x) and
+  did truncate a turn; 3072 lost a task outright. Override with `MSWEA_MAX_TOKENS` or
+  `model.max_tokens` (an explicit `model_kwargs.max_tokens` still wins).
+  - **A truncated turn is never read as the final answer.** It has no `tool_calls` and minimax puts
+    its reasoning in `content`, so the `tool_calls.is_empty()` arm was reading that reasoning as the
+    run's result and submitting a run that had done nothing — measured, that is how a run lost a
+    task it would otherwise have passed. It now falls through to `parse_toolcall_actions`, whose
+    "no tool call" branch is already a format error the loop retries, so the model finishes the
+    thought it was cut off in and only a turn that emitted a real tool call is spent.
+- **The verifier phase now runs in the agent, not only in the terminal UI** (#115 shipped it in
+  `src/ui/App.tsx`, so a run started by the web app, by `mini-tui -p` or by a subagent — the surfaces
+  the pi benchmark measures — never got a verdict). `agent-rs/src/jev.rs` runs it once the loop has
+  ended and the code is on disk: the run's **own** model proposes candidate defects in
+  `git diff HEAD` plus the untracked files, and Jev answers the three typed questions per candidate.
+  `info.jev_verifier` in `traj.json` carries the structured report (status, reason, model, latency,
+  candidates, findings with their probabilities and the branch they took); the transcript gets one
+  notice in the same wording the TUI prints. `MINI_AGENT_JEV=1` turns it on, `auto` (default) runs it
+  only when the run left a diff, `off` never does. Same thresholds as `src/jev/verifier.ts`, same
+  "never block the run" contract, and every missing piece (no diff, no reader, no key, reader
+  failure, unparseable output, HTTP error) degrades with a stated reason.
+  - The reader is the run's own client (`Model::reader_endpoint`), so a second `/connect` provider
+    is not needed. Measured: an unused-import diff came back as one candidate judged by
+    `jev-1.13.0` in 274 ms, and Jev scored it P(real)=0.46 / P(serious)=0.03 — correctly *not* a
+    defect. It is not a good reader, though: on a hand-written `safe_div` with a bare `except`,
+    MiniMax-M3 proposed no candidate at all, and the phase reported `reader proposed no candidates`.
+    That is the honest limit of this configuration: the reader is the run's model because asking for
+    a second credential was the worse trade.
+
 ### Added
 
 - **Jev (TypeSafe System One) as two independent, optional toggles** (#115).

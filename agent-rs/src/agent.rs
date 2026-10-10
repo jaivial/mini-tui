@@ -151,6 +151,9 @@ pub struct Agent {
     /// at its first turn instead of opening. False for every run that went through the normal
     /// loop, and for a fast path that declined or failed.
     fastpath_answered: bool,
+    /// The verifier phase's structured report (`src/jev.rs`), written into `traj.json`'s `info`
+    /// when the phase ran. `None` when it was off or never reached.
+    jev_report: Option<Value>,
 }
 
 impl Agent {
@@ -181,6 +184,7 @@ impl Agent {
             last_save_ms: 0.0,
             warmer: crate::cache_warmer::Warmer::new(),
             fastpath_answered: false,
+            jev_report: None,
         }
     }
 
@@ -582,7 +586,66 @@ impl Agent {
                 break;
             }
         }
+        self.run_verifier_phase();
         Ok(self.messages.last().map(extra).unwrap_or_default())
+    }
+
+    /// The optional post-code verifier phase (`src/jev.rs`): once the loop has ended and the code is
+    /// on disk, the run's own model proposes candidate defects in the diff and Jev (TypeSafe System
+    /// One) answers three typed questions per candidate; fixed thresholds branch the probabilities
+    /// into `auto-fix` / `flag` / `ignore` and the report is appended as a transcript notice.
+    ///
+    /// It runs **after** the loop and never inside it, so it cannot cost a task a turn, and every
+    /// failure path degrades to a stated reason. PR #115 ran this phase only from the terminal UI
+    /// (`src/ui/App.tsx`), which meant a run started by the web app or `mini-tui -p` — the surfaces
+    /// the benchmark measures — never got a verdict; from here every surface gets one.
+    fn run_verifier_phase(&mut self) {
+        if !crate::jev::enabled() {
+            return;
+        }
+        let cwd = match std::env::var("MINI_AGENT_WORKDIR").ok().filter(|c| !c.is_empty()).map(std::path::PathBuf::from).or_else(|| std::env::current_dir().ok()) {
+            Some(c) => c,
+            None => return,
+        };
+        let (base, key, wire_name) = self.model.reader_endpoint();
+        if base.is_empty() {
+            self.push_jev_notice(&format!("jev · verifier skipped: this run's model cannot serve a reader ({} is not an OpenAI-compatible endpoint)", self.model.model_name()));
+            return;
+        }
+        // The reader needs the key in an env var only because that is how every other call in this
+        // process reaches a provider; putting it back for the length of one call keeps the phase
+        // from ever reading it out of a config it does not own.
+        let previous = std::env::var("MINI_JEV_READER_KEY").ok();
+        std::env::set_var("MINI_JEV_READER_KEY", key);
+        let report = crate::jev::verify(&cwd, &base, "MINI_JEV_READER_KEY", &wire_name);
+        match previous {
+            Some(p) => std::env::set_var("MINI_JEV_READER_KEY", p),
+            None => std::env::remove_var("MINI_JEV_READER_KEY"),
+        }
+        let lines = crate::jev::format_report(&report);
+        // One notice, not one per line: the transcript gets a single readable block, and the
+        // structured report under `info.jev_verifier` is what anything parsing this reads.
+        let mut text = lines.join("\n");
+        if !text.is_empty() {
+            text = format!("{text}\n");
+        }
+        // The report goes in BEFORE the save, so the forced export carries both the notice and the
+        // structured verdict. Setting it after would leave `info.jev_verifier` null in `traj.json`.
+        self.jev_report = Some(crate::jev::to_value(&report));
+        self.push_jev_notice(&text);
+    }
+
+    /// Append one notice message carrying the phase's text, and record the structured report so
+    /// `traj.json` answers "what did Jev say" without re-parsing the prose.
+    fn push_jev_notice(&mut self, text: &str) {
+        let mut ex = crate::util::Obj::new();
+        ex.insert("notice".into(), serde_json::Value::String(text.to_string()));
+        ex.insert("interrupt_type".into(), serde_json::Value::String("jev".into()));
+        let message = self.model.format_message("user", &format!("<jev>{text}</jev>"), Some(ex));
+        self.add_messages(vec![message]);
+        // Forced: the run is over, so this is the last write and `traj.json` has to carry both the
+        // notice and `info.jev_verifier`. The journal append still happens either way.
+        self.save(true);
     }
 
     /// One tool-free model call for a task that needs no
@@ -1130,6 +1193,11 @@ impl Agent {
             },
             "trajectory_format": "mini-swe-agent-1.1",
         });
+        // Only when the verifier phase actually ran: a run with the toggle off stays byte-identical
+        // to the trajectory it produced before the phase existed.
+        if let Some(report) = self.jev_report.as_ref() {
+            data["info"]["jev_verifier"] = report.clone();
+        }
         // Only when this session started subagents: a run without any stays byte-identical to
         // the Python agent's trajectory (the parity suite compares them).
         if let Some(children) = crate::subagents::snapshot() {

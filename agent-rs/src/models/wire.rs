@@ -46,6 +46,34 @@ const LITELLM_ONLY: [&str; 5] = ["drop_params", "custom_llm_provider", "api_base
 const WIRE_KEYS: [&str; 5] = ["role", "content", "tool_calls", "tool_call_id", "name"];
 const THINKING: [&str; 2] = ["thinking", "redacted_thinking"];
 
+/// Default per-turn output budget, in tokens (pi-parity round 5).
+///
+/// The measured reason it is not 8192: over the benchmark corpus the longest single turn of a run
+/// was a median **30 %** of that run's wall time, and the turns that blow up are almost entirely
+/// reasoning — the round-4 corpus's worst turn wrote 19 427 characters of `<think>` to emit a tool
+/// call whose payload was **193**. A run is a sequence of tool calls, not a sequence of essays, and
+/// the essay is paid for at full generation speed with nothing on the other side of it.
+///
+/// 4096 is where the corpus measurement put it, not a round number. Measured over the whole
+/// corpus at three caps, back to back per task on an idle machine: 4096 is **0.73x** the wall time
+/// of the previous 8192 on 7 of 10 tasks, it never once truncated a turn (`trunc=0` across 10
+/// tasks), and it cuts the median longest turn from 8.0 s to 3.5 s and the median generated text
+/// from 2 513 to 1 266 chars. 2048 is not faster in a way that pays (0.69x, and it did truncate:
+/// on `t4_refactor` a turn came back `finish_reason: "length"` having emitted no tool call at all).
+/// It is also 4096 rather than 3072 because 4096 is the measured point: at 3072 the sweep lost
+/// `t8_js_bug` to a truncation, at 4096 nothing truncated, and the step below it buys nothing the
+/// model does not recover from.
+///
+/// `MSWEA_MAX_TOKENS` or `model.max_tokens` overrides it, and a turn that hits the cap comes back
+/// `finish_reason: "length"`, which is deliberately **not** read as a final answer (see
+/// `chat_reply`) -- it is a format error the loop retries, so the model gets to finish the thought
+/// it was cut off in instead of the run being submitted unfinished.
+const DEFAULT_MAX_TOKENS: i64 = 4096;
+
+fn default_max_tokens() -> i64 {
+    crate::config::env_or("MSWEA_MAX_TOKENS", &DEFAULT_MAX_TOKENS.to_string()).parse().unwrap_or(DEFAULT_MAX_TOKENS)
+}
+
 impl WireModel {
     fn cfg_str(&self, key: &str) -> Option<String> {
         self.config.get(key).and_then(Value::as_str).map(String::from)
@@ -165,6 +193,10 @@ impl WireModel {
         let (params, mut headers) = self.params();
         headers.extend(self.auth_headers());
         let mut body = json!({"model": self.wire_name, "messages": self.chat_messages(messages), "tools": with_agent_tools(crate::writing::with_writing(read::with_read(vec![bash_tool(), cu_tool()])), crate::agents::chat_tools())});
+        // The per-turn output cap (see `DEFAULT_MAX_TOKENS`). Placed here, after the kwargs loop,
+        // so an explicit `model_kwargs.max_tokens` still wins: this only supplies the default that
+        // used to be an unstated 8192.
+        body["max_tokens"] = json!(self.config.get("max_tokens").and_then(Value::as_i64).unwrap_or_else(default_max_tokens));
         for (k, v) in params {
             body[k] = v;
         }
@@ -361,7 +393,18 @@ impl WireModel {
                 None
             }
         } else if tool_calls.is_empty() {
-            content.as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+            // A turn cut off by the output budget (`finish_reason: "length"`) is not an answer. It
+            // carries no tool call and usually only reasoning, and reading its text as the final
+            // answer ends the run on a turn that never did the work — measured on the round-5 cap
+            // sweep, where that is exactly how a run lost a task it would otherwise have passed.
+            // It has to fall through to `parse_toolcall_actions`, whose "no tool call" branch is a
+            // format error the loop retries with the model's own guidance.
+            let truncated = choice.get("finish_reason").and_then(Value::as_str) == Some("length");
+            if truncated {
+                None
+            } else {
+                content.as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+            }
         } else {
             None
         };
@@ -561,6 +604,16 @@ impl Model for WireModel {
 
     fn context_window(&self) -> i64 {
         self.config.get("context_window").and_then(Value::as_i64).unwrap_or(0)
+    }
+
+    /// The verifier phase's reader: this same provider, this same key, this same wire name. Only a
+    /// chat-protocol model can serve it (the Anthropic and Responses shapes post elsewhere), so
+    /// anything else reports no reader and the phase degrades with that reason.
+    fn reader_endpoint(&self) -> (String, String, String) {
+        if self.protocol != Protocol::Chat || self.api_base.is_empty() || self.api_key.is_empty() {
+            return (String::new(), String::new(), String::new());
+        }
+        (self.api_base.clone(), self.api_key.clone(), self.wire_name.clone())
     }
 
     fn streams(&self) -> bool {

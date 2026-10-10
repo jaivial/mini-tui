@@ -68,6 +68,15 @@ pub trait Model {
     fn model_name(&self) -> String;
     /// `config.context_window` (0 = look it up by id).
     fn context_window(&self) -> i64;
+    /// `(chat base url, api key, the id the provider knows this model as)`.
+    ///
+    /// The verifier phase of `src/jev.rs` needs a reader and this is where it gets one for free: the
+    /// model this run is already talking to, on the endpoint and with the credentials already in
+    /// memory. A second provider to configure is the one thing an optional quality phase must not
+    /// ask for. Scripted models return empty strings, which the phase treats as "no reader".
+    fn reader_endpoint(&self) -> (String, String, String) {
+        (String::new(), String::new(), String::new())
+    }
     /// Streams partial output through the sink (the HTTP clients do; scripted models do not).
     fn streams(&self) -> bool {
         false
