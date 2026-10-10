@@ -1,0 +1,222 @@
+{
+  "label": "mini",
+  "rows": [
+    {
+      "task": "datacurve/anko-typed-variable-bindings",
+      "class": "contested",
+      "field": "4/12",
+      "state": "missing"
+    },
+    {
+      "task": "datacurve/arktype-json-schema-refs-dependencies",
+      "class": "contested",
+      "field": "2/12",
+      "state": "missing"
+    },
+    {
+      "task": "datacurve/expr-try-catch-errors",
+      "class": "contested",
+      "field": "2/12",
+      "state": "missing"
+    },
+    {
+      "task": "datacurve/fastapi-deprecation-response-headers",
+      "class": "contested",
+      "field": "4/12",
+      "state": "missing"
+    },
+    {
+      "task": "datacurve/httpx-multipart-response-parsing",
+      "class": "contested",
+      "field": "5/12",
+      "state": "missing"
+    },
+    {
+      "task": "datacurve/katex-multicolumn-array-spans",
+      "class": "contested",
+      "field": "1/12",
+      "state": "missing"
+    },
+    {
+      "task": "datacurve/meriyah-explicit-resource-declarations",
+      "class": "contested",
+      "field": "1/12",
+      "state": "missing"
+    },
+    {
+      "task": "datacurve/python-statemachine-state-data-scoping",
+      "class": "contested",
+      "field": "7/12",
+      "state": "missing"
+    },
+    {
+      "task": "datacurve/scc-bounded-memory-spilling",
+      "class": "solved-by-nobody",
+      "field": "0/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/build-cython-ext",
+      "class": "universal",
+      "field": "12/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/chess-best-move",
+      "class": "contested",
+      "field": "5/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/code-from-image",
+      "class": "contested",
+      "field": "4/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/constraints-scheduling",
+      "class": "universal",
+      "field": "12/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/db-wal-recovery",
+      "class": "universal",
+      "field": "12/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/dna-insert",
+      "class": "contested",
+      "field": "2/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/extract-elf",
+      "class": "contested",
+      "field": "2/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/gcode-to-text",
+      "class": "contested",
+      "field": "5/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/git-leak-recovery",
+      "class": "universal",
+      "field": "12/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/kv-store-grpc",
+      "class": "solved-by-nobody",
+      "field": "0/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/largest-eigenval",
+      "class": "solved-by-nobody",
+      "field": "0/12",
+      "state": "valid",
+      "success": false,
+      "input_tokens": 197454,
+      "output_tokens": 14907,
+      "cache_tokens": 182080,
+      "cost_usd": 0.324351,
+      "turns": 0,
+      "seconds": 318.286979
+    },
+    {
+      "task": "terminal-bench/log-summary-date-ranges",
+      "class": "universal",
+      "field": "12/12",
+      "state": "valid",
+      "success": true,
+      "input_tokens": 13079,
+      "output_tokens": 893,
+      "cache_tokens": 9152,
+      "cost_usd": 0.027921599999999998,
+      "turns": 0,
+      "seconds": 42.796903
+    },
+    {
+      "task": "terminal-bench/merge-diff-arc-agi-task",
+      "class": "universal",
+      "field": "12/12",
+      "state": "valid",
+      "success": true,
+      "input_tokens": 59347,
+      "output_tokens": 2675,
+      "cache_tokens": 47616,
+      "cost_usd": 0.0896028,
+      "turns": 0,
+      "seconds": 72.589535
+    },
+    {
+      "task": "terminal-bench/modernize-scientific-stack",
+      "class": "universal",
+      "field": "12/12",
+      "state": "valid",
+      "success": true,
+      "input_tokens": 10951,
+      "output_tokens": 891,
+      "cache_tokens": 5632,
+      "cost_usd": 0.031011600000000004,
+      "turns": 0,
+      "seconds": 45.165974
+    },
+    {
+      "task": "terminal-bench/multi-source-data-merger",
+      "class": "universal",
+      "field": "12/12",
+      "state": "valid",
+      "success": true,
+      "input_tokens": 19149,
+      "output_tokens": 2309,
+      "cache_tokens": 13824,
+      "cost_usd": 0.054757200000000006,
+      "turns": 0,
+      "seconds": 69.322124
+    },
+    {
+      "task": "terminal-bench/openssl-selfsigned-cert",
+      "class": "universal",
+      "field": "12/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/polyglot-c-py",
+      "class": "universal",
+      "field": "12/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/regex-log",
+      "class": "contested",
+      "field": "11/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/sanitize-git-repo",
+      "class": "contested",
+      "field": "10/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/sqlite-db-truncate",
+      "class": "universal",
+      "field": "12/12",
+      "state": "missing"
+    },
+    {
+      "task": "terminal-bench/vulnerable-secret",
+      "class": "universal",
+      "field": "12/12",
+      "state": "missing"
+    }
+  ],
+  "scored": 5,
+  "passes": 4
+}
