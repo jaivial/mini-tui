@@ -43,6 +43,12 @@ pub struct AgentConfig {
     pub cost_limit: f64,
     pub wall_time_limit_seconds: i64,
     pub max_consecutive_format_errors: i64,
+    /// `--exit-immediately` (`agent.confirm_exit: false`): end the turn instead of holding at
+    /// the exit waiting for a follow-up. It was set on the command line since the flag landed
+    /// and read by nothing, so every headless run slept in `wait_for_followup` forever after it
+    /// had already written `Submitted` --- 55 processes and 816 MB of RSS were still alive from
+    /// the round-3 benchmark, hours later, each with a hub socket and a monitor thread.
+    pub confirm_exit: bool,
     pub output_path: Option<PathBuf>,
     pub compaction_enabled: bool,
     pub threshold: f64,
@@ -67,6 +73,9 @@ impl AgentConfig {
             cost_limit: num(o, "cost_limit").unwrap_or(0.0), // Jaime 2026-10-09: no default cost limit
             wall_time_limit_seconds: num(o, "wall_time_limit_seconds").unwrap_or(0.0) as i64,
             max_consecutive_format_errors: num(o, "max_consecutive_format_errors").unwrap_or(3.0) as i64,
+            // A run with a control file is a session someone can poke, and it holds at its exit.
+            // One without it cannot be continued by anybody, so there is nothing to wait for.
+            confirm_exit: o.get("confirm_exit").and_then(Value::as_bool).unwrap_or(true),
             output_path: o.get("output_path").and_then(Value::as_str).map(PathBuf::from),
             compaction_enabled: comp.get("enabled").and_then(Value::as_bool).unwrap_or(env_f("MSWEA_AUTO_COMPACT", "1") != "0"),
             threshold: num(&comp, "threshold").unwrap_or(env_f("MSWEA_COMPACT_THRESHOLD", "0.8").parse().unwrap_or(0.8)),
@@ -85,6 +94,7 @@ impl AgentConfig {
             "cost_limit": self.cost_limit,
             "wall_time_limit_seconds": self.wall_time_limit_seconds,
             "max_consecutive_format_errors": self.max_consecutive_format_errors,
+            "confirm_exit": self.confirm_exit,
             "output_path": self.output_path.as_ref().map(|p| p.display().to_string()),
             "compaction": {
                 "enabled": self.compaction_enabled,
@@ -393,6 +403,12 @@ impl Agent {
 
     /// Hold at exit for a follow-up: true when a `MESSAGE` arrived.
     fn wait_for_followup(&mut self) -> Result<bool, ModelError> {
+        // `--exit-immediately`: this run ends with its turn. Children still at work are killed
+        // by the hub guard on the way out, not waited for -- a headless caller is not going to
+        // read their reports, and holding here is what left 55 processes alive after round 3.
+        if !self.config.confirm_exit {
+            return Ok(false);
+        }
         if Self::control_file().is_none() {
             // No one can send a follow-up (a headless run), but subagents still at work will
             // report: hold for them, so ending a turn never kills the children it started.
