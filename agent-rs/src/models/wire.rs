@@ -384,7 +384,18 @@ impl WireModel {
                 None
             }
         } else if tool_calls.is_empty() {
-            content.as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+            // A turn cut off by the output budget (`finish_reason: "length"`) is not an answer. It
+            // carries no tool call and usually only reasoning, and reading its text as the final
+            // answer ends the run on a turn that never did the work — measured on the round-5 cap
+            // sweep, where that is exactly how a run lost a task it would otherwise have passed.
+            // It has to fall through to `parse_toolcall_actions`, whose "no tool call" branch is a
+            // format error the loop retries with the model's own guidance.
+            let truncated = choice.get("finish_reason").and_then(Value::as_str) == Some("length");
+            if truncated {
+                None
+            } else {
+                content.as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+            }
         } else {
             None
         };
