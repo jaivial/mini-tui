@@ -1,0 +1,35 @@
+{
+  "run_id": "2026-10-10-mini-terminal-bench",
+  "status": "aborted-provider-quota",
+  "started_at": "2026-10-10T15:54:15Z",
+  "halted_at": "2026-10-10T16:16:46Z",
+  "arms_completed": ["mini/terminal-bench (partial, 5 of 21 tasks)"],
+  "arms_not_started": ["pi/terminal-bench", "mini/deepswe", "pi/deepswe"],
+  "blocker": {
+    "provider": "opencode-go (https://opencode.ai/zen/go/v1)",
+    "error_type": "GoUsageLimitError",
+    "message": "Go usage limit exceeded",
+    "limit_name": "weekly",
+    "workspace": "wrk_01KFHBN9C6MR761DYR37ACB0W2",
+    "detected_at": "2026-10-10T16:07:57Z",
+    "verified_persistent": true,
+    "note": "/v1/models still answers 200; every /chat/completions is rejected, so the limit applies to generation, not discovery."
+  },
+  "evidence_retained": {
+    "valid_cells": 5,
+    "passes": 4,
+    "infra_invalid": 0,
+    "tasks_completed_before_quota_exhaustion": [
+      "log-summary-date-ranges (PASS)",
+      "merge-diff-arc-agi-task (PASS)",
+      "modernize-scientific-stack (PASS)",
+      "multi-source-data-merger (PASS)",
+      "largest-eigenval (FAIL)"
+    ],
+    "quota_affected_tasks": ["chess-best-move (aborted mid-run, excluded from scoring)"],
+    "integrity": "every retained trial finished before the first 429 at 16:07:57Z, so no retained cell is contaminated by quota exhaustion"
+  },
+  "why_halted": "Continuing would have converted a provider quota outage into apparent agent failures. A trial starved of completions scores as a task failure, which would silently corrupt both the pass rate and the per-task failure analysis.",
+  "to_resume": "run-sweep.sh is idempotent per arm: once the weekly quota resets, rerun it and the remaining tasks are appended. Do not fold quota-affected trials into the matrix; re-run those tasks.",
+  "not_quoted": "pass_rate over this partial matrix is 80.0% over 5 valid cells and success/expected is 13.3%. Neither is a FrontierHarness score: 25 of 30 cells were never run, and the 4 passes are 4 of the 12 tasks the published field solves universally."
+}

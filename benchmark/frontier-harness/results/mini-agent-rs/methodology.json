@@ -1,0 +1,17 @@
+{
+  "arm": "mini",
+  "suite": "terminal-bench",
+  "agent": "mini_agent_rs:MiniAgentRs",
+  "model": "opencode-go/kimi-k3",
+  "model_provider": "opencode-go",
+  "dataset": "terminal-bench@2.0",
+  "tasks_file": "tasks-subset.txt",
+  "runtime": "local docker (host kraken-server)",
+  "concurrency": 1,
+  "divergences_from_published_protocol": [
+    "Runta golden-checkpoint restores replaced by fresh docker containers per trial; no shared frozen checkpoint, so disk/cache state is not guaranteed identical across arms",
+    "Kimi K3 served via OpenCode Go rather than Fireworks; the skill requires a matched control run before claiming leaderboard comparability",
+    "DeepSWE tasks normally run on a Runta-hosted runtime because they set allow_internet=false and the agent must still reach its provider"
+  ],
+  "scored_by": "the harness accounting rules (reward>=1 plus observed usage = success)"
+}
