@@ -56,7 +56,12 @@ class LocalEnvironment:
             )
 
     def get_template_vars(self, **kwargs) -> dict[str, Any]:
-        return recursive_merge(self.config.model_dump(), platform.uname()._asdict(), os.environ, kwargs)
+        # `cwd` is what the instance prompt names as the directory the commands run in, so the
+        # model does not spend turns on `pwd`/`ls`/`find` to discover where it already is. An
+        # unset config.cwd means the shell inherits this process's directory (see `execute`).
+        merged = recursive_merge(self.config.model_dump(), platform.uname()._asdict(), os.environ, kwargs)
+        merged["cwd"] = self.config.cwd or os.getcwd()
+        return merged
 
     def serialize(self) -> dict:
         return {

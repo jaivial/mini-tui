@@ -59,7 +59,11 @@ class DockerEnvironment:
         self._start_container()
 
     def get_template_vars(self, **kwargs) -> dict[str, Any]:
-        return recursive_merge(self.config.model_dump(), platform.uname()._asdict(), kwargs)
+        # `cwd` for the same reason as the local environment: the instance prompt names the
+        # directory the commands run in. Inside the container that is the config's cwd.
+        merged = recursive_merge(self.config.model_dump(), platform.uname()._asdict(), kwargs)
+        merged["cwd"] = self.config.cwd or "/"
+        return merged
 
     def serialize(self) -> dict:
         return {

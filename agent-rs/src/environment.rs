@@ -463,6 +463,11 @@ impl Environment for LocalEnvironment {
     fn template_vars(&self) -> Obj {
         let mut vars = self.config.clone();
         crate::util::merge_into(&mut vars, &uname());
+        // The directory the agent's commands already run in, as `cwd`. `config.cwd` is empty when
+        // the run was not given one, in which case the shell inherits the process directory: the
+        // prompt names it so the model does not spend turns on `pwd`/`ls`/`find` to find out where
+        // it is (it was 2-3 calls per task on the round-2 benchmark).
+        vars.insert("cwd".into(), json!(self.working_dir()));
         let mut env = Obj::new();
         for (k, v) in std::env::vars() {
             env.insert(k, json!(v));
@@ -565,6 +570,9 @@ impl Environment for DockerEnvironment {
     fn template_vars(&self) -> Obj {
         let mut vars = self.config.clone();
         crate::util::merge_into(&mut vars, &uname());
+        // Same `cwd` contract as `LocalEnvironment`: the instance prompt names the directory the
+        // commands run in, so it must be defined here too (the container path, else the image's).
+        vars.insert("cwd".into(), json!(self.config.get("cwd").and_then(Value::as_str).unwrap_or("/")));
         vars
     }
 
