@@ -54,12 +54,21 @@ const THINKING: [&str; 2] = ["thinking", "redacted_thinking"];
 /// call whose payload was **193**. A run is a sequence of tool calls, not a sequence of essays, and
 /// the essay is paid for at full generation speed with nothing on the other side of it.
 ///
-/// 3072 sits above every real payload measured (the longest non-reasoning turn in the round-4
-/// corpus was 1 241 characters, ~400 tokens) and far below the prose tail, so it truncates the
-/// runaway and leaves the work alone. `MSWEA_MAX_TOKENS` or `model.max_tokens` overrides it, and a
-/// turn that hits the cap comes back `finish_reason: "length"`, which the format-error template
-/// already turns into "answer more concisely and finish with exactly one tool call".
-const DEFAULT_MAX_TOKENS: i64 = 3072;
+/// 4096 is where the corpus measurement put it, not a round number. Measured over the whole
+/// corpus at three caps, back to back per task on an idle machine: 4096 is **0.73x** the wall time
+/// of the previous 8192 on 7 of 10 tasks, it never once truncated a turn (`trunc=0` across 10
+/// tasks), and it cuts the median longest turn from 8.0 s to 3.5 s and the median generated text
+/// from 2 513 to 1 266 chars. 2048 is not faster in a way that pays (0.69x, and it did truncate:
+/// on `t4_refactor` a turn came back `finish_reason: "length"` having emitted no tool call at all).
+/// It is also 4096 rather than 3072 because 4096 is the measured point: at 3072 the sweep lost
+/// `t8_js_bug` to a truncation, at 4096 nothing truncated, and the step below it buys nothing the
+/// model does not recover from.
+///
+/// `MSWEA_MAX_TOKENS` or `model.max_tokens` overrides it, and a turn that hits the cap comes back
+/// `finish_reason: "length"`, which is deliberately **not** read as a final answer (see
+/// `chat_reply`) -- it is a format error the loop retries, so the model gets to finish the thought
+/// it was cut off in instead of the run being submitted unfinished.
+const DEFAULT_MAX_TOKENS: i64 = 4096;
 
 fn default_max_tokens() -> i64 {
     crate::config::env_or("MSWEA_MAX_TOKENS", &DEFAULT_MAX_TOKENS.to_string()).parse().unwrap_or(DEFAULT_MAX_TOKENS)
