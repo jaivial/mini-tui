@@ -4,7 +4,7 @@
  */
 export const SITE_URL: string = (import.meta.env.VITE_SITE_URL ?? "https://jaivial.github.io/mini-tui").replace(/\/$/, "");
 export const REPO = "https://github.com/jaivial/mini-tui";
-export const RELEASE = "0.39.0";
+export const RELEASE = "0.41.0";
 export const NAME = "mini-tui";
 export const TAGLINE = "A terminal and web UI for the mini-swe-agent coding agent";
 export const DESCRIPTION =

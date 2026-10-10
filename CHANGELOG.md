@@ -2,7 +2,39 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.41.0 — 2026-10-10
+
+mini wins the pi benchmark for the first time: **0.69x** the wall time end to end, 8 of 10 tasks
+faster, quality unchanged at 10/10 on both sides. Jev arrives as two optional toggles, and a
+truncated turn can no longer be read as a run's final answer.
+
+### Measured
+
+- **Round 5 of the pi benchmark: mini 0.69x aggregate, the first round mini wins** (#116). Same
+  corpus as rounds 1-4, same model on both sides (`minimax/MiniMax-M3`), sequential, no
+  orchestration. **204.5 s against pi's 295.0 s** — 30% less wall time — and **8 of 10 tasks** won,
+  the best of any round (R1 3.65x with 2/10, R2 1.28x, R3 0.95x with 7/10, R4 1.07x with 4/10). The
+  quality verdict is **10/10 PASS on both sides**: the speed was not bought with correctness.
+  The two tasks that led round 4 moved: `t10_crash_report` 62.1 s -> **12.0 s** (5.2x) and
+  `t8_js_bug` 72.2 s -> **28.1 s** (2.6x). Median per task 20.0 s -> **18.1 s**; model time
+  279.1 s -> **179.1 s**; the longest single turn fell from ~30% of a run's wall time to a median
+  **4.9 s**. Nothing was removed from the work: median generated characters went ~2 500 -> 1 667
+  because the model stopped writing essays to emit a 193-character tool call.
+  - The cause was the front, not the number of turns. Over the round-4 corpus the longest single
+    turn of a run was a median **30%** of that run's wall time, and those turns are almost
+    entirely reasoning: the worst one wrote **19 427 chars of `<think>` to emit a 193-char tool
+    call**, while the longest non-reasoning payload across 73 turns was 1 241 chars. Capping the
+    per-turn output at **4096** was measured back to back per task over the whole corpus: **0.73x**
+    the wall time of the old 8192 on 7 of 10 tasks, **zero** turns truncated, median longest turn
+    8.0 s -> 3.5 s and median generated text 2 513 -> 1 266 chars. 4096 is where the measurement
+    is, not a round number: 2048 was not faster enough to pay (0.69x) *and* truncated a turn, and
+    3072 lost `t8_js_bug` outright to a truncation. Override with `MSWEA_MAX_TOKENS` or
+    `model.max_tokens` (an explicit `model_kwargs.max_tokens` still wins).
+  - Where mini still loses (`t2_grep_logs` 1.90x, `t9_pkg_resize` 1.24x) is variance out of
+    `t8`/`t10`: mini spends 6 and 7 turns where pi spends 7 and 12, and on those two tasks the
+    automatic pilot overruns a turn. The honest limit of this round: **one rep is not a trend**.
+    The aggregate is real (8/10 won, 204.5 s), but the full run still has to be repeated a couple
+    of times before 0.69x can be called a standing result.
 
 ### Changed
 
@@ -17,7 +49,7 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
   and the median generated text (2 513 → 1 266 chars). 2048 is not faster enough to pay (0.69x) and
   did truncate a turn; 3072 lost a task outright. Override with `MSWEA_MAX_TOKENS` or
   `model.max_tokens` (an explicit `model_kwargs.max_tokens` still wins).
-  - **A truncated turn is never read as the final answer.** It has no `tool_calls` and minimax puts
+  - **A truncated turn is never read as the final answer** (#116). It has no `tool_calls` and minimax puts
     its reasoning in `content`, so the `tool_calls.is_empty()` arm was reading that reasoning as the
     run's result and submitting a run that had done nothing — measured, that is how a run lost a
     task it would otherwise have passed. It now falls through to `parse_toolcall_actions`, whose
@@ -44,7 +76,7 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ### Added
 
-- **Jev (TypeSafe System One) as two independent, optional toggles** (#115).
+- **Jev (TypeSafe System One) as two independent, optional toggles** (#115, #116).
   - **Toggle 1 — `jev`**: the System One decision service and its API key. The key goes into a
     small vault (`~/.config/mini-tui/vault.json`, 0600) as `jev-api-key`, editable in
     `/settings` → jev (masked, never rendered in full) or with `mini-tui settings jev-key <key>`.

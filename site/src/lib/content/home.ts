@@ -98,6 +98,33 @@ export const agents = {
   ],
 } as const;
 
+/**
+ * Round 5 of the pi benchmark: the round mini first won the aggregate. Same corpus and model as
+ * rounds 1-4 (`minimax/MiniMax-M3`), sequential, no orchestration. Shown on the home page; the full
+ * report is in `docs/pi-vs-mini-benchmark.md` in the repository.
+ */
+export const benchmark = {
+  rounds: [
+    { round: "R1", ratio: "3.65x", won: "2/10", note: "slow start, harness overhead" },
+    { round: "R2", ratio: "1.28x", won: "3/10", note: "native write/edit, leaner prompt" },
+    { round: "R3", ratio: "0.95x", won: "7/10", note: "median flips to mini" },
+    { round: "R4", ratio: "1.07x", won: "4/10", note: "the reasoning front appears" },
+    { round: "R5", ratio: "0.69x", won: "8/10", note: "first aggregate win, quality intact" },
+  ],
+  rows: [
+    { label: "Total wall time", pi: "295.0 s", mini: "204.5 s" },
+    { label: "Median per task", pi: "22.1 s", mini: "18.1 s" },
+    { label: "Tasks won", pi: "2/10", mini: "8/10" },
+    { label: "Quality", pi: "10/10", mini: "10/10" },
+  ],
+  points: [
+    "The front was never the number of turns but the length of the worst one: over the round-4 corpus the longest single turn was a median 30 % of a run's wall time, and those turns are almost entirely reasoning.",
+    "Capping the per-turn output at 4096 (from an unstated 8192) was measured back to back over the whole corpus: 0.73x the wall time on 7 of 10 tasks and zero turns truncated. 2048 was not faster enough to pay and truncated a turn; 3072 lost a task outright.",
+    "The two tasks that led round 4 moved: t10_crash_report 62.1 s -> 12.0 s, t8_js_bug 72.2 s -> 28.1 s.",
+    "Nothing was removed from the work. The speed was not bought with correctness: 10/10 PASS on both sides.",
+  ],
+} as const;
+
 /** Panes and windows: the multi-session layout, advertised on the home page. */
 export const workspaceShots = {
   main: { src: "screens/web-panes.webp", alt: "Four mini-tui sessions side by side in a window called Backend, three of them working; the sidebar lists the Backend, Frontend and Release windows with a status dot per pane", w: 3360, h: 2000 },

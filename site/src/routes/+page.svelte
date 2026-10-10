@@ -10,18 +10,18 @@
   import { Badge } from "$lib/components/ui/badge";
   import * as Card from "$lib/components/ui/card";
   import * as Accordion from "$lib/components/ui/accordion";
-  import { agents, faq, features, hero, RUST_INSTALL, screens, steps, workspacePoints, workspaceShots } from "$lib/content/home";
+  import { agents, benchmark, faq, features, hero, RUST_INSTALL, screens, steps, workspacePoints, workspaceShots } from "$lib/content/home";
   import { reveal } from "$lib/motion";
   import { DESCRIPTION, REPO, RELEASE } from "$lib/site";
 </script>
 
-<Seo page={{ path: "/", title: "mini-tui: terminal and web UI for the mini-swe-agent", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-10-04" }} />
+<Seo page={{ path: "/", title: "mini-tui: terminal and web UI for the mini-swe-agent", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-10-10" }} />
 
 <!-- Hero: the one <h1>, the primary action, and the product in the first viewport. -->
 <div class="relative overflow-hidden border-b">
   <div class="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] bg-[radial-gradient(60%_60%_at_50%_0%,color-mix(in_oklab,var(--primary)_16%,transparent),transparent)]" aria-hidden="true"></div>
   <div class="mx-auto max-w-7xl 2xl:max-w-[90rem] px-4 pt-16 pb-10 text-center sm:px-6 sm:pt-24">
-    <Badge variant="secondary" class="mb-6 font-mono">v{RELEASE}: panes, windows and a Rust agent</Badge>
+    <Badge variant="secondary" class="mb-6 font-mono">v{RELEASE}: faster than pi, 0.69x on the benchmark</Badge>
     <h1 class="mx-auto max-w-3xl text-4xl font-semibold tracking-tight sm:text-6xl">{hero.title}</h1>
     <p class="mx-auto mt-5 max-w-2xl text-base text-muted-foreground sm:text-lg">{hero.sub}</p>
     <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
@@ -151,6 +151,67 @@
       <CodeBlock code={RUST_INSTALL} label="Copy the install command" />
       <p class="mt-2 text-sm">
         <a class="inline-flex min-h-11 items-center gap-1 text-primary underline underline-offset-4" href={resolve("/docs/rust-agent/" as "/")}>Python or Rust: the full comparison <ArrowRight class="size-3.5" aria-hidden="true" /></a>
+      </p>
+    </div>
+  </div>
+</Section>
+
+<Section id="benchmark" title="Faster than the pi harness, and it shows" lede="Round 5 of the benchmark mini-tui's Rust agent runs against pi: the same ten tasks, the same model on both sides, sequential, no orchestration. It is the first round mini wins the aggregate.">
+  <div use:reveal class="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start">
+    <div class="min-w-0">
+      <!-- A real table where there is room; stacked, labelled rows on a phone (no sideways scroll). -->
+      <table class="hidden w-full border-separate border-spacing-0 overflow-hidden rounded-xl border text-sm sm:table">
+        <caption class="sr-only">Round 5 wall time, tasks won and quality: pi harness against mini-tui</caption>
+        <thead>
+          <tr class="bg-card">
+            <th scope="col" class="w-[38%] border-b px-4 py-3 text-left font-medium text-muted-foreground"><span class="sr-only">Measure</span></th>
+            <th scope="col" class="border-b px-4 py-3 text-left font-semibold">pi harness</th>
+            <th scope="col" class="border-b bg-primary/5 px-4 py-3 text-left font-semibold text-primary">mini-tui</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each benchmark.rows as r, i (r.label)}
+            <tr>
+              <th scope="row" class="px-4 py-3 text-left font-medium {i < benchmark.rows.length - 1 ? 'border-b' : ''}">{r.label}</th>
+              <td class="px-4 py-3 tabular-nums text-muted-foreground {i < benchmark.rows.length - 1 ? 'border-b' : ''}">{r.pi}</td>
+              <td class="bg-primary/5 px-4 py-3 font-medium tabular-nums {i < benchmark.rows.length - 1 ? 'border-b' : ''}">{r.mini}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <dl class="grid gap-3 sm:hidden">
+        {#each benchmark.rows as r (r.label)}
+          <div class="rounded-xl border bg-card p-4">
+            <dt class="text-sm font-medium">{r.label}</dt>
+            <dd class="mt-2 grid grid-cols-2 gap-3 text-sm">
+              <span class="min-w-0"><span class="block text-xs text-faint">pi</span><span class="tabular-nums text-muted-foreground">{r.pi}</span></span>
+              <span class="min-w-0"><span class="block text-xs text-primary">mini</span><span class="font-medium tabular-nums">{r.mini}</span></span>
+            </dd>
+          </div>
+        {/each}
+      </dl>
+      <p class="mt-3 text-xs text-faint">Aggregate ratio <strong class="text-primary">0.69x</strong>: 204.5 s against 295.0 s of pi, 30 % less wall time, 8 of 10 tasks won. Same corpus and model as the previous rounds, so the rounds are comparable to each other.</p>
+      <ul class="mt-6 grid gap-2.5 text-sm text-muted-foreground">
+        {#each benchmark.points as p (p)}
+          <li class="flex gap-2.5"><Check class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" /><span class="min-w-0">{p}</span></li>
+        {/each}
+      </ul>
+    </div>
+    <div class="min-w-0">
+      <h3 class="mb-2 font-semibold">Five rounds, side by side</h3>
+      <p class="mb-3 text-sm text-muted-foreground">The aggregate ratio each round, with the tasks won. mini went from 3.65x slower to 0.69x: the first win.</p>
+      <ul class="grid gap-2.5">
+        {#each benchmark.rounds as r (r.round)}
+          <li class="flex items-baseline gap-3 rounded-lg border bg-card px-4 py-3 text-sm">
+            <span class="w-8 shrink-0 font-mono text-muted-foreground">{r.round}</span>
+            <span class="w-16 shrink-0 font-semibold tabular-nums {r.round === 'R5' ? 'text-primary' : ''}">{r.ratio}</span>
+            <span class="w-14 shrink-0 tabular-nums text-muted-foreground">{r.won}</span>
+            <span class="min-w-0 text-muted-foreground">{r.note}</span>
+          </li>
+        {/each}
+      </ul>
+      <p class="mt-4 text-sm">
+        <a class="inline-flex min-h-11 items-center gap-1 text-primary underline underline-offset-4" href={REPO}>The full benchmark report <ArrowRight class="size-3.5" aria-hidden="true" /></a>
       </p>
     </div>
   </div>
