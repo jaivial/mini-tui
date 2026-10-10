@@ -1144,3 +1144,92 @@ Objetivo: **21/30**, una tarea mas que Codex. Ordenado por rendimiento esperado:
 
 Lo que **no** se va a hacer: inventar cifras sin correrlas. El baseline se publicara con
 la corrida completa y con sus reps, o no se publicara.
+
+---
+
+## 11. Ronda 7: una palanca del lado del agente, medida back to back
+
+La orden (16:23) pedia seguir mejorando por el lado del **agente**, no del harness, porque la
+seccion 9.1 mostraba que el 78-81 % del wall es tiempo de modelo y lo que decide es **cuantos
+turnos toma el modelo y cuanto razona en cada uno**. La ronda 7 prueba tres palancas de prompt sobre las tareas
+que perdian, A/B back to back con el binario y el `verify.sh` de cada tarea.
+
+### 11.1 Palanca 1 (descartada): "usa el checker de la tarea como tu lazo"
+
+Hipotesis: el modelo itera a ciegas porque nadie le dice de frente que existe el `verify.sh` de la
+tarea (los `TASK.md` no lo nombran). Se anadio un bloque `<verification_loop>` al system prompt:
+encontrar el checker en el primer turno y verificar con el, en vez de fabricar scripts de prueba.
+
+**Medida: es peor.** Back to back sobre `t10_crash_report`, tres reps, ambos brazos:
+
+| rep | A (sin bloque) | B (con bloque) |
+| --- | --- | --- |
+| r1 | 10,2 s (6 turnos) | **133,8 s (40 turnos, 20 599 chars)** |
+| r2 | 21,4 s (9 turnos) | **32,0 s (12 turnos)** |
+
+El bloque empeoro t10 en las dos reps (133,8 s y 32,0 s contra 10,2 s y 21,4 s). Inspeccionando la
+trayectoria de B r1: no hubo truncamientos ni errores de formato, fueron 40 turnos genuinos de
+"dithering" (el modelo ve el checker en rojo y re-deriva el regex muchas veces). Palanca **tirada**:
+no entra en el repo.
+
+### 11.2 Palanca 2 (ganadora): "termina en los menos turnos posibles"
+
+Hipotesis (distinta): lo que alarga una corrida es el modelo **sondeando la misma cosa turno tras
+turno** para "sentirla", sobre todo en las tareas de derivacion (t10, t7). Se anadio una clausula
+corta al final del `<response_format_rule>` ya existente:
+
+> Finish in as few turns as you can: read what you need, then make the change or compute the answer
+> in ONE pass with a single script, then verify it once. Do not probe the same thing turn after
+> turn to feel it out - that is what makes a run slow.
+
+Sin bloque nuevo: una sola clausula, en el sitio donde ya vivia la instruccion de "razonamiento
+corto" que la ronda 4 si habia medido.
+
+**Medida (A = shipped, C = con la clausula; mismo binario, mismo cap, `verify.sh` de cada tarea):**
+
+| tarea | n | mediana A | mediana C | ratio | C gana (emparejado) |
+| --- | --- | --- | --- | --- | --- |
+| t10_crash_report | 5 | 53,8 s | 21,2 s | **0,39x** | **5/5** |
+| t7_regex_cli | 3 | 16,6 s | 10,1 s | **0,61x** | **3/3** |
+| t8_js_bug | 4 | 38,3 s | 36,8 s | 0,96x | 1/4 |
+| t6_readme_summary | 2 | 30,5 s | 23,0 s | 0,75x | 2/2 |
+| t1_wordfreq | 2 | 8,8 s | 7,8 s | 0,89x | 1/2 |
+| t9_pkg_resize | 4 | 10,2 s | 10,9 s | 1,07x | 1/4 |
+| t5_script_csv | 4 | 9,7 s | 11,4 s | 1,18x | 0/4 |
+| **suma de medianas** | | **167,9 s** | **121,3 s** | **0,72x** | 13/24 |
+
+**Calidad: 48/48 PASS en los dos brazos** (24 corridas por brazo), ningun `verify.sh` FAILED.
+
+Lo que dice el dato, sin adornos:
+
+- El efecto es **fuerte y pareado donde importa**: en las dos tareas que dominaban las perdidas
+  (t10 1,64x y t7 1,50x en la ronda 6) la clausula da **0,39x y 0,61x, ganando 8 de 8 reps
+  emparejados**. El mecanismo se ve en la traza: menos chars de razonamiento y menos turnos
+  (p.ej. t10 r4: 53,8 s / 13 turnos / 5 161 chars -> 15,5 s / 6 turnos / 941 chars).
+- En las tareas **rapidas y pequenas** (t5, t9) es **ligeramente peor o empate** (t5 1,18x, 0/4).
+  La instruccion "hazlo en una pasada" hace que el modelo razonE un poco mas antes de escribir el
+  unico script, y en una tarea de 8 s ese costo es absoluto (~2 s) y relativo. **No es un barrido
+  limpio**: es una palanca que paga mucho en las tareas de derivacion y ~2 s en las triviales.
+- El agregado por suma de medianas mejora a **0,72x**, pero el reparto emparejado (13/24) es
+  basically una moneda al aire: las ganancias grandes de t10/t7 se cancelan con las perdidas
+  pequenas de t5/t9. Lo honesto es el detalle por tarea, no el agregado.
+
+Por que se sube igual: el peor caso medido (t5, ~2 s de diferencia en una tarea de ~9 s) es
+**mucho menor** que el mejor caso (t10, ~30 s en una tarea de ~50 s), y la calidad no se movio en
+48 corridas. Es una mejora neta sin costo de correctitud, medida, no una apuesta.
+
+### 11.3 Lo que NO se toco
+
+- El harness sigue siendo ~1 % del wall (seccion 9.1): no hay palanca ahi, y esta ronda lo
+  confirma (el A/B corre el mismo binario en los dos brazos).
+- El cap por turno de 4096 se mantiene como default; la clausula se suma a el, no lo reemplaza.
+- No se toco el servicio web ni el prompt del `instance_template`; el cambio es **una clausula de
+  6 lineas en el `system_template` compartido**, asi que los dos agentes (Python y Rust) lo leen
+  identico y la paridad se conserva por construccion.
+
+### 11.4 Reproducir
+
+La A/B es `~/mini-tui-benchmark/abx.sh <tarea> <rep> <system_b_file>` mas `abx_batch.sh` (en el
+workspace del benchmark): corre el binario release, mismo `model.max_tokens` (4096), mismo
+`verify.sh`, y reporta wall/model/turns/chars/PASS por brazo. El brazo C es el `mini.yaml` de este
+commit; el brazo A se obtiene pasando el `system_template` sin la clausula.
