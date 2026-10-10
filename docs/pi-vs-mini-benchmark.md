@@ -6,6 +6,14 @@ harness**; mini debe ganar en wall time manteniendo el mismo o mejor % de exito.
 (PRs #109 y #111); este documento mide el resultado **con tareas reales** en lugar de
 argumentar desde el codigo.
 
+> **Ronda 6 (ejecutada 2026-10-10, la mas reciente)**: el **0,69x de la ronda 5 no se sostiene**.
+> Tres reps nuevas de la misma corrida dan **1,13x / 0,98x / 0,93x** (mediana **0,98x**): con este
+> corpus mini y pi estan **empatados en wall time**, no mini mas rapido. La calidad si es solida y
+> si se sostiene: **40/40 PASS en mini y 30/30 en pi**. La varianza esta en el modelo (turnos y
+> longitud del razonamiento), no en el harness, que es ~1 % del wall. Los datos, el por que y la
+> correccion del campo `overhead_ms` estan en la **seccion 9**. Ademas: **no existe ningun
+> "FrontierHarness" en esta maquina** (seccion 9.5), asi que esa parte del pedido quedo bloqueada.
+
 > **Ronda 3 (ejecutada 2026-10-10)**: los dos pedidos de la ronda 2 --- una via rapida para
 > consultas triviales y menos vueltas de overhead por turno --- estan implementados y medidos
 > sobre el **mismo corpus de 10 tareas** y el **mismo modelo en los dos harnesses**
@@ -804,3 +812,122 @@ tiene 7 y 12, y en esas dos tareas el piloto automatico se pasa de turno.
    en vez de 4") era falsa; eran 7 turnos de razonamiento sobre el checker.
 4. **La calidad sigue en 10/10 en ambos lados.** La velocidad no se compro con calidad, que era lo
    que se pedia.
+
+---
+
+## 9. Ronda 6: tres reps mas, y el 0,69x de la ronda 5 era ruido
+
+Pedido del 10 oct 16:23: repetir la corrida completa para separar tendencia de ruido, y si el
+agregado deja de ser <1x de forma consistente, volver a las palancas.
+
+**Resultado: el 0,69x no se sostiene.** Con las mismas condiciones que las rondas 1-5 (mismo
+modelo en los dos lados, `minimax/MiniMax-M3`, secuencial, Jev apagado, techo 4096 por defecto),
+tres reps nuevas:
+
+| rep | mini | pi | ratio agregado | calidad mini | calidad pi |
+| --- | --- | --- | --- | --- | --- |
+| ronda 5 (`134052`) | 204,5 s | 295,0 s | **0,69x** | 10/10 | 10/10 |
+| rep 1 (`142520`) | 254,5 s | 225,3 s | **1,13x** | 10/10 | 10/10 |
+| rep 2 (`143406`) | 285,4 s | 291,4 s | **0,98x** | 10/10 | 10/10 |
+| rep 3 (`144419`) | 246,7 s | 266,4 s | **0,93x** | 10/10 | 10/10 |
+
+**2 de 3 reps por debajo de 1x**, y el rango entero es 0,93x - 1,13x. La mediana del agregado de
+las tres reps nuevas es **0,98x**: mini y pi estan empatados, con la ventaja de mini dentro del
+margen de ruido del propio corpus. Repartido por tarea (medianas de 4 corridas, mini/pi):
+
+| tarea | mini mediana (min-max) | pi mediana (min-max) | ratio mediana |
+| --- | --- | --- | --- |
+| t10_crash_report | 49,2 (12,0 - 94,2) | 30,0 (22,7 - 67,4) | 1,64x |
+| t1_wordfreq | 12,0 (10,0 - 16,1) | 18,4 (9,9 - 28,1) | 0,65x |
+| t2_grep_logs | 15,0 (10,0 - 18,1) | 14,5 (13,1 - 28,5) | 1,03x |
+| t3_pytest_fix | 12,0 (10,0 - 20,1) | 11,8 (11,1 - 16,8) | 1,02x |
+| t4_refactor | 47,1 (36,1 - 66,2) | 53,9 (35,9 - 57,7) | 0,87x |
+| t5_script_csv | 9,0 (8,0 - 12,0) | 12,8 (10,7 - 17,3) | 0,70x |
+| t6_readme_summary | 18,1 (14,0 - 20,1) | 25,0 (18,6 - 36,7) | 0,72x |
+| t7_regex_cli | 23,1 (10,0 - 32,1) | 15,4 (11,5 - 28,9) | 1,50x |
+| t8_js_bug | 38,1 (22,1 - 60,2) | 55,7 (20,0 - 70,3) | 0,68x |
+| t9_pkg_resize | 19,1 (8,0 - 26,1) | 12,1 (9,7 - 17,3) | 1,58x |
+
+**Calidad: 40/40 PASS en mini y 30/30 en pi** (4 corridas completas, ningun verify.sh FAILED).
+Lo que se mantiene solido es exactamente lo que la orden pedia: la calidad. Lo que no se
+mantiene es la ventaja de velocidad.
+
+### 9.1 De donde sale la varianza (y por que no hay palanca de harness)
+
+Reconstruyendo las 40 corridas (`phase_report.py`), el desglose es **modelo, no mini**:
+
+- **El overhead propio del harness es 1,8 - 2,7 s en una corrida de 250 s: ~1 %.** Ya era la
+  conclusion de la ronda 1 y sigue siendo la de la ronda 6.
+- **El 78 - 81 % del wall es tiempo de modelo**, medido turno a turno desde las trayectorias.
+- Lo que mueve el resultado es **cuantos turnos toma el modelo y cuanto razona en cada uno**.
+  `t10_crash_report` es el ejemplo limpio: en la rep 2 mini tardo 94,2 s con 25 llamadas y 93,8 s
+  de modelo puro (25 turnos cortos de 1 - 5 s); en la rep 1 tardo 66,2 s con 8 llamadas pero
+  **65 s de modelo**, porque dos turnos se estiraron a 16,7 s y 17,3 s. Ni el harness ni el techo de
+  salida deciden eso: es la longitud del razonamiento que el modelo elige en ese turno.
+- El rango de `t10` en mini (12,0 - 94,2 s) es casi 8x. Ninguna cifra de una sola rep de esa
+  tarea significa algo, que es justo el aviso que dejo la seccion 8.16.
+
+### 9.2 Un campo de medicion que no era fiable
+
+`extra.timings.overhead_ms` se calcula como `total_ms - suma(fases "model")`, pero `total_ms`
+**ya incluye** la fase `model` (se acumula en `add`). Cuando la fase `model` no llega a
+etiquetarse, el campo colapsa a la duracion entera del paso y reporta el tiempo del modelo como
+si fuera overhead: en `t8` de la rep 1 salia `overhead_ms: 14781` para una corrida cuyo modelo
+total era 14,6 s. El campo se puede usar para comparar fases entre pasos, pero **no** para
+concluir "el harness no cuesta nada": esa cifra sale de `sum_model_ms` contra el wall, no de
+`overhead_ms`. Aqui queda anotado para que la ronda 7 no se apoye en el campo equivocado.
+
+### 9.3 Decision de la ronda 6: no seguir moviendo palancas de harness
+
+El criterio de la orden era explicito ("si el agregado deja de ser <1x de forma consistente,
+volver a las palancas"). El agregado no es <1x de forma consistente: es **1,13x / 0,98x / 0,93x**,
+mediana 0,98x, dentro del ruido. Se cumple la condicion.
+
+Aun asi, **volver a las palancas no produciria una mejora medible**, y la medicion lo dice:
+
+1. El techo de salida por turno (4096) **ya esta aplicado** y ya se midio en el barrido; la ronda 5
+   lo reporto como la palanca ganadora, pero las tres reps de la ronda 6 corren
+   **con ese techo puesto** y el resultado es empate. La palanca se quedo, el beneficio no se
+   reproduce.
+2. El harness son ~2 s de ~250 s. Aunque se eliminara entero, el agregado moveria ~0,8 %: no
+   puede cerrar un 0,98x ni abrir un 1,13x.
+3. Todo lo que queda son turnos de razonamiento del modelo, que ninguna palanca del harness
+   controla (la ronda 5 ya probo y **tiro** el acotado por prompt: 1,73x mas lento con 64 % mas de
+   caracteres).
+4. El arranque (~1,2 s de TLS + TTFB) sigue siendo real pero es del proveedor, no nuestro, y
+   seria ~1 % del total.
+
+La conclusion honesta: **con este corpus de 10 tareas y este modelo, mini y pi estan empatados en
+wall time**, con calidad identica (10/10 los dos, siempre). La ronda 5 no encontro una mejora
+sostenible; dibujo una corrida afortunada. Volver a tocar el lazo para perseguir un 0,69x que no
+existe seria optimizar el numero del informe, no el software.
+
+### 9.4 Lo que si queda como trabajo real
+
+- **Mas reps, o un corpus mas grande.** Con 10 tareas y este rango de varianza, tres reps dan un
+  intervalo de 0,93x - 1,13x. Para distinguir 0,95x de 1,05x haria falta un corpus de 30 - 50
+  tareas, o varias reps por tarea. El `reps.py` de esta ronda (`~/mini-tui-benchmark/reps.py`) ya
+  devuelve mediana y min-max por tarea para cuando se quiera repetir.
+- **`t10` y `t8` concentran la varianza** y podrian quedar fuera de un corpus de comparacion
+  siempre que no se midan con varias reps. Con una rep,mini y pi pierden por turnos distintos.
+
+### 9.5 FrontierHarness: no existe en esta maquina
+
+La orden pedia ejecutar "el FrontierHarness benchmark (el harness ya conocido en este repo)". Se
+busco a fondo antes de concluir y **no hay ningun FrontierHarness aqui**:
+
+- `find /home/jaime` (maxdepth 4, sin node_modules/.venv/.git): sin resultados.
+- `git log --all -S frontierharness` y `git grep -il frontier $(git rev-list --all)`: **nada** en
+  ningun commit, rama o worktree (los 25 worktrees de `.worktrees/` incluidos).
+- Nombres de harness que han existido alguna vez en el repo: `pi-vs-mini-benchmark` (este corpus de
+  10 tareas, el unico que corre hoy), `repl-harness` (el prototipo REPL, `docs/repl-harness.md`),
+  y los runners de `programbench`/`swebench` de la epoca Python (borrados hace tiempo; ya no hay
+  `src/minisweagent`). Ninguno se llama FrontierHarness.
+- ~/.bash_history, `~/.local/bin`, npm global: sin rastro.
+
+Los unicos "frontier" que aparecen en el sistema son bundles de CodeMirror de Playwright
+(empaquetados en `node_modules`, sin relacion). El script que hizo la busqueda queda en
+`~/mini-tui-benchmark/find_frontier.py` para que sea reproducible. Conclusion: **no se puede
+establecer un baseline de FrontierHarness ni avanzar al 70 % porque el harness no esta en esta
+maquina**; hay que decir de que harness se trata (URL, repo, o donde esta el corpus) antes de
+seguir. La parte 1 del pedido (las reps) si se hizo y queda documentada arriba.
