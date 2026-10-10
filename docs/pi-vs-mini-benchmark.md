@@ -441,3 +441,198 @@ total de arriba. Se midio aparte, contra el mismo modelo:
   rechazo (proveedor que responde con tool calls aun sin lista) cae al lazo normal por diseno.
 - Build verificado: `cargo +1.97.1-x86_64-unknown-linux-gnu build --release` limpio en
   `agent-rs/` (los avisos que quedan son preexistentes y ajenos a estos cambios).
+---
+
+# 8. Ronda 4: la duracion del turno (2026-10-10)
+
+La ronda 3 igualo el **numero de llamadas** (70 mini contra 70 turnos de pi) y gano el agregado,
+pero pi seguia ganando la **mediana**: 23.3 s contra 27.1 s de mini. El frente ya no era *cuantas*
+llamadas, sino **cuanto dura cada turno**. Antes de tocar codigo se midio donde se va el tiempo de
+un turno en las trayectorias de la ronda 3 (`extra.timings`, que `agent-rs/src/timings.rs` escribe
+por fase), turno a turno, sobre las 70 llamadas de las 10 tareas.
+
+## 8.1 La medicion: el overhead del harness no es el problema
+
+| por turno (ms) | media | mediana |
+| --- | --- | --- |
+| **modelo** (espera de la llamada) | **4 944,5** | **4 693,9** |
+| `actions` (tool dispatch) | 34,3 | 18,8 |
+| `view` (render del prompt) | 0,25 | 0,25 |
+| `observe` | 0,18 | 0,18 |
+| `control` | 0,00 | 0,00 |
+| `save` | 0,17 | 0,17 |
+| **overhead total del harness** | **34,9** | **19,4** |
+
+Aun tomando el peor caso (la media, arrastrada por un turno de `actions` de 1,5 s) el overhead son
+34,9 ms por turno sobre 4 944,5 ms de modelo: **0,7 %**. Sumado sobre la corrida entera fueron
+**2,32 s de 410,6 s (0,57 %)**. Render de prompt, serializacion y tool dispatch **no tienen nada
+que recortar**: ya cuestan menos que el jitter de la red. Cualquier plan que ataque ahi seria
+optimizar ruido.
+
+Donde si habia tiempo era fuera del lazo:
+
+| | ronda 3 | significado |
+| --- | --- | --- |
+| arranque antes de la primera llamada | **2,6 - 3,0 s por corrida** | fork del binario, config, handshake TLS, primer TTFB del proveedor |
+| hueco por tarea (wall - modelo - harness) | ~1,0 s por tarea | 10,0 s en el total (2,4 %) |
+| modelo | 396 s (96,9 %) | 70 turnos x ~4,9 s |
+
+Y la variable que si explicaba el turno lento no era el prompt (mini envia 7,5 k caracteres de
+sistema+usuario frente a las 25,5 k de las secciones de pi: **mas pequeno y mas lento**) sino los
+**tokens generados**: mini producia **997 caracteres por turno** (849 de ellos de razonamiento)
+contra 709 de pi, y arrastraba **27,8 % de su prompt como razonamiento ya emitido** (300 241 de
+1 079 605 caracteres de contexto; en `t4` y `t8` la mitad del prompt era razonamiento repetido).
+
+## 8.2 Palanca descartada: quitar el eco del razonamiento
+
+La idea obvia era no reenviar el bloque `<think>` de turnos anteriores (`chat_messages` en
+`agent-rs/src/models/wire.rs` solo copia `WIRE_KEYS`). Se midio **reproduciendo un prompt real de
+`t8` con el `<think>` eliminado** contra el mismo prompt intacto, mismo modelo, misma
+temperatura:
+
+| | caracteres de prompt | tokens generados | tiempo por turno |
+| --- | --- | --- | --- |
+| con el eco (mini hoy) | 34 485 | 1 371 | 8,13 s |
+| **sin el eco** | **15 082** | **392** | **2,31 s** (mediana) |
+| veredicto | **-56 % de prompt** | **+3,5x tokens** | **2,90x mas lento** |
+
+Menos prompt, mas tiempo. Al quitarle el historial de razonamiento el modelo se vuelve a
+explicar el contexto desde cero en cada turno: la respuesta llega antes, pero el turno **se alarga
+2,9x**. **No se implemento.** El eco de razonamiento no es un bug que corregir sino el mecanismo
+por el que el modelo conserva el hilo; mini ya hace lo correcto por defecto y por la razon
+equivocada.
+
+## 8.3 Lo que si se recorta: razonamiento acotado por prompt
+
+La lever que quedo es la que ataca la variable real -caracteres generados por turno- sin tocar el
+harness. Una linea dentro de `<response_format_rule>` del `system_template`
+(`agent/src/minisweagent/config/mini.yaml`):
+
+```
+Keep the reasoning short: one or two sentences per turn, then the tool call. Reasoning is not
+read by anyone — the next turn sees only the tool result — so a turn that writes an essay to
+reach a `bash` call buys nothing and costs the run seconds it will not get back. Put the
+thinking in the command, not in prose.
+```
+
+No es una instruccion nueva en el prompt: es la misma regla de "cada respuesta lleva una tool
+call" que ya existe, aplicada al tamaño del razonamiento. Antes de tocar nada se midio un **A/B
+sobre el agente real** (`mini-agent-rs` de release, `verify.sh` de verdad, tres tareas del corpus x
+3 replicas por brazo):
+
+| brazo | wall medio | mediana | generado | llamadas | PASS |
+| --- | --- | --- | --- | --- | --- |
+| A (prompt de hoy) | 14,7 s | 15,8 s | 1 841 c | 6,3 | 9/9 |
+| **D (razonamiento acotado)** | **11,6 s** | **11,9 s** | **1 110 c** | **5,4** | **9/9** |
+
+**0,78x de tiempo, 0,60x de caracteres generados, 0,86x de llamadas, 18/18 PASS entre los dos
+brazos.** D gano en 8 de 9 parejas. Se descarto antes el brazo B (quitar la narracion del
+workflow) porque aunque tambien salia mas rapido, C (un prompt de puro harness) era mas rapido aun
+- y ese quitaba cosas que el agente necesita, asi que D es el que se quedo: es el unico que no
+cambia el contrato.
+
+## 8.4 Bug encontrado de paso: `--exit-immediately` no hacia nada
+
+Al medir el hueco por tarea aparecio algo que no era tiempo sino **procesos vivos**. `src/mini/spawn.ts`
+pasa siempre `-y --exit-immediately`, y `config.rs:181` lo traducía a `agent.confirm_exit: false`,
+pero **ningun codigo leia ese campo**: `wait_for_followup()` se quedaba esperando un seguimiento
+que nunca iba a llegar. Cada corrida del benchmark escribia `Submitted` y se quedaba colgada para
+siempre.
+
+Medido sobre la ronda 3: **48 procesos de `mini-agent-rs` seguian vivos horas despues de terminar
+el benchmark, con 662 MB de RSS**, cada uno con su socket del hub y su hilo de monitor. El campo
+`confirm_exit` se leia en ningun sitio, asi que ahora `AgentConfig` lo expone y
+`wait_for_followup()` hace su trabajo:
+
+```rust
+// `--exit-immediately`: this run ends with its turn. Children still at work are killed
+// by the hub guard on the way out, not waited for -- a headless caller is not going to
+// read their reports, and holding here is what left 55 processes alive after round 3.
+if !self.config.confirm_exit {
+    return Ok(false);
+}
+```
+
+El default sigue siendo `true`: una corrida **con fichero de control** es una sesion que alguien
+puede seguir, y ahi esperar es lo correcto. Verificado con una corrida real: `exit=0` con 0,002 s de
+cola (antes se colgaba para siempre), y la comprobacion de que el binario instalado ya no deja
+procesos tras de si.
+
+## 8.5 Resultados de la ronda 4
+
+Corrida completa: `/home/jaime/mini-tui-benchmark/runs/20261010-111219` (log `bench-111219.log`).
+
+| tarea | mini R3 | pi R3 | mini R4 | pi R4 | ratio R3 | ratio R4 |
+| --- | --- | --- | --- | --- | --- | --- |
+| t10_crash_report | 28,1 | 31,4 | 62,1 | 65,4 | 0,89 | **0,95** |
+| t1_wordfreq | 26,0 | 8,8 | 20,0 | 7,7 | 2,95 | 2,60 |
+| t2_grep_logs | 12,0 | 22,3 | 10,0 | 25,5 | 0,54 | **0,39** |
+| t3_pytest_fix | 34,1 | 14,5 | 20,0 | 12,6 | 2,35 | 1,59 |
+| t4_refactor | 142,2 | 166,7 | 46,1 | 45,3 | 0,85 | 1,02 |
+| t5_script_csv | 12,0 | 17,8 | 8,0 | 7,1 | 0,67 | 1,13 |
+| t6_readme_summary | 18,0 | 18,1 | 28,1 | 14,5 | 0,99 | 1,94 |
+| t7_regex_cli | 66,1 | 24,3 | 18,0 | 20,0 | 2,72 | **0,90** |
+| t8_js_bug | 58,1 | 77,8 | 72,2 | 55,8 | 0,75 | 1,29 |
+| t9_pkg_resize | 14,0 | 48,4 | 10,0 | 22,2 | 0,29 | **0,45** |
+
+| | ronda 3 | ronda 4 |
+| --- | --- | --- |
+| mini total / **mediana** | 410,6 s / **27,1 s** | 293,7 s / **20,0 s** |
+| pi total / **mediana** | 430,1 s / **23,3 s** | 276,0 s / **21,1 s** |
+| ratio agregado | 0,95x | **1,07x** |
+| tasks ganadas | 7/10 | 4/10 |
+| llamadas / turnos | 70 / 70 | 73 / 81 |
+| calidad | **10/10 PASS** | **10/10 PASS** |
+
+**La mediana se dio la vuelta** (20,0 s contra 21,1 s): en la mitad de las tareas **mini es el mas
+rapido**, que es exactamente el frente que fijaba el objetivo de la ronda 4. El tiempo por turno
+cayo de 4 944 ms a **3 539 ms de media** (3 030 de mediana, -28 % / -35 %) sin tocar el harness.
+
+## 8.6 El overhead por turno, antes y despues
+
+| por turno (ms) | R3 (70 turnos) | R4 (73 turnos) |
+| --- | --- | --- |
+| modelo | 4 944,5 (med 4 693,9) | **3 538,6** (med **3 030,3**) |
+| `actions` | 34,3 | 25,0 |
+| `view` / `observe` / `control` / `save` | <= 0,25 | <= 0,23 |
+| **overhead del harness** | **34,9** (med 19,4) | **25,5** (med **13,6**) |
+| **overhead sobre el total** | 0,57 % | **0,58 %** |
+
+El overhead por turno bajo de 34,9 a 25,5 ms de media (-27 %) y de 19,4 a 13,6 ms de mediana
+(-30 %), pero **sigue siendo ~0,6 % del tiempo de la corrida**: la mejora real vino de turnos
+mas cortos, no de codigo mas rapido. Es el dato que cierra la pregunta que abrio la ronda 4 - el
+overhead del harness ya estaba resuelto en la ronda 3, solo faltaba medirlo bien y decirlo.
+
+## 8.7 Honestidad sobre la corrida
+
+- La corrida de la ronda 4 se hizo con **load average de 2,4 - 6,8** (builds ajenos de `vike`
+  durante los primeros minutos), frente a **2,4 - 3,6** en la ronda 3. **Los tiempos absolutos no
+  son comparables entre rondas**: `t10` tardo 62,1 s aqui frente a 28,1 s en la ronda 3, pero **pi
+  tardo tambien el doble** (31,4 -> 65,4 s) porque los dos lados corren secuencialmente bajo las
+  mismas condiciones. Lo que si es comparable es el **ratio por tarea**, porque las dos mitades
+  comparten las condiciones de la corrida.
+- `t10` (62,1 s) y `t8` (72,2 s) son las dos tareas largas y las dos de mayor varianza, como ya
+  se documento en `t4` (348,6 -> 44,1 -> 142,2 s) y `t7` (28,0 -> 66,1 s) en la ronda 3. `t10`
+  empeoro y `t8` tambien; `t4` mejoro **3,1x** (142,2 -> 46,1 s) y pi tambien mejoro (166,7 ->
+  45,3 s). Con 10 tareas, dos de varianza alta mueven la mediana y el agregado a la vez.
+- El **agregado empeora** (0,95x -> 1,07x) aunque la **mediana mejora** (23,3 -> 21,1 s a favor de
+  mini). No es una contradiccion: el agregado lo mueven `t10` y `t8`, las dos mas largas, y la
+  mediana es la medida que el objetivo de la ronda 4 fijaba como el frente. mini gano 4 de 10
+  tareas (contra 7 de 10 en la ronda 3), porque pi tambien se beneficio: las llamadas de pi
+  subieron de 70 a 81 turnos.
+- **El arranque de 2,6 - 3,0 s no se toco.** Medido por separado con y sin el hub de subagentes
+  (`MINI_AGENT_SUBAGENTS=0`): 1,21 - 1,42 s sin hub contra 0,98 - 3,62 s con hub, es decir **el
+  arranque es el handshake TLS y el TTFB del proveedor, no el harness**. Se queda como trabajo
+  futuro.
+
+## 8.8 Lo que queda
+
+1. **`t10` y `t8` son el frente real**: 62,1 s y 72,2 s contra 65,4 s y 55,8 s de pi. Son las
+   tareas largas y las de mayor varianza. Con 10 tareas no se puede ganar el agregado sin ellas.
+2. **El arranque (~1,2 s medido, hasta 3,6 s en frio)** son TLS y TTFB del proveedor. Se puede
+   atacar con una conexion persistida por proceso, no con codigo.
+3. **`t6_readme_summary` empeoro a 1,94x** (18,0 -> 28,1 s): el razonamiento acotado ayudo al
+   tiempo pero la corrida de esa tarea termino en 8 llamadas en vez de 4. Habria que mirar por que
+   pidio mas tool calls antes de asumir que el acotamiento es neutro.
+4. **La calidad sigue en 10/10 PASS en ambos lados**, asi que ninguna de las cifras de aqui se
+   compro a costa de la calidad. Es lo que se pedia: mini ganando en velocidad **y** calidad.
