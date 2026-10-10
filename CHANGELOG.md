@@ -4,6 +4,27 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ## Unreleased
 
+### Changed
+
+- **The verifier phase now runs in the agent, not only in the terminal UI** (#115 shipped it in
+  `src/ui/App.tsx`, so a run started by the web app, by `mini-tui -p` or by a subagent — the surfaces
+  the pi benchmark measures — never got a verdict). `agent-rs/src/jev.rs` runs it once the loop has
+  ended and the code is on disk: the run's **own** model proposes candidate defects in
+  `git diff HEAD` plus the untracked files, and Jev answers the three typed questions per candidate.
+  `info.jev_verifier` in `traj.json` carries the structured report (status, reason, model, latency,
+  candidates, findings with their probabilities and the branch they took); the transcript gets one
+  notice in the same wording the TUI prints. `MINI_AGENT_JEV=1` turns it on, `auto` (default) runs it
+  only when the run left a diff, `off` never does. Same thresholds as `src/jev/verifier.ts`, same
+  "never block the run" contract, and every missing piece (no diff, no reader, no key, reader
+  failure, unparseable output, HTTP error) degrades with a stated reason.
+  - The reader is the run's own client (`Model::reader_endpoint`), so a second `/connect` provider
+    is not needed. Measured: an unused-import diff came back as one candidate judged by
+    `jev-1.13.0` in 274 ms, and Jev scored it P(real)=0.46 / P(serious)=0.03 — correctly *not* a
+    defect. It is not a good reader, though: on a hand-written `safe_div` with a bare `except`,
+    MiniMax-M3 proposed no candidate at all, and the phase reported `reader proposed no candidates`.
+    That is the honest limit of this configuration: the reader is the run's model because asking for
+    a second credential was the worse trade.
+
 ### Added
 
 - **Jev (TypeSafe System One) as two independent, optional toggles** (#115).
