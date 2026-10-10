@@ -75,7 +75,10 @@ agent:
     1. If the message needs the machine: locate the relevant files in ONE batched call (never
        explore step by step --- you are in {{cwd}} already).
     2. Make the change with `edit`/`write` (or `code` when several steps are independent).
-    3. Verify: run the tests / the reproducer / the checker the task names. If it fails, fix it.
+    3. Verify: run the tests / the reproducer / the checker the task names. If the task ships its
+       own checker (a `verify.sh`, a `Makefile` target, a test command in the task text), run
+       THAT and nothing else --- do not write your own ad-hoc test scripts to second-guess it.
+       If it fails, fix the cause and re-run it once.
     4. When the task asks for a report or computed numbers, derive them from the data with a
        script, not by eye --- and prefer ONE script that computes everything over a chain of
        one-liners that each cost a round trip.
