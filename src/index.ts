@@ -13,8 +13,9 @@ Usage:
   mini-tui run ["task"] [-m <model>] [-c <spec>]... [--show-system]
   mini-tui view <traj.json> [--follow] [--show-system]
   mini-tui -p "<prompt>" [options]          headless: run, print the answer, exit
-  mini-tui sessions | models | model | skills | settings    (scripting, see below)
+  mini-tui sessions | models | model | skills | settings | jev    (scripting, see below)
   mini-tui doctor [-m <model>]      why is cliproxy/... failing?
+  mini-tui jev check                 is the Jev (System One) key usable?
 
 Headless (-p, --print) — no TUI, for scripts, CI and other agents:
   -m, --model <model>        model for this run (default: $MINITUI_MODEL, the saved
@@ -52,12 +53,16 @@ Scripting commands (add --json for machine-readable output):
   tasks show [<id>]              print the task card (title, description, to-dos)
   tasks clear [<id>]             remove the task card
   settings [output-mode|theme <v>]    print / change /settings
+  settings jev on|off                 TypeSafe System One decisions (toggle 1, independent)
+  settings jev-verifier on|off        LLM+Jev phase after each finished turn (toggle 2)
+  settings jev-key <key>               store the jev api key in the vault (0600) as jev-api-key
+  jev check                           probe api.typesafe.ai with the key in force, name the model
   doctor [-m <model>]                 probe a cliproxy/ model end to end and name the first
                                       thing that is wrong (gateway, key, upstream login, id)
 
 Prompt commands (TUI):
   /model              open the model picker (or /model <id>)
-  /settings           output display: collapsed / trimmed (2 lines) / expanded
+  /settings           output display, theme, and the jev toggles (Tab \u00d7 3)
   /compact            summarize the conversation now (frees context)
   /resume  /new  /connect  /quit
   $skill              reference skills anywhere in a prompt ($ opens the list)
@@ -105,6 +110,9 @@ if (parsed.command !== "run" && parsed.command !== "view") {
   let code = 0;
   if (cmd.command === "doctor") {
     process.exit(await commands.doctorCommand(cmd, out));
+  }
+  if (cmd.command === "jev") {
+    process.exit(await commands.jevCommand(cmd, out));
   }
   switch (cmd.command) {
     case "sessions":

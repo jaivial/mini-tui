@@ -91,6 +91,16 @@ export interface SettingsArgs {
 }
 
 /**
+ * `mini-tui jev`: the only action today is `check` (is the key usable? which model answers?), but
+ * the subcommand exists so the surface does not change shape when more actions arrive.
+ */
+export interface JevArgs {
+  command: "jev";
+  action: "check";
+  json: boolean;
+}
+
+/**
  * `mini-tui tasks`: the task card an agent fills for the session it runs in — a title, an
  * AI-written description and its to-dos in three buckets. `set` replaces the whole card.
  */
@@ -128,12 +138,13 @@ export type CliArgs =
   | TasksArgs
   | DoctorArgs
   | SettingsArgs
+  | JevArgs
   | HelpArgs
   | VersionArgs;
 
 export class UsageError extends Error {}
 
-const SUBCOMMANDS = new Set(["run", "view", "sessions", "session", "models", "model", "skills", "tasks", "settings", "doctor", "help", "version"]);
+const SUBCOMMANDS = new Set(["run", "view", "sessions", "session", "models", "model", "skills", "tasks", "settings", "jev", "doctor", "help", "version"]);
 
 function takeValue(argv: string[], i: number, flag: string): string {
   const value = argv[i + 1];
@@ -197,6 +208,7 @@ export function parseArgs(rawArgv: string[]): CliArgs {
   }
   if (command === "tasks") return parseTasks(rest);
   if (command === "settings") return parseSettings(rest);
+  if (command === "jev") return parseJev(rest);
   if (command === "run" || command === "view") return parseTui(command, rest);
   if (!SUBCOMMANDS.has(command!) && !command!.startsWith("-")) {
     throw new UsageError(`unknown command: ${command} (a headless run is \`mini-tui -p "<prompt>"\`)`);
@@ -353,8 +365,17 @@ function parseSettings(rest: string[]): SettingsArgs {
   const json = rest.includes("--json");
   const positional = rest.filter((arg) => arg !== "--json");
   const [key, value] = positional;
-  if (key && value === undefined) throw new UsageError(`settings ${key} needs a value`);
+  // `settings jev-key` (no value) clears the stored key, so only the other keys require one.
+  if (key && value === undefined && key.replace(/_/g, "-") !== "jev-key") throw new UsageError(`settings ${key} needs a value`);
   return { command: "settings", key, value, json };
+}
+
+function parseJev(rest: string[]): JevArgs {
+  const json = rest.includes("--json");
+  const positional = rest.filter((arg) => arg !== "--json");
+  const action = positional[0] ?? "check";
+  if (action !== "check") throw new UsageError(`unknown jev action: ${action} (only \`check\` today)`);
+  return { command: "jev", action, json };
 }
 
 function parseTasks(rest: string[]): TasksArgs {

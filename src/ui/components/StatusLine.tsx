@@ -42,6 +42,8 @@ export const StatusLine = memo(function StatusLine(props: {
   startedAt: number;
   /** A context compaction is running (the indicator reads "compacting"). */
   compacting?: boolean;
+  /** The optional verifier phase is reviewing the finished turn's diff. */
+  verifying?: boolean;
 }) {
   const statusColor =
     props.status === "error" ? colors.err : props.status === "done" ? colors.ok : props.status === "interrupted" ? colors.warn : colors.dim;
@@ -50,6 +52,7 @@ export const StatusLine = memo(function StatusLine(props: {
       {props.status === "running" || props.compacting ? (
         <WorkingIndicator key={props.startedAt} startedAt={props.startedAt} label={props.compacting ? "compacting" : undefined} />
       ) : null}
+      {props.verifying ? <text fg={colors.faint}>jev verifying…</text> : null}
       <text fg={colors.text}>{props.model}</text>
       <text fg={colors.faint}>·</text>
       <text fg={colors.dim}>{props.path}</text>

@@ -10,7 +10,7 @@ export interface CommandOption {
 export function buildOptions(models: SelectOption[]): CommandOption[] {
   return [
     { insert: "/model", label: "/model", detail: "open the model picker" },
-    { insert: "/settings", label: "/settings", detail: "output display settings" },
+    { insert: "/settings", label: "/settings", detail: "output display, theme, jev toggles" },
     { insert: "/compact", label: "/compact", detail: "summarize the conversation now (frees context)" },
     { insert: "/subagents", label: "/subagents", detail: "the subagents this session started (open one with /resume)" },
     { insert: "/new", label: "/new", detail: "start a new session (stops the current run)" },
