@@ -4,7 +4,7 @@
  *   models                    the /model catalog (+ /connect providers)
  *   model [<id>]              the default model of new sessions (what /model saves)
  *   skills                    the $skill list
- *   settings [<key> <value>]  /settings (output mode, theme)
+ *   settings [<key> <value>]  /settings (output mode, theme, jev, jev-verifier, jev-key)
  */
 
 import { DEFAULT_MODEL } from "../config";
@@ -14,10 +14,13 @@ import { MODELS } from "../models";
 import { connectionModelOptions, loadConnections } from "../providers";
 import { DEFAULT_DB_PATH, TASK_LIMITS, deleteSession, deleteTask, findLiveRunByControl, findSession, getTask, listAllSessions, openDb, saveTask, type SessionRecord, type SessionTask } from "../sessions";
 import { OUTPUT_MODES, loadSettings, saveSettings, type OutputMode } from "../settings";
+import { JEV_KEY_NAME, getSecret, maskKeyHint, setSecret } from "../jev/vault";
+import { resolveJevKey } from "../jev/client";
+import { jevModels } from "../jev/client";
 import { SKILLS_DIR, listSkills } from "../skills";
 import type { RunEvent } from "../traj/schema";
 import { THEMES } from "../ui/theme";
-import type { DoctorArgs, ModelArgs, ModelsArgs, SessionsArgs, SettingsArgs, SkillsArgs, TasksArgs } from "./args";
+import type { DoctorArgs, JevArgs, ModelArgs, ModelsArgs, SessionsArgs, SettingsArgs, SkillsArgs, TasksArgs } from "./args";
 import { finalAnswer, formatEventText, type HeadlessIO } from "./headless";
 
 type Out = Pick<HeadlessIO, "stdout" | "stderr">;
@@ -212,6 +215,13 @@ export function settingsCommand(args: SettingsArgs, out: Out): number {
     if (args.json) return json(out, settings), 0;
     out.stdout(`output-mode  ${settings.outputMode}   (${OUTPUT_MODES.map((mode) => mode.value).join(" | ")})\n`);
     out.stdout(`theme        ${settings.theme}   (${THEMES.map((theme) => theme.id).join(" | ")})\n`);
+    out.stdout(`jev          ${settings.jevEnabled ? "on" : "off"}   (TypeSafe System One decisions)\n`);
+    out.stdout(`jev-verifier ${settings.jevVerifierEnabled ? "on" : "off"}   (LLM+Jev phase after each finished turn)\n`);
+    const saved = getSecret(JEV_KEY_NAME);
+    const auth = resolveJevKey();
+    out.stdout(
+      `jev key      ${saved ? `${maskKeyHint(saved)} (vault)` : "not in the vault"}${auth.key ? `   (in force: ${auth.source})` : "   (none: the phase will degrade)"}\n`,
+    );
     return 0;
   }
   const key = args.key.replace(/_/g, "-");
@@ -227,13 +237,58 @@ export function settingsCommand(args: SettingsArgs, out: Out): number {
       return 2;
     }
     settings.theme = args.value;
+  } else if (key === "jev" || key === "jev-verifier") {
+    // Both toggles are boolean and independent: neither one reads or writes the other.
+    const value = args.value === "on" || args.value === "true" || args.value === "1";
+    if (args.value !== undefined && !["on", "off", "true", "false", "1", "0"].includes(args.value)) {
+      out.stderr(`error: ${key} must be on or off\n`);
+      return 2;
+    }
+    if (key === "jev") settings.jevEnabled = value;
+    else settings.jevVerifierEnabled = value;
+  } else if (key === "jev-key") {
+    // Writing the key is a separate verb from flipping a toggle: a turn-on with no key must not
+    // silently ship without one, and turning jev off must not delete the stored key.
+    setSecret(JEV_KEY_NAME, args.value ?? "");
+    out.stdout(args.value ? "jev-api-key saved\n" : "jev-api-key cleared\n");
+    return 0;
   } else {
-    out.stderr("error: settings keys are output-mode and theme\n");
+    out.stderr("error: settings keys are output-mode, theme, jev, jev-verifier and jev-key\n");
     return 2;
   }
   saveSettings(settings);
   if (args.json) json(out, settings);
   else out.stdout(`${key} → ${args.value}\n`);
+  return 0;
+}
+
+/**
+ * `mini-tui jev check` — is the Jev key usable, and which model actually answers?
+ *
+ * This is the same `GET /v1/models` the /settings panel's `c` key runs, so the command and the
+ * panel can never disagree about the integration. Exit 0 when the key works, 1 when it does not.
+ */
+export async function jevCommand(args: JevArgs, out: Out): Promise<number> {
+  const result = await jevModels();
+  const settings = loadSettings();
+  const payload = {
+    ...result,
+    base: result.baseUrl,
+    jevEnabled: Boolean(settings.jevEnabled),
+    verifierEnabled: Boolean(settings.jevVerifierEnabled),
+    // What a real judgement costs is ~$0.001 and ~0.6 s; this probe only proves reachability.
+    contract: { endpoint: `${result.baseUrl}/v1/systemone`, auth: "Bearer", primitives: ["noul", "choice", "score"] },
+  };
+  if (args.json) {
+    json(out, payload);
+    return result.ok ? 0 : 1;
+  }
+  if (!result.ok) {
+    out.stderr(`jev: not reachable — ${result.error ?? "unknown"}\n  base   ${result.baseUrl}\n  key    ${result.source || "none (set one with `mini-tui settings jev-key <key>`)"}\n`);
+    return 1;
+  }
+  out.stdout(`jev: ok\n  base    ${result.baseUrl}\n  key     ${result.source}\n  models  ${result.models.join(", ") || "—"}\n  asking  ${result.model} via POST /v1/systemone (noul | choice | score)\n`);
+  out.stdout(`  toggles jev ${settings.jevEnabled ? "on" : "off"} · verifier ${settings.jevVerifierEnabled ? "on" : "off"}\n`);
   return 0;
 }
 

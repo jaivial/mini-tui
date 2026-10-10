@@ -15,7 +15,8 @@ import { ErrorBanner } from "./components/ErrorBanner";
 import { ThinkingCard } from "./components/ThinkingCard";
 import { PromptBar } from "./components/PromptBar";
 import { ModelPicker, MODELS } from "./components/ModelPicker";
-import { SettingsPanel } from "./components/SettingsPanel";
+import { SettingsPanel, SETTINGS_GROUPS } from "./components/SettingsPanel";
+import { JevSettings } from "./components/JevSettings";
 import { HelpPanel } from "./components/HelpPanel";
 import { Modal } from "./components/Modal";
 import { SessionModal } from "./components/SessionModal";
@@ -65,6 +66,9 @@ import { SKILLS_DIR, expandSkills, filterSkills, insertSkill, listSkills, skillQ
 import { SkillHighlighter } from "./skillHighlight";
 import { fromCursorOffset, tabWidthOf, toCursorOffset } from "./textOffsets";
 import { loadSettings, saveSettings, type Settings } from "../settings";
+import { gitDiff } from "../jev/diff";
+import { pickReader } from "../jev/reader";
+import { formatReport, verifyDiff } from "../jev/verifier";
 import { saveLastModel } from "../lastModel";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 
@@ -223,6 +227,12 @@ export function App(props: AppProps) {
     return loaded;
   });
   const [settingsGroup, setSettingsGroup] = useState(0);
+  /** The verifier phase runs in the background after a turn; its report lands as a notice. */
+  const [verifying, setVerifying] = useState(false);
+  const verifyingRef = useRef(false);
+  /** Read at fire time so a toggle flipped mid-run is the one that counts. */
+  const settingsRef = useRef<Settings>(settings);
+  settingsRef.current = settings;
   const [inputFocused, setInputFocusedState] = useState(true);
   const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help" | "resume" | "connect">("none");
   /** ctrl+c was pressed once: the prompt placeholder says a second press closes. */
@@ -602,6 +612,40 @@ export function App(props: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlayState, resumeQuery, resumePage]);
 
+  /**
+   * The optional verifier phase (toggle 2), run after a turn finishes and the code is on disk.
+   *
+   * It is fire-and-forget on purpose: the phase adds a notice to the transcript, it never blocks
+   * the prompt and never touches the run. The settings are read through `settingsRef` at fire
+   * time, not captured, so turning it off while a run is finishing really does stop it.
+   */
+  const runVerifierPhase = () => {
+    if (!settingsRef.current.jevVerifierEnabled) return;
+    if (verifyingRef.current) return; // one at a time: a slow phase must not stack up
+    verifyingRef.current = true;
+    setVerifying(true);
+    const cwd = props.cwd;
+    void (async () => {
+      try {
+        const diff = gitDiff(cwd);
+        const { reader, reason } = pickReader();
+        const report = await verifyDiff({ diff, reader, readerReason: reason });
+        itemAppendHint.current = true;
+        setEvents((prev) => [
+          ...prev,
+          ...formatReport(report).map((text) => ({ type: "notice" as const, text, interruptType: "jev" })),
+        ]);
+      } catch (error) {
+        // A broken phase must never take the run with it: say so and move on.
+        itemAppendHint.current = true;
+        setEvents((prev) => [...prev, { type: "notice", text: `jev · verifier failed: ${(error as Error).message}`, interruptType: "jev" }]);
+      } finally {
+        verifyingRef.current = false;
+        setVerifying(false);
+      }
+    })();
+  };
+
   const startRun = (spec: TaskSpec) => {
     setStatus("running");
     exitedRef.current = false;
@@ -644,6 +688,7 @@ export function App(props: AppProps) {
         setStatus("interrupted"); // the user asked for this stop — not an error
       } else if (code === 0) {
         setStatus("done");
+        runVerifierPhase();
       } else {
         setStatus("error");
         // Post the raw log tail into the thread at the failure point: as a transcript item it
@@ -737,6 +782,8 @@ export function App(props: AppProps) {
       const final = readTrajectory(foreign.trajPath);
       if (final) applySnapshot(final);
       setStatus((current) => (current === "running" ? "done" : current));
+      // Same post-code phase as a run we started ourselves: a followed agent finished its turn too.
+      if (!holding) runVerifierPhase();
     });
   };
 
@@ -1273,9 +1320,10 @@ export function App(props: AppProps) {
         setInputFocused(true);
         return;
       }
-      // Tab moves between the two groups; the focused select owns the other keys
+      // Tab moves between the groups; the focused select owns the other keys. Group 2 (jev) is
+      // its own panel that owns every key while it is open, so only Tab is routed to it here.
       if (key.name === "tab" || key.name === "left" || key.name === "right") {
-        return setSettingsGroup((group) => (group + 1) % 2);
+        return setSettingsGroup((group) => (group + 1) % SETTINGS_GROUPS);
       }
       return;
     }
@@ -1462,7 +1510,11 @@ export function App(props: AppProps) {
     ) : overlayState === "connect" && connectStep ? (
       <ConnectWizard step={connectStep} providers={PROVIDERS} areaHeight={modalAreaHeight} />
     ) : overlayState === "settings" ? (
-      <SettingsPanel settings={settings} group={settingsGroup} onChange={changeSettings} onDone={doneSettings} />
+      settingsGroup === 2 ? (
+        <JevSettings settings={settings} onChange={changeSettings} onDone={doneSettings} />
+      ) : (
+        <SettingsPanel settings={settings} group={settingsGroup} onChange={changeSettings} onDone={doneSettings} />
+      )
     ) : overlayState === "help" ? (
       <HelpPanel />
     ) : overlayState === "resume" ? (
@@ -1574,6 +1626,7 @@ export function App(props: AppProps) {
         status={displayStatus}
         startedAt={turnStartedAt}
         compacting={Boolean(compacting)}
+        verifying={verifying}
       />
       {overlayNode ? <Modal areaHeight={modalAreaHeight}>{overlayNode}</Modal> : null}
     </box>

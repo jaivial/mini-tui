@@ -14,9 +14,12 @@ function indexForTheme(id: string | undefined): number {
   return index >= 0 ? index : 0;
 }
 
+/** Groups cycled by Tab; group 2 (jev) is its own overlay, rendered by App instead of this panel. */
+export const SETTINGS_GROUPS = 3;
+
 /**
- * `/settings` — two groups (output display · theme). Tab switches groups, ↑/↓
- * changes the highlighted option (applied live), Enter closes.
+ * `/settings` — output display and theme (Tab also reaches the jev group, which is its own
+ * panel). ↑/↓ changes the highlighted option (applied live), Enter closes.
  */
 export function SettingsPanel(props: {
   settings: Settings;

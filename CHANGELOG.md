@@ -2,6 +2,31 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Jev (TypeSafe System One) as two independent, optional toggles** (#115).
+  - **Toggle 1 — `jev`**: the System One decision service and its API key. The key goes into a
+    small vault (`~/.config/mini-tui/vault.json`, 0600) as `jev-api-key`, editable in
+    `/settings` → jev (masked, never rendered in full) or with `mini-tui settings jev-key <key>`.
+    Endpoint is `https://api.typesafe.ai` (`POST /v1/systemone`, `Bearer`), NOT OpenRouter, which
+    stays a plain chat provider. Keys resolve vault → `$TYPESAFE_API_KEY` → `~/.config/typesafe/config.json`
+    → `brain.json`, in one function every surface shares, so the panel, the CLI and a run can never
+    disagree about which key is in force.
+  - **Toggle 2 — `jev-verifier`**: an optional post-code phase. After a turn finishes, a cheap LLM
+    (the smallest model of an existing `/connect` provider — no second credential) reads the diff
+    and proposes candidate defects; Jev answers three typed Noul questions per candidate (is it
+    real / is it serious / is it safe to fix unattended) and fixed thresholds in `THRESHOLDS` branch
+    the result into `auto-fix` / `flag` / `ignore`. The report lands as a transcript notice; it never
+    blocks the prompt or the run, and any missing piece (no diff, no reader, no key, HTTP error)
+    degrades with a stated reason instead of an invented verdict.
+  - `mini-tui jev check` (and `c` in the panel) probes `GET /v1/models` with the key in force and
+    names the concrete model that answers.
+
+  Both toggles ship **off** and neither reads the other's state: Jev can be on with the phase off,
+  the phase on with Jev off.
+
 ## 0.40.0 — 2026-10-09
 
 The web UI gets its agents panel (live graph, tabs, session persistence), the agent drops its

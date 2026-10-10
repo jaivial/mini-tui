@@ -7,7 +7,7 @@ export function HelpPanel() {
     ["/new", "start a new session without restarting mini-tui"],
     ["/resume", "browse sessions saved in this folder (search, pages · → preview read-only)"],
     ["/connect", "connect a BYOK provider (key → model → connection test)"],
-    ["/settings", "output display: collapsed / trimmed (2 lines) / expanded"],
+    ["/settings", "output display · theme · jev toggles (Tab ×3)"],
     ["/compact", "summarize the conversation now (frees context; auto at 80 %)"],
     ["$skill (anywhere)", "reference skills in the prompt — $ opens the list, Enter/Tab inserts"],
     ["/help", "this panel"],

@@ -163,6 +163,10 @@ export function patchSettings(patch: Record<string, unknown>): SettingsView {
     next.outputMode = patch.outputMode as OutputMode;
   }
   if (typeof patch.theme === "string" && /^[\w-]{1,32}$/.test(patch.theme)) next.theme = patch.theme;
+  // The two Jev toggles, independently: a boolean is taken as given, anything else is ignored so a
+  // stray string cannot switch Jev on.
+  if (typeof patch.jevEnabled === "boolean") next.jevEnabled = patch.jevEnabled;
+  if (typeof patch.jevVerifierEnabled === "boolean") next.jevVerifierEnabled = patch.jevVerifierEnabled;
   saveSettings(next);
   return settingsView();
 }
