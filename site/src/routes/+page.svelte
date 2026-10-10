@@ -6,6 +6,9 @@
   import Section from "$lib/components/Section.svelte";
   import CodeBlock from "$lib/components/CodeBlock.svelte";
   import FeatureIcon from "$lib/components/FeatureIcon.svelte";
+  import BenchmarkBars from "$lib/components/BenchmarkBars.svelte";
+  import BenchmarkRounds from "$lib/components/BenchmarkRounds.svelte";
+  import BenchmarkAb from "$lib/components/BenchmarkAb.svelte";
   import { Button } from "$lib/components/ui/button";
   import { Badge } from "$lib/components/ui/badge";
   import * as Card from "$lib/components/ui/card";
@@ -214,6 +217,49 @@
         <a class="inline-flex min-h-11 items-center gap-1 text-primary underline underline-offset-4" href={REPO}>The full benchmark report <ArrowRight class="size-3.5" aria-hidden="true" /></a>
       </p>
     </div>
+  </div>
+
+  <!-- The same numbers as graphs. Drawn in the section's own language: shadcn tokens, hairline grid,
+       mono labels, and every figure traceable to a table in docs/pi-vs-mini-benchmark.md. -->
+  <div class="mt-10 grid min-w-0 gap-8 lg:grid-cols-2">
+    <Card.Root class="min-w-0 sm:col-span-2">
+      <Card.Header>
+        <Card.Title><h3 class="text-base font-semibold">Every task, all four runs</h3></Card.Title>
+        <Card.Description>
+          Median wall time per task over the four complete runs of the corpus: round 5 plus the three round-6 reps.
+          Shorter is faster. Five tasks each way, which is the tie the table above reports.
+        </Card.Description>
+      </Card.Header>
+      <Card.Content class="min-w-0">
+        <BenchmarkBars />
+      </Card.Content>
+    </Card.Root>
+
+    <Card.Root class="min-w-0">
+      <Card.Header>
+        <Card.Title><h3 class="text-base font-semibold">Six rounds of the same race</h3></Card.Title>
+        <Card.Description>
+          The aggregate ratio each round, from 3.65x slower at the start to level. Round 5's 0.69x is drawn in full,
+          hollow and dashed, because it was one run and the three fresh repetitions did not repeat it.
+        </Card.Description>
+      </Card.Header>
+      <Card.Content class="min-w-0">
+        <BenchmarkRounds />
+      </Card.Content>
+    </Card.Root>
+
+    <Card.Root class="min-w-0">
+      <Card.Header>
+        <Card.Title><h3 class="text-base font-semibold">The prompt clause, measured both ways</h3></Card.Title>
+        <Card.Description>
+          Back-to-back A/B of the one-clause change that did ship, same binary and same checks on both arms.
+          It pays big on the derivation tasks and about two seconds on the trivial ones, with quality unmoved at 48/48.
+        </Card.Description>
+      </Card.Header>
+      <Card.Content class="min-w-0">
+        <BenchmarkAb />
+      </Card.Content>
+    </Card.Root>
   </div>
 </Section>
 
