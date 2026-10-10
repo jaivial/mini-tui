@@ -1078,34 +1078,111 @@ Salen de aqui porque son la diferencia entre "integrado" y "integrado de verdad"
    (El protocolo publicado lo resuelve con el *overlay* de CA de Runta, que ademas es otra
    CA porque Runta termina el TLS.)
 
-### Estado medido: integracion verde, baseline pendiente
+### Estado medido: integracion verde, baseline **parcial** (cuota del proveedor)
 
-Un trial real completo (`regex-log`, el mismo que usa el SKILL como prueba de plomeria):
+El sweep arranco el 2026-10-10 15:54 con la maquina libre (gate en `done`) y produjo
+**5 celdas validas de las 21 de Terminal-Bench del brazo mini**, 4 de ellas PASS:
 
 ```
-mini-agent-rs + Kimi K3 + Harbor + verificador -> reward 0, 9 llamadas, $0.228, 2m37s
+mini / Terminal-Bench   4 PASS / 5 celdas validas   $0.0508 por pass   6.5 llamadas por pass
+  log-summary-date-ranges   PASS   0.7 min   $0.028    4 llamadas
+  merge-diff-arc-agi-task   PASS   1.2 min   $0.090   14 llamadas
+  modernize-scientific-stack PASS  0.8 min   $0.031    3 llamadas
+  multi-source-data-merger  PASS   1.2 min   $0.055    5 llamadas
+  largest-eigenval          FAIL   5.3 min   $0.324   24 llamadas
 ```
 
-Es decir: **el camino completo funciona**, y el 0 es un **fallo real de capacidad, no de
-plomeria**. El agente escribio un regex correcto pero dejo un grupo de captura, asi que
-`re.findall` devolvia tuplas `('192.168.0.1', '2025-01-09')` en vez de `'2025-01-09'`, y el
-test comparaba contra la lista de fechas. `regex-log` la resuelven 11 de 12 harnesses, asi
-que es exactamente el tipo de detalle de donde saldrían puntos.
+**Lo que esto dice (y lo que no).** Las 4 columnas son 4 de las **12 universales**, o
+sea el suelo del plan se sostiene: mini no se rompe en lo facil. El unico fallo es
+`largest-eigenval`, que **la resuelve 0 de 12 en el campo publicado**, asi que no cuesta
+puntos respecto al objetivo. Y el motivo exacto del fallo se lee en el verificador:
+**26 de 27 tests pasan**, y solo falla `test_speedup[8]` por 37 microsegundos. Es
+casi-acierto en una tarea que nadie resuelve, no un fallo de capacidad de manual.
 
-**Lo que no hay todavia es el baseline.** La sesion `s-mv2iwsb314a9` esta haciendo rondas
-de velocidad en esta misma maquina y las corridas se contaminan entre si, asi que no se ha
-lanzado ni el sweep de mini ni el control de pi. El gate esta en
-`~/mini-tui-benchmark/frontier_gate.sh` y `run-baseline.sh` se niega a arrancar si la otra
-sesion esta `running`.
+**Lo que NO se puede decir.** `pass_rate` da 80.0 % sobre 5 celdas y
+`success/expected` da 13.3 %, pero **ninguno de los dos es un score de FrontierHarness**:
+25 de 30 celdas nunca se corrieron. Citar cualquiera de los dos seria el error que
+`frontier_score.py` sale con codigo 1 para evitar, asi que aqui no se cita ninguno.
+
+### Por que se paro: la cuota semanal de OpenCode Go se agoto
+
+A las 16:07:57Z, en la quinta tarea (`chess-best-move`), el proveedor empezó a responder:
+
+```json
+{"type":"error","error":{"type":"GoUsageLimitError","message":"Go usage limit exceeded"},
+ "metadata":{"workspace":"wrk_01KFHBN9C6MR761DYR37ACB0W2","limit_name":"weekly"}}
+```
+
+Detalle que cuesta un rato descubrir: `/v1/models` **sigue contestando 200**; lo que se
+rechaza es `/chat/completions`.asi que "la API responde" no es prueba de que haya cuota.
+
+El agente no se cae: reintenta con backoff de 60 s y sigue, indefinidamente, hasta el
+timeout del trial. Por eso **parar era la unica decision correcta**. Una tarea sin
+completions se puntua como fallo de tarea, asi que seguir corriendo habria convertido
+una averia del proveedor en aparente incapacity del agente, y habria contaminado a la vez
+el pass_rate y el analisis de fallos por tarea. Se paro el sweep y se mataron los
+contenedores.
+
+**Las 5 celdas que se conservan son limpias**: las 5 terminaron antes del primer 429, asi
+que ninguna esta contaminada. El trial de `chess-best-move` no dejo `result.json`, con lo
+que aparece como `missing` y no infla ni hunde la matriz. Queda escrito en
+`runs/2026-10-10-mini-terminal-bench/ABORTED.json` con el error exacto y la hora.
+
+### Tres defectos mas del sweep, encontrados al medir
+
+Salen de aqui porque los tres habrían hecho que el numero fuera **falso sin parecer falso**:
+
+1. **`frontier_score.py` no contaba ningun trial.** Buscaba
+   `jobs/<run>/<task>__<hash>/result.json`, pero Harbor anade un directorio de timestamp
+   mas: `jobs/<run>/<timestamp>/<task>__<hash>`. Con la ruta que usaba `run-sweep.sh` la
+   matriz daba **0/30 y las 30 tareas como `missing`**, sin ningun error. Ahora acepta
+   ambas profundidades y exige `task_name`, que es lo que deja fuera el resumen de run
+   (que antes se puntuaba como una tarea llamada como el run).
+2. **El brazo pi corria sin clave.** Harbor deduce el proveedor del prefijo del modelo
+   (`opencode-go`) y busca la clave en los nombres de env de *ese* proveedor;
+   `opencode-go` no es un proveedor registrado, asi que nunca se llegaba a preguntar por
+   la clave y `PI_API_KEY`/`PI_BASE_URL` se ignoraban en silencio. El "control" habria
+   corrido sin autenticarse. Ahora pi va por el proveedor `openai` registrado, con la
+   pasarela en `OPENAI_*` y el `model_api` que pi exige para aceptar un base URL a
+   medida.
+3. **DeepSWE corria mini en los dos brazos.** La rama de DeepSWE fijaba
+   `--agent-import-path mini_agent_rs:MiniAgentRs` sin mirar el brazo, asi que el
+   "control de pi" en las 9 tareas de DeepSWE habria sido el propio mini. Ahora elige
+   agente por brazo y **se niega en voz alta** si el brazo pedido no existe en `pier`
+   (que no tiene agente `pi` incorporado), porque un control que es el tratamiento es
+   peor que no tener control.
+
+### Donde queda la palanca hacia el 70 %
+
+Con 5 celdas no se puede recalcular el objetivo, pero si se puede seÃ±ar donde esta:
+
+- **El suelo se sostiene.** 4/4 universales. No hay indicio de fallo sistematico del
+  harness, que era el riesgo grande del plan.
+- **El margen son las 7 disputadas de Terminal-Bench** y siguen sin tocarse. Ahi es
+  donde se decide el 70 %, y nada de lo medido las descarta.
+- **La eficiencia es la ventaja real y ya es grande: 6.5 llamadas por pass frente a las
+  62.35 de turnos medios de Codex, y $0.0508 por pass frente a $1.778.** Si el resto de
+  la matriz se comporta como estas 4, mini llega al objetivo por **turnos por tarea y
+  coste por pass**, que es exactamente el eje del encargo.
+- **Bloqueante, no palanca:** la cuota. Sin reset de `wrk_01KFHBN9C6MR761DYR37ACB0W2` no
+  hay mas llamadas a Kimi K3 por esta via, y las tres suites necesitan el modelo. El
+  sweep es reanudable tal cual (`run-sweep.sh` es idempotente por brazo), pero **las
+  tareas que se tocaron con 429 hay que repetirlas**, no contarlas.
 
 ## 10.4 Setup reproducible
 
 ```bash
 bash ~/frontier-harness-eval/setup-fh-mini.sh          # venv 3.12 + harbor 0.22 + dataset
-bash ~/frontier-harness-eval/run-baseline.sh mini       # brazo mini-agent-rs
-bash ~/frontier-harness-eval/run-baseline.sh pi         # control pi, mismas tareas/modelo
-python3 ~/frontier-harness-eval/frontier_score.py jobs/<run-id>
+bash ~/frontier-harness-eval/run-sweep.sh              # los 2 brazos x las 2 suites, con gate
+python3 ~/frontier-harness-eval/frontier_score.py jobs/<run-id>      # pass_rate del harness
+python3 ~/frontier-harness-eval/analyze-sweep.py jobs/<run-id>       # por tarea, vs el dato publicado
 ```
+
+`analyze-sweep.py` responde lo que el pass_rate no puede: clasifica cada tarea como
+**universal / disputada / imposible-para-todos** leyendo `results/eval-data.json`, dice
+por que fallo cada una leyendo el `test-stdout.txt` del verificador, y da coste y
+turnos por pass. Como `frontier_score.py`, solo compara **celdas validas** y reporta las
+infra-invalidas por separado, para que una matriz a medias jamas se lea como un score.
 
 `run-baseline.sh` escribe `runs/<run-id>/methodology.json` con las divergencias del
 protocolo publicado: Docker local en vez de golden checkpoints de Runta, Kimi K3 por
