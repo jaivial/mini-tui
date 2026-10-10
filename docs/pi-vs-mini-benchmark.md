@@ -931,3 +931,216 @@ Los unicos "frontier" que aparecen en el sistema son bundles de CodeMirror de Pl
 establecer un baseline de FrontierHarness ni avanzar al 70 % porque el harness no esta en esta
 maquina**; hay que decir de que harness se trata (URL, repo, o donde esta el corpus) antes de
 seguir. La parte 1 del pedido (las reps) si se hizo y queda documentada arriba.
+
+# 10. FrontierHarness: que es, como se mide, y donde esta mini
+
+La seccion 9.5 concluyo que "FrontierHarness no existe en esta maquina". Era cierto para
+la busqueda que se hizo entonces (rutas locales) y **hoy es falso**: el harness existe,
+es publico y se puede ejecutar aqui. Esta seccion lo deja funcionando y medido.
+
+## 10.1 Que es FrontierHarness exactamente
+
+Repo: <https://github.com/frontier-harness-eval/eval>, informe vivo en
+<https://frontierharness.org/>. Clon local en `~/frontier-harness-eval`.
+
+No es un harness de agente: es un **benchmark que compara harnesses de agente**. La
+pregunta que hace no es "que modelo es mejor" sino **"manteniendo el modelo, las tareas
+y el runtime constantes, que cambia al cambiar el harness"**. Concretamente:
+
+- **Modelo constante: Kimi K3** (servido por Fireworks en los baselines publicados). El
+  proveedor se puede cambiar, pero eso exige un *control run* pareado para poder comparar.
+- **30 tareas**: 21 de Terminal-Bench (`terminal-bench@2.0`) y 9 de DeepSWE
+  (`datacurve-ai/deep-swe` en el ref `435ee89e`).
+- **9 harnesses / 12 configuraciones / 360 evaluaciones** publicadas.
+- **Cada tarea corre en un contenedor limpio**, restaurado desde un mismo *golden
+  checkpoint*, con vCPU/memoria/disco identicos. Es lo que hace comparables las cifras.
+- **Veredicto por el verificador de la tarea** (`reward >= 1` = pass), no por LLM-as-judge.
+
+### La metrica del "70 %"
+
+La metrica de la que habla Jaime es el **`pass_rate`**, y su definicion exacta esta en
+`SKILL.md` ("Accounting and canonical selection"):
+
+> `pass_rate = passes / valid cells`
+
+La parte importante es **valid cells**. Una celda solo cuenta si el resultado esta
+*probado*:
+
+- `reward >= 1` **y** uso de modelo observado -> **pass**.
+- Otro `reward` con uso de modelo -> **fallo valido** (cuenta en el denominador).
+- Timeout **despues** de que el agente empezo -> fallo valido, aunque no haya uso.
+- Cualquier otra cosa (fallo de imagen, instalacion rota, verificador que no corrio,
+  excepcion sin uso) -> **`infra_invalid`, y NO se cuenta como fallo de tarea**.
+
+Ese ultimo punto es el que suele hacer trampas: un `infra_invalid` que se puntua como
+fallo baja el `pass_rate` sin que el agente tuviera la culpa. Por eso el mismo doc trae
+`success_rate_expected = passes / expected`, que divide entre las 30 tareas congeladas
+sin importar cuantas sean validas, y avisa de que una matriz incompleta **no es un
+pass rate**.
+
+En la practica, con las 30 celdas validas, **70 % = 21 de 30 tareas resueltas**.
+
+### Donde esta el 70 %
+
+Los 12 baselines publicados (de `results/eval-data.json`):
+
+| Puesto | Configuracion | Pass rate | Coste por pass | Tiempo mediano | Turnos |
+|---:|---|---:|---:|---:|---:|
+| 1 | Codex | **66.7 %** (20/30) | $3.47 | 6m 43s | 62.4 |
+| 2 | DSH Creator | 63.3 % (19/30) | $3.28 | 6m 44s | 35.7 |
+| 3 | Claude Code | 63.3 % (19/30) | $18.34 | 9m 38s | 49.3 |
+| 4 | **Pi** | **60.0 %** (18/30) | $2.43 | 7m 33s | 18.7 |
+| 5 | DSH PTC | 60.0 % (18/30) | $4.58 | 7m 44s | 22.2 |
+| 6 | DSH Standard | 60.0 % (18/30) | $3.46 | 6m 17s | 31.0 |
+| 7 | Oh My Pi | 56.7 % (17/30) | $4.75 | 6m 46s | 26.6 |
+| 8 | Kimi Code | 56.7 % (17/30) | $3.65 | 7m 56s | 39.9 |
+| 9 | DSH Minimal | 56.7 % (17/30) | $4.72 | 5m 41s | 47.6 |
+| 10 | Exo | 53.3 % (16/30) | $1.05 | 6m 17s | 12.0 |
+| 11 | OpenCode | 50.0 % (15/30) | $3.24 | 6m 27s | 11.2 |
+| 12 | Hermes | 50.0 % (15/30) | $2.90 | 6m 58s | 25.9 |
+
+**El 70 % no lo ha alcanzado ninguno de los 12.** El techo publicado es Codex con 66.7 %
+(20/30); 70 % son 21 de 30, es decir **una tarea mas que el mejor**. Por eso el objetivo
+de Jaime es aggression: mini tiene que superar al leaderboard actual, no igualarlo.
+
+Reparto por suite de los tres primeros (sobre `task_details` de `eval-data.json`):
+
+| Configuracion | Terminal-Bench | DeepSWE | Total |
+|---|---:|---:|---:|
+| Codex | 15/21 | 5/9 | 20/30 |
+| Claude Code | 16/21 | 3/9 | 19/30 |
+| Pi | 16/21 | 2/9 | 18/30 |
+
+## 10.2 Donde esta el techo y donde esta el suelo
+
+Repartiendo las 30 tareas por cuantos de los 12 harnesses las resuelven:
+
+- **12 tareas Terminal-Bench las resuelven los 12 de 12** (40 % del total): `build-cython-ext`,
+  `constraints-scheduling`, `db-wal-recovery`, `git-leak-recovery`, `log-summary-date-ranges`,
+  `merge-diff-arc-agi-task`, `modernize-scientific-stack`, `multi-source-data-merger`,
+  `openssl-selfsigned-cert`, `polyglot-c-py`, `sqlite-db-truncate`, `vulnerable-secret`.
+- **7 tareas Terminal-Bench son disputadas**: `regex-log` (11/12), `sanitize-git-repo` (10/12),
+  `chess-best-move` (5/12), `gcode-to-text` (5/12), `code-from-image` (4/12),
+  `dna-insert` (2/12), `extract-elf` (2/12).
+- **9 DeepSWE**: la mas facil es `python-statemachine-state-data-scoping` (7/12) y
+  `scc-bounded-memory-spilling` **no la resuelve ninguno** (0/12).
+
+Esto acota el objetivo con honestidad: **ganar las 12 universales + 7 disputadas de
+Terminal-Bench = 19/30 = 63.3 %**, exactamente el nivel de Codex y Claude Code. Para
+llegar al 70 % **hace falta DeepSWE**: sin las 9 de DeepSWE el maximo teorico de este
+corpus es 19/30, y con las 6 DeepSWE que nadie o casi nadie resuelve, el margen real son
+las 3 con mejor historial (`python-statemachine-state-data-scoping` 7/12,
+`httpx-multipart-response-parsing` 5/12, `anko`/`fastapi` 4/12).
+
+## 10.3 Mini como agente bajo evaluacion: la integracion
+
+Harbor es el runner que ejecuta Terminal-Bench (`harbor run -d terminal-bench@2.0`).
+mini-agent-rs **ya es un agente de Harbor**: el binario se identifica como
+`mini-swe-agent-tui`, acepta el mismo contrato de CLI (`--yolo --model= --task=
+--output= --exit-immediately`) y escribe el mismo formato nativo de trajectory
+(`{info, trajectory_format, messages}`) que el `convert_mini_swe_agent_trajectory` de
+Harbor ya sabe leer. Ademas trae built-in los agentes `mini-swe-agent` **y** `pi`, que es
+justo el baseline contra el que hay que competir.
+
+El adaptador esta en `~/frontier-harness-eval/harness/mini_agent_rs.py`: una clase que
+hereda del agente `mini-swe-agent` de Harbor y cambia **solo** dos cosas (instalar el
+binario en vez de `uv tool install`, y la conexion de modelo). Se registra por import path,
+que es la via que Harbor acepta para cualquier agente que no sea built-in:
+
+```bash
+harbor run -d terminal-bench@2.0 -i regex-log \
+  -a mini_agent_rs:MiniAgentRs -m opencode-go/kimi-k3 -n 1 -k 1 -y
+```
+
+**El modelo.** El benchmark fija Kimi K3 y lo aqui se respeta: mini lo alcanza por
+OpenCode Go (`opencode-go/kimi-k3`, ya soportado por la config `opencode_go.yaml` de
+mini). No hay ninguna clave de Fireworks ni de Moonshot en esta maquina; si las hubiera,
+`--provider fireworks` seria lo conforme. Esto se declara como divergencia, no se oculta.
+
+### Tres defectos que aparecieron al poner el primer trial en verde
+
+Salen de aqui porque son la diferencia entre "integrado" y "integrado de verdad":
+
+1. **La ruta de modelo se iba a OpenAI sin avisar.** Esta sesion tiene
+   `MSWEA_OPENAI_API_BASE=https://api.openai.com/v1` en el entorno. El adaptador lo
+   reflejaba en `OPENCODE_GO_API_BASE`, y el trafico de Kimi K3 acababa en OpenAI, que
+   respondia `invalid model ID` / fallo de TLS. El fallo parecia del agente. Ahora un
+   base-URL por defecto de OpenAI **no** se refleja.
+2. **La clave no llegaba al contenedor.** Harbor exporta la clave resuelta como
+   `MSWEA_API_KEY`, pero el sabor OpenCode Go de mini lee `MSWEA_OPENCODE_GO_API_KEY`,
+   luego `OPENCODE_GO_API_KEY`, luego `OPENCODE_API_KEY` — nunca `MSWEA_API_KEY`. Dentro
+   del contenedor la clave simplemente no estaba: HTTP 401 "Missing API key". Ahora se
+   refleja explicitamente.
+3. **Las imagenes de tarea no traen ninguna CA.** Las de Terminal-Bench son minimas y aqui
+   ni siquiera tienen `/etc/ssl/certs/ca-certificates.crt`, asi que **toda** llamada HTTPS
+   del agente fallaba con `invalid peer certificate: UnknownIssuer`. Eso no lo arregla el
+   harness del agente: es el entorno. `install()` copia ahora el trust store del host.
+   (El protocolo publicado lo resuelve con el *overlay* de CA de Runta, que ademas es otra
+   CA porque Runta termina el TLS.)
+
+### Estado medido: integracion verde, baseline pendiente
+
+Un trial real completo (`regex-log`, el mismo que usa el SKILL como prueba de plomeria):
+
+```
+mini-agent-rs + Kimi K3 + Harbor + verificador -> reward 0, 9 llamadas, $0.228, 2m37s
+```
+
+Es decir: **el camino completo funciona**, y el 0 es un **fallo real de capacidad, no de
+plomeria**. El agente escribio un regex correcto pero dejo un grupo de captura, asi que
+`re.findall` devolvia tuplas `('192.168.0.1', '2025-01-09')` en vez de `'2025-01-09'`, y el
+test comparaba contra la lista de fechas. `regex-log` la resuelven 11 de 12 harnesses, asi
+que es exactamente el tipo de detalle de donde saldrían puntos.
+
+**Lo que no hay todavia es el baseline.** La sesion `s-mv2iwsb314a9` esta haciendo rondas
+de velocidad en esta misma maquina y las corridas se contaminan entre si, asi que no se ha
+lanzado ni el sweep de mini ni el control de pi. El gate esta en
+`~/mini-tui-benchmark/frontier_gate.sh` y `run-baseline.sh` se niega a arrancar si la otra
+sesion esta `running`.
+
+## 10.4 Setup reproducible
+
+```bash
+bash ~/frontier-harness-eval/setup-fh-mini.sh          # venv 3.12 + harbor 0.22 + dataset
+bash ~/frontier-harness-eval/run-baseline.sh mini       # brazo mini-agent-rs
+bash ~/frontier-harness-eval/run-baseline.sh pi         # control pi, mismas tareas/modelo
+python3 ~/frontier-harness-eval/frontier_score.py jobs/<run-id>
+```
+
+`run-baseline.sh` escribe `runs/<run-id>/methodology.json` con las divergencias del
+protocolo publicado: Docker local en vez de golden checkpoints de Runta, Kimi K3 por
+OpenCode Go en vez de Fireworks, y solo las 21 tareas de Terminal-Bench (DeepSWE necesita
+`pier` sobre un runtime de Runta). Sin esas divergencias los numeros **no** son
+comparables con el leaderboard, y estan escritas para que no se puedan citar sin
+entenerlas.
+
+`frontier_score.py` implementa las reglas del propio harness y se valido contra el dato
+publicado: reconstruye **18/30 = 60.0 %** para `pi-responses` y un tiempo mediano de
+**7.5 min** frente a los 7m 33s publicados, y sale con codigo 1 si la matriz esta
+incompleta para que un sweep a medias no se lea como un score.
+
+## 10.5 Plan para llegar al 70 %
+
+Objetivo: **21/30**, una tarea mas que Codex. Ordenado por rendimiento esperado:
+
+1. **Medir primero.** Baseline de mini sobre las 21 de Terminal-Bench con el gate de
+   contencion, y el control de pi en las mismas condiciones. Sin esto no se sabe donde se
+   esta: el 70 % son 21 de 30 y hace falta saber cuantas de las 12 universales se caen.
+2. **El suelo es 12/30 (40 %) y solo depende de no romper nada.** Las 12 universales
+  sugieren que mini las deberia hacer; cualquier fallo ahi es doble penalizacion (se pierde
+   el punto y ademas indica un fallo sistematico del harness, no de una tarea).
+3. **El margen real son las 7 disputadas de Terminal-Bench.** `regex-log` (11/12) y
+   `sanitize-git-repo` (10/12) son las de mayor probabilidad y las que el fallo observado
+   (`regex-log`, grupo de captura) deberia arreglar: es un fallo de formato de salida, no de
+   raciocinio, y el prompt de mini ya insiste en "una sola tool call por turno".
+4. **Sin DeepSWE el 70 % es inalcanzable** (techo 19/30 = 63.3 %). Hay que instalar `pier`
+   y resolver la topologia, o el objetivo se queda en 63.3 % y hay que decirlo claro.
+5. **Velocidad mejor que pi, que es la otra mitad del encargo.** Pi es el mas rapido de los
+   rapidos por turnos (18.7 turnos de mediana) y el mas barato por pass ($2.43). El margen
+   de mini en las rondas de velocidad es empata (mediana 0.98x), asi que en FrontierHarness
+   la partida se gana por **turnos por tarea** y **coste por pass**, no por wall-clock.
+   El `cost_limit=0` por defecto del adaptador hay que revisarlo: hoy el smoke gastó $0.228
+   en 9 llamadas, y el presupuesto del benchmark por tarea esta en el orden de $0.06-$0.26.
+
+Lo que **no** se va a hacer: inventar cifras sin correrlas. El baseline se publicara con
+la corrida completa y con sus reps, o no se publicara.
