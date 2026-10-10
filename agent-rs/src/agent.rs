@@ -137,6 +137,10 @@ pub struct Agent {
     last_save_ms: f64,
     /// The prompt-cache warmer (plan item 5), ticking from the idle waits.
     warmer: crate::cache_warmer::Warmer,
+    /// The fast path (`src/intent.rs`) already produced this run's answer: `run`'s loop breaks
+    /// at its first turn instead of opening. False for every run that went through the normal
+    /// loop, and for a fast path that declined or failed.
+    fastpath_answered: bool,
 }
 
 impl Agent {
@@ -166,6 +170,7 @@ impl Agent {
             last_model_ms: 0.0,
             last_save_ms: 0.0,
             warmer: crate::cache_warmer::Warmer::new(),
+            fastpath_answered: false,
         }
     }
 
@@ -494,10 +499,20 @@ impl Agent {
             let instance = render(&self.config.instance_template, &vars).map_err(template_error)?;
             let sys = self.model.format_message("system", &system, None);
             let user = self.model.format_message("user", &instance, None);
-            self.add_messages(vec![sys, user]);
+            // Priority 1 of the round-3: a task that needs no machine answers in ONE call, with
+            // no tool list at all, instead of opening the loop that would have it explore the repo
+            // to answer "hola". Anything the fast path cannot answer falls through to the loop
+            // with the conversation as it was, so quality never depends on the classifier.
+            let fast = self.try_fast_path(task);
+            if !fast {
+                self.add_messages(vec![sys, user]);
+            }
         }
         self.save(false);
         loop {
+            if self.fastpath_answered {
+                break;
+            }
             if STOP.load(Ordering::SeqCst) {
                 return Err(interrupted());
             }
@@ -552,6 +567,73 @@ impl Agent {
             }
         }
         Ok(self.messages.last().map(extra).unwrap_or_default())
+    }
+
+    /// One tool-free model call for a task that needs no
+    /// machine. Returns true when it answered, which ends the run with that text as the
+    /// submission.
+    ///
+    /// It is deliberately all-or-nothing and it never leaves a half state behind: the normal
+    /// `system`+`user` messages are added back when it declines, when the call fails, or when the
+    /// reply is unusable, so the loop that follows is exactly the one this run had before. The
+    /// three ways it declines are cheap --- the classifier said "work", the classifier is off,
+    /// or the provider errored --- and a decline costs nothing but the classification.
+    fn try_fast_path(&mut self, task: &str) -> bool {
+        if crate::intent::classify(task) != crate::intent::Intent::Conversational {
+            return false;
+        }
+        let view = vec![
+            self.model.format_message("system", crate::intent::direct_system(), None),
+            self.model.format_message("user", &crate::intent::direct_user(task), None),
+        ];
+        let started = now();
+        let reply_result = match self.model_query_text(&view) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("fast path: the direct call failed ({}); taking the normal loop", e.kind);
+                return false;
+            }
+        };
+        self.last_model_ms = (now() - started) * 1000.0;
+        self.n_calls += 1;
+        // A FormatError here means the provider insisted on a tool call we did not offer; the
+        // loop (which does offer them) is the right answer, not a second direct call.
+        let message = match reply_result {
+            crate::models::Reply::Message(m) => m,
+            crate::models::Reply::FormatError(_) => return false,
+        };
+        // Even with no tool list a provider may answer with tool calls (GLM ignores
+        // `tool_choice: "none"`; measured, speed8). If it did, this is not a trivial turn after
+        // all: hand the whole conversation to the normal loop rather than pretend it was one.
+        if get(&message, "extra").and_then(|e| e.get("actions")).and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
+            return false;
+        }
+        // The model layer already derived `extra.submission` from the reply (same rule the normal loop
+        // uses: no tool calls = the text is the answer). Reuse it verbatim so a fast-path run's
+        // transcript is indistinguishable from a one-turn normal run's.
+        let text = extra(&message).get("submission").and_then(Value::as_str).unwrap_or_default().to_string();
+        if !crate::intent::usable_answer(&text) {
+            return false;
+        }
+        let cost = extra(&message).get("cost").and_then(Value::as_f64).unwrap_or(0.0);
+        self.cost += cost;
+        let mut extra_map = crate::intent::answer_extra(cost).as_object().cloned().unwrap_or_default();
+        extra_map.insert("submission".into(), json!(text));
+        extra_map.insert("fastpath_intent".into(), json!("conversational"));
+        let mut assistant = message.clone();
+        assistant["extra"] = Value::Object(extra_map);
+        assistant["extra"]["thinking_seconds"] = json!(round1(now() - started));
+        self.add_messages(vec![assistant.clone()]);
+        // The answer doubles as the exit message, so the transcript ends the way a normal run's does.
+        self.add_messages(vec![Self::exit_message("Submitted", &text, &text)]);
+        self.fastpath_answered = true;
+        true
+    }
+
+    /// The direct call, streamed into the journal like any other (the web UI shows the tokens as
+    /// they arrive) but without the per-step view build the normal path pays.
+    fn model_query_text(&mut self, view: &[Value]) -> Result<crate::models::Reply, ModelError> {
+        self.model.query_text(view, None)
     }
 
     fn step(&mut self) -> Result<(), Flow> {

@@ -52,6 +52,15 @@ pub type DeltaSink<'a> = &'a mut dyn FnMut(&str, &str);
 
 pub trait Model {
     fn query(&mut self, messages: &[Value], sink: Option<DeltaSink>) -> Result<Reply, ModelError>;
+    /// One call with **no tool list at all** (the fast path of `src/intent.rs`): the model can
+    /// only answer in text. Providers differ here --- GLM ignores `tool_choice: "none"` and would
+    /// still emit tool calls (measured, speed8), which is why the flag is `text_only: "no_tools"`
+    /// --- so the reply is still parsed by `query` and a caller that asked for text must check for
+    /// `extra.actions` before believing it. The default is the normal call: a scripted model has no
+    /// tool list to drop, and asking it the same question returns the same scripted answer.
+    fn query_text(&mut self, messages: &[Value], sink: Option<DeltaSink>) -> Result<Reply, ModelError> {
+        self.query(messages, sink)
+    }
     fn format_message(&self, role: &str, content: &str, extra: Option<Obj>) -> Value;
     fn format_observation_messages(&self, message: &Value, outputs: &[Value], template_vars: &Value) -> Result<Vec<Value>, String>;
     fn template_vars(&self) -> Obj;

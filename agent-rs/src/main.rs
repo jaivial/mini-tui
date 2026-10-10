@@ -22,6 +22,7 @@ mod shard;
 mod clones;
 mod coord;
 mod hybrid;
+mod intent;
 mod subagents;
 mod templates;
 mod cache_warmer;

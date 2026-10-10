@@ -447,6 +447,26 @@ impl Model for WireModel {
         })
     }
 
+    /// The fast path's call (`src/intent.rs`): the same request with the tool list dropped.
+    /// `text_only: "no_tools"` is already the measured shape for this (it removes `tools` and
+    /// `tool_choice`, because GLM ignores `tool_choice: "none"`), so the override here is just
+    /// that flag applied for the duration of one call and then restored exactly as it was ---
+    /// a config that already pinned `text_only` keeps its own value.
+    fn query_text(&mut self, messages: &[Value], sink: Option<DeltaSink>) -> Result<Reply, ModelError> {
+        let pinned = self.config.get("text_only").cloned();
+        self.config.insert("text_only".into(), json!("no_tools"));
+        let result = self.query(messages, sink);
+        match pinned {
+            Some(v) => {
+                self.config.insert("text_only".into(), v);
+            }
+            None => {
+                self.config.shift_remove("text_only");
+            }
+        }
+        result
+    }
+
     fn format_message(&self, role: &str, content: &str, extra: Option<Obj>) -> Value {
         let mut m = json!({"role": role, "content": content});
         if let Some(e) = extra {
