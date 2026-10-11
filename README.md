@@ -2,37 +2,15 @@
 
 ## Benchmarks
 
-Terminal-Bench 2.0 dev suite (16 tasks, GLM-5.3-flash). mini-tui's Rust agent vs the pi harness, progression across iterations with the public leaderboard Pareto reference.
+Terminal-Bench 2.0 dev suite (16 tasks, GLM-5.3-Flash, Rust agent). mini-tui vs the public harness leaderboard: pass rate vs median cost per task, with the Pareto frontier of public harnesses.
 
-![Terminal-Bench 2.0 dev suite](docs/img/benchmark.png)
+![Pass rate vs median cost per task](docs/img/benchmark.png)
+
+Average agent wall time per task vs public coding agents (Artificial Analysis):
+
+![Time per task](docs/img/time-per-task.png)
 
 ![Agent submit-checklist release](docs/img/update.png)
-
-
-
-A pretty terminal UI for [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent), built with
-[OpenTUI](https://opentui.com) (React + Bun).
-
-It **integrates the bundled mini-swe-agent directly** for normal yolo runs: the TUI launches the
-agent's lightweight `mini-swe-agent-tui` entry point, owns the terminal UI, and reads the same
-append-only trajectory journal/control file as before. The public `mini` CLI remains supported and
-is used automatically for older or custom agents. The harness still produces the same messages and
-artifacts, so the integration is observable and reversible.
-
-Three ways to use it:
-- **Terminal UI** (`mini-tui`), described below.
-- **[Web app](#web-app)** (`bun run web`): panes, notes, a terminal, and sessions on remote hosts.
-- **[Headless](#headless-mini-tui--p-no-tui)** (`mini-tui -p`), for scripts and CI.
-
-The agent behind all three is the bundled Python mini-swe-agent, or its
-**[Rust port](#the-rust-agent-optional)**. The Rust port is a single binary that needs no Python.
-
-The terminal UI and the web app share one session history **and one live agent per session**: open
-a session in both and they stream the same run, and a prompt typed in either reaches the same agent.
-With the Rust agent, a session can also **[start subagents](#subagents)** of its own and see them
-report back.
-
-![mini-tui running a task](docs/screenshots/run.png)
 
 ## Features
 
