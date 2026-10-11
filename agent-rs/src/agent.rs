@@ -125,6 +125,13 @@ pub struct Agent {
     cost: f64,
     n_calls: i64,
     format_errors: i64,
+    /// Degeneration guard: signature of the previous step's actions and how many consecutive
+    /// steps have repeated it byte-for-byte. A model that re-issues the identical call gets the
+    /// identical result, yet without a detector it can loop the same command for hundreds of
+    /// turns until the harness timeout (measured: 229 identical calls on one terminal-bench
+    /// task, the whole trial burned on repetition).
+    last_action_sig: String,
+    repeat_streak: i64,
     start: f64,
     journal_path: Option<PathBuf>,
     journaled: usize,
@@ -167,6 +174,8 @@ impl Agent {
             cost: 0.0,
             n_calls: 0,
             format_errors: 0,
+            last_action_sig: String::new(),
+            repeat_streak: 0,
             start: now(),
             journal_path: None,
             journaled: 0,
@@ -730,7 +739,30 @@ impl Agent {
         }
         // Closes the open `model` label and opens `actions`.
         t.mark("actions");
-        let outputs = self.execute_actions(&message)?;
+        let sig = Self::actions_signature(&message);
+        if !sig.is_empty() && sig == self.last_action_sig {
+            self.repeat_streak += 1;
+        } else {
+            self.repeat_streak = 0;
+        }
+        self.last_action_sig = sig;
+        // Past a dozen byte-identical steps the model has shown it will not recover on its own;
+        // cutting the run here saves the rest of the harness timeout for the next task.
+        if self.repeat_streak >= 12 {
+            return Err(Flow::Interrupt(vec![Self::exit_message("RepeatedActionLoop", "RepeatedActionLoop", "")]));
+        }
+        let mut outputs = self.execute_actions(&message)?;
+        // From the third repeat on, say so inside the observation the model is about to read:
+        // the same call returns the same output, so only a different approach can move the task.
+        if self.repeat_streak >= 3 {
+            if let Some(last) = outputs.last_mut() {
+                let cur = last.get("output").and_then(Value::as_str).unwrap_or("").to_string();
+                last["output"] = json!(format!(
+                    "{cur}\n\n[LOOP WARNING: this exact tool call has now been issued {} times in a row with the same result. Repeating it cannot produce new information. Do NOT issue it again: change the command, switch tool, or finish with your final answer as plain text.]",
+                    self.repeat_streak + 1
+                ));
+            }
+        }
         t.mark("observe");
         self.finish_step(&message, outputs)?;
         self.record_timings(&mut t, at);
@@ -951,6 +983,18 @@ impl Agent {
             outputs.push(slot.unwrap_or_else(crate::models::shapes::not_executed));
         }
         Ok(outputs)
+    }
+
+    /// Byte-level signature of a step's action list, for the degeneration guard above. The
+    /// serialized form preserves the model's own key order, so two replies that are identical
+    /// for the executor compare equal here; any real change (different command, different args)
+    /// breaks the streak.
+    fn actions_signature(message: &Value) -> String {
+        message
+            .pointer("/extra/actions")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(Value::to_string).collect::<Vec<_>>().join("\u{1f}"))
+            .unwrap_or_default()
     }
 
     /// The tail of a step, shared by the serial and overlapped paths: render the observations.
