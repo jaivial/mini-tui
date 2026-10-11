@@ -1,5 +1,15 @@
 # mini-tui
 
+## Benchmarks
+
+Terminal-Bench 2.0 dev suite (16 tasks, GLM-5.3-flash). mini-tui's Rust agent vs the pi harness, progression across iterations with the public leaderboard Pareto reference.
+
+![Terminal-Bench 2.0 dev suite](docs/img/benchmark.png)
+
+![Agent submit-checklist release](docs/img/update.png)
+
+
+
 A pretty terminal UI for [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent), built with
 [OpenTUI](https://opentui.com) (React + Bun).
 
