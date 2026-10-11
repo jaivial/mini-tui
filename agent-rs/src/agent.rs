@@ -132,6 +132,14 @@ pub struct Agent {
     /// task, the whole trial burned on repetition).
     last_action_sig: String,
     repeat_streak: i64,
+    /// Fuzzy degeneration guard: like the exact guard above, but on a normalized signature
+    /// (digits and quoted spans stripped from each command). Catches thrashing where the model
+    /// re-issues the same command with tiny variations (measured: 10 near-identical PIL probes
+    /// on terminal-bench chess-best-move; the exact guard was blind because each call differed
+    /// by a few bytes). Warning only, never a hard cut: legitimate sweeps (paging a file,
+    /// scanning a range) also normalize to one signature, so this guard must not kill a run.
+    last_fuzzy_sig: String,
+    fuzzy_streak: i64,
     start: f64,
     journal_path: Option<PathBuf>,
     journaled: usize,
@@ -176,6 +184,8 @@ impl Agent {
             format_errors: 0,
             last_action_sig: String::new(),
             repeat_streak: 0,
+            last_fuzzy_sig: String::new(),
+            fuzzy_streak: 0,
             start: now(),
             journal_path: None,
             journaled: 0,
@@ -746,6 +756,13 @@ impl Agent {
             self.repeat_streak = 0;
         }
         self.last_action_sig = sig;
+        let fsig = Self::actions_signature_fuzzy(&message);
+        if !fsig.is_empty() && fsig == self.last_fuzzy_sig {
+            self.fuzzy_streak += 1;
+        } else {
+            self.fuzzy_streak = 0;
+        }
+        self.last_fuzzy_sig = fsig;
         // Past a dozen byte-identical steps the model has shown it will not recover on its own;
         // cutting the run here saves the rest of the harness timeout for the next task.
         if self.repeat_streak >= 12 {
@@ -760,6 +777,17 @@ impl Agent {
                 last["output"] = json!(format!(
                     "{cur}\n\n[LOOP WARNING: this exact tool call has now been issued {} times in a row with the same result. Repeating it cannot produce new information. Do NOT issue it again: change the command, switch tool, or finish with your final answer as plain text.]",
                     self.repeat_streak + 1
+                ));
+            }
+        }
+        // Near-identical calls with small variations: nudge the model out of the local tweak
+        // loop. Skipped while the exact guard is already warning (its message is stronger).
+        if self.fuzzy_streak >= 4 && self.repeat_streak < 3 {
+            if let Some(last) = outputs.last_mut() {
+                let cur = last.get("output").and_then(Value::as_str).unwrap_or("").to_string();
+                last["output"] = json!(format!(
+                    "{cur}\n\n[LOOP WARNING: the last {} steps ran almost the same command with only small variations. If the results are not converging toward the goal, more tweaking of this same approach will not help: switch to a fundamentally different strategy, or finish with your final answer as plain text.]",
+                    self.fuzzy_streak + 1
                 ));
             }
         }
@@ -995,6 +1023,73 @@ impl Agent {
             .and_then(Value::as_array)
             .map(|a| a.iter().map(Value::to_string).collect::<Vec<_>>().join("\u{1f}"))
             .unwrap_or_default()
+    }
+
+    /// Normalized signature for the fuzzy degeneration guard: each action's command with
+    /// digits and quoted spans stripped and whitespace collapsed, so calls that differ only in
+    /// numbers or literal choices compare equal. Actions without a command (native outcomes)
+    /// sign by name only. Deliberately coarse: it feeds a warning, never the hard cut above.
+    fn actions_signature_fuzzy(message: &Value) -> String {
+        message
+            .pointer("/extra/actions")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|act| match act.get("command") {
+                        Some(c) => {
+                            let s = c.as_str().map(String::from).unwrap_or_else(|| py_str(c));
+                            Self::fuzzy_norm(&s)
+                        }
+                        None => act
+                            .get("name")
+                            .or_else(|| act.get("tool"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("native")
+                            .to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\u{1f}")
+            })
+            .unwrap_or_default()
+    }
+
+    /// Strip digits and quoted spans (single or double quotes, backslash escapes honored) and
+    /// collapse whitespace runs: the normalizer behind `actions_signature_fuzzy`.
+    fn fuzzy_norm(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut in_q: Option<char> = None;
+        let mut escaped = false;
+        let mut last_ws = false;
+        for ch in s.chars() {
+            match in_q {
+                Some(q) => {
+                    if escaped {
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == q {
+                        in_q = None;
+                    }
+                }
+                None => {
+                    if ch == '\'' || ch == '"' {
+                        in_q = Some(ch);
+                        last_ws = false;
+                    } else if ch.is_ascii_digit() {
+                        // skip
+                    } else if ch.is_whitespace() {
+                        if !last_ws {
+                            out.push(' ');
+                        }
+                        last_ws = true;
+                    } else {
+                        out.push(ch);
+                        last_ws = false;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The tail of a step, shared by the serial and overlapped paths: render the observations.
