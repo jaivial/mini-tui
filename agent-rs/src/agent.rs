@@ -125,6 +125,11 @@ pub struct Agent {
     cost: f64,
     n_calls: i64,
     format_errors: i64,
+    /// Plain text ends the run, but only on the SECOND consecutive try: the first
+    /// no-tool-call reply gets a nudge, because GLM sometimes emits a conversational
+    /// turn mid-task and a single slip used to kill the whole run (chess, polyglot,
+    /// code-from-image all died this way on the 2026-10-11 sweeps).
+    submission_pending: bool,
     /// Degeneration guard: signature of the previous step's actions and how many consecutive
     /// steps have repeated it byte-for-byte. A model that re-issues the identical call gets the
     /// identical result, yet without a detector it can loop the same command for hundreds of
@@ -140,6 +145,7 @@ pub struct Agent {
     /// scanning a range) also normalize to one signature, so this guard must not kill a run.
     last_fuzzy_sig: String,
     fuzzy_streak: i64,
+    last_output_hash: u64,
     start: f64,
     journal_path: Option<PathBuf>,
     journaled: usize,
@@ -182,10 +188,12 @@ impl Agent {
             cost: 0.0,
             n_calls: 0,
             format_errors: 0,
+            submission_pending: false,
             last_action_sig: String::new(),
             repeat_streak: 0,
             last_fuzzy_sig: String::new(),
             fuzzy_streak: 0,
+            last_output_hash: 0,
             start: now(),
             journal_path: None,
             journaled: 0,
@@ -745,8 +753,17 @@ impl Agent {
         let at = self.messages.len().saturating_sub(1);
         if let Some(sub) = get(&message, "extra").and_then(|e| e.get("submission")).and_then(Value::as_str) {
             self.record_timings(&mut t, at);
-            return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", sub, sub)]));
+            if self.submission_pending {
+                return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", sub, sub)]));
+            }
+            self.submission_pending = true;
+            return Err(Flow::FormatError(vec![json!({
+                "role": "user",
+                "content": "[FORMAT ERROR] Your reply had no tool call, so it would end the run                     NOW with that text as the final answer. If the task is truly complete and                     verified, reply once more with your final answer as plain text. Otherwise                     keep working: reply with a tool call.",
+                "extra": {"interrupt_type": "FormatError"}
+            })]));
         }
+        self.submission_pending = false;
         // Closes the open `model` label and opens `actions`.
         t.mark("actions");
         let sig = Self::actions_signature(&message);
@@ -757,11 +774,7 @@ impl Agent {
         }
         self.last_action_sig = sig;
         let fsig = Self::actions_signature_fuzzy(&message);
-        if !fsig.is_empty() && fsig == self.last_fuzzy_sig {
-            self.fuzzy_streak += 1;
-        } else {
-            self.fuzzy_streak = 0;
-        }
+        let same_cmd = !fsig.is_empty() && fsig == self.last_fuzzy_sig;
         self.last_fuzzy_sig = fsig;
         // Past a dozen byte-identical steps the model has shown it will not recover on its own;
         // cutting the run here saves the rest of the harness timeout for the next task.
@@ -769,6 +782,23 @@ impl Agent {
             return Err(Flow::Interrupt(vec![Self::exit_message("RepeatedActionLoop", "RepeatedActionLoop", "")]));
         }
         let mut outputs = self.execute_actions(&message)?;
+        // A real loop repeats the call AND gets the same output back. Same-shaped commands
+        // that keep producing new information (e.g. iterative image processing over heredocs,
+        // whose bodies fuzzy_norm eats) are progress, not a loop.
+        let out_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for o in &outputs {
+                o.get("output").and_then(Value::as_str).unwrap_or("").hash(&mut h);
+            }
+            h.finish()
+        };
+        if same_cmd && out_hash == self.last_output_hash && out_hash != 0 {
+            self.fuzzy_streak += 1;
+        } else {
+            self.fuzzy_streak = 0;
+        }
+        self.last_output_hash = out_hash;
         // From the third repeat on, say so inside the observation the model is about to read:
         // the same call returns the same output, so only a different approach can move the task.
         if self.repeat_streak >= 3 {
@@ -1017,11 +1047,28 @@ impl Agent {
     /// serialized form preserves the model's own key order, so two replies that are identical
     /// for the executor compare equal here; any real change (different command, different args)
     /// breaks the streak.
+    /// Exact-repeat guard signature: byte-identical commands only. Signs each action by
+    /// its command text (or tool name for native outcomes) and deliberately EXCLUDES
+    /// volatile envelope fields (tool_call_id, timestamps): hashing the whole action
+    /// object made every call unique, so the hard cut below could never fire.
     fn actions_signature(message: &Value) -> String {
         message
             .pointer("/extra/actions")
             .and_then(Value::as_array)
-            .map(|a| a.iter().map(Value::to_string).collect::<Vec<_>>().join("\u{1f}"))
+            .map(|a| {
+                a.iter()
+                    .map(|act| match act.get("command") {
+                        Some(c) => c.as_str().map(String::from).unwrap_or_else(|| py_str(c)),
+                        None => act
+                            .get("name")
+                            .or_else(|| act.get("tool"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("native")
+                            .to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\u{1f}")
+            })
             .unwrap_or_default()
     }
 
