@@ -41,6 +41,7 @@ class Provider:
 PROVIDERS: list[Provider] = [
     Provider("anthropic", "anthropic/", "ANTHROPIC_API_BASE", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY", protocol="messages"),
     Provider("moonshot", "moonshot/", "MOONSHOT_API_BASE", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
+    Provider("kimi-coding", "kimi-coding/", "KIMI_API_BASE", "https://api.kimi.com/coding/v1", "KIMI_API_KEY"),
     Provider("zhipu", "zhipu/", "ZHIPU_API_BASE", "https://open.bigmodel.cn/api/paas/v4", "ZHIPUAI_API_KEY"),
     Provider("groq", "groq/", "GROQ_API_BASE", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
     Provider("zai", "zai/", "ZAI_API_BASE", "https://api.z.ai/api/coding/paas/v4", "ZAI_API_KEY"),

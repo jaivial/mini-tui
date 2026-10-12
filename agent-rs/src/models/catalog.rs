@@ -22,6 +22,7 @@ struct Provider {
 const PROVIDERS: &[Provider] = &[
     Provider { id: "anthropic", prefix: "anthropic/", base_env: "ANTHROPIC_API_BASE", default_base: "https://api.anthropic.com/v1", key_env: "ANTHROPIC_API_KEY", protocol: Protocol::Messages },
     Provider { id: "moonshot", prefix: "moonshot/", base_env: "MOONSHOT_API_BASE", default_base: "https://api.moonshot.ai/v1", key_env: "MOONSHOT_API_KEY", protocol: Protocol::Chat },
+    Provider { id: "kimi-coding", prefix: "kimi-coding/", base_env: "KIMI_API_BASE", default_base: "https://api.kimi.com/coding/v1", key_env: "KIMI_API_KEY", protocol: Protocol::Chat },
     Provider { id: "zhipu", prefix: "zhipu/", base_env: "ZHIPU_API_BASE", default_base: "https://open.bigmodel.cn/api/paas/v4", key_env: "ZHIPUAI_API_KEY", protocol: Protocol::Chat },
     Provider { id: "groq", prefix: "groq/", base_env: "GROQ_API_BASE", default_base: "https://api.groq.com/openai/v1", key_env: "GROQ_API_KEY", protocol: Protocol::Chat },
     Provider { id: "zai", prefix: "zai/", base_env: "ZAI_API_BASE", default_base: "https://api.z.ai/api/coding/paas/v4", key_env: "ZAI_API_KEY", protocol: Protocol::Chat },
@@ -399,6 +400,7 @@ mod tests {
         assert_eq!(ty("anthropic/claude-sonnet-4-5"), "AnthropicCompatModel");
         assert_eq!(ty("claude-sonnet-4-5"), "AnthropicCompatModel");
         assert_eq!(ty("moonshot/kimi"), "OpenaiCompatModel");
+        assert_eq!(ty("kimi-coding/kimi-k2.7-code"), "OpenaiCompatModel");
         assert_eq!(ty("plainmodel"), "OpenaiCompatModel");
         assert_eq!(ty("opencode-go/grok-4.7"), "OpencodeGoResponseModel");
         assert_eq!(ty("opencode-go/unknownid"), "OpencodeGoModel");

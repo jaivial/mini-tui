@@ -210,6 +210,18 @@ export const PROVIDERS: ProviderDef[] = [
     staticModels: ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
   },
   {
+    id: "kimi-coding",
+    name: "Kimi for Coding",
+    description: "Kimi coding plan (api.kimi.com/coding)",
+    route: "native",
+    keyEnv: "KIMI_API_KEY",
+    extraEnv: { KIMI_API_BASE: "https://api.kimi.com/coding/v1" },
+    baseUrl: "https://api.kimi.com/coding/v1",
+    probe: "openai",
+    prefix: "kimi-coding",
+    staticModels: ["k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"],
+  },
+  {
     id: "moonshot",
     name: "Moonshot AI",
     description: "Kimi K-series",
