@@ -178,6 +178,8 @@ pub struct Agent {
     jev_report: Option<Value>,
     goal_reports: Vec<Value>,
     oracle_errors: usize,
+    /// Small codejs state belongs to this agent run, never a global process or repo.
+    codejs_store: Obj,
 }
 
 impl Agent {
@@ -218,6 +220,7 @@ impl Agent {
             jev_report: None,
             goal_reports: Vec::new(),
             oracle_errors: 0,
+            codejs_store: Obj::new(),
         }
     }
 
@@ -529,6 +532,7 @@ impl Agent {
     // ---- the run -----------------------------------------------------------------------
 
     pub fn run(&mut self, task: &str, resume: Option<Vec<Value>>, compact_only: bool) -> Result<Obj, ModelError> {
+        self.codejs_store.clear();
         self.extra_vars.insert("task".into(), json!(task));
         crate::subagents::set_parent_state(self.cost, self.config.cost_limit, &self.parent_model_name());
         if let Some(resume) = resume.filter(|r| !r.is_empty()) {
@@ -1337,7 +1341,7 @@ impl Agent {
                         }
                     }),
                 };
-                Some(if tool == "codejs" { crate::codejs::outcome(&args, &mut ctx) } else { crate::writing::code_outcome(&args, &mut ctx) })
+                Some(if tool == "codejs" { crate::codejs::outcome(&args, &mut ctx, &mut self.codejs_store) } else { crate::writing::code_outcome(&args, &mut ctx) })
             }
             _ => None,
         }
