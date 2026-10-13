@@ -28,6 +28,11 @@ pub fn classify_status(status: u16, detail: &str, base: &str) -> ModelError {
     let detail500: String = detail.chars().take(500).collect();
     let mut message = format!("HTTP {status} from {base}: {detail500}");
     let lowered = detail.to_lowercase();
+    // A usage window is not a requests-per-second throttle. Preserve its status,
+    // but do not burn more calls before the caller explicitly resumes.
+    if status == 429 && lowered.contains("usage limit reached") && lowered.contains("limit will reset") {
+        return ModelError { message, status: Some(status), abort: true, kind: "ProviderQuotaError".into(), connect_refused: false, retry_after: None };
+    }
     if ABORT_STATUSES.contains(&status) && !lowered.contains("rate limit") {
         if status == 401 || status == 403 {
             // A gateway (cli-proxy, Rosetta) fronts its own subscription login, so a 401 from it
@@ -337,9 +342,31 @@ fn post_chat_stream_blocking(base: &str, body: &Value, headers: &[(String, Strin
     let content_type = resp.header("Content-Type").unwrap_or("").to_lowercase();
     if !content_type.contains("text/event-stream") {
         let text = resp.into_string().map_err(|e| transport_error(&e, base))?;
-        return serde_json::from_str(&text).map_err(|e| transport_error(&e, base));
+        let value = serde_json::from_str(&text).map_err(|e| transport_error(&e, base))?;
+        return checked_chat_response(value, base);
     }
-    read_chat_sse(resp.into_reader(), sink).map_err(|e| transport_error(&e, base))
+    let value = read_chat_sse(resp.into_reader(), sink).map_err(|e| transport_error(&e, base))?;
+    checked_chat_response(value, base)
+}
+
+/// A gateway can commit HTTP 200 before its upstream answers. Its SSE error frame
+/// is still a provider failure, never an empty assistant reply or a format error.
+fn checked_chat_response(value: Value, base: &str) -> Result<Value, ModelError> {
+    let Some(error) = value.get("error").filter(|e| !e.is_null() && **e != Value::Bool(false) && e.as_str() != Some("")) else {
+        return Ok(value);
+    };
+    let detail = error.get("message").map(value_text).unwrap_or_else(|| value_text(error));
+    let status = error.get("status").or_else(|| error.get("status_code"))
+        .and_then(Value::as_u64).and_then(|s| u16::try_from(s).ok())
+        .filter(|s| (400..=599).contains(s))
+        .or_else(|| detail.split_once("Upstream returned ").and_then(|(_, tail)| {
+            tail.split_once(':').and_then(|(code, _)| code.parse::<u16>().ok())
+                .filter(|s| (400..=599).contains(s))
+        }));
+    Err(match status {
+        Some(status) => classify_status(status, &detail, base),
+        None => transport_error(&detail, base),
+    })
 }
 
 /// Reassemble an OpenAI-compatible SSE body: content, reasoning, tool calls, usage.
@@ -367,6 +394,9 @@ pub fn read_chat_sse(reader: impl Read, sink: &mut Option<DeltaSink>) -> std::io
             continue;
         }
         let Ok(chunk) = serde_json::from_str::<Value>(data) else { continue };
+        if chunk.get("error").is_some_and(|e| !e.is_null() && e != &Value::Bool(false) && e.as_str() != Some("")) {
+            return Ok(chunk);
+        }
         if let Some(u) = chunk.get("usage").filter(|u| u.is_object()) {
             usage = Some(u.clone());
         }
@@ -414,6 +444,9 @@ pub fn read_chat_sse(reader: impl Read, sink: &mut Option<DeltaSink>) -> std::io
                 }
             }
         }
+    }
+    if role.is_empty() && content.is_empty() && reasoning.is_empty() && calls.is_empty() && finish.is_none() {
+        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "provider stream ended without an assistant response"));
     }
     let mut message = json!({"role": if role.is_empty() { "assistant".to_string() } else { role }, "content": content});
     if !reasoning.is_empty() {

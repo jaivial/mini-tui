@@ -101,10 +101,11 @@ impl ContextStore {
     }
 
     pub fn has(&self, key: &str) -> bool {
-        self.dir.join(key).is_file()
+        state_key(key).is_ok_and(|k| self.dir.join(k).is_file())
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
+        let key = state_key(key).ok()?;
         std::fs::read_to_string(self.dir.join(key)).ok()
     }
 
@@ -113,10 +114,26 @@ impl ContextStore {
     pub fn put(&self, key: &str, body: &str) -> Result<String, String> {
         let key = state_key(key)?;
         std::fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
-        let tmp = self.dir.join(format!(".{key}.tmp"));
-        std::fs::write(&tmp, body)
-            .and_then(|_| std::fs::rename(&tmp, self.dir.join(&key)))
-            .map_err(|e| format!("state put {key}: {e}"))?;
+        // Every writer gets its own staging file. Siblings must not rename or
+        // overwrite one another's shared .tmp file before the atomic publish.
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+        let (tmp, mut file) = loop {
+            let nonce = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let tmp = self.dir.join(format!(".{key}.{}.{nonce}.tmp", std::process::id()));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+                Ok(file) => break (tmp, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(format!("state put {key}: {e}")),
+            }
+        };
+        let result = file.write_all(body.as_bytes()).and_then(|_| {
+            drop(file);
+            std::fs::rename(&tmp, self.dir.join(&key))
+        });
+        if result.is_err() { let _ = std::fs::remove_file(&tmp); }
+        result.map_err(|e| format!("state put {key}: {e}"))?;
         Ok(key)
     }
 

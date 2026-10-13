@@ -694,7 +694,9 @@ impl Agent {
             Some(url) if backend == "laya" => {
                 let laya = LayaOracle { url }.evaluate(&evidence);
                 let fallback = std::env::var("MINI_AGENT_GOAL_ORACLE_FALLBACK").unwrap_or_else(|_| "model".into()) == "model";
-                if fallback && !laya.as_ref().is_ok_and(|v| v.complete) {
+                // A negative Laya verdict is a repair instruction, not an outage.
+                // Only an unavailable/invalid service may use the configured fallback.
+                if fallback && laya.is_err() {
                     if let Ok(v) = &laya { self.goal_reports.push(v.record()); }
                     if let Err(reason) = &laya { self.goal_reports.push(json!({"backend":"laya-systemone","status":"unavailable","reason":reason})); }
                     self.n_calls += 1;
