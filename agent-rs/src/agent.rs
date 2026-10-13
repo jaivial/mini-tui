@@ -1533,6 +1533,12 @@ impl Agent {
             },
             "trajectory_format": "mini-swe-agent-1.1",
         });
+        if let (Ok(task_id), Ok(fence), Ok(version)) = (
+            std::env::var("MINI_QUEUE_TASK_ID"), std::env::var("MINI_QUEUE_FENCE"), std::env::var("MINI_QUEUE_GOAL_VERSION")) {
+            if let (Ok(fence), Ok(version)) = (fence.parse::<i64>(), version.parse::<i64>()) {
+                data["info"]["queue_binding"] = json!({"task_id":task_id,"fence":fence,"goal_version":version});
+            }
+        }
         // Only when the verifier phase actually ran: a run with the toggle off stays byte-identical
         // to the trajectory it produced before the phase existed.
         if !self.goal_reports.is_empty() {

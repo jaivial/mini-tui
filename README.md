@@ -826,3 +826,9 @@ The provider and chosen model must still support images. Vendor support and wire
 ### Native tool filesystem scope
 
 Host-native `read`, `write`, `edit` and Rhai `code` are available only for the local environment. Other environments fail closed with a tool error and a bash fallback, so container paths cannot accidentally read or change host files. Docker still executes bash in the container working directory. A native container bridge is not implemented by this guard. STOP is checked before each inline native action in a concurrent batch.
+
+### Queue goal versions and durable events
+
+Queue edits remain limited to pending tasks; each put increments goal_version and clears old results. Claims carry the version. Both managed workers and direct finish calls require positive closure evidence bound to task ID, current fence and goal version, with a trajectory reference. Plain done is refused. This is recorded evidence, not an independent proof that a judge is correct.
+
+`queue events --db PATH --after SEQ --limit 100` returns a durable sequence cursor for created, goal_updated and state_changed events. Consumers deduplicate by seq and resume after their last persisted cursor. Heartbeats do not emit state events. SQLite triggers write events in the same transaction as task changes. Existing tasks are not given invented historical events. Running-goal amendment and live worker notifications remain a separate integration step.
