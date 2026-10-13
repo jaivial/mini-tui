@@ -155,6 +155,60 @@ impl ContextStore {
             .collect()
     }
 
+    /// Recheck prior coverage at the delivery point, not only after a child finishes.
+    /// None means there is no prior snapshot, never a claim of fresh/complete context.
+    /// A stale snapshot suppresses shared orientation until the parent refreshes it.
+    pub fn delivery_staleness(&self, repos: &[String], root: &Path) -> Option<String> {
+        use sha1::Digest;
+        use std::io::Read;
+        let scope = repos.join(" ");
+        let key = format!("coverage.{:x}.json", sha1::Sha1::digest(scope.as_bytes()));
+        let raw = self.get(&key)?;
+        if raw.len() > 256 * 1024 { return Some("coverage manifest exceeds delivery budget".into()); }
+        let doc: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v, Err(_) => return Some("coverage manifest is invalid JSON".into()),
+        };
+        if doc.get("scope").and_then(serde_json::Value::as_str) != Some(scope.as_str()) {
+            return Some("coverage manifest scope mismatch".into());
+        }
+        let Some(files) = doc.get("files").and_then(serde_json::Value::as_object) else {
+            return Some("coverage manifest has no file digests".into());
+        };
+        if files.is_empty() || files.len() > 512 { return Some("coverage snapshot is empty or over budget".into()); }
+        let Ok(base) = root.canonicalize() else { return Some("context delivery root is unreadable".into()); };
+        let mut total = 0usize;
+        for (relative, expected) in files {
+            let path = Path::new(relative);
+            if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                return Some(format!("invalid covered path: {relative}"));
+            }
+            let read = || -> Option<Vec<u8>> {
+                let path = base.join(path).canonicalize().ok()?;
+                if !path.starts_with(&base) || !path.is_file() { return None; }
+                let file = std::fs::File::open(path).ok()?;
+                if file.metadata().ok()?.len() > 512 * 1024 { return None; }
+                let mut bytes = Vec::new();
+                file.take(512 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+                (bytes.len() <= 512 * 1024).then_some(bytes)
+            };
+            let Some(bytes) = read() else { return Some(format!("covered file is no longer safely readable: {relative}")); };
+            total += bytes.len();
+            if total > 4 * 1024 * 1024 { return Some("delivery snapshot exceeds 4MB budget".into()); }
+            let digest = format!("{:x}", sha1::Sha1::digest(&bytes));
+            if expected.as_str() != Some(digest.as_str()) {
+                return Some(format!("covered file changed after orientation snapshot: {relative}"));
+            }
+        }
+        // A prior failed coverage/freshness check stays unresolved until refreshed.
+        for field in ["unread_claims", "unread_index", "changed_since_previous"] {
+            match doc.get(field).and_then(serde_json::Value::as_array) {
+                Some(values) if values.is_empty() => {},
+                _ => return Some(format!("coverage manifest has missing or unresolved {field}; refresh findings/contracts and rerun contract-check")),
+            }
+        }
+        None
+    }
+
     /// The scoped context of a child working in `repos`: the sections of the shared documents that
     /// name one of them, plus that repo's own `surface.<repo>.md`.
     ///
