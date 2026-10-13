@@ -844,3 +844,11 @@ Contract checks now read indexed files from the current contained tree instead o
 ### Rhai code-mode limits
 
 The existing Rhai code tool is a batching alternative, not JavaScript/QuickJS parity with current Pi. It now respects STOP during interpreter progress, caps a single print and the entire returned observation at60KB without splitting UTF-8, and limits reads to8 concurrent file-reader threads. Pure-script time/operation bounds remain; registered host tools still perform real actions. This does not add async JS, non-LLM image classifiers or a result store.
+
+### Explicit queue follow-ups and cancellation
+
+`queue amend --id ID --goal-version N --goal-file FILE` appends a follow-up only to the explicitly named task at the expected version. It clears stale vector/results. Running tasks are fenced and interrupted; managed workers check their lease/version once a second and stop on revocation. Reconcile the stopped process before retrying with the updated goal. This avoids an old goal closing a new request; it is a safe restart route, not live in-place delivery. Ambiguous similarity never edits a task.
+
+`queue cancel --id ID --goal-version N` cancels pending/blocked tasks. A running task stays interrupted (blocking conflicting claims) until its worker is stopped and reconciled. Cancellation-request status is not a claim that all external effects were undone.
+
+After verifying the previous worker is stopped, `queue cancel-reconcile --id ID --goal-version N --reconciled yes` converts interrupted to cancelled and releases ownership. The operator assertion is explicit; the CLI does not pretend to inspect an arbitrary external worker.
