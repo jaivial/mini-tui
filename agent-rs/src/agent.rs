@@ -696,7 +696,7 @@ impl Agent {
         // Collect changes in the execution environment, including Docker, rather than reading
         // a coincidentally named host path. No tests, no mutation, no broad filesystem scan.
         let reference = self.goal_baseline.as_deref().unwrap_or("HEAD");
-        let evidence_command = format!("{{ git diff --no-ext-diff --no-textconv {reference} 2>/dev/null; printf '\nUntracked paths (contents not read automatically):\n'; git ls-files --others --exclude-standard 2>/dev/null | head -100; }} | head -c 24000");
+        let evidence_command = format!("{{ if git rev-parse --verify '{reference}^{{commit}}' >/dev/null 2>&1; then git diff --no-ext-diff --no-textconv {reference} 2>/dev/null || printf '\n[Change evidence unavailable: git diff failed.]\n'; else printf '\n[Change evidence unavailable: original baseline no longer resolves. Do not treat this as an empty diff.]\n'; fi; printf '\nUntracked paths (contents not read automatically):\n'; git ls-files --others --exclude-standard 2>/dev/null | head -100; }} | head -c 24000");
         let diff = if crate::intent::classify(&goals[0]) == crate::intent::Intent::Conversational { String::new() } else { match self.env.execute(&evidence_command) {
             Outcome::Output(v) => v.get("output").and_then(Value::as_str).unwrap_or_default().to_string(),
             _ => String::new(),
