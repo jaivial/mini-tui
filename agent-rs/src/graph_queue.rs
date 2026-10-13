@@ -245,6 +245,38 @@ impl Store {
         }
         Ok(())
     }
+    /// Explicit task identity, never similarity-only routing. Running amendments
+    /// fence the old worker and remain interrupted until its process is reconciled.
+    pub fn amend(&self, id: &str, expected: i64, addition: &str) -> Result<(), String> {
+        ident(id)?;
+        if addition.trim().is_empty() || addition.len() > 64_000 { return Err("amendment requires 1..64000 bytes".into()); }
+        let n = self.db.execute("UPDATE task_nodes SET goal=goal||char(10)||?3,goal_version=goal_version+1,vector=NULL,result=NULL,
+            status=CASE WHEN status='running' THEN 'interrupted' ELSE status END,
+            fence=CASE WHEN status='running' THEN fence+1 ELSE fence END,updated=?4
+            WHERE id=?1 AND goal_version=?2 AND status IN ('pending','running','blocked','interrupted') AND length(CAST(goal AS BLOB))+length(CAST(?3 AS BLOB))+1<=64000",
+            params![id,expected,addition,now()]).map_err(error)?;
+        if n != 1 { return Err("amend refused: stale version, closed task, missing task or combined goal over64KB".into()); }
+        Ok(())
+    }
+    pub fn cancel(&self, id: &str, expected: i64) -> Result<(), String> {
+        ident(id)?;
+        let n = self.db.execute("UPDATE task_nodes SET status=CASE WHEN status='running' THEN 'interrupted' ELSE 'cancelled' END,
+            fence=fence+1,result='cancel requested; reconcile any running worker before retry',updated=?3
+            WHERE id=?1 AND goal_version=?2 AND status IN ('pending','running','blocked')", params![id,expected,now()]).map_err(error)?;
+        if n != 1 { return Err("cancel refused: stale version or task not cancellable".into()); }
+        Ok(())
+    }
+    pub fn reconcile_cancel(&self, id: &str, expected: i64) -> Result<(), String> {
+        ident(id)?;
+        let n = self.db.execute("UPDATE task_nodes SET status='cancelled',owner=NULL,lease_until=NULL,fence=fence+1,updated=?3
+            WHERE id=?1 AND goal_version=?2 AND status='interrupted'", params![id,expected,now()]).map_err(error)?;
+        if n != 1 { return Err("cancel reconciliation requires current interrupted task".into()); }
+        Ok(())
+    }
+    fn lease_current(&self, id: &str, owner: &str, fence: i64, version: i64) -> Result<bool,String> {
+        self.db.query_row("SELECT EXISTS(SELECT 1 FROM task_nodes WHERE id=?1 AND owner=?2 AND fence=?3 AND goal_version=?4 AND status='running' AND lease_until>=?5)",
+            params![id,owner,fence,version,now()], |r| r.get(0)).map_err(error)
+    }
     pub fn events(&self, after: i64, limit: i64) -> Result<Value, String> {
         if after < 0 || !(1..=1000).contains(&limit) { return Err("events requires nonnegative cursor and limit 1..1000".into()); }
         let mut q = self.db.prepare("SELECT seq,task,kind,goal_version,fence,status,created FROM task_events WHERE seq>?1 ORDER BY seq LIMIT ?2").map_err(error)?;
@@ -349,7 +381,7 @@ fn run(args: &[String]) -> Result<Value, String> {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     if matches!(cmd, "help" | "--help" | "-h") {
         return Ok(
-            json!({"usage":"mini-agent-rs queue put|graph|events|search|run|claim|heartbeat|finish|retry --db PATH [--id ID --project PROJECT --cwd DIR --goal-file FILE --deps ID,ID --priority N --embed-dir DIR --owner OWNER --ttl SECONDS --limit N --fence N --status done|blocked --result-file FILE]"}),
+            json!({"usage":"mini-agent-rs queue put|amend|cancel|cancel-reconcile|graph|events|search|run|claim|heartbeat|finish|retry --db PATH [--id ID --project PROJECT --cwd DIR --goal-file FILE --deps ID,ID --priority N --embed-dir DIR --owner OWNER --ttl SECONDS --limit N --fence N --status done|blocked --result-file FILE]"}),
         );
     }
     let mut flags = std::collections::BTreeMap::new();
@@ -455,6 +487,17 @@ fn run(args: &[String]) -> Result<Value, String> {
                 crate::graph_embed::Embedder::load(Path::new(get("--embed-dir")?))?.embed(&text)?;
             store.search(&vector, number("--limit", 10)?.max(1) as usize)
         }
+        "amend" => {
+            let addition=std::fs::read_to_string(get("--goal-file")?).map_err(error)?;
+            store.amend(get("--id")?,number("--goal-version",-1)?,&addition)?;
+            Ok(json!({"amended":true,"worker_reconciliation_required":true}))
+        },
+        "cancel-reconcile" => {
+            if get("--reconciled")? != "yes" { return Err("cancel-reconcile requires --reconciled yes after verifying worker is stopped".into()); }
+            store.reconcile_cancel(get("--id")?,number("--goal-version",-1)?)?;
+            Ok(json!({"cancelled":true}))
+        },
+        "cancel" => { store.cancel(get("--id")?,number("--goal-version",-1)?)?; Ok(json!({"cancel_requested":true})) },
         "events" => store.events(number("--after",0)?,number("--limit",100)?),
         "claim" => Ok(
             json!({"claimed":store.claim(get("--owner")?,number("--ttl",600)?,number("--limit",2)?.max(1) as usize)?}),
@@ -532,7 +575,21 @@ fn execute_wave(
             let store=Store::open(&db)?;
             let mut child=match cmd.spawn(){Ok(c)=>c,Err(e)=>{store.finish(id,owner,fence,"blocked",&format!("spawn failed: {e}"))?;return Err(error(e));}};
             let mut beat=std::time::Instant::now();
+            let mut lease_check=std::time::Instant::now();
             let exit=loop {
+                if lease_check.elapsed().as_secs() >= 1 {
+                    match store.lease_current(id,owner,fence,task["goal_version"].as_i64().ok_or("missing goal version")?) {
+                        Ok(true) => {},
+                        state => {
+                            unsafe{libc::killpg(child.id() as i32,libc::SIGTERM);}
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            unsafe{libc::killpg(child.id() as i32,libc::SIGKILL);}
+                            let _=child.wait();
+                            return match state { Ok(false) => Ok(json!({"id":id,"status":"interrupted","reason":"lease revoked, cancelled or goal amended; worker stopped"})), Err(e) => Err(e), _ => unreachable!() };
+                        }
+                    }
+                    lease_check=std::time::Instant::now();
+                }
                 if crate::agent::STOP.load(Ordering::SeqCst){
                     unsafe{libc::killpg(child.id() as i32,libc::SIGTERM);}
                     std::thread::sleep(std::time::Duration::from_millis(500));
