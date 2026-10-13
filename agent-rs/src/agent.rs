@@ -145,6 +145,7 @@ pub struct Agent {
     /// scanning a range) also normalize to one signature, so this guard must not kill a run.
     last_fuzzy_sig: String,
     fuzzy_streak: i64,
+    strategy_streak: u64,
     last_output_hash: u64,
     start: f64,
     journal_path: Option<PathBuf>,
@@ -195,6 +196,7 @@ impl Agent {
             repeat_streak: 0,
             last_fuzzy_sig: String::new(),
             fuzzy_streak: 0,
+            strategy_streak: 0,
             last_output_hash: 0,
             start: now(),
             journal_path: None,
@@ -904,6 +906,7 @@ impl Agent {
         let fsig = Self::actions_signature_fuzzy(&message);
         let same_cmd = !fsig.is_empty() && fsig == self.last_fuzzy_sig;
         self.last_fuzzy_sig = fsig;
+        self.strategy_streak = if same_cmd { self.strategy_streak.saturating_add(1) } else { 0 };
         // Past a dozen byte-identical steps the model has shown it will not recover on its own;
         // cutting the run here saves the rest of the harness timeout for the next task.
         if self.repeat_streak >= 12 {
@@ -953,6 +956,17 @@ impl Agent {
                 last["output"] = json!(format!(
                     "{cur}\n\n[LOOP WARNING: the last {} steps ran almost the same command with only small variations. If the results are not converging toward the goal, more tweaking of this same approach will not help: switch to a fundamentally different strategy, or finish with your final answer as plain text.]",
                     self.fuzzy_streak + 1
+                ));
+            }
+        }
+        // Changing outputs are not proof of goal progress. A long same-shaped strategy
+        // gets a checkpoint, never a forced stop: paging/sweeps can be legitimate.
+        if self.strategy_streak >= 24 && self.strategy_streak % 24 == 0 {
+            if let Some(last) = outputs.last_mut() {
+                let cur = last.get("output").and_then(Value::as_str).unwrap_or("");
+                last["output"] = json!(format!(
+                    "{cur}\n\n[STRATEGY CHECKPOINT: {} consecutive steps used the same-shaped command. New output alone does not prove progress. State what goal requirement is now closer, which evidence supports that, and the next bounded milestone. If this approach cannot meet the requirement, change strategy or report the concrete blocker. This is a checkpoint, not evidence of failure or completion.]",
+                    self.strategy_streak + 1
                 ));
             }
         }
