@@ -23,6 +23,10 @@ pub trait Environment {
     fn execute(&mut self, command: &str) -> Outcome;
     fn template_vars(&self) -> Obj;
     fn serialize(&self) -> Value;
+    /// Host-native file tools are safe only when the environment explicitly shares this
+    /// filesystem. Remote/container environments must implement their own tool bridge first.
+    fn host_filesystem_tools(&self) -> bool { false }
+
     /// The directory a relative path resolves against for the tools that do not shell out (the
     /// `read` tool): the environment's own `cwd`, which is also where its commands run.
     fn working_dir(&self) -> String {
@@ -340,6 +344,7 @@ impl LocalEnvironment {
 }
 
 impl Environment for LocalEnvironment {
+    fn host_filesystem_tools(&self) -> bool { true }
     fn execute(&mut self, command: &str) -> Outcome {
         let cwd = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
         let mut env: BTreeMap<String, String> = std::env::vars().collect();
@@ -541,6 +546,7 @@ impl DockerEnvironment {
 }
 
 impl Environment for DockerEnvironment {
+    fn working_dir(&self) -> String { self.cwd.clone() }
     fn execute(&mut self, command: &str) -> Outcome {
         let id = self.container_id.clone().unwrap_or_default();
         let mut argv = vec![self.executable.clone(), "exec".into(), "-w".into(), self.cwd.clone()];
