@@ -46,6 +46,7 @@ export class ChannelInbox {
     chmodSync(path, 0o600);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS channel_bindings(channel TEXT,account TEXT,thread TEXT,session TEXT NOT NULL,project TEXT NOT NULL,allowed_senders TEXT NOT NULL,PRIMARY KEY(channel,account,thread));
+      CREATE TABLE IF NOT EXISTS channel_updates(update_seq INTEGER PRIMARY KEY AUTOINCREMENT,inbox_seq INTEGER NOT NULL,attachment_id TEXT NOT NULL,state TEXT NOT NULL,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS channel_consumers(consumer TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS channel_inbox(seq INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,account TEXT NOT NULL,thread TEXT NOT NULL,message_id TEXT NOT NULL,sender TEXT NOT NULL,sent_at INTEGER NOT NULL,payload TEXT NOT NULL,session TEXT NOT NULL,project TEXT NOT NULL,received_at INTEGER NOT NULL,original TEXT NOT NULL,UNIQUE(channel,account,thread,message_id));`);
   }
@@ -89,11 +90,25 @@ export class ChannelInbox {
       const payload = JSON.stringify(message);
       if (Buffer.byteLength(payload) > 256_000) throw new Error("transcript exceeds message cap");
       this.db.query("UPDATE channel_inbox SET payload=?2 WHERE seq=?1").run(seq,payload);
+      // Same transaction: an acknowledged audio message must not lose its later
+      // transcript. This update references the original route, never a new task.
+      this.db.query("INSERT INTO channel_updates(inbox_seq,attachment_id,state,created_at) VALUES(?1,?2,?3,?4)").run(seq,attachmentId,state,Date.now());
     }).immediate();
   }
   read(after: number, limit = 100) {
     if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error("invalid inbox cursor");
     return this.db.query(`SELECT seq,channel,account,thread,message_id,sent_at,payload,session,project FROM channel_inbox WHERE seq>?1 ORDER BY seq LIMIT ?2`).all(after, limit);
+  }
+  /** Transcript completion feed independent of message-delivery checkpoints.
+   * The projection carries the original accepted session/project and current
+   * payload. It does not replay acceptance or grant authority to launch work.
+   */
+  updates(after: number, limit = 100) {
+    if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error("invalid inbox update cursor");
+    return this.db.query(`SELECT u.update_seq,u.inbox_seq,u.attachment_id,u.state,u.created_at,
+      i.channel,i.account,i.thread,i.message_id,i.payload,i.session,i.project
+      FROM channel_updates u JOIN channel_inbox i ON i.seq=u.inbox_seq
+      WHERE u.update_seq>?1 ORDER BY u.update_seq LIMIT ?2`).all(after,limit);
   }
   /** Durable at-least-once handoff. No task launch, cursor advancement or content approval. */
   pending(consumer: string, limit = 100) {
