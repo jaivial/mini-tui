@@ -381,7 +381,10 @@ impl WireModel {
         let msg = choice.get("message").cloned().unwrap_or_else(|| json!({}));
         let tool_calls = msg.get("tool_calls").and_then(Value::as_array).cloned().unwrap_or_default();
         let content = msg.get("content").cloned().unwrap_or(Value::Null);
-        let final_answer = if self.protocol == Protocol::Messages {
+        let output_limited = choice.get("finish_reason").and_then(Value::as_str) == Some("length");
+        let final_answer = if output_limited && tool_calls.is_empty() {
+            None // Messages max_tokens is normalized to length too; never submit its draft.
+        } else if self.protocol == Protocol::Messages {
             if tool_calls.is_empty() {
                 let text = match &content {
                     Value::String(s) => s.clone(),
@@ -417,6 +420,22 @@ impl WireModel {
                 Err(mut e) => {
                     e["extra"]["cost"] = json!(cost);
                     e["extra"]["response"] = response;
+                    // A discarded draft makes length retries restart the same plan.
+                    // Retain bounded planning only, never partial tool arguments/actions.
+                    if finish.as_str() == Some("length") {
+                        let draft = msg.get("reasoning_content").and_then(Value::as_str)
+                            .filter(|s| !s.trim().is_empty())
+                            .or_else(|| content.as_str().filter(|s| !s.trim().is_empty()));
+                        if let Some(draft) = draft {
+                            let mut start = draft.len().saturating_sub(12 * 1024);
+                            while !draft.is_char_boundary(start) { start += 1; }
+                            let partial = json!({"role":"assistant","content":format!("Unfinished model draft from the output-limited turn. Planning only, not executed work or verified evidence.{}\n{}", if start > 0 { " Earlier draft omitted." } else { "" }, &draft[start..]),
+                                "extra":{"cost":cost,"interrupt_type":"OutputLimitDraft","draft_truncated":start > 0}});
+                            // Accounting reads cost from the first message only.
+                            e["extra"]["cost"] = json!(0.0);
+                            return Reply::FormatError(vec![partial,e]);
+                        }
+                    }
                     return Reply::FormatError(vec![e]);
                 }
             }
