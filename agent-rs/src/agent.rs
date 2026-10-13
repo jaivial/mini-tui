@@ -178,6 +178,8 @@ pub struct Agent {
     jev_report: Option<Value>,
     goal_reports: Vec<Value>,
     oracle_errors: usize,
+    /// Original repository baseline, captured before work so committed changes remain evidence.
+    goal_baseline: Option<String>,
     /// Small codejs state belongs to this agent run, never a global process or repo.
     codejs_store: Obj,
 }
@@ -220,6 +222,7 @@ impl Agent {
             jev_report: None,
             goal_reports: Vec::new(),
             oracle_errors: 0,
+            goal_baseline: None,
             codejs_store: Obj::new(),
         }
     }
@@ -533,6 +536,17 @@ impl Agent {
 
     pub fn run(&mut self, task: &str, resume: Option<Vec<Value>>, compact_only: bool) -> Result<Obj, ModelError> {
         self.codejs_store.clear();
+        self.goal_baseline = None;
+        if crate::goal_oracle::enabled() && crate::intent::classify(task) != crate::intent::Intent::Conversational {
+            if let Outcome::Output(v) = self.env.execute("git rev-parse --verify HEAD 2>/dev/null") {
+                if v.get("returncode").and_then(Value::as_i64) == Some(0) {
+                    let hash = v.get("output").and_then(Value::as_str).unwrap_or("").trim();
+                    if matches!(hash.len(), 40 | 64) && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        self.goal_baseline = Some(hash.to_owned());
+                    }
+                }
+            }
+        }
         self.extra_vars.insert("task".into(), json!(task));
         crate::subagents::set_parent_state(self.cost, self.config.cost_limit, &self.parent_model_name());
         if let Some(resume) = resume.filter(|r| !r.is_empty()) {
@@ -681,7 +695,9 @@ impl Agent {
         observations.reverse();
         // Collect changes in the execution environment, including Docker, rather than reading
         // a coincidentally named host path. No tests, no mutation, no broad filesystem scan.
-        let diff = if crate::intent::classify(&goals[0]) == crate::intent::Intent::Conversational { String::new() } else { match self.env.execute("{ git diff --no-ext-diff --no-textconv HEAD 2>/dev/null; printf '\nUntracked paths (contents not read automatically):\n'; git ls-files --others --exclude-standard 2>/dev/null | head -100; } | head -c 24000") {
+        let reference = self.goal_baseline.as_deref().unwrap_or("HEAD");
+        let evidence_command = format!("{{ if git rev-parse --verify '{reference}^{{commit}}' >/dev/null 2>&1; then git diff --no-ext-diff --no-textconv {reference} 2>/dev/null || printf '\n[Change evidence unavailable: git diff failed.]\n'; else printf '\n[Change evidence unavailable: original baseline no longer resolves. Do not treat this as an empty diff.]\n'; fi; printf '\nUntracked paths (contents not read automatically):\n'; git ls-files --others --exclude-standard 2>/dev/null | head -100; }} | head -c 24000");
+        let diff = if crate::intent::classify(&goals[0]) == crate::intent::Intent::Conversational { String::new() } else { match self.env.execute(&evidence_command) {
             Outcome::Output(v) => v.get("output").and_then(Value::as_str).unwrap_or_default().to_string(),
             _ => String::new(),
         } };
