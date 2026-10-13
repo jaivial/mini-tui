@@ -832,3 +832,7 @@ Host-native `read`, `write`, `edit` and Rhai `code` are available only for the l
 Queue edits remain limited to pending tasks; each put increments goal_version and clears old results. Claims carry the version. Both managed workers and direct finish calls require positive closure evidence bound to task ID, current fence and goal version, with a trajectory reference. Plain done is refused. This is recorded evidence, not an independent proof that a judge is correct.
 
 `queue events --db PATH --after SEQ --limit 100` returns a durable sequence cursor for created, goal_updated and state_changed events. Consumers deduplicate by seq and resume after their last persisted cursor. Heartbeats do not emit state events. SQLite triggers write events in the same transaction as task changes. Existing tasks are not given invented historical events. Running-goal amendment and live worker notifications remain a separate integration step.
+
+### Read-only queue event API
+
+`GET /api/task-events?after=SEQ` returns up to 100 durable queue events and a resume cursor. `/api/task-events/stream` uses SSE event `task`, with `id` set to seq. Resume with Last-Event-ID or after; store/deduplicate seq on the client. The server reads without schema migration or worker/model calls, at most once per 5 seconds per stream, limits streams to16 and closes with queue-error on unavailable data. Same-origin protection, 5-second child timeout and cursor validation apply. This is an API, not yet a task-board UI or a verified main-chat delivery path.

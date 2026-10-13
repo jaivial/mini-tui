@@ -61,6 +61,25 @@ type SocketData =
   | { kind: "hub"; client?: HubClient };
 const listeners = new Set<Listener>();
 
+// Queue event readers do not launch workers, migrate schemas or call models.
+let queueEventStreams = 0;
+async function queueEvents(after: number, limit = 100): Promise<{ events: Array<{ seq: number; [key: string]: unknown }>; cursor: number }> {
+  const bin = rustAgentBin();
+  const db = process.env.MINITUI_TASK_GRAPH_DB ?? join(homedir(), ".local/share/mini-tui/task-graph.sqlite");
+  if (!existsSync(db)) return { events: [], cursor: after };
+  if (!bin) throw new Error("task_graph_binary_unavailable");
+  const child = Bun.spawn([bin, "queue", "events-read", "--db", db, "--after", String(after), "--limit", String(limit)], { stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => child.kill(), 5000);
+  try {
+    const [out, , code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    if (code !== 0) throw new Error("task_events_read_failed");
+    const data = JSON.parse(out);
+    if (!Array.isArray(data.events) || !Number.isSafeInteger(data.cursor) || data.cursor < after || data.events.length > limit
+      || data.events.some((e: { seq?: unknown }) => typeof e?.seq !== "number" || !Number.isSafeInteger(e.seq) || e.seq <= after)) throw new Error("invalid_queue_events");
+    return data;
+  } finally { clearTimeout(timer); }
+}
+
 function broadcast(event: { type: string; [key: string]: unknown }): void {
   for (const listener of [...listeners]) {
     try {
@@ -315,6 +334,58 @@ const server = Bun.serve({
           if (code !== 0) return json({ error: "task_graph_read_failed", detail: "Queue feature unavailable or registry could not be read" }, 503);
           return json(JSON.parse(out));
         } finally { clearTimeout(timeout); }
+      }
+      if ((path === "/task-events" || path === "/task-events/stream") && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        const raw = url.searchParams.get("after") ?? request.headers.get("last-event-id") ?? "0";
+        if (!/^\d{1,16}$/.test(raw) || !Number.isSafeInteger(Number(raw))) return json({ error: "invalid_event_cursor" }, 400);
+        let cursor = Number(raw);
+        if (path === "/task-events") {
+          try { return json(await queueEvents(cursor)); }
+          catch { return json({ error: "task_events_unavailable" }, 503); }
+        }
+        if (queueEventStreams >= 16) return json({ error: "too_many_queue_streams" }, 429);
+        queueEventStreams++;
+        const encoder = new TextEncoder();
+        let closed = false;
+        let busy = false;
+        let timer: ReturnType<typeof setInterval> | undefined;
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          if (timer) clearInterval(timer);
+          request.signal.removeEventListener("abort", close);
+          queueEventStreams--;
+        };
+        const stream = new ReadableStream({
+          start(controller) {
+            const tick = async () => {
+              if (closed || busy) return;
+              busy = true;
+              try {
+                const data = await queueEvents(cursor);
+                if (closed) return;
+                for (const event of data.events) {
+                  if (event.seq <= cursor) continue;
+                  controller.enqueue(encoder.encode(`id: ${event.seq}\nevent: task\ndata: ${JSON.stringify(event)}\n\n`));
+                  cursor = event.seq;
+                }
+                if (!data.events.length) controller.enqueue(encoder.encode(": ping\n\n"));
+              } catch {
+                if (!closed) {
+                  try { controller.enqueue(encoder.encode('event: queue-error\ndata: {"error":"task_events_unavailable"}\n\n')); } catch {}
+                  finally { close(); try { controller.close(); } catch {} }
+                }
+              } finally { busy = false; }
+            };
+            timer = setInterval(() => { void tick(); }, 5000);
+            request.signal.addEventListener("abort", close, { once: true });
+            if (request.signal.aborted) { close(); controller.close(); return; }
+            void tick();
+          },
+          cancel() { close(); },
+        });
+        return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no", ...CORS } });
       }
       // ---------------------------------------------------------- stream
       if (path === "/stream" && request.method === "GET") {
