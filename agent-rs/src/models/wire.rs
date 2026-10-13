@@ -706,7 +706,17 @@ fn content_blocks(content: &Value) -> Vec<Value> {
             for b in a {
                 let Some(o) = b.as_object() else { continue };
                 let t = o.get("type").and_then(Value::as_str).unwrap_or("");
-                if ["text", "thinking", "redacted_thinking", "tool_use", "tool_result", "image"].contains(&t) {
+                if t == "image_url" {
+                    if let Some(url) = b.get("image_url").and_then(|i| i.get("url")).and_then(Value::as_str) {
+                        let source = if let Some(data) = url.strip_prefix("data:") {
+                            match data.split_once(";base64,") {
+                                Some((mime, bytes)) => json!({"type": "base64", "media_type": mime, "data": bytes}),
+                                None => { out.push(json!({"type": "text", "text": "[Invalid image data URL]"})); continue; }
+                            }
+                        } else { json!({"type": "url", "url": url}) };
+                        out.push(json!({"type": "image", "source": source}));
+                    }
+                } else if ["text", "thinking", "redacted_thinking", "tool_use", "tool_result", "image"].contains(&t) {
                     out.push(b.clone());
                 } else if let Some(text) = o.get("text").and_then(Value::as_str) {
                     let mut blk = json!({"type": "text", "text": text});

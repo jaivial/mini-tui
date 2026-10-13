@@ -816,3 +816,9 @@ cd agent-rs && cargo test --release && sh tests/parity/run_all.sh   # Rust agent
 - The code highlighter degrades to plain text when a tree-sitter grammar is unavailable.
 - If the TUI is killed hard, the agent child may survive: check `<session>/pid` and
   `pgrep -af "minisweagent.run.tui|mini-agent-rs|mini -y --exit-immediately"`.
+
+### Native visual reads (Rust)
+
+With `MINITUI_AGENT_TOOLS=1`, `read` recognizes PNG, JPEG, GIF and WebP by their byte signatures. It attaches the original image as a bounded (8 MB) data URL, with a separate user visual block after the tool result. Chat, Responses and Messages wire shapes preserve the image; an empty `multimodal_regex` does not disable this route. Images do not accept text pagination. Code-mode text reads reject raster bytes rather than returning broken pixel text.
+
+The provider and chosen model must still support images. Vendor support and wire preservation do not prove that a specific endpoint has interpreted an image correctly. This does not change a running benchmark's binary or tool gate.
