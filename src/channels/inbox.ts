@@ -46,6 +46,7 @@ export class ChannelInbox {
     chmodSync(path, 0o600);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS channel_bindings(channel TEXT,account TEXT,thread TEXT,session TEXT NOT NULL,project TEXT NOT NULL,allowed_senders TEXT NOT NULL,PRIMARY KEY(channel,account,thread));
+      CREATE TABLE IF NOT EXISTS channel_consumers(consumer TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS channel_inbox(seq INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,account TEXT NOT NULL,thread TEXT NOT NULL,message_id TEXT NOT NULL,sender TEXT NOT NULL,sent_at INTEGER NOT NULL,payload TEXT NOT NULL,session TEXT NOT NULL,project TEXT NOT NULL,received_at INTEGER NOT NULL,original TEXT NOT NULL,UNIQUE(channel,account,thread,message_id));`);
   }
   bind(binding: Binding): void {
@@ -93,6 +94,29 @@ export class ChannelInbox {
   read(after: number, limit = 100) {
     if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error("invalid inbox cursor");
     return this.db.query(`SELECT seq,channel,account,thread,message_id,sent_at,payload,session,project FROM channel_inbox WHERE seq>?1 ORDER BY seq LIMIT ?2`).all(after, limit);
+  }
+  /** Durable at-least-once handoff. No task launch, cursor advancement or content approval. */
+  pending(consumer: string, limit = 100) {
+    if (!bounded(consumer) || !Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error("invalid inbox consumer");
+    const checkpoint = this.db.query("SELECT cursor FROM channel_consumers WHERE consumer=?1").get(consumer) as { cursor: number } | null;
+    const cursor = checkpoint?.cursor ?? 0;
+    return { cursor, messages: this.read(cursor,limit) };
+  }
+  /** Advance only the next delivery after the caller confirms its durable handoff.
+   * Compare-and-set protects concurrent consumers and uncertain acknowledgements.
+   * Sender/session/project are the immutable accepted route, not current rebinding.
+   */
+  acknowledge(consumer: string, expected: number, delivery: { seq: number; session: string; project: string }): void {
+    if (!bounded(consumer) || !Number.isSafeInteger(expected) || expected < 0
+      || !Number.isSafeInteger(delivery.seq) || delivery.seq <= expected
+      || !bounded(delivery.session) || !bounded(delivery.project)) throw new Error("invalid inbox acknowledgement");
+    this.db.transaction(() => {
+      const row = this.db.query("SELECT cursor FROM channel_consumers WHERE consumer=?1").get(consumer) as { cursor: number } | null;
+      if ((row?.cursor ?? 0) !== expected) throw new Error("stale inbox acknowledgement; inspect checkpoint before retrying");
+      const next = this.db.query("SELECT seq,session,project FROM channel_inbox WHERE seq>?1 ORDER BY seq LIMIT 1").get(expected) as { seq: number; session: string; project: string } | null;
+      if (!next || next.seq !== delivery.seq || next.session !== delivery.session || next.project !== delivery.project) throw new Error("acknowledgement does not match next accepted route");
+      this.db.query("INSERT INTO channel_consumers(consumer,cursor) VALUES(?1,?2) ON CONFLICT(consumer) DO UPDATE SET cursor=excluded.cursor").run(consumer,delivery.seq);
+    }).immediate();
   }
   close() { this.db.close(); }
 }
