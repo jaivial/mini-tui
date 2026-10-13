@@ -14,7 +14,7 @@ Usage:
   mini-tui view <traj.json> [--follow] [--show-system]
   mini-tui -p "<prompt>" [options]          headless: run, print the answer, exit
   mini-tui sessions | models | model | skills | settings | jev    (scripting, see below)
-  mini-tui doctor [-m <model>]      why is cliproxy/... failing?
+  mini-tui queue <action> [--db PATH]  durable Rust queue (task-graph feature)\n  mini-tui doctor [-m <model>]      why is cliproxy/... failing?
   mini-tui jev check                 is the Jev (System One) key usable?
 
 Headless (-p, --print) — no TUI, for scripts, CI and other agents:
@@ -75,6 +75,22 @@ Options (TUI):
   --show-system         Include the system prompt in the transcript
   -h, --help            Show this help        -V, --version   Show the version
 `;
+
+// Queue scripting keeps the main TUI/session free and never imports OpenTUI.
+if (process.argv[2] === "queue") {
+  const { queueCommand } = await import("./mini/queue");
+  const abort = new AbortController();
+  const stop = () => abort.abort();
+  process.on("SIGINT",stop); process.on("SIGTERM",stop);
+  try {
+    const result = await queueCommand(process.argv.slice(3),abort.signal);
+    process.stdout.write(result.output); process.stderr.write(result.error);
+    process.exitCode = result.code;
+  } catch (error) {
+    process.stderr.write(`queue: ${(error as Error).message}\n`); process.exitCode = 2;
+  } finally { process.off("SIGINT",stop); process.off("SIGTERM",stop); }
+  process.exit(process.exitCode ?? 0);
+}
 
 let parsed: CliArgs;
 try {
