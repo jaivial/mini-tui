@@ -159,6 +159,9 @@ impl Store {
         status: &str,
         result: &str,
     ) -> Result<(), String> {
+        ident(id)?;
+        ident(owner)?;
+        if result.len() > 64_000 { return Err("task result exceeds 64000 bytes".into()); }
         if !matches!(status, "done" | "blocked") {
             return Err("finish requires done or blocked".into());
         }
@@ -169,6 +172,8 @@ impl Store {
         Ok(())
     }
     pub fn heartbeat(&self, id: &str, owner: &str, fence: i64, ttl: i64) -> Result<(), String> {
+        ident(id)?;
+        ident(owner)?;
         if !(30..=86400).contains(&ttl) {
             return Err("invalid lease TTL".into());
         }
@@ -179,6 +184,7 @@ impl Store {
         Ok(())
     }
     pub fn retry(&self, id: &str) -> Result<(), String> {
+        ident(id)?;
         let n=self.db.execute("UPDATE task_nodes SET status='pending',owner=NULL,lease_until=NULL,fence=fence+1,updated=?2 WHERE id=?1 AND status IN ('blocked','interrupted')",params![id,now()]).map_err(error)?;
         if n != 1 {
             return Err(
