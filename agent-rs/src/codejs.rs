@@ -14,7 +14,7 @@ pub fn enabled() -> bool {
     crate::writing::write_enabled() && std::env::var("MINITUI_CODEJS").as_deref() == Ok("1")
 }
 pub fn tool(kind: &str) -> Value {
-    let description = "Run an async JavaScript function body in a fresh QuickJS sandbox. await tools.read({path,offset?,limit?}), tools.write({path,content}), tools.edit({path,edits:[{oldText,newText}]}), tools.bash({command}). Results are structured tool observations; failures throw with the observation. print(...values), return a value. Host calls are sequential even in Promise.all. No filesystem/network/process access except these tools, no imports. 128 host calls, 64MB memory, 300s wall limit, 60KB output. Filesystem changes before failure are real. store(key,value) and load(key) keep small JSON state between codejs calls in this agent run (64 keys, 16KB/value, 128KB total); store(key,undefined) deletes. Store writes commit only on successful execution, reset on run/resume, never persist to disk. Image reads return an image_handle instead of base64. image(readResult) forwards its verified native read image to the model. At most 4 emitted images and 8MB decoded image bytes total per execution. Images emitted before a later script failure are preserved.";
+    let description = "Run an async JavaScript function body in a fresh QuickJS sandbox. await tools.read({path,offset?,limit?}), tools.write({path,content}), tools.edit({path,edits:[{oldText,newText}]}), tools.bash({command}). Results are structured tool observations; failures throw with the observation. text(value), print(...values), console.log/info/warn/error/debug(...values), return a value. Host calls are sequential even in Promise.all. No filesystem/network/process access except these tools, no imports. 128 host calls, 64MB memory, 300s wall limit, 60KB output. Filesystem changes before failure are real. store(key,value) and load(key) keep small JSON state between codejs calls in this agent run (64 keys, 16KB/value, 128KB total); store(key,undefined) deletes. Store writes commit only on successful execution, reset on run/resume, never persist to disk. Image reads return an image_handle instead of base64. image(readResult) forwards its verified native read image to the model. At most 4 emitted images and 8MB decoded image bytes total per execution. Images emitted before a later script failure are preserved.";
     let params = json!({"type":"object","properties":{"code":{"type":"string","description":"Async JavaScript function body"}},"required":["code"]});
     match kind {
         "chat" => {
@@ -160,7 +160,19 @@ pub fn outcome(args: &Value, host: &mut CodeCtx, state: &mut crate::util::Obj) -
                     return out;
                 }])));
                 globalThis.image=async result=>JSON.parse(bridge('image',JSON.stringify(result)));
-                globalThis.print=(...values)=>emit(values.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' '));
+                // Pi-shaped text output: primitives use String, objects use JSON.
+                // No inspection hooks, shell, or unbounded host log sink.
+                const outputText=value=>{
+                    if(value===null || (typeof value!=='object' && typeof value!=='function')) return String(value);
+                    const json=JSON.stringify(value);
+                    return json===undefined?String(value):json;
+                };
+                const writeText=(...values)=>emit(values.map(outputText).join(' '));
+                globalThis.text=value=>emit(outputText(value));
+                globalThis.print=writeText;
+                globalThis.console=Object.freeze(Object.fromEntries(
+                    ['log','info','warn','error','debug'].map(level=>[level,writeText])
+                ));
             "#)?;
             let source=format!("(async()=>{{\n{code}\n}})().then(value=>JSON.stringify(value)??'undefined')");
             let promise:Promise=ctx.eval(source)?;

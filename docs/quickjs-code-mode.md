@@ -40,7 +40,7 @@ Rhai-only `code` tool path for JS. Rhai `code` stays untouched for compat.
   ~/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin/cargo for all checks.
 - quickjs-sys build + cargo check underway under CPU25%/2GB/Nice19/IOWeight1.
 
-## Implemented candidate (16:02, not yet compiled or measured)
+## Implemented candidate (16:02, compiled but not runtime-measured)
 - Fresh Runtime + Context per call, 64MB memory, 512KB stack, interrupt deadline
   and STOP; timeout clamped to 300s maximum, 128 host-call cap.
 - Same read_outcome/write_outcome/edit_outcome used by native tools; bash uses
@@ -59,7 +59,13 @@ Rhai-only `code` tool path for JS. Rhai `code` stays untouched for compat.
   Four emissions and 8MB decoded bytes total per execution, deduplicated.
   Images emitted before failure are kept. Payload compilation only, no endpoint
   or pixel verification yet.
-- Pending compilation and runtime proof. No tests or benchmark changed.
+- Capped compilation passes; runtime proof remains pending. No tests or benchmark changed.
+- Pi-shaped text(value) and console.log/info/warn/error/debug(...values), plus
+  existing print(...values), all append to the same bounded UTF-8 output buffer.
+  Primitive text uses String (including undefined, null and BigInt); objects
+  use JSON. Circular JSON still throws. console is frozen; no host stdout sink.
+  This is API preparation, not full Pi parity. Pi uses separate output items and
+  fail-on-output-limit; mini currently combines text and truncates with a notice.
 
 ## Out of scope
 - REPL Rhai (repl.rs), web UI, benchmark wiring. No change to r1b anything.
