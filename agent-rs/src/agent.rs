@@ -940,7 +940,7 @@ impl Agent {
             if let Some(last) = outputs.last_mut() {
                 let cur = last.get("output").and_then(Value::as_str).unwrap_or("").to_string();
                 last["output"] = json!(format!(
-                    "{cur}\n\n[LOOP WARNING: this exact tool call has now been issued {} times in a row with the same result. Repeating it cannot produce new information. Do NOT issue it again: change the command, switch tool, or finish with your final answer as plain text.]",
+                    "{cur}\n\n[LOOP WARNING: this exact tool call has now been issued {} times in a row. Check whether the new observation actually moves the goal forward. If not, change the strategy. Do not claim completion without evidence.]",
                     self.repeat_streak + 1
                 ));
             }
