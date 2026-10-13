@@ -682,7 +682,8 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
     let pid = std::process::id();
     let depth: u32 = env_num("MINI_AGENT_DEPTH", 0);
     // At the nesting limit a run can not start children: no hub, no socket, nothing to clean up.
-    if depth >= env_num("MINI_AGENT_MAX_DEPTH", 2u32) {
+    let max_depth = env_num("MINI_AGENT_MAX_DEPTH", 0u32);
+    if max_depth != 0 && depth >= max_depth {
         return None;
     }
     prune_stale_runtimes();
@@ -1247,8 +1248,8 @@ impl Hub {
         if !valid_name(&name) {
             return Err(format!("invalid subagent name {name:?}: letters, digits, '.', '_' or '-'"));
         }
-        let max_depth: u32 = env_num("MINI_AGENT_MAX_DEPTH", 2);
-        if self.depth >= max_depth {
+        let max_depth: u32 = env_num("MINI_AGENT_MAX_DEPTH", 0);
+        if max_depth != 0 && self.depth >= max_depth {
             return Err(format!("subagents may not start subagents beyond depth {max_depth}: do this task yourself"));
         }
         let max_live: usize = env_num("MINI_AGENT_MAX_SUBAGENTS", 100).min(100);
@@ -1855,7 +1856,7 @@ impl Launcher {
             .env("MSWEA_SILENT_STARTUP", "1")
             .env("MINI_AGENT_PARENT_SOCKET", &self.socket)
             .env("MINI_AGENT_NAME", &c.name)
-            .env("MINI_AGENT_DEPTH", (self.depth + 1).to_string())
+            .env("MINI_AGENT_DEPTH", self.depth.saturating_add(1).to_string())
             .env("MINI_AGENT_CONTEXT_DIR", &self.context_dir)
             .env("PATH", path)
             .env_remove("MINI_AGENT_SOCKET")

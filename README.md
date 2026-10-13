@@ -553,7 +553,7 @@ mini-agent-rs agent ask "which branch?"                   # inside a subagent: a
   parent reads a `[subagent <name>] …` message before its next step. A parent that already ended
   its turn is woken by it, so the orchestrator never spends steps polling.
 - **Owned by the session.** Subagents stop with it, count toward its cost limit, and run on its
-  current model unless told otherwise. Up to 100 run at once, nested at most 2 deep.
+  current model unless told otherwise. Up to 100 run at once per hub, with resource admission guards. Recursive depth has no fixed default cap; set `MINI_AGENT_MAX_DEPTH=N` for an explicit cap (`0` means uncapped). Depth alone does not bypass memory, concurrency, cancellation or provider limits.
 - **It never OOMs the box.** Before you fan out, `agent resources` reports the free memory, the
   **measured average memory of the running subagents**, and `max fan-out now`:
   `min((free - 10 GiB reserve) / average child, CPU headroom, 100 - live)`. Every `spawn` runs the
