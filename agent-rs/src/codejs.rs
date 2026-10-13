@@ -1,6 +1,7 @@
 //! Opt-in JavaScript batching. Each invocation has a fresh bounded QuickJS runtime.
 //! Host tools execute sequentially on the agent thread, including Promise.all calls.
 use crate::writing::CodeCtx;
+use std::collections::HashMap;
 use rquickjs::{Context, Ctx, Exception, Function, Promise, Runtime};
 use serde_json::{json, Value};
 use std::sync::{
@@ -13,7 +14,7 @@ pub fn enabled() -> bool {
     crate::writing::write_enabled() && std::env::var("MINITUI_CODEJS").as_deref() == Ok("1")
 }
 pub fn tool(kind: &str) -> Value {
-    let description = "Run an async JavaScript function body in a fresh QuickJS sandbox. await tools.read({path,offset?,limit?}), tools.write({path,content}), tools.edit({path,edits:[{oldText,newText}]}), tools.bash({command}). Results are structured tool observations; failures throw with the observation. print(...values), return a value. Host calls are sequential even in Promise.all. No filesystem/network/process access except these tools, no imports. 128 host calls, 64MB memory, 300s wall limit, 60KB output. Changes before a failure are real and are not undone. Read images stay in structured results; this tool does not forward image blocks to the model.";
+    let description = "Run an async JavaScript function body in a fresh QuickJS sandbox. await tools.read({path,offset?,limit?}), tools.write({path,content}), tools.edit({path,edits:[{oldText,newText}]}), tools.bash({command}). Results are structured tool observations; failures throw with the observation. print(...values), return a value. Host calls are sequential even in Promise.all. No filesystem/network/process access except these tools, no imports. 128 host calls, 64MB memory, 300s wall limit, 60KB output. Changes before a failure are real and are not undone. Image reads return an image_handle instead of base64. image(readResult) forwards its verified native read image to the model. At most 4 emitted images and 8MB decoded image bytes total per execution. Images emitted before a later script failure are preserved.";
     let params = json!({"type":"object","properties":{"code":{"type":"string","description":"Async JavaScript function body"}},"required":["code"]});
     match kind {
         "chat" => {
@@ -38,6 +39,9 @@ pub fn outcome(args: &Value, host: &mut CodeCtx) -> Value {
     let printed = Arc::new(Mutex::new(String::new()));
     let truncated = Arc::new(AtomicBool::new(false));
     let ended = Arc::new(AtomicBool::new(false));
+    let images: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let emitted: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let image_bytes = Arc::new(AtomicUsize::new(0));
     let bash = Arc::new(Mutex::new(std::mem::replace(
         &mut host.bash,
         Box::new(|_| Value::Null),
@@ -62,6 +66,7 @@ pub fn outcome(args: &Value, host: &mut CodeCtx) -> Value {
         let context = Context::full(&rt).map_err(|e| e.to_string())?;
         context.with(|ctx| -> rquickjs::Result<String> {
             let cwd=host.cwd.clone(); let b=bash.clone(); let c=calls.clone(); let end=ended.clone();
+            let known=images.clone(); let attachments=emitted.clone(); let bytes=image_bytes.clone();
             ctx.globals().set("__host",Function::new(ctx.clone(),move |js:Ctx<'_>,name:String,raw:String| -> rquickjs::Result<String> {
                 if crate::agent::STOP.load(Ordering::SeqCst)||std::time::Instant::now()>=deadline||end.load(Ordering::SeqCst) {
                     return Err(Exception::throw_message(&js,"codejs cancelled, timed out, or run ended"));
@@ -69,7 +74,17 @@ pub fn outcome(args: &Value, host: &mut CodeCtx) -> Value {
                 if c.fetch_add(1,Ordering::SeqCst)>=CALL_MAX { return Err(Exception::throw_message(&js,"codejs host call limit (128)")); }
                 let a:Value=serde_json::from_str(&raw).map_err(|_|Exception::throw_message(&js,"Invalid tool argument JSON"))?;
                 if !a.is_object() { return Err(Exception::throw_message(&js,"Tool arguments must be an object")); }
-                let out=match name.as_str() {
+                let mut out=match name.as_str() {
+                    "image"=> {
+                        let handle=a.get("image_handle").and_then(Value::as_str).ok_or_else(||Exception::throw_message(&js,"image requires a native image read result"))?;
+                        let url=known.lock().unwrap().get(handle).cloned().ok_or_else(||Exception::throw_message(&js,"Unknown image handle"))?;
+                        let mut attached=attachments.lock().unwrap();
+                        if !attached.contains(&url) {
+                            if attached.len()>=4 { return Err(Exception::throw_message(&js,"At most four emitted images")); }
+                            attached.push(url);
+                        }
+                        json!({"output":"Image attached","returncode":0})
+                    },
                     "read"=>crate::tools::read_outcome(&a,&cwd),
                     "write"=>crate::writing::write_outcome(&a,&cwd),
                     "edit"=>crate::writing::edit_outcome(&a,&cwd),
@@ -81,6 +96,17 @@ pub fn outcome(args: &Value, host: &mut CodeCtx) -> Value {
                     },
                     _=>return Err(Exception::throw_message(&js,"Unknown codejs host tool")),
                 };
+                if let Some(url)=(if name=="read" {out.as_object_mut().and_then(|o|o.remove("image_url")).and_then(|v|v.as_str().map(str::to_owned))} else {None}) {
+                    let size=out.pointer("/extra/bytes").and_then(Value::as_u64).unwrap_or(u64::MAX);
+                    if size>8*1024*1024 || bytes.load(Ordering::SeqCst)>8*1024*1024-size as usize {
+                        return Err(Exception::throw_message(&js,"Image read budget: 8MB decoded total per execution"));
+                    }
+                    bytes.fetch_add(size as usize,Ordering::SeqCst);
+                    let handle=crate::util_hex(24);
+                    known.lock().unwrap().insert(handle.clone(),url);
+                    out["image_handle"]=json!(handle);
+                    out["output"]=json!("Native image read. Call image(result) to forward visual content to the model.");
+                }
                 Ok(out.to_string())
             })?)?;
             let p=printed.clone();let t=truncated.clone();
@@ -97,6 +123,7 @@ pub fn outcome(args: &Value, host: &mut CodeCtx) -> Value {
                     if(out.returncode!==0) {const error=new Error(out.output||'Tool failed');error.observation=out;throw error;}
                     return out;
                 }])));
+                globalThis.image=async result=>JSON.parse(bridge('image',JSON.stringify(result)));
                 globalThis.print=(...values)=>emit(values.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' '));
             "#)?;
             let source=format!("(async()=>{{\n{code}\n}})().then(value=>JSON.stringify(value)??'undefined')");
@@ -133,5 +160,5 @@ pub fn outcome(args: &Value, host: &mut CodeCtx) -> Value {
         let note = "\n[JavaScript output truncated at 60KB.]";
         text = format!("{}{note}", prefix(&text, OUTPUT_MAX - note.len()));
     }
-    json!({"output":text,"returncode":i64::from(failed),"exception_info":if failed{text.clone()}else{String::new()},"extra":{"tool":"codejs","calls":calls.load(Ordering::SeqCst).min(CALL_MAX),"wall_ms":started.elapsed().as_millis() as u64,"output_truncated":output_truncated}})
+    json!({"output":text,"returncode":i64::from(failed),"exception_info":if failed{text.clone()}else{String::new()},"extra":{"tool":"codejs","calls":calls.load(Ordering::SeqCst).min(CALL_MAX),"wall_ms":started.elapsed().as_millis() as u64,"output_truncated":output_truncated},"image_urls":emitted.lock().unwrap().clone()})
 }
