@@ -866,3 +866,7 @@ This is internal adapter/storage preparation. No HTTP receiver, account connecti
 ### Context coverage snapshots
 
 Every contract-check records a coverage.<scope-hash>.json manifest with contained paths and SHA1 content digests of the exact bounded files examined, unread exclusions, scope/root and check time. SHA1 is a freshness fingerprint, not a security guarantee. Changes since the previous check fail the snapshot check and request refreshed findings/contracts. Manifests explicitly state partial repository coverage and unverified semantic contracts. A new snapshot does not automatically repair an index, prove full coverage or check a Git revision.
+
+### Queue event client preparation
+
+QueueEventsClient shares a read-only SSE subscription among watchers, deduplicates durable seq, refreshes the graph after events, reconnects after5 seconds and retries failed snapshots without losing the pending event. It guards stale fetches after all watchers leave and removes timers/streams. No mutations or model polling. This is a client building block; the task panel has not yet been wired to it or visually verified.
