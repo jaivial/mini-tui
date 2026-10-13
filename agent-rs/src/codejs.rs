@@ -96,7 +96,7 @@ pub fn outcome(args: &Value, host: &mut CodeCtx) -> Value {
                     },
                     _=>return Err(Exception::throw_message(&js,"Unknown codejs host tool")),
                 };
-                if let Some(url)=(if name=="read" {out.as_object_mut().and_then(|o|o.remove("image_url")).and_then(|v|v.as_str().map(str::to_owned))} else {None}) {
+                if let Some(url)=if name=="read" {out.as_object_mut().and_then(|o|o.remove("image_url")).and_then(|v|v.as_str().map(str::to_owned))} else {None} {
                     let size=out.pointer("/extra/bytes").and_then(Value::as_u64).unwrap_or(u64::MAX);
                     if size>8*1024*1024 || bytes.load(Ordering::SeqCst)>8*1024*1024-size as usize {
                         return Err(Exception::throw_message(&js,"Image read budget: 8MB decoded total per execution"));
