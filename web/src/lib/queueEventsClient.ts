@@ -32,6 +32,7 @@ export class QueueEventsClient {
   #pending: QueueEvent | undefined;
   view: QueueView = { nodes: [], edges: [] };
   error = "";
+  loaded = false;
   constructor(readonly base = "/api") {}
   watch(listener: (view: QueueView,event?: QueueEvent) => void): () => void {
     this.#listeners.add(listener);
@@ -49,6 +50,11 @@ export class QueueEventsClient {
       }
     };
   }
+  #notify(event?: QueueEvent) {
+    for (const listener of this.#listeners) {
+      try { listener(this.view,event); } catch { /* consumer owns its rendering error */ }
+    }
+  }
   #connect() {
     if (this.#source || !this.#listeners.size) return;
     const source = new EventSource(`${this.base}/task-events/stream?after=${this.#cursor}`);
@@ -61,12 +67,12 @@ export class QueueEventsClient {
         this.#cursor = event.seq;
         this.#pending = event;
         void this.#refresh();
-      } catch { this.error = "invalid queue event"; }
+      } catch { this.error = "invalid queue event"; this.#notify(); }
     });
     const failed = () => {
       if (this.#source !== source) return;
       source.close(); this.#source = null;
-      this.error = "queue stream unavailable; reconnecting";
+      this.error = "queue stream unavailable"; this.#notify();
       if (this.#listeners.size) this.#timer = setTimeout(() => { void this.#refresh(); this.#connect(); },5000);
     };
     source.addEventListener("queue-error",failed);
@@ -87,16 +93,14 @@ export class QueueEventsClient {
       const view = await res.json() as QueueView;
       if (!validView(view)) throw new Error("invalid queue snapshot");
       if (generation !== this.#generation || !this.#listeners.size) return;
-      this.view = view; this.error = "";
-      for (const listener of this.#listeners) {
-        // One view callback must not break subscription delivery to the others.
-        try { listener(view,event); } catch { /* consumer owns its rendering error */ }
-      }
+      this.view = view; this.loaded = true; this.error = "";
+      this.#notify(event);
     } catch (e) {
       failed = true;
       if (generation === this.#generation) {
         this.error = (e as Error).message;
         this.#pending ??= event;
+        this.#notify();
       }
     }
     finally {
