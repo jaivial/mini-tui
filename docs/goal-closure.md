@@ -8,6 +8,7 @@ The closure judgement replaces the old second plain-text confirmation turn. Afte
 
 ## Configuration
 
+- `MINI_AGENT_GOAL_ORACLE=laya` with `MINI_AGENT_GOAL_ORACLE_URL` set to the SystemOne endpoint: real Laya noul decision, P(true) >= 0.85 by default. Lower probability or unavailable/truncated evidence uses the current model for concrete gaps, unless `MINI_AGENT_GOAL_ORACLE_FALLBACK=off`. `MINI_AGENT_LAYA_THRESHOLD` and `MINI_AGENT_LAYA_MODEL` are explicit overrides.
 - `MINI_AGENT_GOAL_ORACLE=model` (default): current model, provisional judge.
 - `MINI_AGENT_GOAL_ORACLE=off`: legacy closure and exact-loop abort behavior.
 - `MINI_AGENT_GOAL_ORACLE_URL`: exact HTTP(S) endpoint for a replacement service, including a future Laya adapter. No port is guessed and no service is installed automatically.
@@ -27,5 +28,5 @@ A successful verdict must have `complete: true`, `score: 100` and an empty `gaps
 
 - Evidence windows and diffs are bounded. Untracked paths are listed, but their content is not automatically read, since they can contain credentials or unrelated files.
 - The judge can make mistakes. Official benchmark verifier results, not oracle opinions, establish pass rate.
-- This does not supply Laya itself, benchmark results, a graph/vector task store or a new parallel scheduler.
+- Laya was verified live at the owner-configured SystemOne endpoint. This does not install or reconfigure Laya itself, benchmark results, a graph/vector task store or a new parallel scheduler.
 - No live terminal binary is replaced by merely building this change.
