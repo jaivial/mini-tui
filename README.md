@@ -840,3 +840,7 @@ Queue edits remain limited to pending tasks; each put increments goal_version an
 ### Context evidence limits
 
 Contract checks now read indexed files from the current contained tree instead of counting index labels as code. Index reads are capped at256 files,512KB per file and4MB corpus, with missing coverage reported. All named identifiers in a positive clause must be present as code tokens; one matching word is insufficient. Coverage requires actual file contents. Prose invariants are flagged for semantic review, never declared safe by an absent/present token. Mechanical checks do not certify types, caller/producer-consumer mappings or complete repository coverage.
+
+### Rhai code-mode limits
+
+The existing Rhai code tool is a batching alternative, not JavaScript/QuickJS parity with current Pi. It now respects STOP during interpreter progress, caps a single print and the entire returned observation at60KB without splitting UTF-8, and limits reads to8 concurrent file-reader threads. Pure-script time/operation bounds remain; registered host tools still perform real actions. This does not add async JS, non-LLM image classifiers or a result store.

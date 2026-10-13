@@ -20,7 +20,7 @@
 //! * both carry a small unified diff under `extra.diff`, so the model --- and the human reading
 //!   the trajectory --- can see what changed without re-reading the file.
 //!
-//! The `code` tool is mini's equivalent of pi's codemode (`https://pi.dev/docs/latest/codemode`):
+//! The `code` tool is a Rhai batching alternative to pi's codemode (`https://pi.dev/docs/latest/codemode`):
 //! a script that calls the other tools, so a read + edit + edit + verify sequence costs **one**
 //! model call instead of four. Pi runs model-written JavaScript in a QuickJS sandbox where
 //! `tools.<name>(args)` is the only door out; mini evaluates Rhai (the same sandboxed interpreter
@@ -584,6 +584,7 @@ pub fn code_outcome(args: &Value, ctx: &mut CodeCtx) -> Value {
     };
     let started = std::time::Instant::now();
     let printed: std::sync::Arc<std::sync::Mutex<String>> = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let print_truncated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut bash_fn = std::mem::replace(&mut ctx.bash, Box::new(|_| Value::Null));
     let bash_shared = std::sync::Arc::new(std::sync::Mutex::new(std::mem::replace(&mut bash_fn, Box::new(|_| Value::Null))));
@@ -600,7 +601,9 @@ pub fn code_outcome(args: &Value, ctx: &mut CodeCtx) -> Value {
         let secs: u64 = std::env::var("MINI_CODE_TIMEOUT").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
         let deadline = started + std::time::Duration::from_secs(secs);
         engine.on_progress(move |_| {
-            if std::time::Instant::now() > deadline {
+            if crate::agent::STOP.load(std::sync::atomic::Ordering::SeqCst) {
+                Some("code tool cancelled".into())
+            } else if std::time::Instant::now() > deadline {
                 Some(format!("code tool wall-clock limit ({secs}s)").into())
             } else {
                 None
@@ -608,12 +611,16 @@ pub fn code_outcome(args: &Value, ctx: &mut CodeCtx) -> Value {
         });
         {
             let p = printed.clone();
+            let truncated = print_truncated.clone();
             engine.on_print(move |s: &str| {
                 let mut b = p.lock().unwrap();
                 if b.len() < CODE_OUTPUT_MAX {
-                    b.push_str(s);
-                    b.push('\n');
-                }
+                    let room = CODE_OUTPUT_MAX - b.len();
+                    let end = utf8_prefix(s, room.saturating_sub(1));
+                    if end < s.len() { truncated.store(true, std::sync::atomic::Ordering::SeqCst); }
+                    b.push_str(&s[..end]);
+                    if b.len() < CODE_OUTPUT_MAX { b.push('\n'); }
+                } else { truncated.store(true, std::sync::atomic::Ordering::SeqCst); }
             });
         }
         register_code_host_fns(&mut engine, &ctx.cwd, &calls, &printed, &bash_shared);
@@ -633,6 +640,15 @@ pub fn code_outcome(args: &Value, ctx: &mut CodeCtx) -> Value {
     if !body.trim().is_empty() {
         extra.insert("printed_bytes".into(), json!(body.len()));
     }
+    let finish = |mut text: String, failed: bool, mut extra: Obj| {
+        if text.len() > CODE_OUTPUT_MAX || print_truncated.load(std::sync::atomic::Ordering::SeqCst) {
+            let note = "\n[Code output truncated at 60KB; filter or store results before printing.]";
+            let end = utf8_prefix(&text, CODE_OUTPUT_MAX - note.len());
+            text.truncate(end); text.push_str(note);
+            extra.insert("output_truncated".into(), json!(true));
+        }
+        observation(text, failed, extra)
+    };
     match result {
         Ok(value) => {
             let mut text = format!("Script completed in {:.2}s, {} tool call{}\n", started.elapsed().as_secs_f64(), n_calls, if n_calls == 1 { "" } else { "s" });
@@ -646,7 +662,7 @@ pub fn code_outcome(args: &Value, ctx: &mut CodeCtx) -> Value {
             if !ret.is_empty() && ret != "()" {
                 text.push_str(&format!("=> {ret}\n"));
             }
-            observation(text, false, extra)
+            finish(text, false, extra)
         }
         Err(e) => {
             let mut text = format!("Script failed after {:.2}s, {} tool call{}\n", started.elapsed().as_secs_f64(), n_calls, if n_calls == 1 { "" } else { "s" });
@@ -658,13 +674,19 @@ pub fn code_outcome(args: &Value, ctx: &mut CodeCtx) -> Value {
             }
             text.push_str(&format!("Script error: {e}\n"));
             text.push_str("Tool calls already made are real: they are not undone. Re-read what you changed before retrying.\n");
-            observation(text, true, extra)
+            finish(text, true, extra)
         }
     }
 }
 
 /// What a `print`-ing script may send back to the model, so a script cannot quietly inflate the
 /// context it was supposed to keep small.
+fn utf8_prefix(text: &str, max: usize) -> usize {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) { end -= 1; }
+    end
+}
+
 const CODE_OUTPUT_MAX: usize = 60 * 1024;
 
 /// The host functions a `code` script gets. They are registered as plain globals (the script
@@ -758,21 +780,21 @@ fn register_code_host_fns(
         // state, no process), and the shape a script needs when it greps several files at once.
         let calls = calls.clone();
         let cwd = cwd.to_string();
-        engine.register_fn("reads", move |paths: rhai::Array| -> rhai::Array {
+        engine.register_fn("reads", move |paths: rhai::Array| -> Result<rhai::Array, Box<rhai::EvalAltResult>> {
+            if paths.len() > 128 { return Err("reads accepts at most128 paths; split the batch".into()); }
             let paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
             calls.fetch_add(paths.len(), std::sync::atomic::Ordering::SeqCst);
             let results: Vec<std::sync::Arc<std::sync::Mutex<String>>> = paths.iter().map(|_| std::sync::Arc::new(std::sync::Mutex::new(String::new()))).collect();
-            std::thread::scope(|s| {
-                for (p, r) in paths.iter().zip(results.iter()) {
-                    let r = r.clone();
-                    let p = p.clone();
-                    let cwd = cwd.clone();
-                    s.spawn(move || {
-                        *r.lock().unwrap() = read_text(&p, None, None, &cwd);
-                    });
-                }
-            });
-            results.into_iter().map(|r| rhai::Dynamic::from(r.lock().unwrap().clone())).collect()
+            for (ps, rs) in paths.chunks(8).zip(results.chunks(8)) {
+                if crate::agent::STOP.load(std::sync::atomic::Ordering::SeqCst) { break; }
+                std::thread::scope(|s| {
+                    for (p, r) in ps.iter().zip(rs.iter()) {
+                        let r = r.clone(); let p = p.clone(); let cwd = cwd.clone();
+                        s.spawn(move || { *r.lock().unwrap() = read_text(&p, None, None, &cwd); });
+                    }
+                });
+            }
+            Ok(results.into_iter().map(|r| rhai::Dynamic::from(r.lock().unwrap().clone())).collect())
         });
     }
     // The string helpers the REPL cell already has, so a script can grep/slice without a shell.
