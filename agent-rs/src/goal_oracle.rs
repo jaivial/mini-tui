@@ -109,7 +109,7 @@ impl GoalOracle for ModelOracle<'_> {
         match self
             .model
             .query_judge(&messages)
-            .map_err(|e| format!("goal judge failed: {}", e.kind))?
+            .map_err(|e| format!("goal judge failed: {}: {}", e.kind, e.message.chars().take(1200).collect::<String>()))?
         {
             Reply::Message(m) => {
                 let cost = extra(&m).get("cost").and_then(Value::as_f64).unwrap_or(0.0);
