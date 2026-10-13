@@ -24,6 +24,7 @@ mod coord;
 mod hybrid;
 mod intent;
 mod jev;
+mod goal_oracle;
 mod subagents;
 mod templates;
 mod cache_warmer;

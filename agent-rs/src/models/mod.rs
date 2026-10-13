@@ -61,6 +61,10 @@ pub trait Model {
     fn query_text(&mut self, messages: &[Value], sink: Option<DeltaSink>) -> Result<Reply, ModelError> {
         self.query(messages, sink)
     }
+    /// Short tool-free closure judgement, with provider-specific output caps.
+    fn query_judge(&mut self, messages: &[Value]) -> Result<Reply, ModelError> {
+        self.query_text(messages, None)
+    }
     fn format_message(&self, role: &str, content: &str, extra: Option<Obj>) -> Value;
     fn format_observation_messages(&self, message: &Value, outputs: &[Value], template_vars: &Value) -> Result<Vec<Value>, String>;
     fn template_vars(&self) -> Obj;

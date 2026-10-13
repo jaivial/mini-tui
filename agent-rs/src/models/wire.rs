@@ -510,6 +510,35 @@ impl Model for WireModel {
         result
     }
 
+    fn query_judge(&mut self, messages: &[Value]) -> Result<Reply, ModelError> {
+        // Restore the exact config even on provider failure. A closure verdict should not
+        // inherit a 4096-token thinking tail or mutate the worker's subsequent generation.
+        let saved = self.config.clone();
+        self.config.insert("max_tokens".into(), json!(1024));
+        self.config.insert("request_timeout".into(), json!(60));
+        let mut kwargs = self.model_kwargs();
+        if self.protocol == Protocol::Responses {
+            kwargs.shift_remove("max_tokens");
+            kwargs.insert("max_output_tokens".into(), json!(1024));
+        } else {
+            kwargs.insert("max_tokens".into(), json!(1024));
+        }
+        self.config.insert("model_kwargs".into(), Value::Object(kwargs));
+        self.config.insert("text_only".into(), json!("no_tools"));
+        // A judge outage is surfaced immediately, not hidden behind the worker's long retry
+        // backoff. The goal loop decides whether another closure attempt is useful.
+        let result = self.raw_query(messages, &mut None);
+        self.config = saved;
+        result.and_then(|response| {
+            let cost = self.cost(&response)?;
+            super::global_stats_add(cost)?;
+            Ok(match self.protocol {
+                Protocol::Responses => self.responses_reply(response, cost),
+                _ => self.chat_reply(response, cost),
+            })
+        })
+    }
+
     fn format_message(&self, role: &str, content: &str, extra: Option<Obj>) -> Value {
         let mut m = json!({"role": role, "content": content});
         if let Some(e) = extra {
