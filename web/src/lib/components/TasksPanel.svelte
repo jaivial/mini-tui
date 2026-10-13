@@ -2,6 +2,7 @@
   import { Check, ChevronRight, ListChecks, X } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import PlanDag from "./PlanDag.svelte";
+  import QueueSection from "./QueueSection.svelte";
   import { todoCounts, whereLabel, type TaskRow } from "../tasks";
   import { planSummary } from "../plan";
   import type { SessionPlan } from "../types";
@@ -68,7 +69,7 @@
 
 <dialog
   bind:this={dialog}
-  class="m-0 ml-auto h-[calc(100*var(--vh))] max-h-[calc(100*var(--vh))] w-[26rem] max-w-[calc(100*var(--vw))] rounded-none border-l border-line bg-canvas p-0 text-ink shadow-2xl"
+  class="fixed top-0 right-0 bottom-auto left-auto z-50 m-0 h-[calc(100*var(--vh))] max-h-[calc(100*var(--vh))] w-[26rem] max-w-[calc(100*var(--vw))] rounded-none border-l border-line bg-canvas p-0 text-ink shadow-2xl"
   aria-label="Session tasks"
   onclose={oncloseevent}
 >
@@ -84,6 +85,7 @@
     </header>
 
     <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
+      <QueueSection {open} />
       {#if !rows.length}
         <p class="px-2 py-6 text-[12.5px] leading-5 text-ink-muted">
           No task cards yet. Every agent fills one while it works (<code class="rounded-sm bg-overlay px-1 py-0.5 text-[11px]">mini-tui tasks set</code>):
