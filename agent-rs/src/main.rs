@@ -35,6 +35,7 @@ mod cache_warmer;
 mod timings;
 mod tools;
 mod writing;
+mod codejs;
 mod util;
 
 use agent::{Agent, AgentConfig, CHILD_GROUP, SIGNAL, STOP};

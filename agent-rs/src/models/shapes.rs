@@ -116,7 +116,7 @@ fn action_value(command: &Value, tool_call_id: Value) -> Value {
 /// `MINITUI_AGENT_TOOLS=1` gate, so a bare run --- and the parity suite --- still sees only
 /// `bash` + `cu`, and a call to any of these without the gate is the usual unknown-tool error.
 pub fn is_native_tool(name: &str) -> bool {
-    matches!(name, "read") || (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled())
+    (name == "codejs" && crate::codejs::enabled()) || matches!(name, "read") || (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled())
 }
 
 fn command_for(name: &str, args: &Value) -> Result<Value, String> {
@@ -132,16 +132,16 @@ fn command_for(name: &str, args: &Value) -> Result<Value, String> {
         }
         return Ok(json!({"tool": "read", "args": args}));
     }
-    if matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled() {
+    if (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled()) || (name == "codejs" && crate::codejs::enabled()) {
         // The same shape for the writing tools: the loop executes them natively.
         let empty = |k: &str| !args.get(k).and_then(Value::as_str).map(|v| !v.trim().is_empty()).unwrap_or(false);
-        if name != "code" && empty("path") {
+        if !matches!(name, "code" | "codejs") && empty("path") {
             return Err(format!("Missing 'path' argument in {name} tool call."));
         }
         if name == "write" && args.get("content").and_then(Value::as_str).is_none() {
             return Err("Missing 'content' argument in write tool call.".into());
         }
-        if name == "code" && args.get("code").and_then(Value::as_str).map(|c| c.trim().is_empty()).unwrap_or(true) {
+        if matches!(name, "code" | "codejs") && args.get("code").and_then(Value::as_str).map(|c| c.trim().is_empty()).unwrap_or(true) {
             return Err("Missing 'code' argument in code tool call.".into());
         }
         return Ok(json!({"tool": name, "args": args}));

@@ -1307,7 +1307,7 @@ impl Agent {
     fn native_outcome(&mut self, action: &Value) -> Option<Value> {
         let tool = action.get("tool").and_then(Value::as_str)?;
         let args = action.get("args").cloned().unwrap_or(json!({}));
-        if matches!(tool, "read" | "write" | "edit" | "code") && !self.env.host_filesystem_tools() {
+        if matches!(tool, "read" | "write" | "edit" | "code" | "codejs") && !self.env.host_filesystem_tools() {
             return Some(json!({"output": format!("Native {tool} cannot access this environment's filesystem. Use bash inside the environment; host filesystem access was refused."),
                 "returncode": 1, "exception_info": "Native filesystem tools are unavailable for this environment."}));
         }
@@ -1316,7 +1316,7 @@ impl Agent {
             "read" => Some(crate::tools::read_outcome(&args, &cwd)),
             "write" => Some(crate::writing::write_outcome(&args, &cwd)),
             "edit" => Some(crate::writing::edit_outcome(&args, &cwd)),
-            "code" => {
+            "code" | "codejs" => {
                 // The script's `bash` calls run through the environment's own execute path, so
                 // they are journaled, timed and killed like commands the model issued directly.
                 // A command that submits or is stopped ends the script's shell access there: the
@@ -1337,7 +1337,7 @@ impl Agent {
                         }
                     }),
                 };
-                Some(crate::writing::code_outcome(&args, &mut ctx))
+                Some(if tool == "codejs" { crate::codejs::outcome(&args, &mut ctx) } else { crate::writing::code_outcome(&args, &mut ctx) })
             }
             _ => None,
         }

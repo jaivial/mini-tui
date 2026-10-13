@@ -27,6 +27,7 @@ ureq = { version = "2", default-features = false, features = ["tls", "native-cer
 regex = "1"
 # `repl`: the sandboxed REPL harness (pure Rust: no fs/net/process unless the host registers it)
 rhai = { version = "1.23", features = ["sync", "serde"] }
+rquickjs = "0.9"
 libc = "0.2"
 rand = "0.8"
 # e2e: DevTools-protocol websocket (local only, no TLS), TOTP and screenshots
