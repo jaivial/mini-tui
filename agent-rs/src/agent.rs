@@ -1568,11 +1568,16 @@ impl Agent {
         self.append_journal(&path, &data);
         if export {
             let tmp = path.with_file_name(format!("{}.tmp", path.file_name().unwrap().to_string_lossy()));
-            if std::fs::write(&tmp, py_json(&data, true)).is_ok() {
-                let _ = std::fs::rename(&tmp, &path);
+            match std::fs::write(&tmp, py_json(&data, true)).and_then(|_| std::fs::rename(&tmp, &path)) {
+                Ok(()) => {
+                    self.export_messages = self.messages.len();
+                    self.export_at = t;
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    eprintln!("trajectory export failed at {}: {e}; export remains pending", path.display());
+                }
             }
-            self.export_messages = self.messages.len();
-            self.export_at = t;
         }
     }
 
@@ -1588,11 +1593,16 @@ impl Agent {
         for m in &self.messages[self.journaled.min(self.messages.len())..] {
             lines.push(py_json(&json!({"t": "msg", "m": m}), true));
         }
-        self.journaled = self.messages.len();
         lines.push(py_json(&json!({"t": "info", "i": data.get("info").cloned().unwrap_or(json!({}))}), true));
         let file = if fresh { std::fs::File::create(&journal) } else { std::fs::OpenOptions::new().append(true).create(true).open(&journal) };
-        if let Ok(mut f) = file {
-            let _ = f.write_all((lines.join("\n") + "\n").as_bytes());
+        match file.and_then(|mut f| f.write_all((lines.join("\n") + "\n").as_bytes())) {
+            Ok(()) => self.journaled = self.messages.len(),
+            Err(e) => {
+                // A partial append may have left an incomplete line. Rebuild from the
+                // in-memory history on the next save instead of advancing the cursor.
+                self.journaled = 0;
+                eprintln!("trajectory journal failed at {}: {e}; snapshot rebuild pending", journal.display());
+            }
         }
     }
 
