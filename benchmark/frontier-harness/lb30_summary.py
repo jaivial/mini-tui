@@ -37,7 +37,8 @@ def summarize(manifest, jobs):
         usage = record.get('agent_result') or {}
         observed = bool(usage.get('n_input_tokens') or usage.get('n_output_tokens'))
         exception = record.get('exception_info') or {}
-        status = 'error' if exception else 'pass' if reward is not None and float(reward) >= 1 and observed else 'fail' if reward is not None and observed else 'unproven'
+        proven_agent_failure = exception.get('exception_type') in ('AgentTimeoutError', 'NonZeroAgentExitCodeError') and (record.get('agent_execution') or {}).get('started_at') is not None
+        status = 'fail' if proven_agent_failure else 'error' if exception else 'pass' if reward is not None and float(reward) >= 1 and observed else 'fail' if reward is not None and observed else 'unproven'
         rows.append(dict(task=task, status=status, reward=reward, observed_usage=observed,
                          wall_seconds=seconds(record), agent_seconds=seconds(record, 'agent_execution'),
                          error_type=exception.get('exception_type'), result=str(path)))
