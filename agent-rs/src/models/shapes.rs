@@ -298,13 +298,24 @@ fn observation_vars(output: &Value, template_vars: &Value) -> Value {
 /// Images are a separate user turn after the tool result. Chat gateways often stringify
 /// role=tool content, so putting pixels inside that result would silently destroy vision.
 fn visual_observation(output: &Value, responses: bool) -> Option<Value> {
-    if output.get("returncode").and_then(Value::as_i64) != Some(0) { return None; }
-    let url = output.get("image_url").and_then(Value::as_str)?;
-    let block = if responses { json!({"type": "input_image", "image_url": url}) }
-        else { json!({"type": "image_url", "image_url": {"url": url}}) };
-    let caption = output.get("output").and_then(Value::as_str).unwrap_or("Image attachment from the preceding tool result.");
-    let text = if responses { json!({"type": "input_text", "text": caption}) } else { json!({"type": "text", "text": caption}) };
-    Some(json!({"role": "user", "content": [text, block], "extra": {"visual_attachment": true}}))
+    let mut urls=Vec::new();
+    if output.get("returncode").and_then(Value::as_i64)==Some(0) {
+        if let Some(url)=output.get("image_url").and_then(Value::as_str) {urls.push(url);}
+    }
+    // codejs has already validated these as native image reads. Preserve explicitly
+    // emitted images even if a later script action failed, like printed output.
+    if output.pointer("/extra/tool").and_then(Value::as_str)==Some("codejs") {
+        if let Some(items)=output.get("image_urls").and_then(Value::as_array) {
+            urls.extend(items.iter().take(4).filter_map(Value::as_str));
+        }
+    }
+    if urls.is_empty() {return None;}
+    let caption=output.get("output").and_then(Value::as_str).unwrap_or("Image attachment from the preceding tool result.");
+    let mut content=vec![if responses {json!({"type":"input_text","text":caption})} else {json!({"type":"text","text":caption})}];
+    for url in urls {
+        content.push(if responses {json!({"type":"input_image","image_url":url})} else {json!({"type":"image_url","image_url":{"url":url}})});
+    }
+    Some(json!({"role":"user","content":content,"extra":{"visual_attachment":true}}))
 }
 
 /// `format_toolcall_observation_messages` (chat completions): `role: tool` results.
