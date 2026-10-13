@@ -650,7 +650,7 @@ impl Agent {
 
     /// Review a proposed final answer before publishing a successful exit.
     fn check_goal_closure(&mut self) {
-        use crate::goal_oracle::{Evidence, GoalOracle, HttpOracle, ModelOracle};
+        use crate::goal_oracle::{Evidence, GoalOracle, HttpOracle, ModelOracle, LayaOracle};
         let Some(exit) = self.messages.pop() else { return };
         self.journaled = self.journaled.min(self.messages.len());
         let goal = self.extra_vars.get("task").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -666,7 +666,7 @@ impl Agent {
         let mut remaining: usize = 24_000;
         for message in self.messages.iter().rev() {
             let text = crate::models::shapes::text_of(message.get("content").unwrap_or(&Value::Null));
-            if text.is_empty() || role(message) == "system" { continue; }
+            if text.is_empty() || role(message) == "system" || (role(message)=="user" && message.get("extra").is_none()) { continue; }
             let tail: String = text.chars().rev().take(remaining).collect::<Vec<_>>().into_iter().rev().collect();
             remaining = remaining.saturating_sub(tail.chars().count());
             observations.push(format!("{}: {}", role(message), tail));
@@ -689,7 +689,19 @@ impl Agent {
         let started = now();
         let configured = std::env::var("MINI_AGENT_GOAL_ORACLE_URL").ok().filter(|s| !s.trim().is_empty());
         let mut billed = 0.0;
+        let backend = std::env::var("MINI_AGENT_GOAL_ORACLE").unwrap_or_else(|_| "model".into());
         let verdict = match configured {
+            Some(url) if backend == "laya" => {
+                let laya = LayaOracle { url }.evaluate(&evidence);
+                let fallback = std::env::var("MINI_AGENT_GOAL_ORACLE_FALLBACK").unwrap_or_else(|_| "model".into()) == "model";
+                if fallback && !laya.as_ref().is_ok_and(|v| v.complete) {
+                    if let Ok(v) = &laya { self.goal_reports.push(v.record()); }
+                    if let Err(reason) = &laya { self.goal_reports.push(json!({"backend":"laya-systemone","status":"unavailable","reason":reason})); }
+                    self.n_calls += 1;
+                    ModelOracle { model: self.model.as_mut(), spent: &mut billed }.evaluate(&evidence)
+                } else { laya }
+            }
+            None if backend == "laya" => Err("Laya selected without MINI_AGENT_GOAL_ORACLE_URL".into()),
             Some(url) => HttpOracle { url }.evaluate(&evidence),
             None => {
                 self.n_calls += 1;
@@ -1503,7 +1515,7 @@ impl Agent {
         // Only when the verifier phase actually ran: a run with the toggle off stays byte-identical
         // to the trajectory it produced before the phase existed.
         if !self.goal_reports.is_empty() {
-            data["info"]["goal_oracle"] = json!({"attempts": self.goal_reports, "provisional": std::env::var("MINI_AGENT_GOAL_ORACLE_URL").map(|s| s.trim().is_empty()).unwrap_or(true)});
+            data["info"]["goal_oracle"] = json!({"attempts": self.goal_reports, "provisional": self.goal_reports.iter().any(|v|v.get("backend").and_then(Value::as_str)==Some("model-provisional"))});
         }
         if let Some(report) = self.jev_report.as_ref() {
             data["info"]["jev_verifier"] = report.clone();

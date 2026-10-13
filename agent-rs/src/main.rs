@@ -25,6 +25,10 @@ mod hybrid;
 mod intent;
 mod jev;
 mod goal_oracle;
+#[cfg(feature = "task-graph")]
+mod graph_embed;
+#[cfg(feature = "task-graph")]
+mod graph_queue;
 mod subagents;
 mod templates;
 mod cache_warmer;
@@ -386,6 +390,12 @@ fn cmd_test_model(args: &[String]) -> i32 {
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(feature = "task-graph")]
+    if argv.first().map(String::as_str) == Some("queue") {
+        config::load_dotenv();
+        graph_queue::install_signals();
+        std::process::exit(graph_queue::client(&argv[1..]));
+    }
     // `e2e` (the test coordinator) and `browser` (its workers' client): see E2E.md.
     if argv.first().map(String::as_str) == Some("e2e") {
         config::load_dotenv();
