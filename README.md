@@ -822,3 +822,7 @@ cd agent-rs && cargo test --release && sh tests/parity/run_all.sh   # Rust agent
 With `MINITUI_AGENT_TOOLS=1`, `read` recognizes PNG, JPEG, GIF and WebP by their byte signatures. It attaches the original image as a bounded (8 MB) data URL, with a separate user visual block after the tool result. Chat, Responses and Messages wire shapes preserve the image; an empty `multimodal_regex` does not disable this route. Images do not accept text pagination. Code-mode text reads reject raster bytes rather than returning broken pixel text.
 
 The provider and chosen model must still support images. Vendor support and wire preservation do not prove that a specific endpoint has interpreted an image correctly. This does not change a running benchmark's binary or tool gate.
+
+### Native tool filesystem scope
+
+Host-native `read`, `write`, `edit` and Rhai `code` are available only for the local environment. Other environments fail closed with a tool error and a bash fallback, so container paths cannot accidentally read or change host files. Docker still executes bash in the container working directory. A native container bridge is not implemented by this guard. STOP is checked before each inline native action in a concurrent batch.

@@ -1152,6 +1152,7 @@ impl Agent {
         let mut slots: Vec<Option<Value>> = (0..actions.len()).map(|_| None).collect();
         let mut batch: Vec<(usize, String)> = Vec::new();
         for (i, action) in actions.iter().enumerate() {
+            if STOP.load(Ordering::SeqCst) { return Err(Flow::Interrupt(vec![])); }
             match self.native_outcome(action) {
                 Some(native) => slots[i] = Some(native),
                 None => batch.push((i, action.get("command").map(|c| c.as_str().map(String::from).unwrap_or_else(|| py_str(c))).unwrap_or_default())),
@@ -1306,6 +1307,10 @@ impl Agent {
     fn native_outcome(&mut self, action: &Value) -> Option<Value> {
         let tool = action.get("tool").and_then(Value::as_str)?;
         let args = action.get("args").cloned().unwrap_or(json!({}));
+        if matches!(tool, "read" | "write" | "edit" | "code") && !self.env.host_filesystem_tools() {
+            return Some(json!({"output": format!("Native {tool} cannot access this environment's filesystem. Use bash inside the environment; host filesystem access was refused."),
+                "returncode": 1, "exception_info": "Native filesystem tools are unavailable for this environment."}));
+        }
         let cwd = self.env.working_dir();
         match tool {
             "read" => Some(crate::tools::read_outcome(&args, &cwd)),
