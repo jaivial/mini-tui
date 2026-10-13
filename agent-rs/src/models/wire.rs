@@ -514,14 +514,14 @@ impl Model for WireModel {
         // Restore the exact config even on provider failure. A closure verdict should not
         // inherit a 4096-token thinking tail or mutate the worker's subsequent generation.
         let saved = self.config.clone();
-        self.config.insert("max_tokens".into(), json!(1024));
+        self.config.insert("max_tokens".into(), json!(4096));
         self.config.insert("request_timeout".into(), json!(60));
         let mut kwargs = self.model_kwargs();
         if self.protocol == Protocol::Responses {
             kwargs.shift_remove("max_tokens");
-            kwargs.insert("max_output_tokens".into(), json!(1024));
+            kwargs.insert("max_output_tokens".into(), json!(4096));
         } else {
-            kwargs.insert("max_tokens".into(), json!(1024));
+            kwargs.insert("max_tokens".into(), json!(4096));
         }
         self.config.insert("model_kwargs".into(), Value::Object(kwargs));
         self.config.insert("text_only".into(), json!("no_tools"));
