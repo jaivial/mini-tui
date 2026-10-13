@@ -224,10 +224,15 @@ impl Store {
             })
             .map_err(error)?;
         let mut out = Vec::new();
+        let query_norm = vector.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+        if query_norm == 0.0 { return Err("query embedding has zero norm".into()); }
         for row in rows {
             let (id, project, goal, status, blob) = row.map_err(error)?;
             let v = unpack(&blob)?;
-            let score = vector.iter().zip(v).map(|(a, b)| a * b).sum::<f32>();
+            let stored_norm = v.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+            if stored_norm == 0.0 { continue; }
+            let dot = vector.iter().zip(v.iter()).map(|(a, b)| *a as f64 * *b as f64).sum::<f64>();
+            let score = (dot / (query_norm * stored_norm)).clamp(-1.0, 1.0) as f32;
             out.push((
                 score,
                 json!({"id":id,"project":project,"goal":goal,"status":status,"similarity":score}),
