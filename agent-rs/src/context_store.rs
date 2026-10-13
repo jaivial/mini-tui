@@ -186,6 +186,7 @@ impl ContextStore {
             keys.push(format!("{SURFACE_PREFIX}{repo}{SURFACE_SUFFIX}"));
         }
         for d in self.docs() {
+            if d.key.starts_with("coverage.") && d.key.ends_with(".json") { continue; }
             if !keys.contains(&d.key) {
                 keys.push(d.key);
             }
@@ -658,12 +659,15 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
     };
     // 1. files
     // Read each claimed file once; all checks use the same snapshot.
+    let mut snapshot = std::collections::BTreeMap::<String,String>::new();
     let mut claimed_bytes = 0usize;
     let contents: Vec<Option<String>> = files.iter().enumerate().map(|(i, f)| {
         if i >= 256 { return None; }
         let text = readable(f)?;
         if claimed_bytes + text.len() > 4 * 1024 * 1024 { return None; }
         claimed_bytes += text.len();
+        use sha1::Digest;
+        snapshot.insert(f.clone(),format!("{:x}",sha1::Sha1::digest(text.as_bytes())));
         Some(text)
     }).collect();
     let missing: Vec<String> = files.iter().zip(&contents)
@@ -697,7 +701,11 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
                 index_missing.push(format!("{}: corpus budget exceeded", hit.file)); continue;
             }
             match readable(&hit.file).filter(|text| text.len() <= 512 * 1024 && corpus_bytes + text.len() <= 4 * 1024 * 1024) {
-                Some(text) => { corpus_bytes += text.len(); corpus.push_str(&text); corpus.push('\n'); }
+                Some(text) => {
+                    use sha1::Digest;
+                    snapshot.insert(hit.file.clone(),format!("{:x}",sha1::Sha1::digest(text.as_bytes())));
+                    corpus_bytes += text.len(); corpus.push_str(&text); corpus.push('\n');
+                }
                 None => index_missing.push(hit.file),
             }
         }
@@ -705,6 +713,29 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
     checks.push(Check { name: "index_coverage".into(), ok: index_missing.is_empty(),
         detail: if index_missing.is_empty() { format!("{} indexed file(s) read from current tree; index labels are not evidence", indexed.len()) }
             else { format!("indexed code was not examined: {}", index_missing.join(", ")) } });
+    // Persist exactly what was examined, not a claim of whole-repo coverage. A file
+    // digest change invalidates previous orientation and needs a refreshed parent review.
+    use sha1::Digest;
+    let key = format!("coverage.{:x}.json",sha1::Sha1::digest(repo.as_bytes()));
+    let prior = store.get(&key).and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    let mut changed: Vec<String> = snapshot.iter().filter(|(path,digest)| prior.as_ref().and_then(|v|v.get("files")).and_then(|v|v.get(path.as_str())).and_then(serde_json::Value::as_str).is_some_and(|old|old != digest.as_str()))
+        .map(|(p,_)|p.clone()).collect();
+    let orientation = format!("{}\n{}",store.get(FINDINGS).unwrap_or_default(),store.get(CONTRACTS).unwrap_or_default());
+    let orientation_digest = format!("{:x}",sha1::Sha1::digest(orientation.as_bytes()));
+    if prior.as_ref().and_then(|v|v.get("orientation_digest")).and_then(serde_json::Value::as_str) == Some(orientation_digest.as_str()) {
+        if let Some(old) = prior.as_ref().and_then(|v|v.get("changed_since_previous")).and_then(serde_json::Value::as_array) {
+            changed.extend(old.iter().filter_map(|v|v.as_str()).map(String::from));
+            changed.sort(); changed.dedup();
+        }
+    }
+    let doc = serde_json::json!({"scope":repo,"root":canonical_root.as_ref().map(|p|p.display().to_string()),"checked_at":crate::util::now(),
+        "hash":"sha1-content-not-security","orientation_digest":orientation_digest,"files":snapshot,"unread_claims":missing,"unread_index":index_missing,
+        "complete_repo_coverage":false,"semantic_contracts_verified":false,"changed_since_previous":changed});
+    let saved = store.put(&key,&doc.to_string());
+    checks.push(Check { name: "snapshot".into(), ok: saved.is_ok() && changed.is_empty(),
+        detail: match saved { Ok(_) if changed.is_empty() => format!("{} current content digests recorded in {key}; partial coverage only", snapshot.len()),
+            Ok(_) => format!("{} file(s) changed since previous check: {}; refresh indexed findings/contracts",changed.len(),changed.join(", ")),
+            Err(e) => format!("coverage manifest was not persisted: {e}") } });
     // 2. contracts: each clause names what this repo produces or consumes.
     let contracts = store.get(CONTRACTS).unwrap_or_default();
     let myclauses: Vec<(String, String)> = clauses(&contracts)

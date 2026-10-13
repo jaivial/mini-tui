@@ -862,3 +862,7 @@ This is internal adapter/storage preparation. No HTTP receiver, account connecti
 ### Queue from the mini-tui CLI
 
 `mini-tui queue <action>` forwards to the selected Rust task-graph binary without taking over the TUI. It preserves queue arguments and stdout/stderr, defaults to MINITUI_TASK_GRAPH_DB, and passes SIGINT/SIGTERM to the queue lifecycle. Non-worker calls have a10-second timeout; output is bounded to4MB per stream. Mutations are attempted once. A timeout/interruption may follow a committed write, so inspect current state before retrying. This shared bridge is ready for main/web clients, but importing it does not launch a worker or prove that main conversation routing is integrated.
+
+### Context coverage snapshots
+
+Every contract-check records a coverage.<scope-hash>.json manifest with contained paths and SHA1 content digests of the exact bounded files examined, unread exclusions, scope/root and check time. SHA1 is a freshness fingerprint, not a security guarantee. Changes since the previous check fail the snapshot check and request refreshed findings/contracts. Manifests explicitly state partial repository coverage and unverified semantic contracts. A new snapshot does not automatically repair an index, prove full coverage or check a Git revision.
