@@ -47,6 +47,24 @@ impl Store {
           CREATE INDEX IF NOT EXISTS graph_reverse ON task_edges(dependency);
           CREATE TABLE IF NOT EXISTS registry_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
           INSERT OR IGNORE INTO registry_meta VALUES('embedding_model','sentence-transformers/all-MiniLM-L6-v2:384');").map_err(error)?;
+        db.execute_batch("BEGIN IMMEDIATE").map_err(error)?;
+        let has_version = {
+            let mut q = db.prepare("PRAGMA table_info(task_nodes)").map_err(error)?;
+            let cols = q.query_map([], |r| r.get::<_, String>(1)).map_err(error)?;
+            cols.collect::<rusqlite::Result<Vec<_>>>().map_err(error)?.iter().any(|c| c == "goal_version")
+        };
+        if !has_version { db.execute_batch("ALTER TABLE task_nodes ADD COLUMN goal_version INTEGER NOT NULL DEFAULT 1;").map_err(error)?; }
+        db.execute_batch("CREATE TABLE IF NOT EXISTS task_events(
+          seq INTEGER PRIMARY KEY AUTOINCREMENT, task TEXT NOT NULL, kind TEXT NOT NULL,
+          goal_version INTEGER NOT NULL, fence INTEGER NOT NULL, status TEXT NOT NULL, created INTEGER NOT NULL);
+          CREATE TRIGGER IF NOT EXISTS queue_insert_event AFTER INSERT ON task_nodes BEGIN
+            INSERT INTO task_events(task,kind,goal_version,fence,status,created) VALUES(new.id,'created',new.goal_version,new.fence,new.status,new.updated); END;
+          CREATE TRIGGER IF NOT EXISTS queue_change_event AFTER UPDATE ON task_nodes
+          WHEN old.status != new.status OR old.goal_version != new.goal_version OR old.fence != new.fence BEGIN
+            INSERT INTO task_events(task,kind,goal_version,fence,status,created) VALUES(new.id,
+              CASE WHEN old.goal_version != new.goal_version THEN 'goal_updated' ELSE 'state_changed' END,
+              new.goal_version,new.fence,new.status,new.updated); END;").map_err(error)?;
+        db.execute_batch("COMMIT").map_err(error)?;
         Ok(Self { db })
     }
     pub fn put(
@@ -83,7 +101,7 @@ impl Store {
             return Err("only pending tasks may be edited".into());
         }
         tx.execute("INSERT INTO task_nodes(id,project,cwd,goal,priority,vector,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)
-          ON CONFLICT(id) DO UPDATE SET project=excluded.project,cwd=excluded.cwd,goal=excluded.goal,priority=excluded.priority,vector=excluded.vector,updated=excluded.updated",
+          ON CONFLICT(id) DO UPDATE SET project=excluded.project,cwd=excluded.cwd,goal=excluded.goal,priority=excluded.priority,vector=excluded.vector,goal_version=task_nodes.goal_version+1,result=NULL,updated=excluded.updated",
           params![id,project,cwd.to_string_lossy(),goal,priority,vector,now()]).map_err(error)?;
         tx.execute("DELETE FROM task_edges WHERE task=?1", [id])
             .map_err(error)?;
@@ -111,7 +129,7 @@ impl Store {
         // reconciliation is required before retry, avoiding concurrent writes to a project.
         tx.execute("UPDATE task_nodes SET status='interrupted',updated=?1 WHERE status='running' AND lease_until<?1", [now()]).map_err(error)?;
         let tasks = {
-            let mut stmt = tx.prepare("SELECT t.id,t.project,t.cwd,t.goal,t.fence FROM task_nodes t WHERE t.status='pending'
+            let mut stmt = tx.prepare("SELECT t.id,t.project,t.cwd,t.goal,t.fence,t.goal_version FROM task_nodes t WHERE t.status='pending'
               AND NOT EXISTS(SELECT 1 FROM task_edges e JOIN task_nodes d ON d.id=e.dependency WHERE e.task=t.id AND d.status!='done')
               AND NOT EXISTS(SELECT 1 FROM task_nodes r WHERE (r.project=t.project OR r.cwd=t.cwd OR substr(r.cwd,1,length(t.cwd)+1)=t.cwd||'/' OR substr(t.cwd,1,length(r.cwd)+1)=r.cwd||'/') AND r.status IN ('running','interrupted'))
               ORDER BY t.priority DESC,t.created,t.id").map_err(error)?;
@@ -123,6 +141,7 @@ impl Store {
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
                         r.get::<_, i64>(4)?,
+                        r.get::<_, i64>(5)?,
                     ))
                 })
                 .map_err(error)?;
@@ -131,7 +150,7 @@ impl Store {
         let mut out = Vec::new();
         let mut cwds: Vec<PathBuf> = Vec::new();
         let mut projects = std::collections::BTreeSet::new();
-        for (id, project, cwd, goal, fence) in tasks {
+        for (id, project, cwd, goal, fence, goal_version) in tasks {
             if out.len() == limit {
                 break;
             }
@@ -146,7 +165,7 @@ impl Store {
             projects.insert(project.clone());
             cwds.push(path);
             tx.execute("UPDATE task_nodes SET status='running',owner=?2,fence=fence+1,lease_until=?3,updated=?4 WHERE id=?1",params![id,owner,now()+ttl,now()]).map_err(error)?;
-            out.push(json!({"id":id,"project":project,"cwd":cwd,"goal":goal,"owner":owner,"fence":fence+1,"lease_until":now()+ttl}));
+            out.push(json!({"id":id,"project":project,"cwd":cwd,"goal":goal,"owner":owner,"fence":fence+1,"goal_version":goal_version,"lease_until":now()+ttl}));
         }
         tx.commit().map_err(error)?;
         Ok(out)
@@ -164,6 +183,39 @@ impl Store {
         if result.len() > 64_000 { return Err("task result exceeds 64000 bytes".into()); }
         if !matches!(status, "done" | "blocked") {
             return Err("finish requires done or blocked".into());
+        }
+        if status == "done" {
+            let evidence: Value = serde_json::from_str(result).map_err(|_| "done requires structured closure evidence".to_string())?;
+            let verdict = evidence.get("closure_verdict").unwrap_or(&Value::Null);
+            let valid = verdict.get("complete").and_then(Value::as_bool) == Some(true)
+                && verdict.get("score").and_then(Value::as_f64) == Some(100.0)
+                && verdict.get("gaps").and_then(Value::as_array).is_some_and(Vec::is_empty)
+                && evidence.get("closure_verified").and_then(Value::as_bool) == Some(true)
+                && evidence.get("task_id").and_then(Value::as_str) == Some(id)
+                && evidence.get("fence").and_then(Value::as_i64) == Some(fence)
+                && evidence.get("trajectory").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+            if !valid { return Err("done requires positive closure and task/fence/artifact binding".into()); }
+            let version: i64 = self.db.query_row("SELECT goal_version FROM task_nodes WHERE id=?1", [id], |r| r.get(0)).map_err(error)?;
+            if evidence.get("goal_version").and_then(Value::as_i64) != Some(version) {
+                return Err("closure evidence is for a stale goal version".into());
+            }
+            let path = evidence["trajectory"].as_str().ok_or("missing trajectory")?;
+            let file = std::fs::File::open(path).map_err(error)?;
+            if !file.metadata().map_err(error)?.is_file() { return Err("trajectory is not a regular file".into()); }
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            file.take(64_000_001).read_to_end(&mut bytes).map_err(error)?;
+            if bytes.len() > 64_000_000 { return Err("trajectory exceeds 64MB cap".into()); }
+            let artifact: Value = serde_json::from_slice(&bytes).map_err(error)?;
+            let binding = artifact.pointer("/info/queue_binding").ok_or("trajectory lacks queue binding")?;
+            let actual = artifact.pointer("/info/goal_oracle/attempts").and_then(Value::as_array).and_then(|a| a.last());
+            if binding.get("task_id").and_then(Value::as_str) != Some(id)
+                || binding.get("fence").and_then(Value::as_i64) != Some(fence)
+                || binding.get("goal_version").and_then(Value::as_i64) != Some(version)
+                || actual != Some(verdict)
+                || artifact.pointer("/info/exit_status").and_then(Value::as_str) != Some("Submitted") {
+                return Err("trajectory does not back the current closure evidence".into());
+            }
         }
         let n = self.db.execute("UPDATE task_nodes SET status=?4,result=?5,lease_until=NULL,owner=NULL,updated=?6 WHERE id=?1 AND owner=?2 AND fence=?3 AND status='running' AND lease_until>=?6",params![id,owner,fence,status,result,now()]).map_err(error)?;
         if n != 1 {
@@ -193,9 +245,20 @@ impl Store {
         }
         Ok(())
     }
+    pub fn events(&self, after: i64, limit: i64) -> Result<Value, String> {
+        if after < 0 || !(1..=1000).contains(&limit) { return Err("events requires nonnegative cursor and limit 1..1000".into()); }
+        let mut q = self.db.prepare("SELECT seq,task,kind,goal_version,fence,status,created FROM task_events WHERE seq>?1 ORDER BY seq LIMIT ?2").map_err(error)?;
+        let rows = q.query_map(params![after,limit], |r| Ok(json!({"seq":r.get::<_,i64>(0)?,"task":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"goal_version":r.get::<_,i64>(3)?,"fence":r.get::<_,i64>(4)?,"status":r.get::<_,String>(5)?,"created":r.get::<_,i64>(6)?}))).map_err(error)?;
+        let events = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(error)?;
+        let cursor = events.last().and_then(|e| e["seq"].as_i64()).unwrap_or(after);
+        Ok(json!({"events":events,"cursor":cursor}))
+    }
     pub fn graph(&self) -> Result<Value, String> {
-        let mut stmt=self.db.prepare("SELECT id,project,cwd,goal,priority,status,owner,fence,lease_until,result FROM task_nodes ORDER BY created,id").map_err(error)?;
-        let rows=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"project":r.get::<_,String>(1)?,"cwd":r.get::<_,String>(2)?,"goal":r.get::<_,String>(3)?,"priority":r.get::<_,i64>(4)?,"status":r.get::<_,String>(5)?,"owner":r.get::<_,Option<String>>(6)?,"fence":r.get::<_,i64>(7)?,"lease_until":r.get::<_,Option<i64>>(8)?,"result":r.get::<_,Option<String>>(9)?}))).map_err(error)?;
+        let has_version = self.db.prepare("SELECT goal_version FROM task_nodes LIMIT 0").is_ok();
+        let sql = if has_version { "SELECT id,project,cwd,goal,priority,status,owner,fence,lease_until,result,goal_version FROM task_nodes ORDER BY created,id" }
+            else { "SELECT id,project,cwd,goal,priority,status,owner,fence,lease_until,result,1 AS goal_version FROM task_nodes ORDER BY created,id" };
+        let mut stmt=self.db.prepare(sql).map_err(error)?;
+        let rows=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"project":r.get::<_,String>(1)?,"cwd":r.get::<_,String>(2)?,"goal":r.get::<_,String>(3)?,"priority":r.get::<_,i64>(4)?,"status":r.get::<_,String>(5)?,"owner":r.get::<_,Option<String>>(6)?,"fence":r.get::<_,i64>(7)?,"lease_until":r.get::<_,Option<i64>>(8)?,"result":r.get::<_,Option<String>>(9)?,"goal_version":r.get::<_,i64>(10)?}))).map_err(error)?;
         let nodes = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(error)?;
         let mut stmt = self
             .db
@@ -286,7 +349,7 @@ fn run(args: &[String]) -> Result<Value, String> {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     if matches!(cmd, "help" | "--help" | "-h") {
         return Ok(
-            json!({"usage":"mini-agent-rs queue put|graph|search|run|claim|heartbeat|finish|retry --db PATH [--id ID --project PROJECT --cwd DIR --goal-file FILE --deps ID,ID --priority N --embed-dir DIR --owner OWNER --ttl SECONDS --limit N --fence N --status done|blocked --result-file FILE]"}),
+            json!({"usage":"mini-agent-rs queue put|graph|events|search|run|claim|heartbeat|finish|retry --db PATH [--id ID --project PROJECT --cwd DIR --goal-file FILE --deps ID,ID --priority N --embed-dir DIR --owner OWNER --ttl SECONDS --limit N --fence N --status done|blocked --result-file FILE]"}),
         );
     }
     let mut flags = std::collections::BTreeMap::new();
@@ -321,10 +384,10 @@ fn run(args: &[String]) -> Result<Value, String> {
             .join(".local/share/mini-tui/task-graph.sqlite")
     });
     // The web projection must never create a registry or run schema migrations.
-    if cmd == "graph-read" {
+    if matches!(cmd, "graph-read" | "events-read") {
         let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(error)?;
         db.busy_timeout(std::time::Duration::from_secs(2)).map_err(error)?;
-        return Store { db }.graph();
+        return if cmd == "graph-read" { Store { db }.graph() } else { Store { db }.events(number("--after",0)?,number("--limit",100)?) };
     }
     let mut store = Store::open(&path)?;
     match cmd {
@@ -392,6 +455,7 @@ fn run(args: &[String]) -> Result<Value, String> {
                 crate::graph_embed::Embedder::load(Path::new(get("--embed-dir")?))?.embed(&text)?;
             store.search(&vector, number("--limit", 10)?.max(1) as usize)
         }
+        "events" => store.events(number("--after",0)?,number("--limit",100)?),
         "claim" => Ok(
             json!({"claimed":store.claim(get("--owner")?,number("--ttl",600)?,number("--limit",2)?.max(1) as usize)?}),
         ),
@@ -461,6 +525,8 @@ fn execute_wave(
                 .current_dir(task["cwd"].as_str().ok_or("missing cwd")?)
                 .stdin(std::process::Stdio::null()).stdout(log.try_clone().map_err(error)?).stderr(log);
             if let Ok(model)=std::env::var("MINI_AGENT_QUEUE_MODEL"){if !model.is_empty(){cmd.arg("-m").arg(model);}}
+            cmd.env("MINI_QUEUE_TASK_ID", id).env("MINI_QUEUE_FENCE", fence.to_string())
+                .env("MINI_QUEUE_GOAL_VERSION", task["goal_version"].as_i64().ok_or("missing goal version")?.to_string());
             cmd.env_remove("MSWEA_CONTROL_FILE").env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_NAME");
             unsafe {cmd.pre_exec(||{if libc::setpgid(0,0)!=0{return Err(std::io::Error::last_os_error());}Ok(())});}
             let store=Store::open(&db)?;
@@ -496,7 +562,7 @@ fn execute_wave(
                 && v.get("score").and_then(Value::as_f64) == Some(100.0)
                 && v.get("gaps").and_then(Value::as_array).is_some_and(Vec::is_empty));
             let status=if exit.success() && verified && trajectory.pointer("/info/exit_status").and_then(Value::as_str)==Some("Submitted"){"done"}else{"blocked"};
-            let result=json!({"trajectory":output,"exit":exit.code(),"exit_status":trajectory.pointer("/info/exit_status"),"submission":trajectory.pointer("/info/submission"),"closure_verified":verified,"closure_verdict":closure,"provisional":trajectory.pointer("/info/goal_oracle/provisional")});
+            let result=json!({"task_id":id,"fence":fence,"goal_version":task["goal_version"],"trajectory":output,"exit":exit.code(),"exit_status":trajectory.pointer("/info/exit_status"),"submission":trajectory.pointer("/info/submission"),"closure_verified":verified,"closure_verdict":closure,"provisional":trajectory.pointer("/info/goal_oracle/provisional")});
             store.finish(id,owner,fence,status,&result.to_string())?;
             Ok(json!({"id":id,"status":status,"result":result}))
         }));
