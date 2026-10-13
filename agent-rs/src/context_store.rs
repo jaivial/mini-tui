@@ -642,16 +642,19 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
     // `repo` may name SEVERAL repos: the hub passes every repo a child was spawned for, joined, so
     // a child given two slices is checked against the contract clauses of both.
     let repos: Vec<String> = repo.split_whitespace().map(|r| r.to_string()).collect();
+    let canonical_root = root.canonicalize().ok();
     let readable = |f: &str| -> Option<String> {
-        let p = Path::new(f);
-        let direct = if p.is_absolute() { p.to_path_buf() } else { root.join(f) };
-        std::fs::read_to_string(&direct).ok().or_else(|| {
-            // A path relative to a repo root inside the store (e.g. `backend/internal/...`).
-            std::fs::read_to_string(root.join(f)).ok()
-        })
+        let base = canonical_root.as_ref()?;
+        let path = root.join(f).canonicalize().ok()?;
+        // Claims and symlinks must stay inside the checked tree.
+        if !path.starts_with(base) || !path.is_file() { return None; }
+        std::fs::read_to_string(path).ok()
     };
     // 1. files
-    let missing: Vec<String> = files.iter().filter(|f| readable(f).is_none()).cloned().collect();
+    // Read each claimed file once; all checks use the same snapshot.
+    let contents: Vec<Option<String>> = files.iter().map(|f| readable(f)).collect();
+    let missing: Vec<String> = files.iter().zip(&contents)
+        .filter(|(_, body)| body.is_none()).map(|(f, _)| f.clone()).collect();
     checks.push(Check {
         name: "files".into(),
         ok: missing.is_empty(),
@@ -665,11 +668,9 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
     });
     // The text of every claimed file, for the contract and invariant checks.
     let mut corpus = String::new();
-    for f in &files {
-        if let Some(t) = readable(f) {
-            corpus.push_str(&t);
-            corpus.push('\n');
-        }
+    for t in contents.iter().flatten() {
+        corpus.push_str(t);
+        corpus.push('\n');
     }
     // The indexed surface of this repo counts as corpus too: the contract may be satisfied in a
     // file the child did not touch but that the parent already indexed.
@@ -687,8 +688,11 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         .filter(|(name, text)| {
             let t = format!("{name} {text}").to_lowercase();
             repos.is_empty()
-                || t.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|w| w == repo.to_lowercase())
-                || (!repos.is_empty() && text.to_lowercase().contains(&format!("{}:", repo.to_lowercase())))
+                || repos.iter().any(|repo| {
+                    let repo = repo.to_lowercase();
+                    t.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|w| w == repo)
+                        || text.to_lowercase().contains(&format!("{repo}:"))
+                })
         })
         .collect();
     let mut absent = vec![];
@@ -746,7 +750,7 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
             .filter(|id| {
                 // The invariant names a code identifier and the touched file does not mention it
                 // at all while claiming to do the thing: report as a warning, not a failure.
-                !corpus.contains(id.as_str()) && claimed_files(handshake).iter().any(|f| readable(f).is_some())
+                !corpus.contains(id.as_str()) && contents.iter().any(Option::is_some)
             })
             .cloned()
             .collect();
