@@ -168,6 +168,9 @@ impl ContextStore {
         let doc: serde_json::Value = match serde_json::from_str(&raw) {
             Ok(v) => v, Err(_) => return Some("coverage manifest is invalid JSON".into()),
         };
+        if doc.get("scope").and_then(serde_json::Value::as_str) != Some(scope.as_str()) {
+            return Some("coverage manifest scope mismatch".into());
+        }
         let Some(files) = doc.get("files").and_then(serde_json::Value::as_object) else {
             return Some("coverage manifest has no file digests".into());
         };
@@ -198,8 +201,9 @@ impl ContextStore {
         }
         // A prior failed coverage/freshness check stays unresolved until refreshed.
         for field in ["unread_claims", "unread_index", "changed_since_previous"] {
-            if doc.get(field).and_then(serde_json::Value::as_array).is_some_and(|v| !v.is_empty()) {
-                return Some(format!("coverage manifest has unresolved {field}; refresh findings/contracts and rerun contract-check"));
+            match doc.get(field).and_then(serde_json::Value::as_array) {
+                Some(values) if values.is_empty() => {},
+                _ => return Some(format!("coverage manifest has missing or unresolved {field}; refresh findings/contracts and rerun contract-check")),
             }
         }
         None
