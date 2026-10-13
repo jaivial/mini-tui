@@ -45,6 +45,11 @@ class PiAgent(BaseInstalledAgent):
         await environment.exec(command=f'mkdir -p {ROOT}', user='root')
         await environment.upload_file(node, f'{ROOT}/node')
         await environment.upload_dir(package, f'{ROOT}/package')
+        # Pi forces CONNECT for HTTP; Pier permits CONNECT only on 443.
+        # Keep its pinned code intact and adapt only the copied runtime transport.
+        preload = self.logs_dir/'pi-proxy.cjs'
+        preload.write_text("const undici = require('/installed-agent/pi-control/package/node_modules/undici');\nconst Original = undici.EnvHttpProxyAgent;\nundici.EnvHttpProxyAgent = class extends Original { constructor(opts = {}) { super({ ...opts, proxyTunnel: false }); } };\n")
+        await environment.upload_file(preload, f'{ROOT}/proxy.cjs')
         await self.exec_as_agent(environment, command=f'chmod +x {ROOT}/node; {self.get_version_command()}')
         version = json.loads((package/'package.json').read_text()).get('version')
         self._version = f'pi@{version}'
@@ -60,7 +65,7 @@ class PiAgent(BaseInstalledAgent):
         await environment.upload_file(temporary, f'{ROOT}/config/models.json')
         env = {'ROSETTA_API_KEY': self._get_env('ROSETTA_API_KEY') or _ROSETTA_DEFAULT_KEY, 'PI_CODING_AGENT_DIR': f'{ROOT}/config'}
         await self.exec_as_agent(environment, command=(
-            f'{ROOT}/node --use-env-proxy {ROOT}/package/dist/bundle/cli.js --print --mode json '
+            f'{ROOT}/node --use-env-proxy --require {ROOT}/proxy.cjs {ROOT}/package/dist/cli.js --print --mode json '
             f'--session-dir /logs/agent/pi/sessions --provider lb30-control --model {shlex.quote(model)} '
             f'{shlex.quote(instruction)} </dev/null 2>&1 | tee /logs/agent/pi.txt'
         ), env=env)
