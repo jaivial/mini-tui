@@ -4,6 +4,7 @@
 use super::{DeltaSink, ModelError};
 use crate::util::get;
 use serde_json::{json, Value};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use std::io::{BufRead, BufReader, Read};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -171,10 +172,25 @@ fn is_connect_refused(text: &str) -> bool {
 
 fn request(url: &str, headers: &[(String, String)], timeout: f64, accept: &str) -> ureq::Request {
     let mut req = agent(timeout).post(url).set("Content-Type", "application/json").set("Accept", accept).timeout(Duration::from_secs_f64(timeout.max(1.0)));
+    // Plain HTTP proxy requests have no CONNECT handshake, so ureq does not attach
+    // proxy authentication. Add it only when an HTTP proxy is actually selected.
+    if url.starts_with("http://") {
+        if let Some(auth) = plain_proxy_authorization() { req=req.set("Proxy-Authorization",&auth); }
+    }
     for (k, v) in headers {
         req = req.set(k, v);
     }
     req
+}
+
+fn plain_proxy_authorization() -> Option<String> {
+    // Match ureq's selection order exactly; never send one proxy's credentials through another.
+    let raw=["ALL_PROXY","all_proxy","HTTPS_PROXY","https_proxy","HTTP_PROXY","http_proxy"]
+        .iter().filter_map(|k|std::env::var(k).ok()).find(|v|ureq::Proxy::new(v).is_ok())?;
+    let authority=raw.strip_prefix("http://").or_else(||if raw.contains("://"){None}else{Some(raw.as_str())})?;
+    let credentials=authority.rsplit_once('@')?.0;
+    let (user,password)=credentials.split_once(':')?;
+    Some(format!("Basic {}",BASE64_STANDARD.encode(format!("{user}:{password}"))))
 }
 
 thread_local! {
