@@ -49,7 +49,11 @@ Rhai-only `code` tool path for JS. Rhai `code` stays untouched for compat.
 - Chat/Responses/Messages schemas behind both MINITUI_AGENT_TOOLS=1 and
   MINITUI_CODEJS=1. Environment filesystem restriction preserved.
 - print/return/error combined output bounded to 60KB on UTF-8 boundaries.
-- No store/load API yet. Not full Pi parity.
+- Synchronous store(key,value)/load(key) per agent run. Fresh execution snapshot,
+  commit only on successful, non-cancelled execution; rollback on failure.
+  64 keys, 128-byte keys, 16KB JSON/value, 128KB total. undefined deletes;
+  absent load returns undefined. Run/resume resets state. No disk persistence.
+  This shares Pi semantics for JSON snapshot/commit, but is not full parity.
 - Native image reads return opaque handles, not base64 to the JS VM; image(result)
   explicitly emits verified native read images into separate visual user blocks.
   Four emissions and 8MB decoded bytes total per execution, deduplicated.
