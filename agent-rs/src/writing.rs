@@ -127,6 +127,7 @@ pub fn with_writing(base: Vec<Value>) -> Vec<Value> {
         out.push(write_tool_chat());
         out.push(edit_tool_chat());
         out.push(code_tool_chat());
+        if crate::codejs::enabled() { out.push(crate::codejs::tool("chat")); }
     }
     out
 }
@@ -136,6 +137,7 @@ pub fn with_writing_anthropic(base: Vec<Value>) -> Vec<Value> {
         out.push(write_tool_anthropic());
         out.push(edit_tool_anthropic());
         out.push(code_tool_anthropic());
+        if crate::codejs::enabled() { out.push(crate::codejs::tool("anthropic")); }
     }
     out
 }
@@ -145,6 +147,7 @@ pub fn with_writing_responses(base: Vec<Value>) -> Vec<Value> {
         out.push(write_tool_responses());
         out.push(edit_tool_responses());
         out.push(code_tool_responses());
+        if crate::codejs::enabled() { out.push(crate::codejs::tool("responses")); }
     }
     out
 }
