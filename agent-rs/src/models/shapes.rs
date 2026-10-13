@@ -295,10 +295,23 @@ fn observation_vars(output: &Value, template_vars: &Value) -> Value {
     Value::Object(vars)
 }
 
+/// Images are a separate user turn after the tool result. Chat gateways often stringify
+/// role=tool content, so putting pixels inside that result would silently destroy vision.
+fn visual_observation(output: &Value, responses: bool) -> Option<Value> {
+    if output.get("returncode").and_then(Value::as_i64) != Some(0) { return None; }
+    let url = output.get("image_url").and_then(Value::as_str)?;
+    let block = if responses { json!({"type": "input_image", "image_url": url}) }
+        else { json!({"type": "image_url", "image_url": {"url": url}}) };
+    let caption = output.get("output").and_then(Value::as_str).unwrap_or("Image attachment from the preceding tool result.");
+    let text = if responses { json!({"type": "input_text", "text": caption}) } else { json!({"type": "text", "text": caption}) };
+    Some(json!({"role": "user", "content": [text, block], "extra": {"visual_attachment": true}}))
+}
+
 /// `format_toolcall_observation_messages` (chat completions): `role: tool` results.
 pub fn toolcall_observations(message: &Value, outputs: &[Value], template: &str, template_vars: &Value, multimodal_regex: &str) -> Result<Vec<Value>, String> {
     let actions: Vec<Value> = get(message, "extra").and_then(|e| e.get("actions")).and_then(Value::as_array).cloned().unwrap_or_default();
     let mut results = Vec::new();
+    let mut images = Vec::new();
     for (i, action) in actions.iter().enumerate() {
         let output = outputs.get(i).cloned().unwrap_or_else(not_executed);
         let content = render(template, &observation_vars(&output, template_vars))?;
@@ -316,7 +329,9 @@ pub fn toolcall_observations(message: &Value, outputs: &[Value], template: &str,
             msg = expand_multimodal(&msg, multimodal_regex);
         }
         results.push(msg);
+        if let Some(image) = visual_observation(&output, false) { images.push(image); }
     }
+    results.extend(images);
     Ok(results)
 }
 
@@ -324,6 +339,7 @@ pub fn toolcall_observations(message: &Value, outputs: &[Value], template: &str,
 pub fn response_observations(message: &Value, outputs: &[Value], template: &str, template_vars: &Value) -> Result<Vec<Value>, String> {
     let actions: Vec<Value> = get(message, "extra").and_then(|e| e.get("actions")).and_then(Value::as_array).cloned().unwrap_or_default();
     let mut results = Vec::new();
+    let mut images = Vec::new();
     for (i, action) in actions.iter().enumerate() {
         let output = outputs.get(i).cloned().unwrap_or_else(not_executed);
         let content = render(template, &observation_vars(&output, template_vars))?;
@@ -339,7 +355,9 @@ pub fn response_observations(message: &Value, outputs: &[Value], template: &str,
             msg.insert("content".into(), json!([{"type": "input_text", "text": content}]));
         }
         results.push(Value::Object(msg));
+        if let Some(image) = visual_observation(&output, true) { images.push(image); }
     }
+    results.extend(images);
     Ok(results)
 }
 
@@ -353,6 +371,7 @@ pub fn text_observations(outputs: &[Value], template: &str, template_vars: &Valu
             msg = expand_multimodal(&msg, multimodal_regex);
         }
         results.push(msg);
+        if let Some(image) = visual_observation(&output, false) { results.push(image); }
     }
     Ok(results)
 }

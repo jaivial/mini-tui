@@ -23,6 +23,7 @@
 use crate::util::{get, Obj};
 use serde_json::{json, Value};
 use std::io::Read;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use std::path::{Path, PathBuf};
 
 /// The read tool is offered to the model (and its calls routed to the direct reader) only when
@@ -40,7 +41,7 @@ pub const READ_MAX_BYTES: usize = 50 * 1024;
 /// before the budget has a chance to apply.
 pub const READ_HARD_CAP: usize = 64 * 1024 * 1024;
 
-pub const READ_DESCRIPTION: &str = "Read the contents of a text file directly (no shell, no process spawn). Use this instead of cat/sed -n/head/tail for reading files: it is faster and its output is bounded. Output is truncated to 2000 lines or 50KB (whichever is hit first); use offset/limit to page through a large file, and continue with offset until complete when you need the whole file. Reading never modifies anything; to change files use the edit or write tool.";
+pub const READ_DESCRIPTION: &str = "Read text or a PNG/JPEG/GIF/WebP image directly (no shell, no process spawn). Images are sent as native visual blocks, not pixel text; image reads have an 8MB cap and do not accept offset/limit. Use read on screenshots instead of ASCII pixel probes. Use this instead of cat/sed -n/head/tail for reading files: it is faster and its output is bounded. Output is truncated to 2000 lines or 50KB (whichever is hit first); use offset/limit to page through a large file, and continue with offset until complete when you need the whole file. Reading never modifies anything; to change files use the edit or write tool.";
 
 fn read_params() -> Value {
     json!({
@@ -175,6 +176,43 @@ fn failed(path: &str, extra: Obj, text: String) -> ReadPage {
     ReadPage { text, extra, error: Some(error) }
 }
 
+/// Detect supported raster formats by bytes, never by a potentially wrong extension.
+fn image_mime(raw: &[u8]) -> Option<&'static str> {
+    if raw.starts_with(b"\x89PNG\r\n\x1a\n") { Some("image/png") }
+    else if raw.starts_with(&[0xff, 0xd8, 0xff]) { Some("image/jpeg") }
+    else if raw.starts_with(b"GIF87a") || raw.starts_with(b"GIF89a") { Some("image/gif") }
+    else if raw.len() >= 12 && &raw[..4] == b"RIFF" && &raw[8..12] == b"WEBP" { Some("image/webp") }
+    else { None }
+}
+
+const IMAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// None means this is not a supported raster. Failures remain tool errors, never visual success.
+fn image_outcome(path: &str, args: &Value, cwd: &str) -> Option<Value> {
+    let abs = resolve_path(path, cwd);
+    if !std::fs::metadata(&abs).ok()?.is_file() { return None; }
+    let mut file = std::fs::File::open(abs).ok()?;
+    let mut header = [0u8; 12];
+    let n = file.read(&mut header).ok()?;
+    let mime = image_mime(&header[..n])?;
+    let fail = |msg: &str| json!({"output": msg, "returncode": 1, "exception_info": msg});
+    if args.get("offset").is_some_and(|v| !v.is_null()) || args.get("limit").is_some_and(|v| !v.is_null()) {
+        return Some(fail("Image reads do not accept offset or limit; omit them to read the complete image."));
+    }
+    let meta = match file.metadata() { Ok(m) => m, Err(_) => return Some(fail("Cannot inspect image file.")) };
+    if !meta.is_file() || meta.len() > IMAGE_MAX_BYTES {
+        return Some(fail("Image exceeds the 8MB cap or is not a regular file. Resize it before reading."));
+    }
+    let mut raw = header[..n].to_vec();
+    if file.take(IMAGE_MAX_BYTES + 1 - n as u64).read_to_end(&mut raw).is_err() {
+        return Some(fail("Cannot read image bytes."));
+    }
+    if raw.len() as u64 > IMAGE_MAX_BYTES { return Some(fail("Image grew past the 8MB cap while reading.")); }
+    Some(json!({"output": format!("Image read: {path} ({mime}, {} bytes). Visual content is attached below. Do not infer pixels from this text.", raw.len()),
+        "returncode": 0, "exception_info": "", "image_url": format!("data:{mime};base64,{}", STANDARD.encode(&raw)),
+        "extra": {"path": path, "media_type": mime, "bytes": raw.len(), "visual_attachment": true}}))
+}
+
 pub fn read_file(path: &str, offset: Option<i64>, limit: Option<i64>, cwd: &str) -> ReadPage {
     let shown = path.trim().to_string();
     let mut extra = Obj::new();
@@ -194,6 +232,9 @@ pub fn read_file(path: &str, offset: Option<i64>, limit: Option<i64>, cwd: &str)
     let mut raw = Vec::with_capacity(size.min(2 * READ_MAX_BYTES));
     if let Err(e) = std::fs::File::open(&abs).and_then(|mut f| f.read_to_end(&mut raw)) {
         return failed(&shown, extra, format!("cannot read '{shown}': {}", io_message(&e)));
+    }
+    if image_mime(&raw).is_some() {
+        return failed(&shown, extra, "This is an image, not text. Use the native read tool directly to attach its visual content.".into());
     }
     // Lossy on purpose: a binary file degrades to replacement characters instead of failing the
     // page. The budget counts the decoded text, which is what the model is charged for.
@@ -267,6 +308,7 @@ pub fn read_outcome(args: &Value, cwd: &str) -> Value {
             "exception_info": "Missing 'path' argument in read tool call.",
         });
     };
+    if let Some(image) = image_outcome(path, args, cwd) { return image; }
     let page = read_file(path, arg_num(args, "offset"), arg_num(args, "limit"), cwd);
     let mut out = json!({
         "output": page.text,
