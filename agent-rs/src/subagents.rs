@@ -1333,6 +1333,13 @@ impl Hub {
         } else {
             None
         };
+        let cwd = {
+            let c = s(req, "cwd");
+            if c.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { c }
+        };
+        if !Path::new(&cwd).is_dir() {
+            return Err(format!("--cwd {cwd} is not a folder"));
+        }
         // Context the child starts with instead of re-discovering it (Fase 1): files handed over
         // (`--context-file`), the parent's brief (`--brief`), and the shared state on disk note.
         let context_max: usize = env_num("MINI_AGENT_CONTEXT_MAX", 32 * 1024);
@@ -1345,8 +1352,14 @@ impl Hub {
         let mut store_chars = 0usize;
         let mut notes_trimmed: Option<usize> = None;
         if self.handover {
-            let repos = repos_of(req, &s(req, "cwd"), &name);
-            for (key, body) in self.store.scoped_keys(&repos) {
+            let repos = repos_of(req, &cwd, &name);
+            let stale = self.store.delivery_staleness(&repos, Path::new(&cwd));
+            if let Some(reason) = stale.as_ref() {
+                // Do not present old orientation as current facts. The child can still
+                // work from its explicit brief and inspect current files itself.
+                context_blocks.push_str(&format!("<context-warning>Shared orientation withheld: {reason}. Inspect current code and ask the parent to refresh findings/contracts. No semantic contract guarantee.</context-warning>\n\n"));
+            }
+            for (key, body) in if stale.is_some() { Vec::new() } else { self.store.scoped_keys(&repos) } {
                 if body.trim().is_empty() || key == "index.json" {
                     continue;
                 }
@@ -1404,13 +1417,6 @@ impl Hub {
         let (task, used, missing) = expand_skills(&raw_task, &skills, &[]);
         if !missing.is_empty() {
             return Err(format!("unknown skill{}: {}", if missing.len() > 1 { "s" } else { "" }, missing.join(", ")));
-        }
-        let cwd = {
-            let c = s(req, "cwd");
-            if c.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { c }
-        };
-        if !Path::new(&cwd).is_dir() {
-            return Err(format!("--cwd {cwd} is not a folder"));
         }
         // Jaime 2026-10-09: subagents always run unlimited - explicit budgets are ignored on spawn.
         let max_steps = 0;
