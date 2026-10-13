@@ -648,11 +648,24 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         let path = root.join(f).canonicalize().ok()?;
         // Claims and symlinks must stay inside the checked tree.
         if !path.starts_with(base) || !path.is_file() { return None; }
-        std::fs::read_to_string(path).ok()
+        use std::io::Read;
+        let file = std::fs::File::open(path).ok()?;
+        if file.metadata().ok()?.len() > 512 * 1024 { return None; }
+        let mut bytes = Vec::new();
+        file.take(512 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 512 * 1024 { return None; }
+        String::from_utf8(bytes).ok()
     };
     // 1. files
     // Read each claimed file once; all checks use the same snapshot.
-    let contents: Vec<Option<String>> = files.iter().map(|f| readable(f)).collect();
+    let mut claimed_bytes = 0usize;
+    let contents: Vec<Option<String>> = files.iter().enumerate().map(|(i, f)| {
+        if i >= 256 { return None; }
+        let text = readable(f)?;
+        if claimed_bytes + text.len() > 4 * 1024 * 1024 { return None; }
+        claimed_bytes += text.len();
+        Some(text)
+    }).collect();
     let missing: Vec<String> = files.iter().zip(&contents)
         .filter(|(_, body)| body.is_none()).map(|(f, _)| f.clone()).collect();
     checks.push(Check {
@@ -663,7 +676,7 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         } else if missing.is_empty() {
             format!("{} claimed file(s) exist: {}", files.len(), files.join(", "))
         } else {
-            format!("{} claimed file(s) do not exist: {}", missing.len(), missing.join(", "))
+            format!("{} claimed file(s) could not be safely examined (missing/outside root/nontext/over budget): {}", missing.len(), missing.join(", "))
         },
     });
     // The text of every claimed file, for the contract and invariant checks.
@@ -672,15 +685,26 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         corpus.push_str(t);
         corpus.push('\n');
     }
-    // The indexed surface of this repo counts as corpus too: the contract may be satisfied in a
-    // file the child did not touch but that the parent already indexed.
+    // Index entries are leads, never code evidence. Read their actual files under the
+    // same root, bounded and once, or report missing coverage instead of using labels.
+    let mut indexed = std::collections::BTreeSet::new();
+    let mut index_missing = Vec::new();
+    let mut corpus_bytes = corpus.len();
     if let Some(body) = store.get(FINDINGS) {
         for hit in index(&body) {
-            if repos.is_empty() || store.mentions(&hit.file, &repos) {
-                corpus.push_str(&format!("{} {}\n", hit.file, hit.what));
+            if !(repos.is_empty() || store.mentions(&hit.file, &repos)) || files.contains(&hit.file) || !indexed.insert(hit.file.clone()) { continue; }
+            if indexed.len() > 256 || corpus_bytes >= 4 * 1024 * 1024 {
+                index_missing.push(format!("{}: corpus budget exceeded", hit.file)); continue;
+            }
+            match readable(&hit.file).filter(|text| text.len() <= 512 * 1024 && corpus_bytes + text.len() <= 4 * 1024 * 1024) {
+                Some(text) => { corpus_bytes += text.len(); corpus.push_str(&text); corpus.push('\n'); }
+                None => index_missing.push(hit.file),
             }
         }
     }
+    checks.push(Check { name: "index_coverage".into(), ok: index_missing.is_empty(),
+        detail: if index_missing.is_empty() { format!("{} indexed file(s) read from current tree; index labels are not evidence", indexed.len()) }
+            else { format!("indexed code was not examined: {}", index_missing.join(", ")) } });
     // 2. contracts: each clause names what this repo produces or consumes.
     let contracts = store.get(CONTRACTS).unwrap_or_default();
     let myclauses: Vec<(String, String)> = clauses(&contracts)
@@ -696,7 +720,9 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         })
         .collect();
     let mut absent = vec![];
+    let mut lexical_clauses = 0;
     for (name, text) in &myclauses {
+        if name.starts_with("no ") || name.starts_with("never ") || text.to_lowercase().contains("must not") { continue; }
         // The identifiers of the clause: snake_case, camelCase, dotted paths, quoted strings.
         let mut ids: Vec<String> = vec![];
         for tok in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.')) {
@@ -717,10 +743,10 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         }
         ids.sort();
         ids.dedup();
-        let hit_any = ids.iter().any(|id| corpus.contains(id.as_str()));
-        if !hit_any && !ids.is_empty() {
-            absent.push(format!("{name}: nothing in the touched files carries {}", ids.join("/")));
-        }
+        lexical_clauses += 1;
+        let tokens: std::collections::BTreeSet<&str> = corpus.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.')).collect();
+        let missing: Vec<&str> = ids.iter().map(String::as_str).filter(|id| !tokens.contains(id)).collect();
+        if !missing.is_empty() { absent.push(format!("{name}: code snapshot lacks {}", missing.join(", "))); }
     }
     checks.push(Check {
         name: "contracts".into(),
@@ -728,53 +754,31 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
         detail: if myclauses.is_empty() {
             format!("no contract clause names {repo:?} (nothing to check)")
         } else if absent.is_empty() {
-            format!("{} contract clause(s) for {repo:?} are present in the touched files", myclauses.len())
+            format!("{lexical_clauses} clause(s) have all named identifiers in actual code; lexical evidence only, types/callers/semantics not verified")
         } else {
             absent.join("; ")
         },
     });
-    // 3. invariants: `no <words>` clauses, checked literally.
-    let mut broken = vec![];
-    for (name, text) in &myclauses {
-        if !name.starts_with("no ") && !name.starts_with("never ") && !text.to_lowercase().contains("must not") {
-            continue;
-        }
-        let body = if name.starts_with("no ") || name.starts_with("never ") { name } else { name.as_str() };
-        let ids: Vec<String> = body
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .filter(|t| t.len() >= 4 && t.chars().any(|c| c.is_ascii_uppercase() || c == '_'))
-            .map(String::from)
-            .collect();
-        let violated: Vec<String> = ids
-            .iter()
-            .filter(|id| {
-                // The invariant names a code identifier and the touched file does not mention it
-                // at all while claiming to do the thing: report as a warning, not a failure.
-                !corpus.contains(id.as_str()) && contents.iter().any(Option::is_some)
-            })
-            .cloned()
-            .collect();
-        if !violated.is_empty() {
-            broken.push(format!("{name} (no {violated:?} anywhere in the touched files)"));
-        }
-    }
-    checks.push(Check {
-        name: "invariants".into(),
-        ok: broken.is_empty(),
-        detail: if broken.is_empty() { "no invariant of the contract is contradicted".into() } else { broken.join("; ") },
-    });
+    // Prose negation cannot be checked by presence/absence of an identifier. A token
+    // mention proves neither "never" nor control-flow, so do not emit a false green.
+    let invariants: Vec<&str> = myclauses.iter().filter(|(name,text)|
+        name.starts_with("no ") || name.starts_with("never ") || text.to_lowercase().contains("must not"))
+        .map(|(name,_)| name.as_str()).collect();
+    checks.push(Check { name: "invariants".into(), ok: invariants.is_empty(),
+        detail: if invariants.is_empty() { "no prose invariant declared; no semantic guarantee".into() }
+            else { format!("semantic review required; not verified by lexical presence: {}", invariants.join(", ")) } });
     // 4. COVERAGE. The checks above can all be true about nothing at all: with no file
     //    claimed, an empty corpus satisfies every clause and no invariant can be contradicted.
     //    Measured in the browser on 2026-10-07 a child finished with 1,765 chars of perfectly
     //    good prose naming two real files, but without a `surface:` tag, so nothing was claimed
     //    and the check reported "3/3 pass" over an empty corpus - which reads exactly like
     //    "the contract holds". A green check over nothing is a silent hole, so it fails here.
-    let covered = !files.is_empty() || !myclauses.is_empty();
+    let covered = contents.iter().any(Option::is_some) || (!indexed.is_empty() && index_missing.is_empty());
     checks.push(Check {
         name: "coverage".into(),
         ok: covered,
         detail: if covered {
-            format!("{} file(s) and {} contract clause(s) were actually examined", files.len(), myclauses.len())
+            format!("{} claimed file(s) read, {} indexed leads, {} scoped clauses; partial current-tree snapshot only", contents.iter().filter(|x| x.is_some()).count(), indexed.len(), myclauses.len())
         } else if handshake.trim().is_empty() {
             "NOTHING was checked: there is no handshake for this child, so this is not a pass.\n       End the child's answer with `surface:` / `contract:` / `surprise:` lines, or run\n       `agent contract-check --repo <repo> --prompt-file <the answer>`.".into()
         } else {
@@ -783,7 +787,7 @@ pub fn contract_check(store: &ContextStore, repo: &str, handshake: &str, root: &
     });
     let passed = checks.iter().filter(|c| c.ok).count();
     let total = checks.len();
-    let mut out = format!("contract-check {repo}: {passed}/{total} pass\n");
+    let mut out = format!("contract-check {repo}: {passed}/{total} mechanical checks pass; semantic contract correctness NOT VERIFIED\n");
     for c in &checks {
         out.push_str(&format!("  [{}] {}: {}\n", if c.ok { "ok" } else { "FAIL" }, c.name, c.detail));
     }

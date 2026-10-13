@@ -836,3 +836,7 @@ Queue edits remain limited to pending tasks; each put increments goal_version an
 ### Read-only queue event API
 
 `GET /api/task-events?after=SEQ` returns up to 100 durable queue events and a resume cursor. `/api/task-events/stream` uses SSE event `task`, with `id` set to seq. Resume with Last-Event-ID or after; store/deduplicate seq on the client. The server reads without schema migration or worker/model calls, at most once per 5 seconds per stream, limits streams to16 and closes with queue-error on unavailable data. Same-origin protection, 5-second child timeout and cursor validation apply. This is an API, not yet a task-board UI or a verified main-chat delivery path.
+
+### Context evidence limits
+
+Contract checks now read indexed files from the current contained tree instead of counting index labels as code. Index reads are capped at256 files,512KB per file and4MB corpus, with missing coverage reported. All named identifiers in a positive clause must be present as code tokens; one matching word is insufficient. Coverage requires actual file contents. Prose invariants are flagged for semantic review, never declared safe by an absent/present token. Mechanical checks do not certify types, caller/producer-consumer mappings or complete repository coverage.
