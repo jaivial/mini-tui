@@ -21,6 +21,7 @@ import { agentsView } from "./agents";
 import { listAgentDefs } from "../mini/agentDefs";
 import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
 import { homedir } from "node:os";
+import { rustAgentBin } from "../mini/spawn";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { syncAllSkills } from "../skills";
@@ -299,6 +300,22 @@ const server = Bun.serve({
     }
 
     try {
+      // Read-only projection of the local task registry. No worker launch, model
+      // call, schema creation or browser-selected filesystem path.
+      if (path === "/task-graph" && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        const bin = rustAgentBin();
+        const db = process.env.MINITUI_TASK_GRAPH_DB ?? join(homedir(), ".local/share/mini-tui/task-graph.sqlite");
+        if (!bin) return json({ error: "task_graph_binary_unavailable" }, 503);
+        if (!existsSync(db)) return json({ nodes: [], edges: [], configured: false });
+        const child = Bun.spawn([bin, "queue", "graph-read", "--db", db], { stdout: "pipe", stderr: "pipe" });
+        const timeout = setTimeout(() => child.kill(), 5000);
+        try {
+          const [out, _err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+          if (code !== 0) return json({ error: "task_graph_read_failed", detail: "Queue feature unavailable or registry could not be read" }, 503);
+          return json(JSON.parse(out));
+        } finally { clearTimeout(timeout); }
+      }
       // ---------------------------------------------------------- stream
       if (path === "/stream" && request.method === "GET") {
         const encoder = new TextEncoder();

@@ -320,6 +320,12 @@ fn run(args: &[String]) -> Result<Value, String> {
         PathBuf::from(std::env::var("HOME").unwrap_or_default())
             .join(".local/share/mini-tui/task-graph.sqlite")
     });
+    // The web projection must never create a registry or run schema migrations.
+    if cmd == "graph-read" {
+        let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(error)?;
+        db.busy_timeout(std::time::Duration::from_secs(2)).map_err(error)?;
+        return Store { db }.graph();
+    }
     let mut store = Store::open(&path)?;
     match cmd {
         "run" => {
@@ -436,6 +442,7 @@ fn execute_wave(
     std::fs::create_dir_all(run_dir).map_err(error)?;
     let db = std::fs::canonicalize(db).map_err(error)?;
     let run_dir = std::fs::canonicalize(run_dir).map_err(error)?;
+    if crate::agent::STOP.load(Ordering::SeqCst) { return Ok(json!({"completed_wave":[]})); }
     let tasks = store.claim(owner, ttl, limit)?;
     let mut workers = Vec::new();
     for task in tasks {
@@ -480,8 +487,16 @@ fn execute_wave(
                 std::thread::sleep(std::time::Duration::from_millis(200));
             };
             let trajectory:Value=std::fs::read_to_string(&output).ok().and_then(|s|serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
-            let status=if exit.success() && trajectory.pointer("/info/exit_status").and_then(Value::as_str)==Some("Submitted"){"done"}else{"blocked"};
-            let result=json!({"trajectory":output,"exit":exit.code(),"exit_status":trajectory.pointer("/info/exit_status"),"submission":trajectory.pointer("/info/submission")});
+            // A worker may run with its oracle disabled. Submitted alone is a
+            // proposal; dependent tasks must wait for a recorded positive verdict.
+            let closure = trajectory.pointer("/info/goal_oracle/attempts")
+                .and_then(Value::as_array).and_then(|a| a.last());
+            let verified = closure.is_some_and(|v|
+                v.get("complete").and_then(Value::as_bool) == Some(true)
+                && v.get("score").and_then(Value::as_f64) == Some(100.0)
+                && v.get("gaps").and_then(Value::as_array).is_some_and(Vec::is_empty));
+            let status=if exit.success() && verified && trajectory.pointer("/info/exit_status").and_then(Value::as_str)==Some("Submitted"){"done"}else{"blocked"};
+            let result=json!({"trajectory":output,"exit":exit.code(),"exit_status":trajectory.pointer("/info/exit_status"),"submission":trajectory.pointer("/info/submission"),"closure_verified":verified,"closure_verdict":closure,"provisional":trajectory.pointer("/info/goal_oracle/provisional")});
             store.finish(id,owner,fence,status,&result.to_string())?;
             Ok(json!({"id":id,"status":status,"result":result}))
         }));
