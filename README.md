@@ -852,3 +852,9 @@ The existing Rhai code tool is a batching alternative, not JavaScript/QuickJS pa
 `queue cancel --id ID --goal-version N` cancels pending/blocked tasks. A running task stays interrupted (blocking conflicting claims) until its worker is stopped and reconciled. Cancellation-request status is not a claim that all external effects were undone.
 
 After verifying the previous worker is stopped, `queue cancel-reconcile --id ID --goal-version N --reconciled yes` converts interrupted to cancelled and releases ownership. The operator assertion is explicit; the CLI does not pretend to inspect an arbitrary external worker.
+
+### Channel inbox preparation
+
+Transport-neutral ChannelInbox stores explicitly bound Gmail/WhatsApp/Apple-Messages routes with session/project and approved sender handles. Ingestion is transactional, bounded, deduplicated by account/thread/message ID and ordered by arrival cursor while retaining provider time/reply-to. A conflicting duplicate is refused. Evo normalizes messages.upsert data only after transport authentication, using the account supplied by trusted configuration rather than the webhook claim; self echoes and ambiguous sender direction are refused. Group messages require participant identity. Media references are not fetched automatically. Audio transcription attaches to the original audio with pending/complete/uncertain/failed state, never a second task.
+
+This is internal adapter/storage preparation. No HTTP receiver, account connection, webhook configuration, Gmail/Apple transport, external send, task launcher or bot identity is enabled by importing it. Bindings are operator configuration, not grants from message content. Transport authentication and owner permission must be checked before calling accept; incoming words cannot authorize arbitrary external effects. Real channel end-to-end and multi-chat work remain open.
