@@ -34,7 +34,7 @@ interface OutboundRow {
   updated_at: number;
 }
 
-const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
+const LOOPBACK = new Set(["127.0.0.1", "::1"]);
 const MAX_TEXT = 60_000; // sendText accepts 65 536 bytes; stay under it with multibyte headroom
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -96,6 +96,12 @@ export class EvoSender {
    * Send `reply` into `origin.thread` as a quoted reply to the accepted message.
    * Returns `sentNow: false` when a previous attempt already delivered (any text):
    * the caller must then acknowledge without a second wire send.
+   *
+   * Once an attempt's outcome is unknown, this sender NEVER resends: every later
+   * call for that row only inspects the chat for the identical sent text. A send
+   * that truly never landed therefore stays blocked (visible in the logs) until
+   * an operator resolves it — a possible duplicate is worse than a visible
+   * block, and the loop never acknowledges a failed send anyway.
    */
   async sendReply(seq: number, origin: ReplyOrigin, reply: string): Promise<{ sentNow: boolean; key: string | null }> {
     let text = reply.trim();
@@ -111,14 +117,15 @@ export class EvoSender {
       return (row?.attempts ?? 0) + 1;
     })();
     if (reservation === null) return { sentNow: false, key: this.#keyOf(seq) };
-    // A prior attempt may have landed even though its 201 never reached us: look
-    // in the chat for our own words before risking a duplicate.
+    // An earlier attempt went out on the wire without a confirmed result: the
+    // only move is to look for our own words, never a second send.
     if (reservation > 1) {
       const found = await this.#findOwn(origin, text);
       if (found) {
         this.#confirm(seq, found);
         return { sentNow: false, key: found };
       }
+      throw new EvoSendError("an earlier send is still unresolved; blocked pending chat inspection", false);
     }
     const quoted = origin.quoteId
       ? {

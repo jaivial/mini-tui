@@ -5,8 +5,14 @@
  * session's own agent produced — routing never answers on the agent's behalf.
  *
  * Turn state is durable per accepted message (`channel_turns`), so a restart
- * mid-flow re-joins the running turn instead of prompting the agent twice, and a
- * completed turn is never repeated.
+ * mid-flow re-joins the turn instead of prompting the agent twice:
+ *   - `starting`: the prompt was about to be handed to the session. Recovery
+ *     looks for the session's own `task` event carrying the exact prompt text
+ *     (the transcript/journal echo) before daring to hand it over again.
+ *   - `running`: the prompt is in. Recovery only waits for the session's own
+ *     answer — it never re-prompts, whatever the age of the row.
+ * A turn that ends in `error`/timeout answers the thread once with the
+ * configured error notice and is consumed; it is never retried automatically.
  */
 import type { Database } from "bun:sqlite";
 import type { Inbound } from "./inbox";
@@ -23,9 +29,9 @@ export interface SessionBridgeConfig {
   cwd: string;
   /** Optional model override; empty means the operator's saved default. */
   model?: string;
-  /** Give up waiting for the agent after this long (default 3 min). */
+  /** Give up waiting for the agent after this long per turn (default 3 min). */
   turnTimeoutMs?: number;
-  /** Sent (quoted) when the turn itself fails, so the thread is never left hanging. */
+  /** Sent (quoted) when the turn fails, so the thread is never left hanging. */
   errorNotice: string;
   /** Sent when the accepted message carries no text (media is WA-4's scope). */
   attachmentNotice: string;
@@ -84,16 +90,15 @@ export class SessionBridge {
   /**
    * Run the accepted message's turn and return the reply text to send (possibly
    * ""). Deterministic per row: a completed turn returns its recorded reply, a
-   * running turn is waited on, never restarted.
+   * started turn is waited on, never restarted.
    */
   async deliver(row: DeliveryRow): Promise<string> {
     const existing = this.db.query("SELECT inbox_seq,session,status,reply,updated_at FROM channel_turns WHERE inbox_seq=?1").get(row.seq) as TurnRow | undefined;
-    if (existing) {
-      if (existing.status !== "running") return existing.reply ?? "";
-      // A previous attempt started this turn and died mid-wait: the prompt is
-      // already in the conversation. Re-joining it is the only move that can
-      // neither lose the message nor double-prompt the agent.
-      if (Date.now() - existing.updated_at < 2 * this.#timeoutMs) return this.#awaitReply(row.session, existing);
+    if (existing && existing.status !== "starting") {
+      if (existing.status === "complete") return existing.reply ?? "";
+      // `running`: the prompt is already in the conversation. Re-joining is the
+      // only move that can neither lose the message nor double-prompt.
+      return this.#awaitReply(row.session, existing);
     }
     const inbound = JSON.parse(row.payload) as Inbound;
     const text = inbound.text.trim();
@@ -101,26 +106,46 @@ export class SessionBridge {
       // Attachments-only: media handling is WA-4's scope. Say so honestly.
       return this.#finish(row, this.#config.attachmentNotice);
     }
-    const prior = await this.#deps.get(row.session);
-    try {
-      if (prior) await this.#deps.send(row.session, text);
-      else await this.#deps.create({ id: row.session, prompt: text, cwd: this.#config.cwd, model: this.#config.model });
-    } catch (error) {
-      const shape = error instanceof Error ? error.message : "unknown error";
-      this.#deps.log?.(`turn for seq ${row.seq} could not start: ${shape}`);
-      return this.#finish(row, this.#config.errorNotice);
+    let handOver = true;
+    if (existing?.status === "starting") {
+      // A previous attempt reserved the turn and died around the hand-over.
+      // The session's own transcript is the evidence: a `task` event carrying
+      // the exact prompt means it was delivered, whatever happened after.
+      const session = await this.#deps.get(row.session);
+      const delivered = !!session && session.events.some((event) => event.type === "task" && event.text === text);
+      if (session && (delivered || session.status === "running")) {
+        handOver = false;
+      }
     }
-    const running: TurnRow = { inbox_seq: row.seq, session: row.session, status: "running", reply: null, updated_at: Date.now() };
-    this.db.query(`INSERT INTO channel_turns(inbox_seq,session,status,reply,updated_at) VALUES(?1,?2,'running',NULL,?3)
-      ON CONFLICT(inbox_seq) DO UPDATE SET status='running', reply=NULL, updated_at=excluded.updated_at`).run(row.seq, row.session, running.updated_at);
+    if (handOver) {
+      this.#mark(row, "starting");
+      const prior = await this.#deps.get(row.session);
+      try {
+        // Last-moment idempotence: if the session now shows the prompt (or is
+        // already working on it), the hand-over happened — never send twice.
+        const already = !!prior && (prior.status === "running" || prior.events.some((event) => event.type === "task" && event.text === text));
+        if (!prior) await this.#deps.create({ id: row.session, prompt: text, cwd: this.#config.cwd, model: this.#config.model });
+        else if (!already) await this.#deps.send(row.session, text);
+      } catch (error) {
+        const shape = error instanceof Error ? error.message : "unknown error";
+        this.#deps.log?.(`turn for seq ${row.seq} could not start: ${shape}`);
+        return this.#finish(row, this.#config.errorNotice);
+      }
+    }
+    this.#mark(row, "running");
     try {
-      const reply = await this.#awaitReply(row.session, running);
+      const reply = await this.#awaitReply(row.session, { inbox_seq: row.seq, session: row.session, status: "running", reply: null, updated_at: Date.now() });
       return this.#finish(row, reply);
     } catch (error) {
       const shape = error instanceof Error ? error.message : "unknown error";
       this.#deps.log?.(`turn for seq ${row.seq} failed: ${shape}`);
       return this.#finish(row, this.#config.errorNotice);
     }
+  }
+
+  #mark(row: DeliveryRow, status: "starting" | "running"): void {
+    this.db.query(`INSERT INTO channel_turns(inbox_seq,session,status,reply,updated_at) VALUES(?1,?2,?3,NULL,?4)
+      ON CONFLICT(inbox_seq) DO UPDATE SET status=excluded.status, reply=NULL, updated_at=excluded.updated_at`).run(row.seq, row.session, status, Date.now());
   }
 
   /** Poll the live session until its turn ends, then take the agent's last answer. */
