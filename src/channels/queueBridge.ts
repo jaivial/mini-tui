@@ -30,7 +30,7 @@
  *    after the runner reports the worker stopped.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -271,6 +271,14 @@ export class QueueBridge {
   }
 
   private async putTask(mapping: TaskMapping): Promise<void> {
+    // `put` ON CONFLICT bumps goal_version and clears the result, so a re-put
+    // is NOT idempotent: if the id already exists (crash after a successful put
+    // but before the state flip), the put already landed — treat it as done.
+    // A missing store file is a fresh lane, not an error.
+    if (existsSync(taskGraphPath())) {
+      const nodes = await this.graph();
+      if (nodes.some((n) => n.id === mapping.task)) return;
+    }
     const dir = join(homedir(), ".local/share/mini-tui/queue-goals");
     mkdirSync(dir, { recursive: true });
     const goalFile = join(dir, `${mapping.task.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`);
@@ -278,9 +286,8 @@ export class QueueBridge {
     const args = ["put", "--id", mapping.task, "--project", mapping.project, "--cwd", mapping.cwd, "--goal-file", goalFile];
     if (this.embedDir) args.push("--embed-dir", this.embedDir);
     // The embedding model may load cold: give put a wider window than the
-    // default 10 s. Retrying after an uncertain put is safe here by
-    // construction — this bridge is the only writer of `chat-*` ids and the
-    // goal text is immutable for a given id.
+    // default 10 s. An uncertain put leaves the row in `creating`; the sweep
+    // re-checks existence before ever re-putting.
     const result = await queueCommand(args, undefined, { bin: this.queueBin, timeoutMs: 120_000 });
     if (result.code !== 0) throw new Error(result.error.trim() || `queue put exit ${result.code}`);
   }
@@ -408,10 +415,12 @@ export class QueueBridge {
     for (const event of events) this.reconcileSeq = Math.max(this.reconcileSeq, event.seq);
     for (const [task, state] of [...this.reconciles]) {
       // The store has no separate worker-stopped event: the amend's own
-      // state_changed→interrupted is the signal, and the runner's watchdog
-      // kills the fenced worker group within ~1 s of it. The settle window is
-      // the honest margin before --reconciled yes attests the stop.
-      const stopped = [...events].reverse().some((e) => e.task === task && e.kind === "state_changed" && (e.status === "blocked" || e.status === "interrupted"));
+      // event is the signal — and because an amend changes status AND
+      // goal_version, the store's trigger classifies it as `goal_updated`
+      // (with status interrupted), so the kind must not be filtered here.
+      // The runner's watchdog kills the fenced worker group within ~1 s of
+      // it; the settle window is the honest margin before --reconciled yes.
+      const stopped = [...events].reverse().some((e) => e.task === task && (e.status === "blocked" || e.status === "interrupted"));
       if (stopped && state.stoppedAt === undefined) state.stoppedAt = Date.now();
       const settled = state.stoppedAt !== undefined && Date.now() - state.stoppedAt >= this.reconcileSettleMs;
       if (!settled && Date.now() - state.startedAt < this.reconcileTimeoutS * 1000) continue;
