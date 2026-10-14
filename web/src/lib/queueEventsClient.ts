@@ -1,6 +1,6 @@
 /** Read-only queue subscription shared by board/main clients, with durable cursor dedup. */
 export interface QueueEvent { seq: number; task: string; kind: string; goal_version: number; fence: number; status: string; created: number }
-export interface QueueNode { id: string; project: string; goal: string; status: string; goal_version: number; fence: number; result: string | null }
+export interface QueueNode { id: string; project: string; goal: string; status: string; goal_version: number; fence: number; result: string | null; owner?: string | null; lease_until?: number | null; priority?: number; cwd?: string }
 export interface QueueView { nodes: QueueNode[]; edges: Array<{ task: string; dependency: string }> }
 
 /** Fail closed before exposing a malformed projection to a board or main client. */
@@ -15,6 +15,12 @@ function validView(value: unknown): value is QueueView {
       || !Number.isSafeInteger(node.goal_version) || node.goal_version < 1
       || !Number.isSafeInteger(node.fence) || node.fence < 0
       || (node.result !== null && typeof node.result !== "string")) return false;
+    // Lease fields are optional; when present they must be well-formed so the
+    // panel never renders a heartbeat it cannot trust.
+    if (node.owner !== undefined && node.owner !== null && typeof node.owner !== "string") return false;
+    if (node.lease_until !== undefined && node.lease_until !== null && !Number.isSafeInteger(node.lease_until)) return false;
+    if (node.priority !== undefined && !Number.isSafeInteger(node.priority)) return false;
+    if (node.cwd !== undefined && node.cwd !== null && typeof node.cwd !== "string") return false;
     ids.add(node.id);
   }
   return view.edges.every(edge => edge && typeof edge.task === "string" && typeof edge.dependency === "string"
