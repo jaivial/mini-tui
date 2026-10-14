@@ -84,7 +84,7 @@ const media: MediaHandling | undefined = mediaEnabled
         timeoutMs: num(process.env.EVO_MEDIA_TIMEOUT_MS, 30_000),
         maxBytes: mediaMaxBytes,
       }),
-      store: new MediaStore(mediaDir, { maxDirBytes: Number(process.env.EVO_MEDIA_DIR_MAX_BYTES ?? 256 * 1024 * 1024), retainMs: retainDays * 24 * 60 * 60 * 1000 }),
+      store: new MediaStore(mediaDir, { maxDirBytes: num(process.env.EVO_MEDIA_DIR_MAX_BYTES, 256 * 1024 * 1024), retainMs: retainDays * 24 * 60 * 60 * 1000 }),
       transcriber: createWhisperTranscriber({
         bin: whisperBin,
         model: whisperModel,

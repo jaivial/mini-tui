@@ -17,7 +17,7 @@
  *    retries.
  */
 
-import { readdirSync, writeFileSync, chmodSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -77,6 +77,7 @@ export async function transcribePendingAudio(
     return { frame: "[Voice note attached. Transcription is temporarily unavailable — say honestly that the voice note cannot be played or read yet.]" };
   }
   let path: string | null = findStoredPath(media.store, seq, attachment.id);
+  let tempDir: string | null = null;
   if (!path) {
     if (!attachment.providerRef) return { frame: "[Voice note attached but unusable (missing provider reference). Say honestly it cannot be transcribed.]" };
     let bytes: Buffer | null = null;
@@ -94,14 +95,21 @@ export async function transcribePendingAudio(
       path = media.store.save(seq, attachment.id, bytes, mime ?? attachment.mime ?? null);
     } catch (error) {
       // Store full is a retention problem, not a transcription verdict: fall
-      // back to a private temp file so the honest outcome still gets reached.
+      // back to a private temp dir (mkdtemp: unpredictable name, no collision)
+      // so the honest outcome still gets reached. Removed after transcribing.
       log("channel.media.store_fallback", { seq, attachmentId: attachment.id, error: error instanceof Error ? error.message : String(error) });
-      path = join(tmpdir(), `mini-tui-media-${seq}-${attachment.id.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 100)}`);
+      tempDir = mkdtempSync(join(tmpdir(), "mini-tui-media-"));
+      chmodSync(tempDir, 0o700);
+      path = join(tempDir, "media");
       writeFileSync(path, bytes, { mode: 0o600 });
-      chmodSync(path, 0o600);
     }
   }
-  const result = await media.transcriber.transcribe({ path, maxAudioSeconds: media.maxAudioSeconds, timeoutMs: media.transcribeTimeoutMs });
+  let result;
+  try {
+    result = await media.transcriber.transcribe({ path, maxAudioSeconds: media.maxAudioSeconds, timeoutMs: media.transcribeTimeoutMs });
+  } finally {
+    if (typeof tempDir === "string") rmSync(tempDir, { recursive: true, force: true });
+  }
   if (result.transient) {
     log("channel.media.transient", { seq, attachmentId: attachment.id, error: result.error?.slice(0, 200) });
     return { frame: "[Voice note attached. Transcription is temporarily unavailable — say honestly it is not available right now.]" };

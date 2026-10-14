@@ -11,7 +11,9 @@
  * optimism. `complete` only when text exists and every segment's mean content
  * token probability is inside the confident band; `uncertain` when text exists
  * but some segment's confidence is weak (the reply must say so); `failed` for
- * empty output, over-cap audio, tool failures or timeouts.
+ * empty output, over-cap audio or undecodable input. Environmental failures
+ * (missing tools, timeouts under load, signal death) come back `transient` so
+ * the attachment stays pending and a later pass retries.
  */
 
 import { spawn } from "node:child_process";
@@ -110,7 +112,11 @@ export function createWhisperTranscriber(config: {
           : whisperArgs;
         const started = Date.now();
         const result = await run(wrapped ? "systemd-run" : config.bin, args, timeoutMs, spawnFn);
-        if (result.code !== 0) return { state: "failed", text: "", error: `whisper failed: ${(result.stderr || result.stdout).slice(0, 200)}` };
+        if (result.code !== 0) {
+          // A null exit code means the process died by signal (e.g. OOM kill):
+          // environmental, not a verdict about the audio.
+          return { state: "failed", text: "", transient: result.code === null, error: `whisper failed: ${(result.stderr || result.stdout).slice(0, 200)}` };
+        }
         // 4. Read the JSON and decide the state from whisper's own numbers.
         let parsed: { transcription?: WhisperSegment[] };
         try {

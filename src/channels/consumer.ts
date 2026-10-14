@@ -182,20 +182,21 @@ async function processOne(
     // any attachment left pending by the first pass.)
     if (options.media && message.attachments.length) {
       mediaFrames = await ensureMediaFrames(options.media, options.inbox, log, seq, message);
-      // Whatever this reply will carry — transcript, uncertainty note or
-      // honest failure — is delivered with it: mark it so the late sweep
-      // never re-sends it as a follow-up.
-      if (options.lateTranscripts) {
-        const freshRow = options.inbox.read(seq - 1, 1)[0] as PendingRow | undefined;
-        if (freshRow?.seq === seq) {
-          for (const a of (JSON.parse(freshRow.payload) as Inbound).attachments) {
-            if (a.kind === "audio" && a.transcriptionState && a.transcriptionState !== "pending") options.lateTranscripts.mark(seq, a.id);
-          }
-        }
-      }
     }
     const turn = await runTurn(options, log, row, message, maxTurnAttempts, mediaFrames);
     replyText = turn;
+    // The reply carries the transcript frames (or their honest per-attachment
+    // failure notes): mark delivered so the late sweep never re-sends them as
+    // a follow-up. A turn that ended in the generic failure note carried
+    // nothing — those attachments stay unmarked and the sweep relays them.
+    if (options.media && options.lateTranscripts && !replyText.startsWith("(mini could not complete this turn")) {
+      const freshRow = options.inbox.read(seq - 1, 1)[0] as PendingRow | undefined;
+      if (freshRow?.seq === seq) {
+        for (const a of (JSON.parse(freshRow.payload) as Inbound).attachments) {
+          if (a.kind === "audio" && a.transcriptionState && a.transcriptionState !== "pending") options.lateTranscripts.mark(seq, a.id);
+        }
+      }
+    }
     options.ledger.begin(seq, replyText, quotedId);
   }
 
@@ -376,25 +377,32 @@ async function lateTranscriptSweep(
       // Transcripts delivered inline with the turn's reply were marked at
       // resolution time; this reaches attachments resolved after the message
       // was answered (fetch outage during the turn, transient tool failure).
-      for (const attachment of message.attachments) {
-        if (attachment.kind !== "audio" || !attachment.transcriptionState || attachment.transcriptionState === "pending") continue;
+      const resolvedAudio = message.attachments.filter((a) => a.kind === "audio" && a.transcriptionState && a.transcriptionState !== "pending");
+      const many = resolvedAudio.length > 1;
+      for (const attachment of resolvedAudio) {
         if (!options.lateTranscripts || options.lateTranscripts.delivered(row.seq, attachment.id)) continue;
-        const note = lateTranscriptNote(attachment.transcript ?? "", attachment.transcriptionState as "complete" | "uncertain" | "failed");
-        // Evidence before resend, same discipline as findDeliveredReply: a
-        // saturated window proves nothing, and text evidence needs recency.
-        try {
-          const recent = await options.sender.recentOutgoing(row.thread, LATE_NOTE_WINDOW);
-          if (recent.length >= LATE_NOTE_WINDOW) continue;
-          const nowS = Date.now() / 1000;
-          const already = recent.some((m) => (m.quotedStanzaId && m.quotedStanzaId === message.messageId && m.text === note) || (m.text === note && m.ts !== null && nowS - toSeconds(m.ts) < LATE_NOTE_MATCH_WINDOW_S));
-          if (already) {
-            options.lateTranscripts.mark(row.seq, attachment.id);
-            log("channel.media.late_transcript", { seq: row.seq, attachmentId: attachment.id, state: attachment.transcriptionState, already: true });
+        const state = attachment.transcriptionState as "complete" | "uncertain" | "failed";
+        let note = lateTranscriptNote(attachment.transcript ?? "", state);
+        // Two voice notes in one message would otherwise produce identical
+        // notes quoting the same stanza — indistinguishable evidence.
+        if (many) note = `${note} [${resolvedAudio.indexOf(attachment) + 1}/${resolvedAudio.length}]`;
+        if (state !== "failed") {
+          // Evidence before resend, same discipline as findDeliveredReply: a
+          // saturated window proves nothing, and text evidence needs recency.
+          try {
+            const recent = await options.sender.recentOutgoing(row.thread, LATE_NOTE_WINDOW);
+            if (recent.length >= LATE_NOTE_WINDOW) continue;
+            const nowS = Date.now() / 1000;
+            const already = recent.some((m) => (m.quotedStanzaId && m.quotedStanzaId === message.messageId && m.text === note) || (m.text === note && m.ts !== null && nowS - toSeconds(m.ts) < LATE_NOTE_MATCH_WINDOW_S));
+            if (already) {
+              options.lateTranscripts.mark(row.seq, attachment.id);
+              log("channel.media.late_transcript", { seq: row.seq, attachmentId: attachment.id, state, already: true });
+              continue;
+            }
+          } catch {
+            // History unreadable: skip this pass rather than risk a duplicate.
             continue;
           }
-        } catch {
-          // History unreadable: skip this pass rather than risk a duplicate.
-          continue;
         }
         const sent = await options.sender.sendText({
           number: row.thread,
@@ -403,11 +411,16 @@ async function lateTranscriptSweep(
         });
         if (sent.kind === "sent") {
           options.lateTranscripts.mark(row.seq, attachment.id);
-          log("channel.media.late_transcript", { seq: row.seq, attachmentId: attachment.id, state: attachment.transcriptionState, replyId: sent.replyId });
+          log("channel.media.late_transcript", { seq: row.seq, attachmentId: attachment.id, state, replyId: sent.replyId });
+        } else if (state === "failed") {
+          // A generic failure note can never be text-evidenced (any look-alike
+          // is indistinguishable): mark after the attempt — a rare duplicate
+          // apology beats never delivering the reason at all.
+          options.lateTranscripts.mark(row.seq, attachment.id);
+          log("channel.media.late_transcript_uncertain", { seq: row.seq, attachmentId: attachment.id, marked: true, error: sent.error.slice(0, 160) });
         } else {
-          // Uncertain: leave unmarked — the next sweep's evidence check (the
-          // quoted reply makes the note findable in history) re-sends only on
-          // proven absence.
+          // Uncertain with unique text: leave unmarked — the next sweep's
+          // evidence check re-sends only on proven absence.
           log("channel.media.late_transcript_uncertain", { seq: row.seq, attachmentId: attachment.id, error: sent.error.slice(0, 160) });
         }
       }
