@@ -25,12 +25,13 @@ is refused, never truncated.
 
 ## Audio → transcription (heavy lane)
 
-whisper.cpp (local build, CPU only — this host has no GPU). Each run is
-spawned under a systemd user scope capped at `EVO_TRANSCRIBE_CPU_QUOTA`
+whisper.cpp (local build, CPU only — this host has no GPU). Each whisper run
+is spawned under a systemd user scope capped at `EVO_TRANSCRIBE_CPU_QUOTA`
 (default 25%) and `EVO_TRANSCRIBE_MEM_MAX` (default 2 GB), so transcription
-can never squeeze the box's benchmark or serving processes. ffmpeg converts
-ogg/opus voice notes to 16 kHz mono WAV first; `EVO_TRANSCRIBE_MAX_AUDIO_S`
-(default 600) caps duration.
+can never squeeze the box's benchmark or serving processes. The ffmpeg/ffprobe
+conversion steps (ogg/opus → 16 kHz mono WAV) run outside the scope but are
+bounded: inputs are already size-capped and each step has its own timeout.
+`EVO_TRANSCRIBE_MAX_AUDIO_S` (default 600) caps duration.
 
 States written through `ChannelInbox.transcript(seq, attachmentId, text,
 state)` — attached to the ORIGINAL message, never a new task:

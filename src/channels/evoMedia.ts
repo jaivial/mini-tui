@@ -128,7 +128,6 @@ export class MediaStore {
     let entries: Array<{ name: string; path: string; mtime: number; size: number }> = [];
     try {
       entries = readdirSync(this.dir)
-        .filter((f) => !f.includes(".tmp-"))
         .map((name) => {
           const path = join(this.dir, name);
           try {
@@ -142,7 +141,18 @@ export class MediaStore {
     } catch {
       return 0;
     }
+    // Orphaned temp files (crash mid-write) count toward the total but are
+    // never real media: delete them after an hour so they cannot wedge save().
     for (const e of entries) {
+      if (e.name.includes(".tmp-")) {
+        if (now - e.mtime > 3_600_000) {
+          try {
+            rmSync(e.path);
+            removed++;
+          } catch {}
+        }
+        continue;
+      }
       if (now - e.mtime > this.retainMs) {
         try {
           rmSync(e.path);
@@ -150,7 +160,7 @@ export class MediaStore {
         } catch {}
       }
     }
-    const remaining = entries.filter((e) => now - e.mtime <= this.retainMs);
+    const remaining = entries.filter((e) => !e.name.includes(".tmp-") && now - e.mtime <= this.retainMs);
     let total = remaining.reduce((sum, e) => sum + e.size, 0);
     for (const e of remaining.sort((a, b) => a.mtime - b.mtime)) {
       if (total <= this.maxDirBytes) break;

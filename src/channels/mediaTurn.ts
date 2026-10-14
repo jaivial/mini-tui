@@ -17,7 +17,9 @@
  *    retries.
  */
 
-import { readdirSync } from "node:fs";
+import { readdirSync, writeFileSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { Inbound, Attachment } from "./inbox";
 import type { EvoMediaClient, MediaStore } from "./evoMedia";
@@ -77,16 +79,33 @@ export async function transcribePendingAudio(
   let path: string | null = findStoredPath(media.store, seq, attachment.id);
   if (!path) {
     if (!attachment.providerRef) return { frame: "[Voice note attached but unusable (missing provider reference). Say honestly it cannot be transcribed.]" };
+    let bytes: Buffer | null = null;
+    let mime: string | null = null;
     try {
       const fetched = await media.client.fetchMedia({ providerRef: attachment.providerRef, thread });
-      path = media.store.save(seq, attachment.id, fetched.bytes, fetched.mime ?? attachment.mime ?? null);
+      bytes = fetched.bytes;
+      mime = fetched.mime;
     } catch (error) {
       // Transport problem, not a verdict: stay pending, retry later.
       log("channel.media.fetch_failed", { seq, attachmentId: attachment.id, error: error instanceof Error ? error.message : String(error) });
       return { frame: "[Voice note attached. Transcription could not be fetched right now — say honestly it is not available yet.]" };
     }
+    try {
+      path = media.store.save(seq, attachment.id, bytes, mime ?? attachment.mime ?? null);
+    } catch (error) {
+      // Store full is a retention problem, not a transcription verdict: fall
+      // back to a private temp file so the honest outcome still gets reached.
+      log("channel.media.store_fallback", { seq, attachmentId: attachment.id, error: error instanceof Error ? error.message : String(error) });
+      path = join(tmpdir(), `mini-tui-media-${seq}-${attachment.id.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 100)}`);
+      writeFileSync(path, bytes, { mode: 0o600 });
+      chmodSync(path, 0o600);
+    }
   }
   const result = await media.transcriber.transcribe({ path, maxAudioSeconds: media.maxAudioSeconds, timeoutMs: media.transcribeTimeoutMs });
+  if (result.transient) {
+    log("channel.media.transient", { seq, attachmentId: attachment.id, error: result.error?.slice(0, 200) });
+    return { frame: "[Voice note attached. Transcription is temporarily unavailable — say honestly it is not available right now.]" };
+  }
   if (result.state === "failed") {
     // Definitive: no speech / over cap / tool failure. Record honestly.
     try {

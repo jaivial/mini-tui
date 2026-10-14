@@ -62,9 +62,15 @@ const sender = createEvoSender({
 });
 // Attachment handling (WA-4): enabled when a whisper binary is present. Every
 // bound is explicit; the media store's cleanup is owned by this consumer.
+// Numeric envs are validated: a garbage value falls back to the default rather
+// than becoming NaN (which would silently disable every cap comparison).
+const num = (value: string | undefined, fallback: number): number => {
+  const parsed = Number(value);
+  return value !== undefined && value !== "" && Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 const mediaDir = process.env.EVO_MEDIA_DIR ?? join(homedir(), ".local/share/mini-tui/media");
-const mediaMaxBytes = Number(process.env.EVO_MEDIA_MAX_BYTES ?? 20 * 1024 * 1024);
-const retainDays = Number(process.env.EVO_MEDIA_RETAIN_DAYS ?? 7);
+const mediaMaxBytes = num(process.env.EVO_MEDIA_MAX_BYTES, 20 * 1024 * 1024);
+const retainDays = num(process.env.EVO_MEDIA_RETAIN_DAYS, 7);
 const whisperBin = process.env.EVO_TRANSCRIBE_BIN ?? join(homedir(), "tools/whisper.cpp/build/bin/whisper-cli");
 const whisperModel = process.env.EVO_TRANSCRIBE_MODEL ?? join(homedir(), "tools/whisper.cpp/models/ggml-small.bin");
 const mediaEnabled = existsSync(whisperBin) && existsSync(whisperModel);
@@ -75,19 +81,19 @@ const media: MediaHandling | undefined = mediaEnabled
         baseUrl: process.env.EVO_API_URL!,
         instance: process.env.EVO_INSTANCE!,
         token: process.env.EVO_INSTANCE_TOKEN!,
-        timeoutMs: Number(process.env.EVO_MEDIA_TIMEOUT_MS ?? 30_000),
+        timeoutMs: num(process.env.EVO_MEDIA_TIMEOUT_MS, 30_000),
         maxBytes: mediaMaxBytes,
       }),
       store: new MediaStore(mediaDir, { maxDirBytes: Number(process.env.EVO_MEDIA_DIR_MAX_BYTES ?? 256 * 1024 * 1024), retainMs: retainDays * 24 * 60 * 60 * 1000 }),
       transcriber: createWhisperTranscriber({
         bin: whisperBin,
         model: whisperModel,
-        cpuQuota: process.env.EVO_TRANSCRIBE_CPU_QUOTA ?? "25%",
-        memMax: process.env.EVO_TRANSCRIBE_MEM_MAX ?? "2G",
+        cpuQuota: /^\d+%$/.test(process.env.EVO_TRANSCRIBE_CPU_QUOTA ?? "") ? (process.env.EVO_TRANSCRIBE_CPU_QUOTA as string) : "25%",
+        memMax: /^\d+[GMK]?$/.test(process.env.EVO_TRANSCRIBE_MEM_MAX ?? "") ? (process.env.EVO_TRANSCRIBE_MEM_MAX as string) : "2G",
       }),
-      maxAudioSeconds: Number(process.env.EVO_TRANSCRIBE_MAX_AUDIO_S ?? 600),
-      transcribeTimeoutMs: Number(process.env.EVO_TRANSCRIBE_TIMEOUT_S ?? 300) * 1000,
-      lateSweepMs: Number(process.env.EVO_LATE_SWEEP_MS ?? 600_000),
+      maxAudioSeconds: num(process.env.EVO_TRANSCRIBE_MAX_AUDIO_S, 600),
+      transcribeTimeoutMs: num(process.env.EVO_TRANSCRIBE_TIMEOUT_S, 300) * 1000,
+      lateSweepMs: num(process.env.EVO_LATE_SWEEP_MS, 600_000),
     }
   : undefined;
 const turnTimeoutS = Number(process.env.EVO_CONSUMER_TURN_TIMEOUT_S ?? 600);

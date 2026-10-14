@@ -25,6 +25,10 @@ export interface TranscriptionResult {
   state: TranscriptionState;
   text: string;
   error?: string;
+  /** True for environmental failures (spawn ENOENT, timeout under load): the
+   * attachment must stay pending so a later pass can retry. Definitive
+   * outcomes (no speech, over-cap, undecodable file) are terminal. */
+  transient?: boolean;
 }
 
 export interface Transcriber {
@@ -117,10 +121,14 @@ export function createWhisperTranscriber(config: {
         const segments = (parsed.transcription ?? []).map((s) => ({ text: String(s.text ?? "").trim(), confidence: segmentConfidence(s) })).filter((s) => s.text.length > 0);
         const text = segments.map((s) => s.text).join(" ").trim();
         if (!text) return { state: "failed", text: "", error: "no speech recognized" };
-        const weak = segments.some((s) => s.confidence !== null && s.confidence < CONFIDENT_TOKEN_P);
+        // An unmeasured segment (no token data) counts as weak: `complete`
+        // is never claimed on segments whisper did not score.
+        const weak = segments.some((s) => (s.confidence ?? 0) < CONFIDENT_TOKEN_P);
         return { state: weak ? "uncertain" : "complete", text, error: undefined };
       } catch (error) {
-        return { state: "failed", text: "", error: error instanceof Error ? error.message : String(error) };
+        // Spawn-level failure (tool missing, SIGKILL on timeout): environmental,
+        // not a verdict about the audio — the caller keeps it pending.
+        return { state: "failed", text: "", transient: true, error: error instanceof Error ? error.message : String(error) };
       } finally {
         rmSync(work, { recursive: true, force: true });
       }
