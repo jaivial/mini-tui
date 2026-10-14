@@ -27,9 +27,14 @@ export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[
       if (media) attachments.push({ id: `${key.id}:${field}`, kind, mime: typeof media.mimetype === "string" ? media.mimetype : undefined, providerRef: key.id, transcriptionState: kind === "audio" ? "pending" : undefined });
     }
     const text = message.conversation ?? message.extendedTextMessage?.text ?? message.imageMessage?.caption ?? message.documentMessage?.caption ?? "";
-    const timestamp = Number(item.messageTimestamp);
-    if (typeof text !== "string" || !Number.isFinite(timestamp) || timestamp < 0) throw new Error("invalid Evo content/time");
     const context = message.extendedTextMessage?.contextInfo ?? message.imageMessage?.contextInfo ?? message.audioMessage?.contextInfo;
-    return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, sentAt: Math.trunc(timestamp * 1000), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, attachments }];
+    // The weai fork's MESSAGES_UPSERT data carries no messageTimestamp; the
+    // RFC3339 `date_time` on the envelope (delivery wall clock) is the only
+    // time it provides. Evolution-style senders keep the seconds timestamp.
+    const seconds = typeof item.messageTimestamp === "number" || typeof item.messageTimestamp === "string" ? Number(item.messageTimestamp) : Number.NaN;
+    const envelopeMs = typeof envelope.date_time === "string" ? Date.parse(envelope.date_time) : Number.NaN;
+    const sentAt = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : envelopeMs;
+    if (typeof text !== "string" || !Number.isFinite(sentAt) || sentAt < 0) throw new Error("invalid Evo content/time");
+    return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, sentAt: Math.trunc(sentAt), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, attachments }];
   });
 }
