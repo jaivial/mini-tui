@@ -563,7 +563,13 @@ fn execute_wave(
             let output=run_dir.join(format!("{}-{fence}.json",crate::util_hex(16)));
             let log=std::fs::File::create(output.with_extension("log")).map_err(error)?;
             let mut cmd=std::process::Command::new(std::env::current_exe().map_err(error)?);
-            cmd.args(["-y","--exit-immediately","-c","mini.yaml","-o"])
+            cmd.args(["-y","--exit-immediately"]);
+            // Config resolution mirrors the consumer's own runs: a task cwd may
+            // bring its own mini.yaml; otherwise omit -c so the worker uses the
+            // default chain (MINI_AGENT_CONFIG_DIR, set by the lane unit).
+            let cwd_cfg = Path::new(task["cwd"].as_str().unwrap_or(".")).join("mini.yaml");
+            if cwd_cfg.is_file() { cmd.arg("-c").arg(&cwd_cfg); }
+            cmd.arg("-o")
                 .arg(&output).arg("-t").arg(task["goal"].as_str().ok_or("missing goal")?)
                 .current_dir(task["cwd"].as_str().ok_or("missing cwd")?)
                 .stdin(std::process::Stdio::null()).stdout(log.try_clone().map_err(error)?).stderr(log);
