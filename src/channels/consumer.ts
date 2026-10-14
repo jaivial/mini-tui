@@ -34,6 +34,7 @@ import { runHeadless, type HeadlessResult } from "../cli/headless";
 import { DEFAULT_DB_PATH, createSession, findSession, getSession, openDb } from "../sessions";
 import type { ChannelInbox, Inbound } from "./inbox";
 import type { EvoSender, SendLedger } from "./evoSend";
+import type { QueueBridge } from "./queueBridge";
 
 export interface PendingRow {
   seq: number;
@@ -67,13 +68,17 @@ export interface ConsumerOptions {
   maxTurnAttempts?: number;
   /** Settle delay before the second absence check that earns a resend. */
   settleMs?: number;
+  /** Chat ↔ queue bridge: directives in replies become queue work; optional. */
+  queueBridge?: Pick<QueueBridge, "planReply">;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** The prompt the session's agent actually sees. Transport metadata is framed as
- * data: an inbound message is never a grant to act as the sender. */
+ * data: an inbound message is never a grant to act as the sender. Directives at
+ * the very end hand work to the background queue; the bridge strips them before
+ * anything is sent, and acts on them with its own deterministic rules. */
 export function turnPrompt(message: Inbound): string {
   return [
     `[WhatsApp message received in bound thread ${message.thread} — sender ${message.sender}]`,
@@ -81,6 +86,14 @@ export function turnPrompt(message: Inbound): string {
     "",
     "Reply with your answer as your final plain-text answer; it is sent back to this chat",
     "as a quoted reply. Answer in the sender's language, concise enough for a chat message.",
+    "",
+    "To hand work to the background queue you may end your reply with exactly ONE directive",
+    "on its own last line — never inside the visible answer:",
+    "[[mini-queue: <concise, self-contained goal>]] when the sender asks for work to be done in the background;",
+    "[[mini-followup: <what to add or correct>]] when the sender adds to or corrects earlier queued work;",
+    "[[mini-status]] when the sender only asks about the state of queued work.",
+    "The bridge removes the directive line before sending and confirms the queueing itself.",
+    "When the message is purely conversational, emit no directive.",
   ].join("\n");
 }
 
@@ -167,8 +180,22 @@ async function processOne(
   let replyText = entry?.replyText ?? "";
   if (!replyText) {
     const turn = await runTurn(options, log, row, message, maxTurnAttempts);
-    replyText = turn;
+    // Directives leave the reply here: what is journalled and sent is pure chat.
+    const planned = options.queueBridge?.planReply(row, message, turn) ?? { text: turn };
+    replyText = planned.text;
     options.ledger.begin(seq, replyText, quotedId);
+    if (planned.after) {
+      // Deferred bridge work (queue put, follow-up routing, status reports)
+      // runs behind the reply path — never before the cursor can advance.
+      const runAfter = planned.after;
+      void (async () => {
+        try {
+          runAfter();
+        } catch (error) {
+          log("channel.queue.deferred_error", { seq, error: error instanceof Error ? error.message : String(error) });
+        }
+      })();
+    }
   }
 
   const outcome = await options.sender.sendText({

@@ -16,11 +16,17 @@
  *   EVO_CONSUMER_CWD        working directory of the agent turns (default ~/wa-assistant)
  *   MINITUI_MODEL           model for new sessions (empty = default chain)
  *   EVO_CONSUMER_TURN_TIMEOUT_S  agent turn wall-clock limit (default 600)
+ *   MINITUI_QUEUE_BIN       queue binary with the task-graph feature (default: resolved rust agent)
+ *   MINITUI_QUEUE_EMBED_DIR MiniLM directory; when set, chat tasks are embedded
+ *   MINITUI_QUEUE_POLL_MS   queue event poll interval (default 5000)
+ *   MINITUI_QUEUE_RECONCILE_TIMEOUT_S  wait for an interrupted worker before retry (default 180)
  */
 
 import { ChannelInbox } from "./inbox";
 import { SendLedger, createEvoSender } from "./evoSend";
 import { startChannelConsumer } from "./consumer";
+import { QueueBridge } from "./queueBridge";
+import { openDb } from "../sessions";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -40,6 +46,29 @@ const sender = createEvoSender({
   timeoutMs: Number(process.env.EVO_SEND_TIMEOUT_MS ?? 20_000),
 });
 const turnTimeoutS = Number(process.env.EVO_CONSUMER_TURN_TIMEOUT_S ?? 600);
+
+const log = (event: string, fields: Record<string, unknown> = {}): void => {
+  // Structured, journal-friendly; the token never appears in any field.
+  const parts = Object.entries(fields)
+    .filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => `${k}=${typeof v === "string" && /[\s="]/.test(v) ? JSON.stringify(v) : v}`);
+  console.log(`[mini-channel-consumer] ${event}${parts.length ? " " + parts.join(" ") : ""}`);
+};
+
+// Optional read-only handle on the shared sessions store (queue-task cwd lookup).
+const sessionsDb = process.env.MINITUI_DB_PATH ? openDb(process.env.MINITUI_DB_PATH) : undefined;
+const queueBridge = new QueueBridge({
+  db: inbox.db,
+  sender,
+  consumer: "queue-events",
+  sessionsDb,
+  queueBin: process.env.MINITUI_QUEUE_BIN || undefined,
+  embedDir: process.env.MINITUI_QUEUE_EMBED_DIR || undefined,
+  cwd: process.env.EVO_CONSUMER_CWD,
+  pollMs: Number(process.env.MINITUI_QUEUE_POLL_MS ?? 5_000),
+  reconcileTimeoutS: Number(process.env.MINITUI_QUEUE_RECONCILE_TIMEOUT_S ?? 180),
+  log,
+});
 const { done, stop } = startChannelConsumer({
   inbox,
   sender,
@@ -49,16 +78,16 @@ const { done, stop } = startChannelConsumer({
   cwd: process.env.EVO_CONSUMER_CWD,
   model: process.env.MINITUI_MODEL ?? "",
   turnTimeoutS: Number.isFinite(turnTimeoutS) && turnTimeoutS > 0 ? turnTimeoutS : 600,
-  log: (event, fields = {}) => {
-    // Structured, journal-friendly; the token never appears in any field.
-    const parts = Object.entries(fields)
-      .filter(([, v]) => v !== undefined && v !== null && v !== "")
-      .map(([k, v]) => `${k}=${typeof v === "string" && /[\s="]/.test(v) ? JSON.stringify(v) : v}`);
-    console.log(`[mini-channel-consumer] ${event}${parts.length ? " " + parts.join(" ") : ""}`);
-  },
+  queueBridge,
+  log,
 });
-process.on("SIGINT", () => stop());
-process.on("SIGTERM", () => stop());
+queueBridge.start();
+const stopAll = () => {
+  queueBridge.stop();
+  stop();
+};
+process.on("SIGINT", () => stopAll());
+process.on("SIGTERM", () => stopAll());
 done.then(
   () => {
     inbox.close();
