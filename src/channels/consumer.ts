@@ -34,6 +34,7 @@ import { runHeadless, type HeadlessResult } from "../cli/headless";
 import { DEFAULT_DB_PATH, createSession, findSession, getSession, openDb } from "../sessions";
 import type { ChannelInbox, Inbound, Attachment } from "./inbox";
 import type { EvoSender, SendLedger } from "./evoSend";
+import type { QueueBridge } from "./queueBridge";
 import { ensureMediaFrames, lateTranscriptNote, transcribePendingAudio, type LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 
 export interface PendingRow {
@@ -73,13 +74,17 @@ export interface ConsumerOptions {
   lateTranscripts?: LateTranscriptLog;
   /** Settle delay before the second absence check that earns a resend. */
   settleMs?: number;
+  /** Chat ↔ queue bridge: directives in replies become queue work; optional. */
+  queueBridge?: Pick<QueueBridge, "planReply">;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** The prompt the session's agent actually sees. Transport metadata is framed as
- * data: an inbound message is never a grant to act as the sender. */
+ * data: an inbound message is never a grant to act as the sender. Directives at
+ * the very end hand work to the background queue; the bridge strips them before
+ * anything is sent, and acts on them with its own deterministic rules. */
 export function turnPrompt(message: Inbound, mediaFrames: string[] = []): string {
   return [
     `[WhatsApp message received in bound thread ${message.thread} — sender ${message.sender}]`,
@@ -88,6 +93,14 @@ export function turnPrompt(message: Inbound, mediaFrames: string[] = []): string
     "",
     "Reply with your answer as your final plain-text answer; it is sent back to this chat",
     "as a quoted reply. Answer in the sender's language, concise enough for a chat message.",
+    "",
+    "To hand work to the background queue you may end your reply with exactly ONE directive",
+    "on its own last line — never inside the visible answer:",
+    "[[mini-queue: <concise, self-contained goal>]] when the sender asks for work to be done in the background;",
+    "[[mini-followup: <what to add or correct>]] when the sender adds to or corrects earlier queued work;",
+    "[[mini-status]] when the sender only asks about the state of queued work.",
+    "The bridge removes the directive line before sending and confirms the queueing itself.",
+    "When the message is purely conversational, emit no directive.",
   ].join("\n");
 }
 
@@ -184,7 +197,9 @@ async function processOne(
       mediaFrames = await ensureMediaFrames(options.media, options.inbox, log, seq, message);
     }
     const turn = await runTurn(options, log, row, message, maxTurnAttempts, mediaFrames);
-    replyText = turn;
+    // Directives leave the reply here: what is journalled and sent is pure chat.
+    const planned = options.queueBridge?.planReply(row, message, turn) ?? { text: turn };
+    replyText = planned.text;
     // The reply carries the transcript frames (or their honest per-attachment
     // failure notes): mark delivered so the late sweep never re-sends them as
     // a follow-up. A turn that ended in the generic failure note carried
@@ -198,6 +213,18 @@ async function processOne(
       }
     }
     options.ledger.begin(seq, replyText, quotedId);
+    if (planned.after) {
+      // Deferred bridge work (queue put, follow-up routing, status reports)
+      // runs behind the reply path — never before the cursor can advance.
+      const runAfter = planned.after;
+      void (async () => {
+        try {
+          await runAfter();
+        } catch (error) {
+          log("channel.queue.deferred_error", { seq, error: error instanceof Error ? error.message : String(error) });
+        }
+      })();
+    }
   }
 
   const outcome = await options.sender.sendText({
