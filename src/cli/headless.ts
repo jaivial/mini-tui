@@ -202,8 +202,8 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
   const started = Date.now();
   let dbHandle: Database | undefined;
   // Resolved per call (not at import): an embedding process (the channel
-  // consumer) may point MINITUI_DB_PATH at its store after module load.
-  const db = () => (dbHandle ??= openDb(defaultDbPath()));
+  // consumer) may pass its own store or point MINITUI_DB_PATH after module load.
+  const db = () => (dbHandle ??= openDb(args.dbPath ?? defaultDbPath()));
   const errorOut = (message: string) => {
     if (args.outputFormat === "text") io.stderr(`error: ${message}\n`);
     else io.stdout(`${JSON.stringify({ type: "result", subtype: "error", is_error: true, error: message })}\n`);

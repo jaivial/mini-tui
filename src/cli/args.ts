@@ -43,6 +43,8 @@ export interface HeadlessArgs extends CommonArgs {
   costLimit?: number;
   /** Wall-clock limit in seconds. */
   timeout?: number;
+  /** Sessions db override for embedding processes (default: env chain). */
+  dbPath?: string;
 }
 
 export type SessionsAction = "list" | "show" | "rm";

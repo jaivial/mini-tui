@@ -29,12 +29,23 @@ first real consumer, `whatsapp-outbound`:
   original message's replyTo (else its own id). Only a confirmed 201 plus the
   CAS `acknowledge` advances the inbox cursor.
 - A failed send never acknowledges the cursor. Any non-201/timeout is
-  `uncertain`: the thread's recent outgoing history (`findMessages`,
-  `fromMe=true`) is read and a resend happens only when the reply is provably
-  absent (matched by quoted stanza id, else by exact text). This closes the
-  double-send window after a crash between send and acknowledge.
+  `uncertain`: after a settle delay, the thread's recent outgoing history
+  (`findMessages`, `fromMe=true`) is read twice and a resend happens only when
+  two consecutive checks prove the reply absent (quoted stanza id match, else
+  same text within a recent window). This is deliberate no-blind-retry, not a
+  formal exactly-once guarantee: a send whose response was lost after the
+  server accepted it can still rarely produce a duplicate — that residual
+  window is accepted in exchange for never losing a reply.
+- A definitive 4xx (rejected by dispatch before any send — bad token, bad
+  instance) can never deliver: the row retries at the slow backoff floor and
+  every attempt is logged, because by contract a failed send never advances
+  the cursor; the fix is operator action, visible in the journal.
 - A turn that keeps failing (bounded retries) sends one honest failure note
-  instead of blocking the cursor on a poison message.
+  instead of blocking the cursor on a poison message. A crash in the gap
+  between a finished turn and its ledger entry re-runs the turn (never a
+  duplicate send; at-least-once cost).
+- Shutdown (SIGTERM) waits for the in-flight turn (bounded by the turn
+  timeout) and the in-flight send; the ledger makes either interruption safe.
 
 Credentials (evo-weai instance token) come from a 0600 env file and are never
 logged. No test suite changed.

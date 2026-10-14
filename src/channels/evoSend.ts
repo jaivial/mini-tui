@@ -67,10 +67,19 @@ export class SendLedger {
  * retry policy belongs to the consumer loop. */
 export interface EvoSender {
   sendText(args: { number: string; text: string; quoted?: { id: string; remoteJid: string; participant?: string } }): Promise<
-    { kind: "sent"; replyId: string } | { kind: "uncertain"; status?: number; error: string }
+    { kind: "sent"; replyId: string } | { kind: "uncertain"; status?: number; error: string; definitive: boolean }
   >;
   /** Newest outgoing messages of `thread`, newest first (bounded page). */
-  recentOutgoing(thread: string, limit?: number): Promise<Array<{ id: string; text: string; quotedStanzaId: string | null }>>;
+  recentOutgoing(thread: string, limit?: number): Promise<Array<{ id: string; text: string; quotedStanzaId: string | null; ts: number | null }>>;
+}
+
+/** The fork accepts 1..65536 bytes of text; keep a margin under the cap. */
+export const MAX_SEND_TEXT_BYTES = 60_000;
+
+export function truncateForSend(text: string): string {
+  const buffer = Buffer.from(text, "utf8");
+  if (buffer.length <= MAX_SEND_TEXT_BYTES) return text;
+  return `${buffer.subarray(0, MAX_SEND_TEXT_BYTES).toString("utf8")}…`;
 }
 
 export function createEvoSender(config: { baseUrl: string; instance: string; token: string; timeoutMs?: number }): EvoSender {
@@ -103,15 +112,19 @@ export function createEvoSender(config: { baseUrl: string; instance: string; tok
       // WHATSAPP-BAILEYS instance; quoted.key carries the quoted stanza id.
       const r = await call(`/message/sendText/${encodeURIComponent(config.instance)}`, {
         number,
-        text,
+        text: truncateForSend(text),
         ...(quoted ? { quoted: { key: { id: quoted.id, remoteJid: quoted.remoteJid, ...(quoted.participant ? { participant: quoted.participant } : {}) } } } : {}),
       });
       if (r.status === 201 && r.json?.key?.id) return { kind: "sent", replyId: String(r.json.key.id) };
       // 201 is the only success the fork returns; anything else (or a timeout /
       // connection reset) may or may not have delivered — verify before resending.
-      return { kind: "uncertain", status: r.status || undefined, error: r.error || (r.json ? JSON.stringify(r.json).slice(0, 300) : `status ${r.status}`) };
+      // A 4xx was rejected by dispatch BEFORE any send: it can never land, so no
+      // evidence pass can ever find it — flag it so the consumer treats the
+      // retry as operator-actionable instead of "maybe delivered".
+      const definitive = r.status >= 400 && r.status < 500;
+      return { kind: "uncertain", definitive, status: r.status || undefined, error: r.error || (r.json ? JSON.stringify(r.json).slice(0, 300) : `status ${r.status}`) };
     },
-    async recentOutgoing(thread, limit = 20) {
+    async recentOutgoing(thread, limit = 50) {
       const r = await call(`/chat/findMessages/${encodeURIComponent(config.instance)}`, {
         where: { key: { remoteJid: thread, fromMe: true } },
         page: 1,
@@ -123,6 +136,7 @@ export function createEvoSender(config: { baseUrl: string; instance: string; tok
         id: String(m?.key?.id ?? ""),
         text: String(m?.message?.conversation ?? m?.message?.extendedTextMessage?.text ?? ""),
         quotedStanzaId: m?.message?.extendedTextMessage?.contextInfo?.stanzaId ? String(m.message.extendedTextMessage.contextInfo.stanzaId) : null,
+        ts: typeof m?.messageTimestamp === "number" ? m.messageTimestamp : null,
       }));
     },
   };

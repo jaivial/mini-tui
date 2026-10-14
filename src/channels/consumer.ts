@@ -65,6 +65,8 @@ export interface ConsumerOptions {
   maxBackoffMs?: number;
   /** Turn attempts before an honest failure note is sent instead. */
   maxTurnAttempts?: number;
+  /** Settle delay before the second absence check that earns a resend. */
+  settleMs?: number;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
@@ -145,7 +147,14 @@ async function processOne(
   }
   // Uncertain send: inspect the thread's history before ever resending.
   if (entry && entry.replyText) {
-    const delivered = await findDeliveredReply(options.sender, row.thread, entry.quotedId, entry.replyText);
+    const deliverCheck = async () => findDeliveredReply(options.sender, row.thread, entry.quotedId, entry.replyText);
+    let delivered = await deliverCheck();
+    if (!delivered) {
+      // The reply may still be in flight from the uncertain attempt: settle,
+      // then re-check. Only absence twice in a row earns a resend.
+      await sleep(options.settleMs ?? 5_000);
+      delivered = await deliverCheck();
+    }
     if (delivered) {
       log("channel.consumer.verified_sent", { seq, replyId: delivered });
       options.ledger.markSent(seq, delivered);
@@ -174,24 +183,45 @@ async function processOne(
     return;
   }
   // Unknown whether the reply landed: the cursor stays put and the next pass
-  // resolves it by evidence (or resends when the history proves absence).
+  // resolves it by evidence (or resends when the history proves absence). A
+  // definitive 4xx was rejected before any send and can only be fixed by the
+  // operator — by contract the cursor never advances on a failed send, so the
+  // retry continues at the slow backoff floor and every attempt is logged.
   options.ledger.markUncertain(seq);
-  log("channel.consumer.send_uncertain", { seq, status: outcome.status, error: outcome.error.slice(0, 200) });
+  const attempts = (entry?.attempts ?? 0) + 1;
+  if (outcome.definitive && attempts >= 10) log("channel.consumer.send_rejected_operator_action", { seq, attempts, status: outcome.status, error: outcome.error.slice(0, 200) });
+  log("channel.consumer.send_uncertain", { seq, definitive: outcome.definitive || undefined, status: outcome.status, error: outcome.error.slice(0, 200) });
   throw new Error(`send uncertain for seq ${seq}: ${outcome.error.slice(0, 120)}`);
 }
 
-/** Does the thread's recent outgoing history already carry this reply? */
-async function findDeliveredReply(sender: EvoSender, thread: string, quotedId: string | null, replyText: string): Promise<string | null> {
-  let recent: Array<{ id: string; text: string; quotedStanzaId: string | null }>;
+/** Recent-window bound for text-based evidence: a reply counts as delivered by
+ * text match only if it was sent recently (an old look-alike is not evidence). */
+const RECENT_MATCH_WINDOW_S = 15 * 60;
+const toSeconds = (ts: number) => (ts > 1e12 ? ts / 1000 : ts);
+
+/** Does the thread's recent outgoing history already carry this reply?
+ * Throws when absence cannot be proven (history unreadable, or the bounded
+ * window is saturated — a busy thread may have pushed the reply out of it). */
+async function findDeliveredReply(sender: EvoSender, thread: string, quotedId: string | null, replyText: string, limit = 50): Promise<string | null> {
+  let recent: Array<{ id: string; text: string; quotedStanzaId: string | null; ts: number | null }>;
   try {
-    recent = await sender.recentOutgoing(thread, 20);
+    recent = await sender.recentOutgoing(thread, limit);
   } catch (error) {
     // History unreadable (instance closed, transport down): assume nothing.
     throw new Error(`cannot verify pending send: ${error instanceof Error ? error.message : String(error)}`);
   }
+  if (recent.length >= limit) throw new Error("evidence window saturated; absence unproven");
+  const nowS = Date.now() / 1000;
+  const recentText = (m: { ts: number | null }) => m.ts !== null && nowS - toSeconds(m.ts) < RECENT_MATCH_WINDOW_S;
   for (const m of recent) {
-    if (quotedId && m.quotedStanzaId && m.quotedStanzaId === quotedId) return m.id || null;
-    if (!quotedId && m.text === replyText) return m.id || null;
+    if (quotedId) {
+      if (m.quotedStanzaId === quotedId) return m.id || null;
+      // A stored reply whose contextInfo went missing (normalization gaps) must
+      // still count as delivered: quote absent-or-equal, same text, recent.
+      if ((m.quotedStanzaId == null || m.quotedStanzaId === quotedId) && m.text === replyText && recentText(m)) return m.id || null;
+    } else if (m.text === replyText && recentText(m)) {
+      return m.id || null;
+    }
   }
   return null;
 }
@@ -206,8 +236,6 @@ async function runTurn(
   maxTurnAttempts: number,
 ): Promise<string> {
   const dbPath = options.sessionsDbPath ?? process.env.MINITUI_DB_PATH ?? DEFAULT_DB_PATH;
-  // runHeadless resolves the sessions db per call from this env (see headless.ts).
-  if (options.sessionsDbPath) process.env.MINITUI_DB_PATH = options.sessionsDbPath;
   const cwd = options.cwd ?? process.env.EVO_CONSUMER_CWD ?? join(homedir(), "wa-assistant");
   mkdirSync(cwd, { recursive: true });
   const model = options.model ?? "";
@@ -235,6 +263,7 @@ async function runTurn(
           noSession: false,
           compact: false,
           cwd,
+          ...(options.sessionsDbPath ? { dbPath: options.sessionsDbPath } : {}),
           ...(model ? { model } : {}),
           ...(options.turnTimeoutS ? { timeout: options.turnTimeoutS } : {}),
         },
