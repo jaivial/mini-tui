@@ -32,8 +32,9 @@ import { join } from "node:path";
 
 import { runHeadless, type HeadlessResult } from "../cli/headless";
 import { DEFAULT_DB_PATH, createSession, findSession, getSession, openDb } from "../sessions";
-import type { ChannelInbox, Inbound } from "./inbox";
+import type { ChannelInbox, Inbound, Attachment } from "./inbox";
 import type { EvoSender, SendLedger } from "./evoSend";
+import { ensureMediaFrames, lateTranscriptNote, transcribePendingAudio, type LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 
 export interface PendingRow {
   seq: number;
@@ -65,6 +66,11 @@ export interface ConsumerOptions {
   maxBackoffMs?: number;
   /** Turn attempts before an honest failure note is sent instead. */
   maxTurnAttempts?: number;
+  /** Attachment handling (audio transcription, honest image/document frames).
+   * Absent = the plain-text-only behavior. */
+  media?: MediaHandling;
+  /** Durable record of late-transcript follow-up notes already delivered. */
+  lateTranscripts?: LateTranscriptLog;
   /** Settle delay before the second absence check that earns a resend. */
   settleMs?: number;
   log?: (event: string, fields?: Record<string, unknown>) => void;
@@ -74,10 +80,11 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 /** The prompt the session's agent actually sees. Transport metadata is framed as
  * data: an inbound message is never a grant to act as the sender. */
-export function turnPrompt(message: Inbound): string {
+export function turnPrompt(message: Inbound, mediaFrames: string[] = []): string {
   return [
     `[WhatsApp message received in bound thread ${message.thread} — sender ${message.sender}]`,
     message.text,
+    ...mediaFrames,
     "",
     "Reply with your answer as your final plain-text answer; it is sent back to this chat",
     "as a quoted reply. Answer in the sender's language, concise enough for a chat message.",
@@ -99,11 +106,13 @@ export function startChannelConsumer(options: ConsumerOptions): { done: Promise<
     const cursor = options.inbox.sync(consumer);
     log("channel.consumer.start", { consumer, cursor });
     let backoff = baseBackoff;
+    let lastLateSweep = 0;
     while (!stopped) {
       try {
         const { cursor, messages } = options.inbox.pending(consumer, 1);
         if (!messages.length) {
           backoff = baseBackoff;
+          await lateTranscriptSweep(options, log, consumer, () => (lastLateSweep = Date.now()), lastLateSweep);
           await Promise.race([sleep(idleMs), new Promise<void>((r) => (wake = r))]);
           continue;
         }
@@ -165,9 +174,29 @@ async function processOne(
 
   const quotedId = entry?.quotedId ?? message.replyTo ?? message.messageId;
   let replyText = entry?.replyText ?? "";
+  let mediaFrames: string[] = [];
   if (!replyText) {
-    const turn = await runTurn(options, log, row, message, maxTurnAttempts);
+    // Attachments resolve BEFORE the turn: the transcript is durable by then,
+    // so a crash replays with the transcript already attached to the message.
+    // (A send-retry pass with a stored reply skips this: the late sweep owns
+    // any attachment left pending by the first pass.)
+    if (options.media && message.attachments.length) {
+      mediaFrames = await ensureMediaFrames(options.media, options.inbox, log, seq, message);
+    }
+    const turn = await runTurn(options, log, row, message, maxTurnAttempts, mediaFrames);
     replyText = turn;
+    // The reply carries the transcript frames (or their honest per-attachment
+    // failure notes): mark delivered so the late sweep never re-sends them as
+    // a follow-up. A turn that ended in the generic failure note carried
+    // nothing — those attachments stay unmarked and the sweep relays them.
+    if (options.media && options.lateTranscripts && !replyText.startsWith("(mini could not complete this turn")) {
+      const freshRow = options.inbox.read(seq - 1, 1)[0] as PendingRow | undefined;
+      if (freshRow?.seq === seq) {
+        for (const a of (JSON.parse(freshRow.payload) as Inbound).attachments) {
+          if (a.kind === "audio" && a.transcriptionState && a.transcriptionState !== "pending") options.lateTranscripts.mark(seq, a.id);
+        }
+      }
+    }
     options.ledger.begin(seq, replyText, quotedId);
   }
 
@@ -240,6 +269,7 @@ async function runTurn(
   row: PendingRow,
   message: Inbound,
   maxTurnAttempts: number,
+  mediaFrames: string[],
 ): Promise<string> {
   const dbPath = options.sessionsDbPath ?? process.env.MINITUI_DB_PATH ?? DEFAULT_DB_PATH;
   const cwd = options.cwd ?? process.env.EVO_CONSUMER_CWD ?? join(homedir(), "wa-assistant");
@@ -260,7 +290,7 @@ async function runTurn(
       const exitCode = await runHeadless(
         {
           command: "print",
-          prompt: turnPrompt(message),
+          prompt: turnPrompt(message, mediaFrames),
           outputFormat: "json",
           verbose: false,
           quiet: true,
@@ -295,4 +325,107 @@ async function runTurn(
   // The turn kept failing: an honest failure note is still a reply — better
   // than a silent thread or a poison message blocking the cursor forever.
   return `(mini could not complete this turn: ${lastError.slice(0, 180)})`;
+}
+
+const LATE_NOTE_WINDOW = 20;
+const LATE_NOTE_MATCH_WINDOW_S = 60 * 60;
+
+/** Late-transcript sweep (runs while idle, at most once per lateSweepMs):
+ * messages the cursor has already passed can still carry pending audio (e.g.
+ * weai was down during the turn). Retry them; a definitive transcript is
+ * written through inbox.transcript — which records the durable channel_updates
+ * row — and relayed to the thread as a short quoted follow-up, recorded in the
+ * LateTranscriptLog so the note is not re-sent on every pass. */
+async function lateTranscriptSweep(
+  options: ConsumerOptions,
+  log: (event: string, fields?: Record<string, unknown>) => void,
+  consumer: string,
+  markRan: () => void,
+  lastRun: number,
+): Promise<void> {
+  const media = options.media;
+  if (!media || !media.lateSweepMs || !media.client || !media.store || !media.transcriber) return;
+  if (Date.now() - lastRun < media.lateSweepMs) return;
+  markRan();
+  try {
+    const removed = media.store.sweep();
+    if (removed) log("channel.media.sweep", { removed });
+    // Read-only: only rows the cursor has already passed are ours here.
+    const { cursor } = options.inbox.pending(consumer, 1);
+    const rows = options.inbox.read(Math.max(0, cursor - 200), 200) as PendingRow[];
+    for (const row of rows) {
+      if (row.seq > cursor) continue;
+      let message: Inbound;
+      try {
+        message = JSON.parse(row.payload) as Inbound;
+      } catch {
+        continue;
+      }
+      // Pass 1: retry anything still pending (transient failures, fetch outages).
+      let mutated = false;
+      for (const attachment of message.attachments) {
+        if (attachment.kind !== "audio" || attachment.transcriptionState !== "pending" || !attachment.providerRef) continue;
+        await transcribePendingAudio(media, options.inbox, log, row.seq, attachment as Attachment, message.thread);
+        mutated = true;
+      }
+      // Pass 2 reads fresh state: pass 1 may have resolved the attachment.
+      if (mutated) {
+        const freshRow = options.inbox.read(row.seq - 1, 1)[0] as PendingRow | undefined;
+        if (freshRow?.seq === row.seq) message = JSON.parse(freshRow.payload) as Inbound;
+      }
+      // Pass 2: relay any resolved transcript the sender has not received.
+      // Transcripts delivered inline with the turn's reply were marked at
+      // resolution time; this reaches attachments resolved after the message
+      // was answered (fetch outage during the turn, transient tool failure).
+      const resolvedAudio = message.attachments.filter((a) => a.kind === "audio" && a.transcriptionState && a.transcriptionState !== "pending");
+      const many = resolvedAudio.length > 1;
+      for (const attachment of resolvedAudio) {
+        if (!options.lateTranscripts || options.lateTranscripts.delivered(row.seq, attachment.id)) continue;
+        const state = attachment.transcriptionState as "complete" | "uncertain" | "failed";
+        let note = lateTranscriptNote(attachment.transcript ?? "", state);
+        // Two voice notes in one message would otherwise produce identical
+        // notes quoting the same stanza — indistinguishable evidence.
+        if (many) note = `${note} [${resolvedAudio.indexOf(attachment) + 1}/${resolvedAudio.length}]`;
+        if (state !== "failed") {
+          // Evidence before resend, same discipline as findDeliveredReply: a
+          // saturated window proves nothing, and text evidence needs recency.
+          try {
+            const recent = await options.sender.recentOutgoing(row.thread, LATE_NOTE_WINDOW);
+            if (recent.length >= LATE_NOTE_WINDOW) continue;
+            const nowS = Date.now() / 1000;
+            const already = recent.some((m) => (m.quotedStanzaId && m.quotedStanzaId === message.messageId && m.text === note) || (m.text === note && m.ts !== null && nowS - toSeconds(m.ts) < LATE_NOTE_MATCH_WINDOW_S));
+            if (already) {
+              options.lateTranscripts.mark(row.seq, attachment.id);
+              log("channel.media.late_transcript", { seq: row.seq, attachmentId: attachment.id, state, already: true });
+              continue;
+            }
+          } catch {
+            // History unreadable: skip this pass rather than risk a duplicate.
+            continue;
+          }
+        }
+        const sent = await options.sender.sendText({
+          number: row.thread,
+          text: note,
+          quoted: { id: message.messageId, remoteJid: row.thread, ...(message.sender ? { participant: message.sender } : {}) },
+        });
+        if (sent.kind === "sent") {
+          options.lateTranscripts.mark(row.seq, attachment.id);
+          log("channel.media.late_transcript", { seq: row.seq, attachmentId: attachment.id, state, replyId: sent.replyId });
+        } else if (state === "failed") {
+          // A generic failure note can never be text-evidenced (any look-alike
+          // is indistinguishable): mark after the attempt — a rare duplicate
+          // apology beats never delivering the reason at all.
+          options.lateTranscripts.mark(row.seq, attachment.id);
+          log("channel.media.late_transcript_uncertain", { seq: row.seq, attachmentId: attachment.id, marked: true, error: sent.error.slice(0, 160) });
+        } else {
+          // Uncertain with unique text: leave unmarked — the next sweep's
+          // evidence check re-sends only on proven absence.
+          log("channel.media.late_transcript_uncertain", { seq: row.seq, attachmentId: attachment.id, error: sent.error.slice(0, 160) });
+        }
+      }
+    }
+  } catch (error) {
+    log("channel.media.sweep_error", { error: error instanceof Error ? error.message : String(error) });
+  }
 }
