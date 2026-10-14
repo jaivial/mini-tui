@@ -117,8 +117,12 @@ function signIn(request: Request, secret: Buffer): string {
  */
 async function gate(request: Request, url: URL, pathname: string): Promise<{ claims: ReturnType<Auth["claimsOf"]> } | Response> {
   if (!auth || auth.disabled) return { claims: null };
-  // The inbound webhook carries its own shared secret; health is for monitoring.
+  // The inbound webhook carries its own secret; health is for monitoring. The browser fetches
+  // the manifest, the service worker script and the favicon WITHOUT credentials (the manifest
+  // request carries no cookies), so a signed-in gate would keep the app un-installable — they
+  // are public static files and carry no data.
   if (pathname === "/channels/evo" || pathname === "/health") return { claims: null };
+  if (url.pathname === "/manifest.webmanifest" || url.pathname === "/sw.js" || url.pathname === "/favicon.ico" || url.pathname.startsWith("/icons/")) return { claims: null };
 
   const claims = auth.claimsOf(request);
   if (url.pathname === "/login") {
