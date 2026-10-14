@@ -131,7 +131,18 @@ export function createEvoSender(config: { baseUrl: string; instance: string; tok
         offset: Math.min(50, Math.max(1, limit)),
       });
       if (r.status !== 200 || !r.json) throw new Error(`findMessages failed: ${r.error || `status ${r.status}`}`);
-      const messages = Array.isArray(r.json?.messages) ? r.json.messages : [];
+      // Page shapes seen in the wild: the deployed 0.2.8 returns
+      // {messages:{records:[...],total,...}}; the source's history handler
+      // returns {messages:[...]}. An empty/unknown shape yields [] which the
+      // caller must treat as INCONCLUSIVE evidence, never as absence proof.
+      const j = r.json ?? {};
+      const messages: any[] = Array.isArray(j.messages)
+        ? j.messages
+        : Array.isArray(j.messages?.records)
+          ? j.messages.records
+          : Array.isArray(j.records)
+            ? j.records
+            : [];
       return messages.map((m: any) => ({
         id: String(m?.key?.id ?? ""),
         text: String(m?.message?.conversation ?? m?.message?.extendedTextMessage?.text ?? ""),
