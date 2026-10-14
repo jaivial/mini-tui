@@ -380,7 +380,6 @@ const server = Bun.serve({
       // call, schema creation or browser-selected filesystem path.
       if (path === "/task-graph" && request.method === "GET") {
         if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
-        console.log("task-graph request", new Date().toISOString());
         const bin = rustAgentBin();
         const db = process.env.MINITUI_TASK_GRAPH_DB ?? join(homedir(), ".local/share/mini-tui/task-graph.sqlite");
         if (!bin) return json({ error: "task_graph_binary_unavailable" }, 503);
