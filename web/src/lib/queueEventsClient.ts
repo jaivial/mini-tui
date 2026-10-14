@@ -31,7 +31,9 @@ export class QueueEventsClient {
   #refreshTimer: ReturnType<typeof setTimeout> | undefined;
   #pending: QueueEvent | undefined;
   view: QueueView = { nodes: [], edges: [] };
-  error = "";
+  #snapshotError = "";
+  #streamError = "";
+  get error(): string { return [this.#snapshotError, this.#streamError].filter(Boolean).join("; "); }
   loaded = false;
   constructor(readonly base = "/api") {}
   watch(listener: (view: QueueView,event?: QueueEvent) => void): () => void {
@@ -59,20 +61,25 @@ export class QueueEventsClient {
     if (this.#source || !this.#listeners.size) return;
     const source = new EventSource(`${this.base}/task-events/stream?after=${this.#cursor}`);
     this.#source = source;
+    source.onopen = () => {
+      if (this.#source !== source || !this.#listeners.size) return;
+      this.#streamError = ""; this.#notify();
+    };
     source.addEventListener("task",raw => {
       if (this.#source !== source || !this.#listeners.size) return;
       try {
         const event = JSON.parse((raw as MessageEvent).data) as QueueEvent;
         if (!Number.isSafeInteger(event.seq) || event.seq <= this.#cursor || typeof event.task !== "string" || typeof event.status !== "string") return;
+        this.#streamError = "";
         this.#cursor = event.seq;
         this.#pending = event;
         void this.#refresh();
-      } catch { this.error = "invalid queue event"; this.#notify(); }
+      } catch { this.#streamError = "invalid queue event"; this.#notify(); }
     });
     const failed = () => {
       if (this.#source !== source) return;
       source.close(); this.#source = null;
-      this.error = "queue stream unavailable"; this.#notify();
+      this.#streamError = "queue stream unavailable"; this.#notify();
       if (this.#listeners.size) this.#timer = setTimeout(() => { void this.#refresh(); this.#connect(); },5000);
     };
     source.addEventListener("queue-error",failed);
@@ -93,12 +100,12 @@ export class QueueEventsClient {
       const view = await res.json() as QueueView;
       if (!validView(view)) throw new Error("invalid queue snapshot");
       if (generation !== this.#generation || !this.#listeners.size) return;
-      this.view = view; this.loaded = true; this.error = "";
+      this.view = view; this.loaded = true; this.#snapshotError = "";
       this.#notify(event);
     } catch (e) {
       failed = true;
       if (generation === this.#generation) {
-        this.error = (e as Error).message;
+        this.#snapshotError = (e as Error).message;
         this.#pending ??= event;
         this.#notify();
       }
