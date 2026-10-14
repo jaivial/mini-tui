@@ -2,8 +2,10 @@ import { mount } from "svelte";
 import "./app.css";
 import { ui } from "./lib/stores/ui.svelte";
 import { workspace } from "./lib/workspace";
+import { initPwa } from "./lib/pwa.svelte";
 
 ui.apply();
+initPwa();
 
 // After a rebuild the hashed bundles change and the old ones are deleted. A tab (or a cached
 // index.html) that still points at the old names cannot load them, so reload once to pick up

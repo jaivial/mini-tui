@@ -40,12 +40,12 @@ describe("boardRows", () => {
 });
 
 describe("whereLabel", () => {
-  test("a session on screen names its pane and the window holding it", () => {
-    expect(whereLabel({ pane: 2, window: "Work" })).toBe("Pane 2 · Work");
-    expect(whereLabel({ pane: 1, window: "Window 3" })).toBe("Pane 1 · Window 3");
+  test("a session on screen names its bot and the agent holding it", () => {
+    expect(whereLabel({ pane: 2, window: "Work" })).toBe("Bot 2 · Work");
+    expect(whereLabel({ pane: 1, window: "Agent 3" })).toBe("Bot 1 · Agent 3");
   });
   test("one that no pane shows says exactly that", () => {
-    expect(whereLabel(null)).toBe("Not open in a pane");
+    expect(whereLabel(null)).toBe("Not shown on screen");
   });
 });
 

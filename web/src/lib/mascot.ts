@@ -29,8 +29,8 @@ const MOODS = {
 
 export const petSrc = (mood: PetMood): string => MOODS[mood];
 
-/** A session's pose: the pose IS the status, colour only backs it up. */
-export const statusMood = (status: SessionStatus): PetMood =>
+/** A session's pose: the pose IS the status, colour only backs it up. A bot with no session floats. */
+export const statusMood = (status: SessionStatus | null): PetMood =>
   status === "running" ? "thinking" : status === "done" ? "happy" : status === "error" || status === "interrupted" ? "break" : "idle";
 
 /** The sidebar's status line, in words (the pose and dot carry it too). */

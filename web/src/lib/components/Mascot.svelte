@@ -5,7 +5,7 @@
    * One bizbots pet, as an avatar. Decorative by rule (the row's text carries
    * the meaning, like the landing's `mk-pet-*`): always `aria-hidden`, never
    * interactive. The animation is the state: idle floats, thinking breathes
-   * inside a sunset halo, `greet` waves three times on mount.
+   * inside an ember halo, `greet` waves three times on mount.
    */
   let {
     mood = "idle",
@@ -27,7 +27,7 @@
 
 <span class="relative inline-grid shrink-0 place-items-center {klass}" style="width:{size}px;height:{size}px">
   {#if mood === "thinking"}
-    <!-- The "thinking" halo: a sunset ring pulsing behind the pet. -->
+    <!-- The "thinking" halo: an ember ring pulsing behind the pet. -->
     <span class="pet-halo absolute inset-[-4px] rounded-full bg-live-soft" aria-hidden="true"></span>
   {/if}
   <img

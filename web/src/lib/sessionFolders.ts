@@ -101,6 +101,8 @@ export interface SidebarPrefs {
   pinned: string[];
   /** Folders you opened or closed yourself, and which way: this wins over the default. */
   expanded: Record<string, boolean>;
+  /** Agents of the accordion you opened or folded yourself; an agent nobody chose follows the screen. */
+  agentsExpanded: Record<string, boolean>;
 }
 
 /** Expanded? What you chose for this folder; otherwise open when it has open sessions or is pinned. */
@@ -108,15 +110,25 @@ export function isExpanded(g: Pick<FolderGroup, "cwd" | "open" | "pinned">, pref
   const chosen = prefs.expanded[g.cwd];
   return chosen ?? (g.open.length > 0 || g.pinned);
 }
+
+/** An agent of the accordion: what you chose wins; otherwise open (one agent on screen is the rule). */
+export function agentOpen(id: string, active: boolean, prefs: Pick<SidebarPrefs, "agentsExpanded">): boolean {
+  const chosen = prefs.agentsExpanded?.[id];
+  return chosen ?? (active || Object.keys(prefs.agentsExpanded ?? {}).length === 0);
+}
+
 export function loadPrefs(value?: unknown): SidebarPrefs {
   try {
     const v = (value ?? {}) as Partial<SidebarPrefs>;
     const strings = (x: unknown) => (Array.isArray(x) ? x.filter((s): s is string => typeof s === "string").slice(0, 200) : []);
-    const expanded: Record<string, boolean> = {};
-    if (v.expanded && typeof v.expanded === "object") for (const [k, b] of Object.entries(v.expanded).slice(0, 500)) if (typeof b === "boolean") expanded[k] = b;
-    return { view: v.view === "folder" ? "folder" : "recent", pinned: strings(v.pinned), expanded };
+    const flags = (x: unknown) => {
+      const out: Record<string, boolean> = {};
+      if (x && typeof x === "object") for (const [k, b] of Object.entries(x).slice(0, 500)) if (typeof b === "boolean") out[k] = b;
+      return out;
+    };
+    return { view: v.view === "folder" ? "folder" : "recent", pinned: strings(v.pinned), expanded: flags(v.expanded), agentsExpanded: flags(v.agentsExpanded) };
   } catch {
-    return { view: "recent", pinned: [], expanded: {} };
+    return { view: "recent", pinned: [], expanded: {}, agentsExpanded: {} };
   }
 }
 export function toggleIn(list: string[], item: string): string[] {

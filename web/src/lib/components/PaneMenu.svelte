@@ -32,7 +32,7 @@
     canDown?: boolean;
     limitReached?: boolean;
     canClose?: boolean;
-    /** Other windows, for "Move to window…". Empty when this is the only one. */
+    /** Other agents, for "Move to agent…". Empty when this is the only one. */
     windows?: { id: string; label: string }[];
     onmove?: (to: string | "new", name?: string) => void;
     onsplit: (dir: "row" | "col") => void;
@@ -52,40 +52,40 @@
   const items = $derived<Item[]>(
     [
       ...(tabs
-        ? [{ id: "tab", label: "New pane", hint: "Ctrl \\", icon: SquareSplitHorizontal, disabled: limitReached ? "At most 12 panes" : "", run: () => onsplit("row") }]
+        ? [{ id: "tab", label: "New bot", hint: "Ctrl \\", icon: SquareSplitHorizontal, disabled: limitReached ? "At most 12 bots" : "", run: () => onsplit("row") }]
         : [
-            { id: "right", label: "Split right", hint: "Ctrl \\", icon: Columns2, disabled: limitReached ? "At most 12 panes" : canRight ? "" : "Too narrow to split", run: () => onsplit("row") },
-            { id: "down", label: "Split down", hint: "Ctrl Shift \\", icon: Rows2, disabled: limitReached ? "At most 12 panes" : canDown ? "" : "Too short to split", run: () => onsplit("col") },
+            { id: "right", label: "Split right", hint: "Ctrl \\", icon: Columns2, disabled: limitReached ? "At most 12 bots" : canRight ? "" : "Too narrow to split", run: () => onsplit("row") },
+            { id: "down", label: "Split down", hint: "Ctrl Shift \\", icon: Rows2, disabled: limitReached ? "At most 12 bots" : canDown ? "" : "Too short to split", run: () => onsplit("col") },
           ]),
       // Rearranging the panes this window already has: trade places with a neighbour, one step at a time.
       ...(onmovepane
         ? ([
-            ["left", "Move pane left", "pane left of this one", ArrowLeft],
-            ["right", "Move pane right", "pane right of this one", ArrowRight],
-            ["up", "Move pane up", "pane above this one", ArrowUp],
-            ["down", "Move pane down", "pane below this one", ArrowDown],
+            ["left", "Move bot left", "bot left of this one", ArrowLeft],
+            ["right", "Move bot right", "bot right of this one", ArrowRight],
+            ["up", "Move bot up", "bot above this one", ArrowUp],
+            ["down", "Move bot down", "bot below this one", ArrowDown],
           ] as const).map(([dir, label, why, icon]) => ({
             id: `pane-${dir}`,
             label,
             hint: "",
             icon,
             disabled: moves[dir] ? "" : `No ${why}`,
-            group: "Move pane",
+            group: "Move bot",
             run: () => onmovepane(dir),
           }))
         : []),
       // A whole new shape for the panes there are, keeping their order.
       ...(onarrange
         ? [
-            { id: "lay-row", label: "Lay out in a row", hint: "", icon: Columns2, disabled: layouts.row ? "" : "Needs 2 panes", group: "Layout", run: () => onarrange("row") },
-            { id: "lay-col", label: "Lay out in a column", hint: "", icon: Rows2, disabled: layouts.col ? "" : "Needs 2 panes", group: "Layout", run: () => onarrange("col") },
-            { id: "lay-grid", label: "Lay out in a grid", hint: "", icon: LayoutGrid, disabled: layouts.grid ? "" : "Needs 4 panes", group: "Layout", run: () => onarrange("grid") },
+            { id: "lay-row", label: "Lay out in a row", hint: "", icon: Columns2, disabled: layouts.row ? "" : "Needs 2 bots", group: "Layout", run: () => onarrange("row") },
+            { id: "lay-col", label: "Lay out in a column", hint: "", icon: Rows2, disabled: layouts.col ? "" : "Needs 2 bots", group: "Layout", run: () => onarrange("col") },
+            { id: "lay-grid", label: "Lay out in a grid", hint: "", icon: LayoutGrid, disabled: layouts.grid ? "" : "Needs 4 bots", group: "Layout", run: () => onarrange("grid") },
           ]
         : []),
       // Moving a pane: to any other window, or to a new one. Both keep its session running.
-      ...windows.map((w) => ({ id: `move-${w.id}`, label: w.label, hint: "", icon: AppWindow, disabled: "", group: "Move to window", run: () => onmove?.(w.id) })),
-      ...(onmove ? [{ id: "move-new", label: "New window", hint: "", icon: AppWindowMac, disabled: "", group: windows.length ? "Move to window" : "Move to a new window", run: () => onmove("new") }] : []),
-      { id: "close", label: "Close pane", hint: "Alt X", icon: X, disabled: canClose ? "" : "The last pane stays", run: onclose },
+      ...windows.map((w) => ({ id: `move-${w.id}`, label: w.label, hint: "", icon: AppWindow, disabled: "", group: "Move to agent", run: () => onmove?.(w.id) })),
+      ...(onmove ? [{ id: "move-new", label: "New agent", hint: "", icon: AppWindowMac, disabled: "", group: windows.length ? "Move to agent" : "Move to a new agent", run: () => onmove("new") }] : []),
+      { id: "close", label: "Close bot", hint: "Alt X", icon: X, disabled: canClose ? "" : "The last bot stays", run: onclose },
       ...(oncloseSession ? [{ id: "close-session", label: "Close session", hint: "", icon: Trash2, disabled: "", run: oncloseSession }] : []),
     ],
   );
@@ -129,7 +129,7 @@
 </script>
 
 <div class="relative" bind:this={button}>
-  <Button variant="ghost" size="icon-sm" icon={Columns2} title="Pane" aria-label="Pane menu" aria-haspopup="menu" aria-expanded={open} aria-controls="{uid}-menu" active={open} onclick={toggle} />
+  <Button variant="ghost" size="icon-sm" icon={Columns2} title="Bot" aria-label="Bot menu" aria-haspopup="menu" aria-expanded={open} aria-controls="{uid}-menu" active={open} onclick={toggle} />
   {#if open}
     <div
       id="{uid}-menu"
