@@ -77,7 +77,11 @@ export function parseDirectives(replyText: string): ParsedReply {
 export interface QueueBridgeOptions {
   /** The shared channel store (same DB the inbox/ledger use). */
   db: Database;
-  sender: EvoSender;
+  /** Single-account sender (WA-2). Absent when `senderFor` is given. */
+  sender?: EvoSender;
+  /** Per-account senders (WA-5): each note is delivered as the account that
+   * owns its thread — never with another identity's instance token. */
+  senderFor?: (account: string) => EvoSender | undefined;
   consumer: string;
   /** Optional read-only handle on the shared sessions store, for cwd lookup. */
   sessionsDb?: Database;
@@ -117,6 +121,8 @@ interface OutboxRow {
   thread: string;
   quoted_id: string | null;
   participant: string | null;
+  /** Owning account ('' on pre-WA-5 rows): picks the sending identity. */
+  account: string;
   text: string;
   state: string;
   attempts: number;
@@ -154,7 +160,8 @@ const taskRecency = (id: string) => Number(/(\d+)$/.exec(id)?.[1] ?? 0);
 
 export class QueueBridge {
   private readonly db: Database;
-  private readonly sender: EvoSender;
+  private readonly sender: EvoSender | undefined;
+  private readonly senderFor: ((account: string) => EvoSender | undefined) | undefined;
   private readonly consumer: string;
   private readonly sessionsDb: Database | undefined;
   private readonly queueBin: string | undefined;
@@ -174,6 +181,8 @@ export class QueueBridge {
   constructor(options: QueueBridgeOptions) {
     this.db = options.db;
     this.sender = options.sender;
+    this.senderFor = options.senderFor;
+    if (!this.sender && !this.senderFor) throw new Error("queue bridge needs a sender or senderFor");
     this.consumer = options.consumer;
     this.sessionsDb = options.sessionsDb;
     this.queueBin = options.queueBin;
@@ -196,6 +205,10 @@ export class QueueBridge {
       state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS queue_event_consumers(
       consumer TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0);`);
+    // WA-5: the outbox remembers which account owns each note so delivery picks
+    // that account's identity. Additive column on pre-existing stores.
+    const outboxColumns = (this.db.query("PRAGMA table_info(channel_task_outbox)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (!outboxColumns.includes("account")) this.db.exec(`ALTER TABLE channel_task_outbox ADD COLUMN account TEXT NOT NULL DEFAULT ''`);
   }
 
   // ── Reply planning (called synchronously inside the consumer turn path) ──
@@ -549,6 +562,7 @@ export class QueueBridge {
             thread: mapping.thread,
             quoted_id: payload?.messageId ?? null,
             participant: payload?.sender ?? null,
+            account: mapping.account,
             text,
           });
           if (!enqueued) {
@@ -610,12 +624,12 @@ export class QueueBridge {
   }
 
   /** Journal a delivery intent; returns false when it already existed (dedupe by key). */
-  private enqueue(row: { dedupe_key: string; task: string | null; thread: string; quoted_id: string | null; participant: string | null; text: string }): boolean {
+  private enqueue(row: { dedupe_key: string; task: string | null; thread: string; quoted_id: string | null; participant: string | null; account?: string; text: string }): boolean {
     try {
       this.db.query(
-        `INSERT INTO channel_task_outbox(dedupe_key,task,thread,quoted_id,participant,text,state,attempts,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,'sending',0,?7)`,
-      ).run(row.dedupe_key, row.task, row.thread, row.quoted_id, row.participant, row.text, Date.now());
+        `INSERT INTO channel_task_outbox(dedupe_key,task,thread,quoted_id,participant,account,text,state,attempts,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,'sending',0,?8)`,
+      ).run(row.dedupe_key, row.task, row.thread, row.quoted_id, row.participant, row.account ?? "", row.text, Date.now());
       return true;
     } catch {
       return false;
@@ -626,7 +640,7 @@ export class QueueBridge {
    * message that asked, or plain when the origin is unavailable. */
   private async enqueueChatNote(row: PendingRow, message: Inbound | undefined, key: string, text: string): Promise<void> {
     const dedupeKey = `msg-${row.seq}-${key}`;
-    if (!this.enqueue({ dedupe_key: dedupeKey, task: null, thread: row.thread, quoted_id: message?.messageId ?? null, participant: message?.sender ?? null, text })) return;
+    if (!this.enqueue({ dedupe_key: dedupeKey, task: null, thread: row.thread, quoted_id: message?.messageId ?? null, participant: message?.sender ?? null, account: row.account, text })) return;
     await this.deliverOutboxRow(dedupeKey);
   }
 
@@ -635,7 +649,7 @@ export class QueueBridge {
     if (!mapping) return;
     const payload = this.inboxPayload(mapping.inbox_seq);
     const key = `op-${task}-${Date.now()}`;
-    if (!this.enqueue({ dedupe_key: key, task, thread: mapping.thread, quoted_id: payload?.messageId ?? null, participant: payload?.sender ?? null, text })) return;
+    if (!this.enqueue({ dedupe_key: key, task, thread: mapping.thread, quoted_id: payload?.messageId ?? null, participant: payload?.sender ?? null, account: mapping.account, text })) return;
     await this.deliverOutboxRow(key);
   }
 
@@ -645,18 +659,31 @@ export class QueueBridge {
     for (const { dedupe_key } of rows) await this.deliverOutboxRow(dedupe_key);
   }
 
+  /** The identity that delivers this row: its owning account's sender, or the
+   * single-account sender. An account with no configured sender fails loudly —
+   * silent cross-identity delivery is exactly what WA-5 forbids. */
+  private senderForRow(row: { account?: string }): EvoSender {
+    if (this.senderFor) {
+      const resolved = this.senderFor(row.account ?? "");
+      if (!resolved) throw new Error(`no sender configured for account ${row.account || "(empty)"}`);
+      return resolved;
+    }
+    return this.sender as EvoSender;
+  }
+
   /** One delivery attempt with evidence-based uncertainty resolution, the same
    * discipline as the reply ledger: a non-201 never marks sent; text evidence
    * in the thread's recent outgoing history does. */
   private async deliverOutboxRow(dedupeKey: string): Promise<boolean> {
     const row = this.db.query("SELECT * FROM channel_task_outbox WHERE dedupe_key=?1").get(dedupeKey) as OutboxRow | undefined;
     if (!row || row.state === "sent") return true;
+    const sender = this.senderForRow(row);
     if (row.attempts > 0) {
       // Second pass: settle, then look for the earlier attempt before resending.
-      const delivered = await this.findDelivered(row);
+      const delivered = await this.findDelivered(sender, row);
       if (delivered) return this.markSent(row, delivered);
     }
-    const outcome = await this.sender.sendText({
+    const outcome = await sender.sendText({
       number: row.thread,
       text: row.text,
       ...(row.quoted_id ? { quoted: { id: row.quoted_id, remoteJid: row.thread, ...(row.participant ? { participant: row.participant } : {}) } } : {}),
@@ -667,10 +694,10 @@ export class QueueBridge {
     return false;
   }
 
-  private async findDelivered(row: OutboxRow): Promise<string | null> {
+  private async findDelivered(sender: EvoSender, row: OutboxRow): Promise<string | null> {
     let recent: Array<{ id: string; text: string; ts: number | null }>;
     try {
-      recent = await this.sender.recentOutgoing(row.thread, 50);
+      recent = await sender.recentOutgoing(row.thread, 50);
     } catch {
       return null; // history unreadable: assume nothing, keep retrying
     }

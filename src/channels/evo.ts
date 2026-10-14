@@ -28,6 +28,17 @@ export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[
     }
     const text = message.conversation ?? message.extendedTextMessage?.text ?? message.imageMessage?.caption ?? message.documentMessage?.caption ?? "";
     const context = message.extendedTextMessage?.contextInfo ?? message.imageMessage?.contextInfo ?? message.audioMessage?.contextInfo;
+    // Explicit @mentions — the group mention policy compares these against the
+    // trusted account's own jid; a webhook can never claim identity through
+    // this list. The deployed fork serializes contextInfo.mentionedJid
+    // (fork.rs), Baileys' canonical name is mentionedJidArray: read both.
+    const mentions: string[] = [];
+    for (const source of [context?.mentionedJid, context?.mentionedJidArray, (message as Record<string, unknown>).mentionedJid]) {
+      if (Array.isArray(source)) for (const jid of source) {
+        if (typeof jid === "string" && jid.length > 0 && jid.length <= 256 && !/[\x00-\x1f]/.test(jid) && !mentions.includes(jid)) mentions.push(jid);
+      }
+    }
+    if (mentions.length > 64) throw new Error("Evo mention list exceeds 64 jids");
     // The weai fork's MESSAGES_UPSERT data carries no messageTimestamp; the
     // RFC3339 `date_time` on the envelope (delivery wall clock) is the only
     // time it provides, so an absent messageTimestamp falls back to it. A
@@ -47,6 +58,6 @@ export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[
       if (Number.isFinite(parsed) && new Date(parsed).toISOString() === envelope.date_time) sentAt = parsed;
     }
     if (typeof text !== "string" || !Number.isFinite(sentAt) || sentAt < 0) throw new Error("invalid Evo content/time");
-    return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, sentAt: Math.trunc(sentAt), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, attachments }];
+    return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, sentAt: Math.trunc(sentAt), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, mentions: mentions.length ? mentions : undefined, attachments }];
   });
 }

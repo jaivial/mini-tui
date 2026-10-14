@@ -10,8 +10,12 @@
  *   EVO_INBOX_DB            the shared channel store (same as the receiver's)
  *   EVO_CONSUMER_NAME       durable consumer name (its inbox cursor)
  *   EVO_API_URL             evo-weai base URL (loopback)
- *   EVO_INSTANCE            instance name (mini-assistant)
- *   EVO_INSTANCE_TOKEN      instance apikey (0600 env, never logged)
+ *   EVO_ACCOUNTS            WA-5 multichat: JSON array, one identity per
+ *                           instance — [{"account","instance","token","jid?"}…]
+ *                           (0600 env; tokens are read, never logged)
+ *   EVO_INSTANCE            single-account form (WA-2), used when EVO_ACCOUNTS
+ *   EVO_INSTANCE_TOKEN      is absent; EVO_ACCOUNT_JID adds the mention-gate
+ *                           jid for that one identity
  *   MINITUI_DB_PATH         the shared sessions.db
  *   EVO_CONSUMER_CWD        working directory of the agent turns (default ~/wa-assistant)
  *   MINITUI_MODEL           model for new sessions (empty = default chain)
@@ -43,11 +47,13 @@ import { join } from "node:path";
 
 import { ChannelInbox } from "./inbox";
 import { SendLedger, createEvoSender } from "./evoSend";
+import { parseConsumerAccounts } from "./accounts";
 import { createEvoMediaClient, MediaStore } from "./evoMedia";
 import { createWhisperTranscriber } from "./transcribe";
 import { LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 import { startChannelConsumer } from "./consumer";
 import { QueueBridge } from "./queueBridge";
+import { planGroupCreation as planGroupCreationFlow } from "./groupBridge";
 import { openDb } from "../sessions";
 
 function required(name: string): string {
@@ -61,12 +67,22 @@ function required(name: string): string {
 
 const inboxPath = required("EVO_INBOX_DB");
 const inbox = new ChannelInbox(inboxPath);
-const sender = createEvoSender({
+// WA-5 multichat: EVO_ACCOUNTS is a JSON array (one identity per instance);
+// absent, the WA-2 single-account env trio still configures exactly one.
+const accounts = parseConsumerAccounts();
+if (!accounts.length) {
+  console.error("consumer: no evo accounts configured (set EVO_ACCOUNTS or EVO_INSTANCE + EVO_INSTANCE_TOKEN)");
+  process.exit(2);
+}
+const senders = new Map(accounts.map((account) => [account.account, createEvoSender({
   baseUrl: required("EVO_API_URL"),
-  instance: required("EVO_INSTANCE"),
-  token: required("EVO_INSTANCE_TOKEN"),
+  instance: account.instance,
+  token: account.token,
   timeoutMs: Number(process.env.EVO_SEND_TIMEOUT_MS ?? 20_000),
-});
+})]));
+const defaultAccount = accounts[0]!;
+const sender = senders.get(defaultAccount.account)!;
+const accountJids = new Map(accounts.map((account) => [account.account, account.jid]));
 // Attachment handling (WA-4): enabled when a whisper binary is present. Every
 // bound is explicit; the media store's cleanup is owned by this consumer.
 // Numeric envs are validated: a garbage value falls back to the default rather
@@ -118,6 +134,7 @@ const sessionsDb = process.env.MINITUI_DB_PATH ? openDb(process.env.MINITUI_DB_P
 const queueBridge = new QueueBridge({
   db: inbox.db,
   sender,
+  senderFor: (account) => senders.get(account),
   consumer: "queue-events",
   sessionsDb,
   queueBin: process.env.MINITUI_QUEUE_BIN || undefined,
@@ -131,6 +148,30 @@ const queueBridge = new QueueBridge({
 const { done, stop } = startChannelConsumer({
   inbox,
   sender,
+  senderFor: (account) => senders.get(account),
+  accountJids,
+  // Group-session bridge (WA-5): [[mini-newgroup: …]] creates a fresh isolated
+  // group session on the requesting account's own instance (works for the
+  // single-account envs too — `accounts` always has one entry). The photo is
+  // the static bizbots mascot frame shipped in src/channels/assets.
+  planGroupCreation: (row, message, replyText) =>
+    planGroupCreationFlow(
+      {
+        inbox,
+        accountFor: (account) => {
+          const entry = accounts.find((a) => a.account === account);
+          return entry ? { instance: entry.instance, token: entry.token } : undefined;
+        },
+        baseUrl: process.env.EVO_API_URL ?? "",
+        photoPath: process.env.EVO_GROUP_PHOTO || undefined,
+        newSessionId: (account) => `wa-${account}-${[...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).padStart(2, "0")).join("")}`,
+        senderFor: (account) => senders.get(account),
+        log,
+      },
+      row,
+      message,
+      replyText,
+    ),
   ledger: new SendLedger(inbox.db),
   consumer: required("EVO_CONSUMER_NAME"),
   sessionsDbPath: process.env.MINITUI_DB_PATH,
