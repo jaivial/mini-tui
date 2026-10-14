@@ -19,8 +19,8 @@ import { loadLastModel } from "../lastModel";
 import { runnerSupportsCompactOnly, spawnMini, tailLog, type MiniRun } from "../mini/spawn";
 import { modelEnv } from "../providers";
 import {
-  DEFAULT_DB_PATH,
   createSession,
+  defaultDbPath,
   findSession,
   latestSession,
   openDb,
@@ -201,7 +201,9 @@ async function resolveRun(args: HeadlessArgs, io: HeadlessIO, db: () => Database
 export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO()): Promise<number> {
   const started = Date.now();
   let dbHandle: Database | undefined;
-  const db = () => (dbHandle ??= openDb(DEFAULT_DB_PATH));
+  // Resolved per call (not at import): an embedding process (the channel
+  // consumer) may pass its own store or point MINITUI_DB_PATH after module load.
+  const db = () => (dbHandle ??= openDb(args.dbPath ?? defaultDbPath()));
   const errorOut = (message: string) => {
     if (args.outputFormat === "text") io.stderr(`error: ${message}\n`);
     else io.stdout(`${JSON.stringify({ type: "result", subtype: "error", is_error: true, error: message })}\n`);

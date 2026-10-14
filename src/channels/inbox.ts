@@ -140,5 +140,18 @@ export class ChannelInbox {
       this.db.query("INSERT INTO channel_consumers(consumer,cursor) VALUES(?1,?2) ON CONFLICT(consumer) DO UPDATE SET cursor=excluded.cursor").run(consumer,delivery.seq);
     }).immediate();
   }
+  /** A new consumer starts at the present: its cursor begins at the newest
+   * accepted seq, so history accepted before it first ran is never replayed.
+   * An existing cursor is never touched. Returns the (possibly fresh) cursor. */
+  sync(consumer: string): number {
+    if (!bounded(consumer)) throw new Error("invalid inbox consumer");
+    return this.db.transaction(() => {
+      const existing = this.db.query("SELECT cursor FROM channel_consumers WHERE consumer=?1").get(consumer) as { cursor: number } | null;
+      if (existing) return existing.cursor;
+      const newest = this.db.query("SELECT COALESCE(MAX(seq),0) AS seq FROM channel_inbox").get() as { seq: number };
+      this.db.query("INSERT INTO channel_consumers(consumer,cursor) VALUES(?1,?2)").run(consumer, newest.seq);
+      return newest.seq;
+    }).immediate();
+  }
   close() { this.db.close(); }
 }
