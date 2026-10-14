@@ -16,7 +16,7 @@
   import Skeleton from "./Skeleton.svelte";
   import { store } from "../stores/sessions.svelte";
   import { baseName, relativeTime, cost } from "../format";
-  import { statusLine, statusMood, type PetMood } from "../mascot";
+  import { HOUSE_MASCOT, mascotSpecFor, statusLine, statusState, type AgentMascotState } from "../mascot";
   import Mascot from "./Mascot.svelte";
   import type { SessionState } from "../types";
   import { pwa, promptInstall } from "../pwa.svelte";
@@ -78,8 +78,8 @@
       label: string;
       name: string | null;
       active: boolean;
-      /** The agent mascot's pose, from its bots' states. */
-      mood: PetMood;
+      /** The agent mascot's state, from its bots' states. */
+      state: AgentMascotState;
       botCount: number;
       /** Its bots, in the agent's reading order. */
       bots: {
@@ -327,7 +327,8 @@
               <div class="flex items-center gap-2.5">
                 <span class="relative">
                   <Mascot
-                    mood={statusMood(session.status)}
+                    spec={mascotSpecFor(session.id)}
+                    state={statusState(session.status)}
                     size={34}
                     class="rounded-xl bg-surface/80 p-px elev-1"
                   />
@@ -401,7 +402,7 @@
               disabled={openingId === item.id}
               onclick={() => onopenhistory(item)}
             >
-              <Mascot mood="offline" size={26} class="rounded-lg bg-surface/60 p-px elev-1" />
+              <Mascot spec={mascotSpecFor(item.id)} state="idle" dim size={26} class="rounded-lg bg-surface/60 p-px elev-1" />
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-1.5">
                   <span class="min-w-0 flex-1 truncate font-display text-[12.5px] leading-4 tracking-[-0.01em] text-ink-muted">{item.title || "Untitled"}</span>
@@ -423,7 +424,7 @@
   <!-- Brand / workspace -->
   <div class="flex items-center gap-2 px-3 py-2.5">
     <!-- The house pet greets you every time the rail opens. -->
-    <Mascot mood="wave" greet size={22} class="rounded-lg bg-brand-soft p-px" />
+    <Mascot spec={HOUSE_MASCOT} greet size={22} class="rounded-lg bg-brand-soft p-px" />
     <span class="min-w-0 flex-1 truncate font-display text-[13.5px] leading-4 font-semibold tracking-[-0.01em]">mini-tui</span>
     <!--
       The connection state is a dot, not a word: it is ambient information and
@@ -500,7 +501,7 @@
                   onpointerup={rowUp}
                   onpointercancel={rowUp}
                 >
-                  <Mascot mood={a.mood} size={22} class="shrink-0 rounded-lg bg-surface/80 p-px elev-1" />
+                  <Mascot spec={mascotSpecFor(a.id, a.name ?? a.label)} state={a.state} size={22} class="shrink-0 rounded-lg bg-surface/80 p-px elev-1" />
                   <span class="min-w-0 flex-1 truncate text-[12px] leading-4">{a.label}</span>
                   {#if windowTasks[a.id]}
                     <TasksButton tasks={windowTasks[a.id]} onopen={() => ontasks?.()} />
@@ -542,7 +543,7 @@
                       onpointercancel={rowUp}
                     >
                       <span class="relative shrink-0">
-                        <Mascot mood={statusMood(b.status)} size={24} class="rounded-lg bg-surface/60 p-px" />
+                        <Mascot spec={mascotSpecFor(b.paneId)} state={statusState(b.status)} size={24} class="rounded-lg bg-surface/60 p-px" />
                         <span
                           class="absolute -right-0.5 -bottom-0.5 size-2 rounded-full border border-canvas {b.status === 'running'
                             ? 'pulse-live bg-live'

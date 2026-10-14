@@ -237,8 +237,8 @@
 }
 
 /*
- * Mascot motion (the bizbots pet library, web/public/mascots). Each state has
- * one animation, all opacity/transform so they never reflow anything; the
+ * Mascot motion (the squishmoji avatars, rendered client-side from their specs). Each
+ * state has one animation, all opacity/transform so they never reflow anything; the
  * global reduced-motion switch flattens them with everything else.
  */
 @keyframes pet-float {
@@ -282,6 +282,16 @@
     transform: scale(1.12);
   }
 }
+@keyframes pet-swap {
+  0% {
+    opacity: 0.25;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 @utility pet-idle {
   animation: pet-float 3.8s var(--ease-standard) infinite;
 }
@@ -291,6 +301,10 @@
 /* The greeting: three waves, then it rests (an `animationend` one-shot). */
 @utility pet-wave {
   animation: pet-wave 0.8s var(--ease-emphasized) 3;
+}
+/* An expression swap (state change): a quick soften-in, so the face morphs rather than flashes. */
+@utility pet-swap {
+  animation: pet-swap 0.22s var(--ease-standard);
 }
 @utility pet-halo {
   animation: pet-halo 1.6s var(--ease-standard) infinite;

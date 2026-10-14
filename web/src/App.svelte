@@ -16,7 +16,7 @@
   import { store } from "./lib/stores/sessions.svelte";
   import { panes } from "./lib/stores/panes.svelte";
 import { windows } from "./lib/stores/windows.svelte";
-  import { agentMood, subagentRows } from "./lib/agents";
+  import { agentState, subagentRows } from "./lib/agents";
   import { relativeTime } from "./lib/format";
   import { ui } from "./lib/stores/ui.svelte";
   import { tasks } from "./lib/stores/tasks.svelte";
@@ -389,8 +389,8 @@ import { windows } from "./lib/stores/windows.svelte";
       label: windows.label(w.id, (wid) => panes.paneCount(wid)),
       name: w.name,
       active: w.id === windows.activeId,
-      // The agent's mascot poses as its bots do: any one working and the agent is thinking.
-      mood: agentMood(panes.panesIn(w.id).map((p) => ({ status: (p.sessionId ? store.sessions[p.sessionId]?.status : null) ?? null }))),
+      // The agent's mascot reacts as its bots do: any one working and the agent is thinking.
+      state: agentState(panes.panesIn(w.id).map((p) => ({ status: (p.sessionId ? store.sessions[p.sessionId]?.status : null) ?? null }))),
       botCount: panes.paneCount(w.id),
       bots: panes.panesIn(w.id).map((p) => {
         const s = p.sessionId ? store.sessions[p.sessionId] : null;

@@ -7,16 +7,16 @@
  * started subagents of its own, which each are sessions too — the tree below walks them as deep as
  * the data goes.
  */
-import type { PetMood } from "./mascot";
+import type { AgentMascotState } from "./mascot";
 import type { SessionState, SubagentView } from "./types";
 
-/** The agent's own pose, from its bots' states: one mascot speaks for the whole agent. */
-export function agentMood(bots: { status: SessionState["status"] | null }[]): PetMood {
+/** The agent's own state, from its bots' states: one mascot speaks for the whole agent. */
+export function agentState(bots: { status: SessionState["status"] | null }[]): AgentMascotState {
   const real = bots.filter((b) => b.status !== null);
   if (!real.length) return "idle";
   if (real.some((b) => b.status === "running")) return "thinking";
-  if (real.some((b) => b.status === "error" || b.status === "interrupted")) return "break";
-  if (real.every((b) => b.status === "done")) return "happy";
+  if (real.some((b) => b.status === "error" || b.status === "interrupted")) return "error";
+  if (real.every((b) => b.status === "done")) return "success";
   return "idle";
 }
 

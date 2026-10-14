@@ -4,6 +4,7 @@
   import Button from "./Button.svelte";
   import Badge from "./Badge.svelte";
   import Mascot from "./Mascot.svelte";
+  import { mascotSpecFor } from "../mascot";
   import { store } from "../stores/sessions.svelte";
   import { ui, PALETTES } from "../stores/ui.svelte";
   import { cost, duration } from "../format";
@@ -78,7 +79,7 @@
     <div class="col-start-2 flex min-w-0 items-center gap-2.5 self-end pane-sm:self-center">
       <!-- The assistant greets you when its chat opens, and works while it runs. -->
       {#key session.id}
-        <Mascot mood={session.status === "running" ? "thinking" : "wave"} greet size={30} class="rounded-xl bg-surface/80 p-px elev-1" />
+        <Mascot spec={mascotSpecFor(session.id)} state={session.status === "running" ? "thinking" : "idle"} greet size={30} class="rounded-xl bg-surface/80 p-px elev-1" />
       {/key}
       <h1 class="truncate font-display text-[14px] leading-4 font-semibold tracking-[-0.01em]">{session.title || "Untitled"}</h1>
       <!--

@@ -1,6 +1,6 @@
-/** The agents accordion's rules: an agent's mood, and the subagent tree under a bot. */
+/** The agents accordion's rules: an agent's state, and the subagent tree under a bot. */
 import { describe, expect, test } from "bun:test";
-import { agentMood, subagentRows, subRowLabel, type SubRow } from "../web/src/lib/agents";
+import { agentState, subagentRows, subRowLabel, type SubRow } from "../web/src/lib/agents";
 import type { SubagentView } from "../web/src/lib/types";
 
 const view = (sessionId: string, state = "running", name = sessionId): SubagentView => ({
@@ -17,20 +17,20 @@ const view = (sessionId: string, state = "running", name = sessionId): SubagentV
   memPeak: 0,
 });
 
-describe("agentMood", () => {
-  test("an agent with no bots, or only new chats, just floats", () => {
-    expect(agentMood([])).toBe("idle");
-    expect(agentMood([{ status: null }, { status: null }])).toBe("idle");
+describe("agentState", () => {
+  test("an agent with no bots, or only new chats, just idles", () => {
+    expect(agentState([])).toBe("idle");
+    expect(agentState([{ status: null }, { status: null }])).toBe("idle");
   });
   test("any bot working and the agent is thinking", () => {
-    expect(agentMood([{ status: "done" }, { status: "running" }])).toBe("thinking");
+    expect(agentState([{ status: "done" }, { status: "running" }])).toBe("thinking");
   });
-  test("a snag beats happiness: an error among finished bots is a break", () => {
-    expect(agentMood([{ status: "done" }, { status: "error" }])).toBe("break");
-    expect(agentMood([{ status: "done" }, { status: "interrupted" }])).toBe("break");
+  test("a snag beats happiness: an error among finished bots is an error", () => {
+    expect(agentState([{ status: "done" }, { status: "error" }])).toBe("error");
+    expect(agentState([{ status: "done" }, { status: "interrupted" }])).toBe("error");
   });
-  test("all finished and well: celebrate", () => {
-    expect(agentMood([{ status: "done" }, { status: "done" }])).toBe("happy");
+  test("all finished and well: success", () => {
+    expect(agentState([{ status: "done" }, { status: "done" }])).toBe("success");
   });
 });
 
