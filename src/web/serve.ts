@@ -8,7 +8,7 @@
  *   bun src/web/serve.ts [--port 4317] [--host 127.0.0.1]
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 
 import { SessionManager, loadHosts, saveHosts, probeHost, type RemoteHostRecord } from "./sessions";
@@ -23,7 +23,11 @@ import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
 import { homedir } from "node:os";
 import { rustAgentBin } from "../mini/spawn";
 import { ChannelInbox } from "../channels/inbox";
+import type { Inbound } from "../channels/inbox";
 import { evoReceiver } from "../channels/evoReceiver";
+import { EvoSender } from "../channels/evoSender";
+import { SessionBridge } from "../channels/sessionBridge";
+import { startChannelConsumer } from "../channels/consumer";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { syncAllSkills } from "../skills";
@@ -60,19 +64,26 @@ const HOST = flag("host", process.env.MINITUI_WEB_HOST ?? "127.0.0.1");
 // unknown path. The inbox database defaults to the shared channel store;
 // EVO_INBOX_DB overrides it for an isolated deployment. The secret is never
 // logged here; evoReceiver answers counts only.
+let sharedInbox: ChannelInbox | null | undefined;
+function channelInbox(): ChannelInbox | null {
+  if (sharedInbox !== undefined) return sharedInbox;
+  try {
+    sharedInbox = new ChannelInbox(process.env.EVO_INBOX_DB ?? join(homedir(), ".local/share/mini-tui/channels.sqlite"));
+  } catch (error) {
+    log(`channel inbox unavailable: ${error instanceof Error ? error.message : "invalid configuration"}`);
+    sharedInbox = null;
+  }
+  return sharedInbox;
+}
 let evoHandler: ((request: Request) => Promise<Response>) | null | undefined;
 function evoRoute(): ((request: Request) => Promise<Response>) | null {
   if (evoHandler !== undefined) return evoHandler;
   const account = process.env.EVO_RECEIVER_ACCOUNT ?? "";
   const webhookSecret = process.env.EVO_WEBHOOK_SECRET ?? "";
   if (!account || !webhookSecret) return (evoHandler = null);
-  try {
-    const inbox = new ChannelInbox(process.env.EVO_INBOX_DB ?? join(homedir(), ".local/share/mini-tui/channels.sqlite"));
-    evoHandler = evoReceiver(inbox, { account, webhookSecret });
-  } catch (error) {
-    log(`evo receiver disabled: ${error instanceof Error ? error.message : "invalid configuration"}`);
-    evoHandler = null;
-  }
+  const inbox = channelInbox();
+  if (!inbox) return (evoHandler = null);
+  evoHandler = evoReceiver(inbox, { account, webhookSecret });
   return evoHandler;
 }
 
@@ -165,8 +176,86 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.once(sig, () => {
     sessions.persistAll();
     terminals.killAll();
+    channelConsumer?.stop();
     process.exit(0);
   });
+
+/**
+ * The channel consumer (src/channels/consumer.ts): turns accepted inbox rows
+ * into real session turns and sends each session's answer back through Evo as a
+ * quoted reply. Env-gated like the receiver, and only with both halves present:
+ * EVO_CONSUMER=1, the Evo global key in EVO_SENDER_APIKEY (0600 service env,
+ * never logged), plus optional EVO_CONSUMER_NAME / _CWD / _MODEL / _POLL_MS /
+ * _TURN_TIMEOUT_MS and EVO_SENDER_BASE_URL (loopback only) / _INSTANCE. The
+ * binding's session id IS the mini session id: one thread, one stable session.
+ */
+let channelConsumer: ReturnType<typeof startChannelConsumer> | undefined;
+function startChannelRuntime(): void {
+  if (process.env.EVO_CONSUMER !== "1") return;
+  const account = process.env.EVO_RECEIVER_ACCOUNT ?? "";
+  const apiKey = process.env.EVO_SENDER_APIKEY ?? "";
+  if (!apiKey) {
+    log("channel consumer disabled: EVO_SENDER_APIKEY missing");
+    return;
+  }
+  const inbox = channelInbox();
+  if (!inbox) {
+    log("channel consumer disabled: no channel inbox");
+    return;
+  }
+  try {
+    const sender = new EvoSender(inbox.db, {
+      baseUrl: process.env.EVO_SENDER_BASE_URL ?? "http://127.0.0.1:8952",
+      instance: process.env.EVO_SENDER_INSTANCE ?? account,
+      apiKey,
+      timeoutMs: Number(process.env.EVO_SENDER_TIMEOUT_MS ?? "") || undefined,
+    });
+    const cwd = process.env.EVO_CONSUMER_CWD ?? join(homedir(), ".local/share/mini-tui/channels-workspace");
+    mkdirSync(cwd, { recursive: true });
+    const bridge = new SessionBridge(inbox.db, {
+      cwd,
+      model: process.env.EVO_CONSUMER_MODEL ?? undefined,
+      turnTimeoutMs: Number(process.env.EVO_CONSUMER_TURN_TIMEOUT_MS ?? "") || undefined,
+      errorNotice: process.env.EVO_CONSUMER_ERROR_NOTICE ?? "No pude procesar el mensaje ahora mismo; inténtalo de nuevo en unos minutos.",
+      attachmentNotice: process.env.EVO_CONSUMER_ATTACHMENT_NOTICE ?? "Todavía no puedo leer adjuntos: reenvíalo como texto.",
+    }, {
+      get: async (id) => {
+        try {
+          return await held(id);
+        } catch {
+          return undefined;
+        }
+      },
+      create: async (init) => {
+        await sessions.create({ id: init.id, prompt: init.prompt, cwd: init.cwd, model: init.model, target: "local" });
+      },
+      send: (id, prompt) => sessions.send(id, prompt),
+      log: (message) => log(`channel session: ${message}`),
+    });
+    channelConsumer = startChannelConsumer(inbox, {
+      consumer: process.env.EVO_CONSUMER_NAME ?? "evo-main",
+      pollMs: Number(process.env.EVO_CONSUMER_POLL_MS ?? "") || undefined,
+    }, {
+      process: async (row) => {
+        const reply = await bridge.deliver(row);
+        if (!reply) return; // nothing the agent said is worth a wire send
+        const inbound = JSON.parse(row.payload) as Inbound;
+        await sender.sendReply(row.seq, {
+          thread: row.thread,
+          quoteId: inbound.replyTo || inbound.messageId,
+          sender: inbound.sender,
+          isGroup: row.thread.endsWith("@g.us"),
+          text: inbound.text,
+        }, reply);
+      },
+      log: (message) => log(`channel consumer: ${message}`),
+    });
+    log(`channel consumer started (account ${account})`);
+  } catch (error) {
+    log(`channel consumer disabled: ${error instanceof Error ? error.message : "invalid configuration"}`);
+  }
+}
+startChannelRuntime();
 
 /** Put a session away everywhere (its socket subscribers and the shared stream). It stays in the history. */
 /**

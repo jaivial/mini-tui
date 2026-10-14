@@ -510,13 +510,15 @@ export class SessionManager {
   }
 
   async create(options: {
+    /** Exact session id. The channel layer passes the binding's deterministic id; everyone else lets the manager pick. */
+    id?: string;
     prompt: string;
     cwd?: string;
     model?: string;
     target: "local" | "remote";
     hostId?: string;
   }): Promise<LiveSession> {
-    const id = newId();
+    const id = options.id ?? newId();
     const title = titleFor(options.prompt);
     if (options.model?.trim()) saveLastModel(options.model.trim());
     const model = options.model || "";
