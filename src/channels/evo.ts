@@ -41,7 +41,10 @@ export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[
     } else if (typeof rawTimestamp === "string" && /^\d+(\.\d+)?$/.test(rawTimestamp)) {
       sentAt = Number(rawTimestamp) * 1000;
     } else if (rawTimestamp == null && typeof envelope.date_time === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(envelope.date_time)) {
-      sentAt = Date.parse(envelope.date_time);
+      // Round-trip through the one canonical form: rejects impossible
+      // calendar dates (e.g. 2023-02-29) that Date.parse would normalize.
+      const parsed = Date.parse(envelope.date_time);
+      if (Number.isFinite(parsed) && new Date(parsed).toISOString() === envelope.date_time) sentAt = parsed;
     }
     if (typeof text !== "string" || !Number.isFinite(sentAt) || sentAt < 0) throw new Error("invalid Evo content/time");
     return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, sentAt: Math.trunc(sentAt), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, attachments }];

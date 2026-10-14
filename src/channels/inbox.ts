@@ -74,7 +74,8 @@ export class ChannelInbox {
         // envelope. Compare every content field structurally; any difference
         // under the same id is reuse, never a duplicate.
         const previous = JSON.parse(old.original) as Inbound;
-        const sameContent = previous.channel === message.channel && previous.account === message.account && previous.thread === message.thread && previous.messageId === message.messageId && previous.sender === message.sender && previous.text === message.text && (previous.replyTo ?? null) === (message.replyTo ?? null) && JSON.stringify(previous.attachments) === JSON.stringify(message.attachments);
+        const canonical = (attachments: Attachment[]) => JSON.stringify(attachments.map(a => ({ id: a.id, kind: a.kind, mime: a.mime ?? null, providerRef: a.providerRef ?? null, transcript: a.transcript ?? null, transcriptionState: a.transcriptionState ?? null })));
+        const sameContent = previous.channel === message.channel && previous.account === message.account && previous.thread === message.thread && previous.messageId === message.messageId && previous.sender === message.sender && previous.text === message.text && (previous.replyTo ?? null) === (message.replyTo ?? null) && canonical(previous.attachments) === canonical(message.attachments);
         if (!sameContent) throw new Error("message identifier reused with different content");
         return { seq: old.seq, duplicate: true, session: old.session, project: old.project };
       }
