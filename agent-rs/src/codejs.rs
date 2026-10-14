@@ -54,6 +54,7 @@ pub fn outcome(args: &Value, host: &mut CodeCtx, state: &mut crate::util::Obj) -
         .unwrap_or(300)
         .clamp(1, 300);
     let deadline = started + std::time::Duration::from_secs(secs);
+    let _host_deadline = crate::environment::host_deadline(deadline);
     let run = || -> Result<String, String> {
         if code.trim().is_empty() || code.len() > crate::writing::WRITE_HARD_CAP {
             return Err("Missing or oversized code body".into());

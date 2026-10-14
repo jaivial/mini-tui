@@ -11,6 +11,25 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+// The codejs host bridge runs synchronously on this agent thread. Propagate its
+// enclosing deadline into subprocess waits without changing other agents or
+// setting the process-global STOP flag.
+thread_local! {
+    static HOST_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) struct HostDeadlineGuard(Option<Instant>);
+impl Drop for HostDeadlineGuard {
+    fn drop(&mut self) { HOST_DEADLINE.with(|slot| slot.set(self.0)); }
+}
+pub(crate) fn host_deadline(deadline: Instant) -> HostDeadlineGuard {
+    HostDeadlineGuard(HOST_DEADLINE.with(|slot| {
+        let old = slot.get();
+        slot.set(Some(old.map_or(deadline, |end| end.min(deadline))));
+        old
+    }))
+}
+
 pub enum Outcome {
     Output(Value),
     /// The command printed the submit marker: the run ends with this submission.
@@ -193,7 +212,8 @@ impl Child {
     fn wait_collect(&mut self, label: &str, timeout: u64) -> Result<(String, i64), (String, String, String)> {
         use crate::agent::STOP;
         use std::sync::atomic::Ordering;
-        let deadline = Instant::now() + Duration::from_secs(timeout.max(1));
+        let command_deadline = Instant::now() + Duration::from_secs(timeout.max(1));
+        let deadline = HOST_DEADLINE.with(|slot| slot.get().map_or(command_deadline, |end| end.min(command_deadline)));
         let status = loop {
             match self.process.try_wait() {
                 Ok(Some(status)) => break Some(status),
