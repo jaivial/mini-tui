@@ -1,37 +1,40 @@
 @import "tailwindcss";
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource-variable/space-grotesk";
 
 /* ------------------------------------------------------------------ *
- * Design tokens: shadcn structure (semantic tokens, 6/8/12/16 radii) in
- * Cursor's voice (warm cream / warm charcoal, one orange accent,
- * hairline-only depth). Geist for UI, JetBrains Mono for every code surface.
- *
- * The six mini-tui themes (src/ui/theme.ts) map onto --theme-accent here so
- * the web app keeps the terminal's identity.
+ * Design tokens: assistant-persona voice (v2 redesign). Cool deep
+ * space, one violet brand accent, warm sunset reserved for "live".
+ * Hierarchy comes from surface steps + hairlines, never shadows.
+ * Space Grotesk carries the persona surfaces (names, headers);
+ * Geist stays for dense UI, JetBrains Mono for every code surface.
  * ------------------------------------------------------------------ */
 @theme {
-  /* ---- Cursor x shadcn: warm neutrals, one orange accent, hairline depth.
-     Every text/surface pair below was measured: body text >= 6:1, the faintest
-     text >= 4.5:1, so "quiet" never turns into "unreadable". */
-  --color-canvas: #161612;
-  --color-surface: #1c1c17;
-  --color-raised: #26251f;
-  --color-overlay: #2c2b24;
+  /* ---- Cool dark ladder: canvas → surface → raised → overlay, each a
+     quiet step up. Text pairs measured as before: body >= 6:1, faint >= 4.5:1. */
+  --color-canvas: #121319;
+  --color-surface: #181a21;
+  --color-raised: #21242d;
+  --color-overlay: #262a34;
 
   /* Hairlines carry the structure; there are no elevation tiers. */
-  --color-line: #2f2e27;
-  --color-line-strong: #46443b;
+  --color-line: #2d3140;
+  --color-line-strong: #41485c;
 
-  --color-ink: #f2f1ec;
-  --color-ink-muted: #a8a59a;
-  --color-ink-faint: #96927f;
+  --color-ink: #f3f4f8;
+  --color-ink-muted: #a7acbc;
+  --color-ink-faint: #838a9c;
 
-  --color-brand: #ff7a3d;
-  --color-brand-ink: #1a0f08;
-  --color-brand-soft: rgb(255 122 61 / 0.14);
+  --color-brand: #9a8cf5;
+  --color-brand-ink: #16102b;
+  --color-brand-soft: rgb(154 140 245 / 0.15);
 
-  --color-ok: #3fbf8f;
+  /* The live accent: a warm sunset, only ever meaning "working right now". */
+  --color-live: #ffa14a;
+  --color-live-soft: rgb(255 161 74 / 0.16);
+
+  --color-ok: #46c99a;
   --color-err: #ff6b8a;
   --color-warn: #e0a03c;
 
@@ -62,6 +65,8 @@
   --font-sans:
     "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display:
+    "Space Grotesk Variable", var(--font-sans);
   --font-mono:
     "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
@@ -75,23 +80,26 @@
 :root[data-theme="catppuccin"]{ --theme-accent: oklch(0.72 0.12 265); }
 /* "shadcn" is the default palette: it keeps the Cursor orange (no override). */
 
-/* Light mode: the same roles, inverted lightness. */
+/* Light mode: a warm paper take on the same roles (Pi's cream, violet ink). */
 :root.light {
-  --color-canvas: #f7f7f4;
-  --color-surface: #ffffff;
-  --color-raised: #efeee8;
+  --color-canvas: #f7f5ef;
+  --color-surface: #fffefa;
+  --color-raised: #edeade;
   --color-overlay: #ffffff;
 
-  --color-line: #e6e5e0;
-  --color-line-strong: #cfcdc4;
+  --color-line: #e4e1d5;
+  --color-line-strong: #c9c5b4;
 
-  --color-ink: #26251e;
-  --color-ink-muted: #5a5852;
-  --color-ink-faint: #66645a;
+  --color-ink: #242334;
+  --color-ink-muted: #5b5a6b;
+  --color-ink-faint: #6e6d7e;
 
-  --color-brand: #c93d00;
+  --color-brand: #6553d9;
   --color-brand-ink: #ffffff;
-  --color-brand-soft: rgb(201 61 0 / 0.09);
+  --color-brand-soft: rgb(101 83 217 / 0.09);
+
+  --color-live: #c96a12;
+  --color-live-soft: rgb(201 106 18 / 0.1);
 
   --color-ok: #16724f;
   --color-err: #b8244c;
@@ -224,6 +232,66 @@
 }
 @utility spin-slow {
   animation: spin 1s linear infinite;
+}
+
+/*
+ * Mascot motion (the bizbots pet library, web/public/mascots). Each state has
+ * one animation, all opacity/transform so they never reflow anything; the
+ * global reduced-motion switch flattens them with everything else.
+ */
+@keyframes pet-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7%);
+  }
+}
+@keyframes pet-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+@keyframes pet-wave {
+  0%,
+  100% {
+    transform: rotate(0);
+  }
+  25% {
+    transform: rotate(-8deg);
+  }
+  75% {
+    transform: rotate(8deg);
+  }
+}
+@keyframes pet-halo {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+@utility pet-idle {
+  animation: pet-float 3.8s var(--ease-standard) infinite;
+}
+@utility pet-think {
+  animation: pet-breathe 1.4s var(--ease-standard) infinite;
+}
+/* The greeting: three waves, then it rests (an `animationend` one-shot). */
+@utility pet-wave {
+  animation: pet-wave 0.8s var(--ease-emphasized) 3;
+}
+@utility pet-halo {
+  animation: pet-halo 1.6s var(--ease-standard) infinite;
 }
 
 /*
