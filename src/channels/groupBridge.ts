@@ -134,8 +134,8 @@ async function callGroupApi(options: GroupBridgeOptions, instance: string, token
 
 /** The created group's jid, wherever the fork put it in the response. */
 function findGroupJid(value: unknown, depth = 0): string | null {
-  if (depth > 6 || value === null || typeof value !== "object") return null;
   if (typeof value === "string") return /@g\.us$/.test(value) ? value : null;
+  if (depth > 6 || value === null || typeof value !== "object") return null;
   for (const item of Array.isArray(value) ? value : Object.values(value)) {
     const found = findGroupJid(item, depth + 1);
     if (found) return found;
