@@ -3,6 +3,7 @@
   import type { Snippet } from "svelte";
   import Button from "./Button.svelte";
   import Badge from "./Badge.svelte";
+  import Mascot from "./Mascot.svelte";
   import { store } from "../stores/sessions.svelte";
   import { ui, PALETTES } from "../stores/ui.svelte";
   import { cost, duration } from "../format";
@@ -74,16 +75,20 @@
   {/if}
 
   <div class="contents">
-    <div class="col-start-2 flex min-w-0 items-center gap-2 self-end pane-sm:self-center">
-      <h1 class="truncate text-[13.5px] leading-4 font-semibold">{session.title || "Untitled"}</h1>
+    <div class="col-start-2 flex min-w-0 items-center gap-2.5 self-end pane-sm:self-center">
+      <!-- The assistant greets you when its chat opens, and works while it runs. -->
+      {#key session.id}
+        <Mascot mood={session.status === "running" ? "thinking" : "wave"} greet size={30} class="rounded-xl bg-surface/80 p-px elev-1" />
+      {/key}
+      <h1 class="truncate font-display text-[14px] leading-4 font-semibold tracking-[-0.01em]">{session.title || "Untitled"}</h1>
       <!--
         One status dot, not a badge: the shape and the colour both carry the
         state, and the running one breathes. Motion is never the only channel.
       -->
       {#if session.status === "running"}
-        <span class="flex shrink-0 items-center gap-1.5 text-[11.5px] text-ink-muted">
-          <span class="pulse-live size-1.5 rounded-full bg-brand"></span>
-          running
+        <span class="flex shrink-0 items-center gap-1.5 text-[11.5px] text-live">
+          <span class="pulse-live size-1.5 rounded-full bg-live"></span>
+          working
         </span>
       {:else if session.status === "error"}
         <span class="flex shrink-0 items-center gap-1.5 text-[11.5px] text-err">

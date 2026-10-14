@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { Plus, Server, Terminal, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers } from "@lucide/svelte";
+  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers } from "@lucide/svelte";
   import Spinner from "./Spinner.svelte";
   import { sidebarHistory } from "../stores/history.svelte";
   import { folderStore } from "../stores/folders.svelte";
@@ -16,6 +16,8 @@
   import Skeleton from "./Skeleton.svelte";
   import { store } from "../stores/sessions.svelte";
   import { baseName, relativeTime, cost } from "../format";
+  import { statusLine, statusMood } from "../mascot";
+  import Mascot from "./Mascot.svelte";
   import type { SessionState } from "../types";
   import type { WindowTasks } from "../tasks";
 
@@ -215,9 +217,10 @@
 </script>
 
 {#snippet sessionRow(session: SessionState)}
+  <!-- One assistant: its pet in the pose the status calls for, its name, its state in words. -->
           <div
             role="listitem"
-            class="group/sess interactive relative cursor-pointer rounded-md py-1.5 pr-2 pl-3 pointer-coarse:py-2.5 pointer-coarse:pr-12
+            class="group/sess interactive relative cursor-pointer rounded-xl py-2 pr-2 pl-2.5 pointer-coarse:py-2.5 pointer-coarse:pr-12
               hover:bg-raised/70"
             class:bg-raised={focusedSession === session.id}
           >
@@ -227,34 +230,57 @@
               title={session.title}
               aria-current={focusedSession === session.id ? "true" : undefined}
             >
-              <div class="flex items-center gap-1.5">
-                {#if session.target === "remote"}
-                  <Server size={12} class="shrink-0 text-accent" strokeWidth={2} />
-                {/if}
-                <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 font-medium text-ink">
-                  {session.title || "Untitled"}
+              <div class="flex items-center gap-2.5">
+                <span class="relative">
+                  <Mascot
+                    mood={statusMood(session.status)}
+                    size={34}
+                    class="rounded-xl bg-surface/80 p-px elev-1"
+                  />
+                  <!--
+                    Presence dot, Slack's rule: sunset + pulse only means "working right now",
+                    the quiet colours are states that need no attention.
+                  -->
+                  <span
+                    class="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-canvas {session.status === 'running'
+                      ? 'pulse-live bg-live'
+                      : session.status === 'done'
+                        ? 'bg-ok'
+                        : session.status === 'error'
+                          ? 'bg-err'
+                          : session.status === 'interrupted'
+                            ? 'bg-warn'
+                            : 'bg-line-strong'}"
+                  ></span>
                 </span>
-                {#if paneOf(session.id)}
-                  <!-- Which pane shows it: a number, like tmux's pane index. -->
-                  <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(session.id)}">
-                    <span aria-hidden="true">{paneOf(session.id)}</span><span class="sr-only">in pane {paneOf(session.id)}</span>
-                  </span>
-                {:else if inOtherWindow?.(session.id)}
-                  <!-- Open, but on another window's screen: where to find it. -->
-                  <span class="shrink-0 text-ink-faint" title="On {inOtherWindow(session.id)}"><AppWindow size={12} strokeWidth={1.75} aria-label="On {inOtherWindow(session.id)}" /></span>
-                {/if}
-                {#if session.status === "running"}
-                  <span class="pulse-live size-1.5 shrink-0 rounded-full bg-brand"></span>
-                {/if}
-              </div>
-              <div class="mt-0.5 flex items-center gap-1.5 pl-0 text-[10.5px] leading-4 text-ink-faint">
-                <span class="truncate">{baseName(session.cwd)}</span>
-                <span>·</span>
-                <span class="tnum shrink-0">{relativeTime(session.updatedAt)}</span>
-                {#if session.cost > 0}
-                  <span>·</span>
-                  <span class="tnum shrink-0">{cost(session.cost)}</span>
-                {/if}
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-1.5">
+                    {#if session.target === "remote"}
+                      <Server size={12} class="shrink-0 text-accent" strokeWidth={2} />
+                    {/if}
+                    <span class="min-w-0 flex-1 truncate font-display text-[13px] leading-4 font-medium tracking-[-0.01em] text-ink">
+                      {session.title || "Untitled"}
+                    </span>
+                    {#if paneOf(session.id)}
+                      <!-- Which pane shows it: a number, like tmux's pane index. -->
+                      <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(session.id)}">
+                        <span aria-hidden="true">{paneOf(session.id)}</span><span class="sr-only">in pane {paneOf(session.id)}</span>
+                      </span>
+                    {:else if inOtherWindow?.(session.id)}
+                      <!-- Open, but on another window's screen: where to find it. -->
+                      <span class="shrink-0 text-ink-faint" title="On {inOtherWindow(session.id)}"><AppWindow size={12} strokeWidth={1.75} aria-label="On {inOtherWindow(session.id)}" /></span>
+                    {/if}
+                  </div>
+                  <div class="mt-0.5 flex items-center gap-1.5 pl-0 text-[10.5px] leading-4 text-ink-faint">
+                    <span class="truncate {session.status === 'running' ? 'font-medium text-live' : ''}">{statusLine(session.status)}</span>
+                    <span aria-hidden="true">·</span>
+                    <span class="truncate">{baseName(session.cwd)}</span>
+                    <span class="tnum shrink-0">{relativeTime(session.updatedAt)}</span>
+                    {#if session.cost > 0}
+                      <span class="tnum shrink-0">{cost(session.cost)}</span>
+                    {/if}
+                  </div>
+                </div>
               </div>
             </button>
             <!-- Per-row actions appear on hover/focus, never hidden from keyboard. -->
@@ -273,23 +299,25 @@
 
 {#snippet savedRow(item: HistoryItem)}
           {@const reason = unresumableReason(item)}
-          <div role="listitem" class="interactive relative rounded-md py-1.5 pr-2 pl-3 hover:bg-raised/70 pointer-coarse:py-2.5" data-history={item.id}>
+          <div role="listitem" class="interactive relative rounded-xl py-1.5 pr-2 pl-2.5 hover:bg-raised/70 pointer-coarse:py-2.5" data-history={item.id}>
             <button
               type="button"
-              class="block w-full cursor-pointer text-left pointer-coarse:min-h-11"
+              class="flex w-full cursor-pointer items-center gap-2.5 text-left pointer-coarse:min-h-11"
               title={reason ? `${item.title}: read only. ${reason}` : item.title}
               disabled={openingId === item.id}
               onclick={() => onopenhistory(item)}
             >
-              <div class="flex items-center gap-1.5">
-                <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink-muted">{item.title || "Untitled"}</span>
-                {#if openingId === item.id}<Spinner size={11} label="Opening" />{/if}
-                {#if reason}<span class="shrink-0 text-[10px] text-ink-faint">read only</span>{/if}
-              </div>
-              <div class="mt-0.5 flex items-center gap-1.5 text-[10.5px] leading-4 text-ink-faint">
-                <span class="truncate">{baseName(item.cwd)}</span>
-                <span aria-hidden="true">·</span>
-                <span class="tnum shrink-0">{relativeTime(item.updatedAt)}</span>
+              <Mascot mood="offline" size={26} class="rounded-lg bg-surface/60 p-px elev-1" />
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5">
+                  <span class="min-w-0 flex-1 truncate font-display text-[12.5px] leading-4 tracking-[-0.01em] text-ink-muted">{item.title || "Untitled"}</span>
+                  {#if openingId === item.id}<Spinner size={11} label="Opening" />{/if}
+                  {#if reason}<span class="shrink-0 text-[10px] text-ink-faint">read only</span>{/if}
+                </div>
+                <div class="mt-0.5 flex items-center gap-1.5 text-[10.5px] leading-4 text-ink-faint">
+                  <span class="truncate">Sleeping · {baseName(item.cwd)}</span>
+                  <span class="tnum shrink-0">{relativeTime(item.updatedAt)}</span>
+                </div>
               </div>
             </button>
           </div>
@@ -300,8 +328,9 @@
 >
   <!-- Brand / workspace -->
   <div class="flex items-center gap-2 px-3 py-2.5">
-    <Terminal size={14} class="shrink-0 text-ink-faint" strokeWidth={1.75} />
-    <span class="min-w-0 flex-1 truncate text-[13px] leading-4 font-medium">mini-tui</span>
+    <!-- The house pet greets you every time the rail opens. -->
+    <Mascot mood="wave" greet size={22} class="rounded-lg bg-brand-soft p-px" />
+    <span class="min-w-0 flex-1 truncate font-display text-[13.5px] leading-4 font-semibold tracking-[-0.01em]">mini-tui</span>
     <!--
       The connection state is a dot, not a word: it is ambient information and
       never needs a full line of the narrow rail.
