@@ -32,9 +32,11 @@ import { join } from "node:path";
 
 import { runHeadless, type HeadlessResult } from "../cli/headless";
 import { DEFAULT_DB_PATH, createSession, findSession, getSession, openDb } from "../sessions";
+import { mentionsAccount } from "./accounts";
 import type { ChannelInbox, Inbound, Attachment } from "./inbox";
 import type { EvoSender, SendLedger } from "./evoSend";
 import type { QueueBridge } from "./queueBridge";
+import type { GroupPlan } from "./groupBridge";
 import { ensureMediaFrames, lateTranscriptNote, transcribePendingAudio, type LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 
 export interface PendingRow {
@@ -60,6 +62,11 @@ export interface ConsumerOptions {
   cwd?: string;
   /** Model for new sessions; empty = the repo default chain. */
   model?: string;
+  /** Per-account identity map (WA-5): the account's own jid for the group
+   * mention gate, and that account's sender when `senderFor` is absent. */
+  accountJids?: Map<string, string | undefined>;
+  /** Sender per owning account. Absent = every row uses `sender` (single-account). */
+  senderFor?: (account: string) => EvoSender | undefined;
   /** Agent turn wall-clock limit in seconds (the runner aborts past it). */
   turnTimeoutS?: number;
   idleMs?: number;
@@ -76,10 +83,23 @@ export interface ConsumerOptions {
   settleMs?: number;
   /** Chat ↔ queue bridge: directives in replies become queue work; optional. */
   queueBridge?: Pick<QueueBridge, "planReply">;
+  /** Group-session bridge (WA-5): strips [[mini-newgroup: …]] from the reply
+   * and returns the deferred creation flow; optional. */
+  planGroupCreation?: (row: PendingRow, message: Inbound, replyText: string) => GroupPlan;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** The sender that speaks AS this row's account. Identity hygiene: a message
+ * accepted for account A is never answered with account B's instance token.
+ * No per-account map (single-account deployments) resolves to `sender`. */
+function senderForAccount(options: ConsumerOptions, account: string): EvoSender {
+  const resolved = options.senderFor?.(account);
+  if (resolved) return resolved;
+  if (options.senderFor) throw new Error(`no sender configured for account ${account}`);
+  return options.sender;
+}
 
 /** The prompt the session's agent actually sees. Transport metadata is framed as
  * data: an inbound message is never a grant to act as the sender. Directives at
@@ -99,6 +119,9 @@ export function turnPrompt(message: Inbound, mediaFrames: string[] = []): string
     "[[mini-queue: <concise, self-contained goal>]] when the sender asks for work to be done in the background;",
     "[[mini-followup: <what to add or correct>]] when the sender adds to or corrects earlier queued work;",
     "[[mini-status]] when the sender only asks about the state of queued work.",
+    "When the sender explicitly asks to start a brand-new dedicated session (\"nueva sesión\",",
+    "\"new chat\"), end the reply with [[mini-newgroup: <short subject for the new chat>]] instead:",
+    "a new isolated WhatsApp group bound to a fresh session is created for them.",
     "The bridge removes the directive line before sending and confirms the queueing itself.",
     "When the message is purely conversational, emit no directive.",
   ].join("\n");
@@ -159,6 +182,26 @@ async function processOne(
   const message = JSON.parse(row.payload) as Inbound;
   const seq = row.seq;
   const ack = () => options.inbox.acknowledge(consumer, cursor, { seq, session: row.session, project: row.project });
+  const sender = senderForAccount(options, row.account);
+
+  // Per-turn operator state (WA-5): the binding is read fresh so CLI changes
+  // apply immediately. The group mention gate uses its policy; every turn uses
+  // its model. An unbound row cannot exist past accept(), so this only fails
+  // if the binding was removed mid-flight — then the default chain applies.
+  const binding = options.inbox.bindingFor("whatsapp", row.account, row.thread);
+
+  // Group mention gate (WA-5): a bound group thread answers only when the
+  // account's own jid is explicitly mentioned, unless the operator set policy
+  // "all". Ignored messages are acknowledged unread-by-any-model — the cursor
+  // never blocks on a group that did not ask for the bot.
+  if (row.thread.endsWith("@g.us")) {
+    const gated = (binding?.policy ?? "") !== "all" && !mentionsAccount(message.mentions, options.accountJids?.get(row.account));
+    if (gated) {
+      log("channel.consumer.group_ignored", { seq, thread: row.thread, account: row.account, reason: options.accountJids?.get(row.account) ? "no_mention" : "no_jid_configured" });
+      ack();
+      return;
+    }
+  }
 
   // Crash between send and acknowledge: the reply is already out — skip it.
   const entry = options.ledger.get(seq);
@@ -169,7 +212,7 @@ async function processOne(
   }
   // Uncertain send: inspect the thread's history before ever resending.
   if (entry && entry.replyText) {
-    const deliverCheck = async () => findDeliveredReply(options.sender, row.thread, entry.quotedId, entry.replyText);
+    const deliverCheck = async () => findDeliveredReply(sender, row.thread, entry.quotedId, entry.replyText);
     let delivered = await deliverCheck();
     if (!delivered) {
       // The reply may still be in flight from the uncertain attempt: settle,
@@ -196,10 +239,13 @@ async function processOne(
     if (options.media && message.attachments.length) {
       mediaFrames = await ensureMediaFrames(options.media, options.inbox, log, seq, message);
     }
-    const turn = await runTurn(options, log, row, message, maxTurnAttempts, mediaFrames);
+    const turn = await runTurn(options, log, row, message, maxTurnAttempts, mediaFrames, binding?.model || undefined);
     // Directives leave the reply here: what is journalled and sent is pure chat.
     const planned = options.queueBridge?.planReply(row, message, turn) ?? { text: turn };
-    replyText = planned.text;
+    // Group-session directive (WA-5) is parsed from what survives the queue
+    // bridge; both bridges' deferred work runs behind the cursor.
+    const groupPlanned = options.planGroupCreation?.(row, message, planned.text) ?? { text: planned.text };
+    replyText = groupPlanned.text;
     // The reply carries the transcript frames (or their honest per-attachment
     // failure notes): mark delivered so the late sweep never re-sends them as
     // a follow-up. A turn that ended in the generic failure note carried
@@ -213,10 +259,14 @@ async function processOne(
       }
     }
     options.ledger.begin(seq, replyText, quotedId);
-    if (planned.after) {
-      // Deferred bridge work (queue put, follow-up routing, status reports)
-      // runs behind the reply path — never before the cursor can advance.
-      const runAfter = planned.after;
+    const deferredSteps = [planned.after, groupPlanned.after].filter((step): step is () => Promise<void> => !!step);
+    if (deferredSteps.length) {
+      // Deferred bridge work (queue put, follow-up routing, status reports,
+      // group creation) runs behind the reply path — never before the cursor
+      // can advance.
+      const runAfter = async () => {
+        for (const step of deferredSteps) await step();
+      };
       void (async () => {
         try {
           await runAfter();
@@ -227,7 +277,7 @@ async function processOne(
     }
   }
 
-  const outcome = await options.sender.sendText({
+  const outcome = await sender.sendText({
     number: row.thread,
     text: replyText,
     quoted: { id: quotedId, remoteJid: row.thread, ...(message.sender ? { participant: message.sender } : {}) },
@@ -297,11 +347,15 @@ async function runTurn(
   message: Inbound,
   maxTurnAttempts: number,
   mediaFrames: string[],
+  bindingModel?: string,
 ): Promise<string> {
   const dbPath = options.sessionsDbPath ?? process.env.MINITUI_DB_PATH ?? DEFAULT_DB_PATH;
   const cwd = options.cwd ?? process.env.EVO_CONSUMER_CWD ?? join(homedir(), "wa-assistant");
   mkdirSync(cwd, { recursive: true });
-  const model = options.model ?? "";
+  // The binding's model (operator CLI) wins; the consumer default is the
+  // fallback. The choice persists with the session: it is saved on create and
+  // re-applied on every resume so the conversation never silently drifts.
+  const model = bindingModel || options.model || "";
   let lastError = "";
   for (let attempt = 1; attempt <= maxTurnAttempts; attempt++) {
     try {
@@ -400,6 +454,8 @@ async function lateTranscriptSweep(
         const freshRow = options.inbox.read(row.seq - 1, 1)[0] as PendingRow | undefined;
         if (freshRow?.seq === row.seq) message = JSON.parse(freshRow.payload) as Inbound;
       }
+      // Each row is sent with the identity of the account that owns it.
+      const sender = senderForAccount(options, row.account);
       // Pass 2: relay any resolved transcript the sender has not received.
       // Transcripts delivered inline with the turn's reply were marked at
       // resolution time; this reaches attachments resolved after the message
@@ -417,7 +473,7 @@ async function lateTranscriptSweep(
           // Evidence before resend, same discipline as findDeliveredReply: a
           // saturated window proves nothing, and text evidence needs recency.
           try {
-            const recent = await options.sender.recentOutgoing(row.thread, LATE_NOTE_WINDOW);
+            const recent = await sender.recentOutgoing(row.thread, LATE_NOTE_WINDOW);
             if (recent.length >= LATE_NOTE_WINDOW) continue;
             const nowS = Date.now() / 1000;
             const already = recent.some((m) => (m.quotedStanzaId && m.quotedStanzaId === message.messageId && m.text === note) || (m.text === note && m.ts !== null && nowS - toSeconds(m.ts) < LATE_NOTE_MATCH_WINDOW_S));
@@ -431,7 +487,7 @@ async function lateTranscriptSweep(
             continue;
           }
         }
-        const sent = await options.sender.sendText({
+        const sent = await sender.sendText({
           number: row.thread,
           text: note,
           quoted: { id: message.messageId, remoteJid: row.thread, ...(message.sender ? { participant: message.sender } : {}) },

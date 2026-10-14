@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { rustAgentBin } from "../mini/spawn";
 import { ChannelInbox } from "../channels/inbox";
 import { evoReceiver } from "../channels/evoReceiver";
+import { parseReceiverAccounts } from "../channels/accounts";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { syncAllSkills } from "../skills";
@@ -54,21 +55,21 @@ const HOST = flag("host", process.env.MINITUI_WEB_HOST ?? "127.0.0.1");
 
 // Channel receivers (src/channels) are inbound webhooks from external
 // providers. The Evo receiver exists only when the operator configured it in
-// the service environment, never in the repo: EVO_RECEIVER_ACCOUNT (the bound
-// account; the webhook body cannot select one) and a 32+ byte
-// EVO_WEBHOOK_SECRET. Without both, the route below answers 404 like any
-// unknown path. The inbox database defaults to the shared channel store;
-// EVO_INBOX_DB overrides it for an isolated deployment. The secret is never
-// logged here; evoReceiver answers counts only.
+// the service environment, never in the repo: EVO_RECEIVER_ACCOUNTS (WA-5
+// multichat JSON: [{"account","webhookSecret"}…] — the offered secret selects
+// the account) or the single-account pair EVO_RECEIVER_ACCOUNT +
+// EVO_WEBHOOK_SECRET (WA-1). Without a valid configuration, the route below
+// answers 404 like any unknown path. The inbox database defaults to the shared
+// channel store; EVO_INBOX_DB overrides it for an isolated deployment. Secrets
+// are never logged here; evoReceiver answers counts only.
 let evoHandler: ((request: Request) => Promise<Response>) | null | undefined;
 function evoRoute(): ((request: Request) => Promise<Response>) | null {
   if (evoHandler !== undefined) return evoHandler;
-  const account = process.env.EVO_RECEIVER_ACCOUNT ?? "";
-  const webhookSecret = process.env.EVO_WEBHOOK_SECRET ?? "";
-  if (!account || !webhookSecret) return (evoHandler = null);
+  const accounts = parseReceiverAccounts();
+  if (!accounts.length) return (evoHandler = null);
   try {
     const inbox = new ChannelInbox(process.env.EVO_INBOX_DB ?? join(homedir(), ".local/share/mini-tui/channels.sqlite"));
-    evoHandler = evoReceiver(inbox, { account, webhookSecret });
+    evoHandler = evoReceiver(inbox, { accounts });
   } catch (error) {
     log(`evo receiver disabled: ${error instanceof Error ? error.message : "invalid configuration"}`);
     evoHandler = null;
