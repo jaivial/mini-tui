@@ -186,7 +186,8 @@ async function processOne(
   // resolves it by evidence (or resends when the history proves absence). A
   // definitive 4xx was rejected before any send and can only be fixed by the
   // operator — by contract the cursor never advances on a failed send, so the
-  // retry continues at the slow backoff floor and every attempt is logged.
+  // retry continues at the slow backoff floor and every attempt is logged
+  // (markUncertain bumps the ledger's attempts on every pass).
   options.ledger.markUncertain(seq);
   const attempts = (entry?.attempts ?? 0) + 1;
   if (outcome.definitive && attempts >= 10) log("channel.consumer.send_rejected_operator_action", { seq, attempts, status: outcome.status, error: outcome.error.slice(0, 200) });
@@ -213,13 +214,17 @@ async function findDeliveredReply(sender: EvoSender, thread: string, quotedId: s
   if (recent.length >= limit) throw new Error("evidence window saturated; absence unproven");
   const nowS = Date.now() / 1000;
   const recentText = (m: { ts: number | null }) => m.ts !== null && nowS - toSeconds(m.ts) < RECENT_MATCH_WINDOW_S;
+  // Honest failure notes are intentionally generic: two messages can fail with
+  // the byte-identical note, so a note is never text-evidence — only its quoted
+  // stanza id (when present) may identify it. Text evidence is for real replies.
+  const textEvidenceAllowed = !replyText.startsWith("(mini could not complete this turn");
   for (const m of recent) {
     if (quotedId) {
       if (m.quotedStanzaId === quotedId) return m.id || null;
       // A stored reply whose contextInfo went missing (normalization gaps) must
       // still count as delivered: quote absent-or-equal, same text, recent.
-      if ((m.quotedStanzaId == null || m.quotedStanzaId === quotedId) && m.text === replyText && recentText(m)) return m.id || null;
-    } else if (m.text === replyText && recentText(m)) {
+      if (textEvidenceAllowed && (m.quotedStanzaId == null || m.quotedStanzaId === quotedId) && m.text === replyText && recentText(m)) return m.id || null;
+    } else if (textEvidenceAllowed && m.text === replyText && recentText(m)) {
       return m.id || null;
     }
   }

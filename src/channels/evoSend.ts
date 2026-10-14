@@ -58,7 +58,7 @@ export class SendLedger {
     this.db.query("UPDATE channel_sends SET state='sent', reply_id=?2, updated_at=?3 WHERE inbox_seq=?1").run(seq, replyId, Date.now());
   }
   markUncertain(seq: number): void {
-    this.db.query("UPDATE channel_sends SET state='uncertain', updated_at=?2 WHERE inbox_seq=?1").run(seq, Date.now());
+    this.db.query("UPDATE channel_sends SET state='uncertain', attempts=attempts+1, updated_at=?2 WHERE inbox_seq=?1").run(seq, Date.now());
   }
 }
 

@@ -44,8 +44,10 @@ first real consumer, `whatsapp-outbound`:
   instead of blocking the cursor on a poison message. A crash in the gap
   between a finished turn and its ledger entry re-runs the turn (never a
   duplicate send; at-least-once cost).
-- Shutdown (SIGTERM) waits for the in-flight turn (bounded by the turn
-  timeout) and the in-flight send; the ledger makes either interruption safe.
+- Shutdown (SIGTERM) interrupts the in-flight turn (the runner's own signal
+  handling) and stops after the current send; the interrupted message stays
+  unacknowledged and retries from the ledger on the next start — never a
+  lost message, never a duplicate send.
 
 Credentials (evo-weai instance token) come from a 0600 env file and are never
 logged. No test suite changed.
