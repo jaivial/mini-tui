@@ -69,7 +69,12 @@ export class ChannelInbox {
       if (!binding || !(JSON.parse(binding.allowed_senders) as string[]).includes(message.sender)) throw new Error("unbound route or unapproved sender");
       const old = this.db.query(`SELECT seq,original,session,project FROM channel_inbox WHERE channel=?1 AND account=?2 AND thread=?3 AND message_id=?4`).get(message.channel,message.account,message.thread,message.messageId) as { seq: number; original: string; session: string; project: string } | null;
       if (old) {
-        if (old.original !== payload) throw new Error("message identifier reused with different content");
+        // sentAt is transport metadata (e.g. the fork's per-delivery envelope
+        // time), not message content: a redelivered message arrives in a new
+        // envelope. Compare everything else; any other difference under the
+        // same id is reuse, never a duplicate.
+        const stable = (m: Inbound) => JSON.stringify({ ...m, sentAt: 0 });
+        if (stable(JSON.parse(old.original) as Inbound) !== stable(message)) throw new Error("message identifier reused with different content");
         return { seq: old.seq, duplicate: true, session: old.session, project: old.project };
       }
       const result = this.db.query(`INSERT INTO channel_inbox(channel,account,thread,message_id,sender,sent_at,payload,session,project,received_at,original) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?7)`).run(message.channel,message.account,message.thread,message.messageId,message.sender,message.sentAt,payload,binding.session,binding.project,Date.now());

@@ -30,10 +30,19 @@ export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[
     const context = message.extendedTextMessage?.contextInfo ?? message.imageMessage?.contextInfo ?? message.audioMessage?.contextInfo;
     // The weai fork's MESSAGES_UPSERT data carries no messageTimestamp; the
     // RFC3339 `date_time` on the envelope (delivery wall clock) is the only
-    // time it provides. Evolution-style senders keep the seconds timestamp.
-    const seconds = typeof item.messageTimestamp === "number" || typeof item.messageTimestamp === "string" ? Number(item.messageTimestamp) : Number.NaN;
-    const envelopeMs = typeof envelope.date_time === "string" ? Date.parse(envelope.date_time) : Number.NaN;
-    const sentAt = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : envelopeMs;
+    // time it provides, so an absent messageTimestamp falls back to it. A
+    // present-but-invalid timestamp is a malformed delivery, not a reason to
+    // fall back. sentAt is transport metadata either way: channel dedupe
+    // (ChannelInbox.accept) compares everything except sentAt.
+    const rawTimestamp = (item as Record<string, unknown>).messageTimestamp;
+    let sentAt = Number.NaN;
+    if (rawTimestamp != null) {
+      const seconds = Number(rawTimestamp);
+      if (Number.isFinite(seconds) && seconds >= 0) sentAt = seconds * 1000;
+    } else if (typeof envelope.date_time === "string") {
+      const envelopeMs = Date.parse(envelope.date_time);
+      if (Number.isFinite(envelopeMs) && envelopeMs >= 0) sentAt = envelopeMs;
+    }
     if (typeof text !== "string" || !Number.isFinite(sentAt) || sentAt < 0) throw new Error("invalid Evo content/time");
     return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, sentAt: Math.trunc(sentAt), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, attachments }];
   });
