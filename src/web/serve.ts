@@ -25,6 +25,7 @@ import { rustAgentBin } from "../mini/spawn";
 import { ChannelInbox } from "../channels/inbox";
 import { evoReceiver } from "../channels/evoReceiver";
 import { parseReceiverAccounts } from "../channels/accounts";
+import { channelsView, evoQr, evoStatus } from "./channels";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { syncAllSkills } from "../skills";
@@ -353,6 +354,27 @@ const server = Bun.serve({
         const handler = evoRoute();
         if (!handler) return json({ error: "not found" }, 404);
         return handler(request);
+      }
+      // Read-only channel visibility for the operator: bound routes, recent
+      // accepted messages (bounded, truncated) and consumer cursors. No
+      // mutation, no raw payloads, no secrets — the store opens read-only.
+      if (path === "/channels/inbox" && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        try { return json(await channelsView()); }
+        catch { return json({ error: "channel_inbox_read_failed" }, 503); }
+      }
+      // Assistant connection visibility. Both read the weai-mini API strictly
+      // over loopback with a server-held apikey; only the mapped state, the QR
+      // image and the pairing code are exposed, never the key or the raw API.
+      if (path === "/channels/evo/status" && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        return json(await evoStatus());
+      }
+      if (path === "/channels/evo/qr" && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        // Rate-limited inside: the upstream connect call regenerates the QR.
+        const view = await evoQr();
+        return json(view, view.error === "qr_rate_limited" ? 429 : 200);
       }
       // Read-only projection of the local task registry. No worker launch, model
       // call, schema creation or browser-selected filesystem path.
