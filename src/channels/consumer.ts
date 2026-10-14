@@ -190,7 +190,7 @@ async function processOne(
       const runAfter = planned.after;
       void (async () => {
         try {
-          runAfter();
+          await runAfter();
         } catch (error) {
           log("channel.queue.deferred_error", { seq, error: error instanceof Error ? error.message : String(error) });
         }

@@ -71,12 +71,16 @@ For `[[mini-followup: <note>]]` the bridge resolves the target task:
 ## Running tasks: fenced interrupt + reconcile
 
 `amend` on a running task makes the queue itself fence it (interrupted,
-fence+1); the runner detects the revoked lease/goal version and stops the
-worker, reporting `blocked` ("queue worker cancelled"). Only after that
-worker-stopped event does the bridge `queue retry --id` (back to `pending`,
-picked up by the next lane wave). If the worker has not confirmed stop within
-`MINITUI_QUEUE_RECONCILE_TIMEOUT_S` (default 180), the bridge says so in the
-thread and does NOT relaunch — operator action required.
+fence+1); the runner's 1 s lease watchdog notices the revoked fence/goal
+version, kills the worker process group and reports `interrupted` back to its
+own caller. The event log carries no separate worker-stopped row — the amend's
+own `state_changed→interrupted` is the signal. The bridge holds a settle window
+(`MINITUI_QUEUE_RECONCILE_SETTLE_S`, default 30) after that event — comfortably
+past the watchdog's kill — before `queue retry --id --reconciled yes` (back to
+`pending`, picked up by the next lane wave). If the settle window never opens
+within `MINITUI_QUEUE_RECONCILE_TIMEOUT_S` (default 180), the bridge says so in
+the thread and does NOT relaunch — operator action required. A bridge restart
+re-arms reconciliation for any mapped task the store still shows interrupted.
 
 ## Audit trail
 
@@ -99,3 +103,4 @@ against a benchmark measurement. The queue binary must be built with
 | `MINITUI_QUEUE_EMBED_DIR` | MiniLM directory; unset → tasks without vectors |
 | `MINITUI_QUEUE_POLL_MS` | event poll interval (default 5000) |
 | `MINITUI_QUEUE_RECONCILE_TIMEOUT_S` | interrupted-worker wait before retry (default 180) |
+| `MINITUI_QUEUE_RECONCILE_SETTLE_S` | hold after the interrupt event before retry (default 30) |

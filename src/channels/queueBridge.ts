@@ -50,7 +50,7 @@ export interface ParsedReply {
 }
 
 /** `[[mini-queue: …]]` / `[[mini-followup: …]]` carry a value; `[[mini-status]]` may not. */
-const DIRECTIVE = /\[\[mini-(queue|followup|status)(?::[ \t]*([^\]]*))?\]\]/g;
+const DIRECTIVE = /\[\[mini-(queue|followup|status):?\s*([^\]]*)\]\]/g;
 const MAX_DIRECTIVE_BYTES = 60_000;
 
 /** Strip every directive; the last of each kind wins. Directives are data, and
@@ -91,6 +91,9 @@ export interface QueueBridgeOptions {
   pollMs?: number;
   /** Seconds to wait for an interrupted worker to report stopped before retry. */
   reconcileTimeoutS?: number;
+  /** Milliseconds to hold after the interrupt event before retrying (the runner's
+   * watchdog kills a fenced worker group within ~1 s; this is the settle margin). */
+  reconcileSettleMs?: number;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
@@ -160,10 +163,13 @@ export class QueueBridge {
   private readonly fallbackCwd: string;
   private readonly pollMs: number;
   private readonly reconcileTimeoutS: number;
+  private readonly reconcileSettleMs: number;
   private readonly log: (event: string, fields?: Record<string, unknown>) => void;
   private stopped = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private reconciles = new Map<string, { startedAt: number }>();
+  private reconciles = new Map<string, { startedAt: number; stoppedAt?: number }>();
+  /** High-water mark for the reconciler's event scan: the tail, never a bounded head. */
+  private reconcileSeq = 0;
 
   constructor(options: QueueBridgeOptions) {
     this.db = options.db;
@@ -176,6 +182,7 @@ export class QueueBridge {
     this.fallbackCwd = options.cwd ?? join(homedir(), "wa-assistant");
     this.pollMs = Math.max(1_000, options.pollMs ?? 5_000);
     this.reconcileTimeoutS = options.reconcileTimeoutS ?? 180;
+    this.reconcileSettleMs = Math.max(0, options.reconcileSettleMs ?? 30_000);
     this.log = options.log ?? (() => {});
     this.db.exec(`CREATE TABLE IF NOT EXISTS channel_tasks(
       task TEXT PRIMARY KEY, inbox_seq INTEGER NOT NULL,
@@ -196,7 +203,7 @@ export class QueueBridge {
   /** Strip directives from the reply, append the immediate acknowledgement for
    * queued work, and return the deferred work to run after the cursor moves.
    * Nothing here talks to the network or the queue: planning stays cheap. */
-  planReply(row: PendingRow, message: Inbound, replyText: string): { text: string; after?: () => void } {
+  planReply(row: PendingRow, message: Inbound, replyText: string): { text: string; after?: () => Promise<void> } {
     const parsed = parseDirectives(replyText);
     const deferred: Array<() => void> = [];
     if (parsed.queue) {
@@ -218,7 +225,7 @@ export class QueueBridge {
     if (parsed.status) {
       deferred.push(() => this.reportStatus(row, parsed.queue ? `chat-${row.seq}` : undefined));
     }
-    return { text: parsed.text, after: deferred.length ? () => { for (const step of deferred) step(); } : undefined };
+    return { text: parsed.text, after: deferred.length ? async () => { for (const step of deferred) await step(); } : undefined };
   }
 
   private cwdForSession(session: string): string {
@@ -235,8 +242,21 @@ export class QueueBridge {
   // ── Task creation sweep (crash-safe `queue put`) ──
 
   /** Put every still-`creating` task; called after each planned reply and on
-   * every poll tick, so an interrupted creation is retried until it lands. */
+   * every poll tick, so an interrupted creation is retried until it lands.
+   * The guard keeps the deferred-after-reply sweep and the poll tick from
+   * double-putting the same intent concurrently. */
+  private sweeping = false;
   async sweepCreatingTasks(): Promise<void> {
+    if (this.sweeping) return;
+    this.sweeping = true;
+    try {
+      await this.sweepCreatingTasksInner();
+    } finally {
+      this.sweeping = false;
+    }
+  }
+
+  private async sweepCreatingTasksInner(): Promise<void> {
     const rows = this.db.query("SELECT * FROM channel_tasks WHERE state='creating' ORDER BY inbox_seq").all() as TaskMapping[];
     for (const mapping of rows) {
       try {
@@ -381,20 +401,29 @@ export class QueueBridge {
     if (!this.reconciles.size) return;
     let events: QueueEvent[] = [];
     try {
-      events = await this.readEvents(0, 200);
+      events = await this.readEvents(this.reconcileSeq, 200);
     } catch {
       return;
     }
+    for (const event of events) this.reconcileSeq = Math.max(this.reconcileSeq, event.seq);
     for (const [task, state] of [...this.reconciles]) {
+      // The store has no separate worker-stopped event: the amend's own
+      // state_changed→interrupted is the signal, and the runner's watchdog
+      // kills the fenced worker group within ~1 s of it. The settle window is
+      // the honest margin before --reconciled yes attests the stop.
       const stopped = [...events].reverse().some((e) => e.task === task && e.kind === "state_changed" && (e.status === "blocked" || e.status === "interrupted"));
-      if (!stopped && Date.now() - state.startedAt < this.reconcileTimeoutS * 1000) continue;
+      if (stopped && state.stoppedAt === undefined) state.stoppedAt = Date.now();
+      const settled = state.stoppedAt !== undefined && Date.now() - state.stoppedAt >= this.reconcileSettleMs;
+      if (!settled && Date.now() - state.startedAt < this.reconcileTimeoutS * 1000) continue;
       this.reconciles.delete(task);
-      if (!stopped) {
+      if (!settled) {
         this.log("channel.queue.reconcile_timeout", { task });
         await this.deliverOperatorNote(task, `⏳ ${task}: el worker anterior no ha confirmado su parada en ${Math.round(this.reconcileTimeoutS / 60)} min. No lo relanzo automáticamente; requiere revisión manual.`);
         continue;
       }
-      const retry = await queueCommand(["retry", "--id", task], undefined, { bin: this.queueBin });
+      // The bridge only gets here after the runner's own worker-stopped event
+      // was observed — that observation is exactly what --reconciled attests.
+      const retry = await queueCommand(["retry", "--id", task, "--reconciled", "yes"], undefined, { bin: this.queueBin });
       this.audit("reconcile_retry", { task, ok: retry.code === 0 });
       if (retry.code !== 0) {
         await this.deliverOperatorNote(task, `⚠️ ${task}: el worker paró pero el relanzamiento falló: ${retry.error.trim().slice(0, 160)}`);
@@ -417,7 +446,8 @@ export class QueueBridge {
       const goal = n.goal.split("\n")[0].slice(0, 90);
       let line = `• ${n.id} [${n.status}] v${n.goal_version} — ${goal}`;
       if (n.status === "running" && n.owner) {
-        const fresh = n.lease_until && n.lease_until / 1000 > nowS;
+        // The store's clock is seconds-since-epoch (util::now), same as nowS.
+        const fresh = n.lease_until !== null && n.lease_until > nowS;
         line += fresh ? ` (worker ${n.owner})` : ` (worker ${n.owner} — lease CADUCADA, worker presumiblemente muerto)`;
       }
       if (n.status === "done") line += " (con evidencia de cierre verificada)";
@@ -440,7 +470,29 @@ export class QueueBridge {
 
   // ── Event consumer: queue outcomes back to the originating thread ──
 
+  /** Re-arm fenced-interrupt reconciliation for mapped tasks the store still
+   * shows interrupted (restart recovery); errors only delay the next tick. */
+  private async rearmReconciles(): Promise<void> {
+    try {
+      const graph = await this.graph();
+      const mapped = new Set(
+        (this.db.query("SELECT task FROM channel_tasks WHERE channel='whatsapp'").all() as Array<{ task: string }>).map((r) => r.task),
+      );
+      for (const node of graph) {
+        if (node.status === "interrupted" && mapped.has(node.id) && !this.reconciles.has(node.id)) {
+          this.reconciles.set(node.id, { startedAt: Date.now() });
+          this.log("channel.queue.reconcile_rearmed", { task: node.id });
+        }
+      }
+    } catch {
+      // The queue store may not exist yet; the next start/tick retries.
+    }
+  }
+
   start(): void {
+    // A crash mid-reconcile loses the in-memory map: re-arm from the durable
+    // mapping so an interrupted amendment is still retried after a restart.
+    void this.rearmReconciles();
     void this.tick();
   }
 

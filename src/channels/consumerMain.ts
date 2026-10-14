@@ -20,6 +20,7 @@
  *   MINITUI_QUEUE_EMBED_DIR MiniLM directory; when set, chat tasks are embedded
  *   MINITUI_QUEUE_POLL_MS   queue event poll interval (default 5000)
  *   MINITUI_QUEUE_RECONCILE_TIMEOUT_S  wait for an interrupted worker before retry (default 180)
+ *   MINITUI_QUEUE_RECONCILE_SETTLE_S   hold after the interrupt event before retry (default 30)
  */
 
 import { ChannelInbox } from "./inbox";
@@ -67,6 +68,7 @@ const queueBridge = new QueueBridge({
   cwd: process.env.EVO_CONSUMER_CWD,
   pollMs: Number(process.env.MINITUI_QUEUE_POLL_MS ?? 5_000),
   reconcileTimeoutS: Number(process.env.MINITUI_QUEUE_RECONCILE_TIMEOUT_S ?? 180),
+  reconcileSettleMs: Number(process.env.MINITUI_QUEUE_RECONCILE_SETTLE_S ?? 30) * 1000,
   log,
 });
 const { done, stop } = startChannelConsumer({
