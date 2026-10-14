@@ -29,10 +29,11 @@
   function label(status: string) {
     return ({pending:"Ready / waiting",running:"Running",blocked:"Blocked",interrupted:"Needs reconciliation",done:"Closed with evidence",cancelled:"Cancelled"} as Record<string,string>)[status] ?? status;
   }
-  /** A running row is worker-alive only while its lease is fresh. */
+  /** A running row is worker-alive only while its lease is fresh. The registry stores epoch seconds; be tolerant of ms. */
   function lease(node: QueueNode): { fresh: boolean; text: string } | null {
     if (node.status !== "running") return null;
-    const until = typeof node.lease_until === "number" && node.lease_until > 1_000_000_000_000 ? node.lease_until : null;
+    const raw = typeof node.lease_until === "number" && node.lease_until > 1_000_000_000 ? node.lease_until : null;
+    const until = raw === null ? null : raw > 1_000_000_000_000 ? raw : raw * 1000;
     if (until === null) return { fresh: false, text: node.owner ? `Registry says running · owner ${node.owner} · no lease recorded` : "Registry says running · no worker lease recorded" };
     const seconds = Math.round((until - now) / 1000);
     if (seconds > 0) return { fresh: true, text: `Worker lease fresh${node.owner ? ` · ${node.owner}` : ""} · renews for ${formatDuration(seconds)}` };

@@ -188,11 +188,11 @@ function envValue(name: string): string {
   return typeof value === "string" && value.length > 0 ? value : "";
 }
 
-/** The apikey comes from the service environment or a 0600 env file — never the repo, never the client. */
+/** The apikey comes from the service environment (systemd EnvironmentFile) or a 0600 env file — never the repo, never the client. */
 function evoConfig(): EvoConfig | null {
   const instance = envValue("EVO_CONNECT_INSTANCE") || envValue("EVO_INSTANCE") || "mini-assistant";
   const baseUrl = (envValue("EVO_CONNECT_BASE_URL") || "http://127.0.0.1:8952").replace(/\/+$/, "");
-  let apiKey = envValue("EVO_CONNECT_API_KEY");
+  let apiKey = envValue("EVO_CONNECT_API_KEY") || envValue("INSTANCE_TOKEN_MINI_ASSISTANT");
   if (!apiKey) {
     const file = envValue("EVO_CONNECT_ENV_FILE") || "/etc/evo-weai/mini.env";
     const keyName = envValue("EVO_CONNECT_API_KEY_NAME") || "INSTANCE_TOKEN_MINI_ASSISTANT";
@@ -241,13 +241,25 @@ function mapState(raw: string): EvoStatusView["state"] {
   return "disconnected";
 }
 
+/** weai 0.2.8 nests the instance: {"instance":{"instanceName","state"}}; older builds answered flat. */
+function rawState(data: Record<string, unknown>): string {
+  if (typeof data.state === "string") return data.state;
+  if (typeof data.connectionStatus === "string") return data.connectionStatus;
+  const nested = data.instance;
+  if (nested && typeof nested === "object") {
+    const inner = nested as Record<string, unknown>;
+    if (typeof inner.state === "string") return inner.state;
+    if (typeof inner.connectionStatus === "string") return inner.connectionStatus;
+  }
+  return "";
+}
+
 export async function evoStatus(): Promise<EvoStatusView> {
   const config = evoConfig();
   if (!config) return { configured: false };
   const data = await weaiGet(`/instance/connectionState/${encodeURIComponent(config.instance)}`, config);
   if (!data) return { configured: true, instance: config.instance, state: "unreachable", detail: "weai-mini did not answer on loopback" };
-  const raw = typeof data.state === "string" ? data.state : typeof data.connectionStatus === "string" ? data.connectionStatus : "";
-  return { configured: true, instance: config.instance, state: mapState(raw) };
+  return { configured: true, instance: config.instance, state: mapState(rawState(data)) };
 }
 
 let lastQrAt = 0;
