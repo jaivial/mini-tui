@@ -201,8 +201,8 @@ const RECENT_MATCH_WINDOW_S = 15 * 60;
 const toSeconds = (ts: number) => (ts > 1e12 ? ts / 1000 : ts);
 
 /** Does the thread's recent outgoing history already carry this reply?
- * Throws when absence cannot be proven (history unreadable, or the bounded
- * window is saturated — a busy thread may have pushed the reply out of it). */
+ * Throws when absence cannot be proven (history unreadable, an empty window,
+ * or the bounded window saturated — any of those leaves "maybe delivered"). */
 async function findDeliveredReply(sender: EvoSender, thread: string, quotedId: string | null, replyText: string, limit = 50): Promise<string | null> {
   let recent: Array<{ id: string; text: string; quotedStanzaId: string | null; ts: number | null }>;
   try {
@@ -212,6 +212,7 @@ async function findDeliveredReply(sender: EvoSender, thread: string, quotedId: s
     throw new Error(`cannot verify pending send: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (recent.length >= limit) throw new Error("evidence window saturated; absence unproven");
+  if (recent.length === 0) throw new Error("empty evidence window; absence unproven");
   const nowS = Date.now() / 1000;
   const recentText = (m: { ts: number | null }) => m.ts !== null && nowS - toSeconds(m.ts) < RECENT_MATCH_WINDOW_S;
   // Honest failure notes are intentionally generic: two messages can fail with
