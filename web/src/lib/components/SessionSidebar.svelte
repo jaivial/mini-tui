@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers } from "@lucide/svelte";
+  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, Bot } from "@lucide/svelte";
   import Spinner from "./Spinner.svelte";
   import { sidebarHistory } from "../stores/history.svelte";
   import { folderStore } from "../stores/folders.svelte";
@@ -16,9 +16,12 @@
   import Skeleton from "./Skeleton.svelte";
   import { store } from "../stores/sessions.svelte";
   import { baseName, relativeTime, cost } from "../format";
-  import { statusLine, statusMood } from "../mascot";
+  import { HOUSE_MASCOT, mascotSpecFor, statusLine, statusState, type AgentMascotState } from "../mascot";
   import Mascot from "./Mascot.svelte";
   import type { SessionState } from "../types";
+  import { pwa, promptInstall } from "../pwa.svelte";
+  import { agentOpen } from "../sessionFolders";
+  import { type SubRow, subRowLabel } from "../agents";
   import type { WindowTasks } from "../tasks";
 
   let {
@@ -33,11 +36,15 @@
     onnewin,
     inOtherWindow,
     openingId = "",
-    windows = [],
-    onwindow,
-    onnewwindow,
-    onrename,
-    onclosewindow,
+    agents = [],
+    onopenagent,
+    onnewagent,
+    onrenameagent,
+    oncloseagent,
+    onnewbot,
+    onopenbot,
+    ondropbot,
+    onreorderagents,
     ontasks,
     windowTasks = {},
     paneOf = () => 0,
@@ -62,24 +69,49 @@
     onresume: () => void;
     /** A saved session being opened right now. */
     openingId?: string;
-    /** Every window, in order, with its pane count and which is on screen. */
-    windows?: {
+    /**
+     * Every agent, in order, with its bots (its panes, reimagined) and which is on screen. The
+     * accordion is drawn straight from this; the drag and drop acts through the callbacks below.
+     */
+    agents?: {
       id: string;
       label: string;
       name: string | null;
-      panes: number;
       active: boolean;
-      /** One per pane, in reading order. */
-      dots?: { id: string; status: "live" | "done" | "idle"; label: string; error?: boolean }[];
+      /** The agent mascot's state, from its bots' states. */
+      state: AgentMascotState;
+      botCount: number;
+      /** Its bots, in the agent's reading order. */
+      bots: {
+        paneId: string;
+        sessionId: string | null;
+        title: string;
+        status: SessionState["status"] | null;
+        /** The bot's last activity, in words ("2m"). */
+        when: string;
+        /** The subagent tree under this bot's session, depth first. */
+        subs: (SubRow & { open: boolean })[];
+      }[];
     }[];
-    /** Show a window. */
-    onwindow?: (id: string) => void;
-    /** Start a new, empty window. */
-    onnewwindow?: () => void;
-    /** Rename a window (an empty name goes back to "Window 3"). */
-    onrename?: (id: string, name: string) => void;
-    /** Close a window. Only one with no panes can go; the button says so otherwise. */
-    onclosewindow?: (id: string) => void;
+    /** Show an agent (bring its bots to the screen). */
+    onopenagent?: (id: string) => void;
+    /** Start a new, empty agent. */
+    onnewagent?: () => void;
+    /** Rename an agent (an empty name goes back to "Agent 3"). */
+    onrenameagent?: (id: string, name: string) => void;
+    /** Close an agent. Only one with no bots can go; the button says so otherwise. */
+    oncloseagent?: (id: string) => void;
+    /** A new bot in this agent (a new chat, beside its first bot). */
+    onnewbot?: (agentId: string) => void;
+    /** Open a bot: its agent comes to the screen and the bot takes the focus. */
+    onopenbot?: (paneId: string) => void;
+    /**
+     * A bot was dropped: on another bot of the same agent the two trade places; anywhere else the
+     * bot moves to that agent (or to a new one, `agent:new`).
+     */
+    ondropbot?: (paneId: string, target: { type: "bot"; id: string } | { type: "agent"; id: string }) => void;
+    /** An agent was dropped on another: the two trade places in the list. */
+    onreorderagents?: (fromId: string, ontoId: string) => void;
 
     /** Open the window's task board (the panel listing every session's task card). */
     ontasks?: () => void;
@@ -146,6 +178,7 @@
       prefs.view = next.view;
       prefs.pinned = next.pinned;
       prefs.expanded = next.expanded;
+      prefs.agentsExpanded = next.agentsExpanded;
     }),
   );
   const home = $derived(store.list.find((s) => s.target === "local" && /^\/home\/[^/]+/.test(s.cwd))?.cwd.match(/^\/home\/[^/]+/)?.[0] ?? "");
@@ -200,20 +233,81 @@
     });
   });
 
-  // Renaming a window: the row's pencil turns the label into a one-line input.
+  // Renaming an agent: the row's pencil turns the label into a one-line input.
   let editing = $state("");
   let draft = $state("");
-  const startRename = (w: { id: string; name: string | null }) => {
-    editing = w.id;
-    draft = w.name ?? "";
+  const startRename = (a: { id: string; name: string | null }) => {
+    editing = a.id;
+    draft = a.name ?? "";
   };
   const commitRename = () => {
-    if (editing) onrename?.(editing, draft);
+    if (editing) onrenameagent?.(editing, draft);
     editing = "";
   };
 
-  const statusTone = (s: SessionState) =>
-    s.status === "running" ? "brand" : s.status === "error" ? "err" : s.status === "done" ? "ok" : "neutral";
+  // ---- The accordion: which agents are open. What you chose wins; otherwise the agent on screen
+  // is open and the rest follow the last choice made anywhere (shared like the folders are).
+  const isOpenAgent = (a: { id: string; active: boolean }) => agentOpen(a.id, a.active, prefs);
+  function toggleAgent(a: { id: string; active: boolean }) {
+    prefs.agentsExpanded = { ...prefs.agentsExpanded, [a.id]: !isOpenAgent(a) };
+  }
+
+  // ---- Drag and drop, pointer events (the same choice the pane area made: they work the same under
+  // a finger). The pointer is captured by the row it went down on, so the drop target is found by
+  // what lies under the pointer (`data-drop` attributes), not by enter/leave events. A pointer that
+  // never moves past a few pixels was a click: no drop, and the row's own onclick fires.
+  let dragKind = $state<"" | "bot" | "agent">("");
+  let dragId = $state("");
+  let dropKind = $state<"" | "bot" | "agent">("");
+  let dropId = $state("");
+  let dragX = 0;
+  let dragY = 0;
+  let dragArmed = false; // past the threshold: this pointer is a drag, not a click
+
+  const dropOf = (x: number, y: number): { kind: "" | "bot" | "agent"; id: string } => {
+    const el = document.elementFromPoint(x, y)?.closest("[data-drop]");
+    const tag = el?.getAttribute("data-drop") ?? "";
+    const i = tag.indexOf(":");
+    if (i < 0) return { kind: "", id: "" };
+    const kind = tag.slice(0, i);
+    return kind === "bot" || kind === "agent" ? { kind, id: tag.slice(i + 1) } : { kind: "", id: "" };
+  };
+
+  function rowDown(kind: "bot" | "agent", id: string, event: PointerEvent) {
+    if (event.button !== 0) return;
+    dragKind = kind;
+    dragId = id;
+    dropKind = dropId = "";
+    dragArmed = false;
+    dragX = event.clientX;
+    dragY = event.clientY;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function rowMove(event: PointerEvent) {
+    if (!dragKind) return;
+    if (!dragArmed) {
+      if (Math.hypot(event.clientX - dragX, event.clientY - dragY) < 6) return;
+      dragArmed = true; // a drag, not a click
+    }
+    const target = dropOf(event.clientX, event.clientY);
+    dropKind = target.kind;
+    dropId = target.id;
+  }
+
+  function rowUp(event: PointerEvent) {
+    const armed = dragArmed;
+    const kind = dragKind;
+    const id = dragId;
+    const target = { kind: dropKind, id: dropId };
+    (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
+    dragKind = dragId = dropKind = dropId = "";
+    dragArmed = false;
+    if (!kind || !armed) return; // a click: the row's onclick does the work
+    if (kind === "agent" && target.kind === "agent") onreorderagents?.(id, target.id);
+    else if (kind === "bot" && target.kind === "bot") ondropbot?.(id, { type: "bot", id: target.id });
+    else if (kind === "bot") ondropbot?.(id, { type: "agent", id: target.id });
+  }
 </script>
 
 {#snippet sessionRow(session: SessionState)}
@@ -233,7 +327,8 @@
               <div class="flex items-center gap-2.5">
                 <span class="relative">
                   <Mascot
-                    mood={statusMood(session.status)}
+                    spec={mascotSpecFor(session.id)}
+                    state={statusState(session.status)}
                     size={34}
                     class="rounded-xl bg-surface/80 p-px elev-1"
                   />
@@ -307,7 +402,7 @@
               disabled={openingId === item.id}
               onclick={() => onopenhistory(item)}
             >
-              <Mascot mood="offline" size={26} class="rounded-lg bg-surface/60 p-px elev-1" />
+              <Mascot spec={mascotSpecFor(item.id)} state="idle" dim size={26} class="rounded-lg bg-surface/60 p-px elev-1" />
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-1.5">
                   <span class="min-w-0 flex-1 truncate font-display text-[12.5px] leading-4 tracking-[-0.01em] text-ink-muted">{item.title || "Untitled"}</span>
@@ -329,7 +424,7 @@
   <!-- Brand / workspace -->
   <div class="flex items-center gap-2 px-3 py-2.5">
     <!-- The house pet greets you every time the rail opens. -->
-    <Mascot mood="wave" greet size={22} class="rounded-lg bg-brand-soft p-px" />
+    <Mascot spec={HOUSE_MASCOT} greet size={22} class="rounded-lg bg-brand-soft p-px" />
     <span class="min-w-0 flex-1 truncate font-display text-[13.5px] leading-4 font-semibold tracking-[-0.01em]">mini-tui</span>
     <!--
       The connection state is a dot, not a word: it is ambient information and
@@ -346,89 +441,164 @@
     <Button variant="subtle" size="sm" icon={Plus} class="min-w-0 flex-1 justify-start" onclick={onnew}>
       New chat
     </Button>
-    <Button variant="subtle" size="sm" icon={AppWindowMac} class="pointer-coarse:px-3 shrink-0" title="New window" aria-label="New window" onclick={onnewwindow} />
+    <Button variant="subtle" size="sm" icon={Bot} class="pointer-coarse:px-3 shrink-0" title="New agent" aria-label="New agent" onclick={onnewagent} />
   </div>
 
-  {#if windows.length}
-    <!-- The windows, tmux style: one on screen, the others kept with their panes. -->
-    <div class="px-2.5 pb-2" role="group" aria-label="Windows">
+  {#if agents.length}
+    <!--
+      The agents, each with the bots it holds. The one on screen is the open row of the accordion;
+      the others fold their bots away until you open them. A bot or an agent row is also a drag
+      handle: drop a bot on another bot of the same agent to trade places, on any other row to move
+      it there, and drag an agent onto an agent to reorder them.
+    -->
+    <div class="px-2.5 pb-2" role="group" aria-label="Agents">
       <div class="mb-0.5 flex items-center gap-1.5 px-1">
-        <span class="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-ink-faint uppercase"><Layers size={10} strokeWidth={2} aria-hidden="true" />Windows</span>
-        <span class="tnum ml-auto text-[10px] text-ink-faint">{windows.length}</span>
+        <span class="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-ink-faint uppercase"><Bot size={10} strokeWidth={2} aria-hidden="true" />Agents</span>
+        <span class="tnum ml-auto text-[10px] text-ink-faint">{agents.length}</span>
       </div>
-      <div class="flex flex-col gap-0.5" role="radiogroup" aria-label="Window to show">
-        {#each windows as w (w.id)}
-          {#if editing === w.id}
-            <div class="flex min-h-7 items-center gap-1.5 px-1.5 py-1">
-              <AppWindow size={12} strokeWidth={1.75} class="shrink-0 text-brand" aria-hidden="true" />
-              <input
-                bind:value={draft}
-                aria-label="Window name"
-                class="h-6 min-w-0 flex-1 rounded-sm border border-brand bg-canvas px-1 text-[12px] text-ink focus:outline-none"
-                onkeydown={(e) => {
-                  if (e.key === "Enter") commitRename();
-                  else if (e.key === "Escape") editing = "";
-                }}
-                onblur={commitRename}
-              />
-            </div>
-          {:else}
-            <div class="group/win flex items-center rounded-md {w.active ? 'bg-raised' : 'hover:bg-raised/70'}">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={w.active}
-                class="interactive flex min-h-7 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left pointer-coarse:min-h-11
-                  {w.active ? 'text-ink' : 'text-ink-muted hover:text-ink'}"
-                onclick={() => onwindow?.(w.id)}
-              >
-                <AppWindow size={12} strokeWidth={1.75} class="shrink-0 {w.active ? 'text-brand' : 'text-ink-faint'}" aria-hidden="true" />
-                <span class="min-w-0 flex-1 truncate text-[12px] leading-4">{w.label}</span>
-                {#if w.dots?.length}
-                  <!--
-                    One dot per pane, in reading order, six to a row (12 panes make two rows, so the name
-                    keeps its room). Shape carries the state as well as colour: live pulses, done is
-                    solid (green, or red for an error), idle is an empty ring.
-                  -->
-                  <span class="pane-dots grid shrink-0 place-items-center gap-[3px]" style="grid-template-columns: repeat({Math.min(w.dots.length, 6)}, 7px)" role="img" aria-label="Panes: {w.dots.map((d, i) => `${i + 1} ${d.label}`).join(', ')}">
-                    {#each w.dots as d (d.id)}
-                      <span
-                        class="dot size-[7px] shrink-0 rounded-full"
-                        data-status={d.status}
-                        class:pulse-live={d.status === "live"}
-                        class:is-error={d.error}
-                        title={d.label}
-                      ></span>
-                    {/each}
-                  </span>
-                {/if}
-                <span class="tnum shrink-0 rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="{w.panes} {w.panes === 1 ? 'pane' : 'panes'}">{w.panes}</span>
-              </button>
-              <!--
-                One tasks icon per window, and it is always visible: it is the window's own state, not
-                a hover extra (the row's rename and close still fade in).
-              -->
-              {#if windowTasks[w.id]}
-                <TasksButton tasks={windowTasks[w.id]} onopen={() => ontasks?.()} />
-              {/if}
-              <button
-                type="button"
-                class="interactive mr-0.5 grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint opacity-0 hover:text-ink group-hover/win:opacity-100 group-focus-within/win:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
-                aria-label="Rename {w.label}"
-                title="Rename"
-                onclick={() => startRename(w)}
-              ><Pencil size={11} strokeWidth={2} aria-hidden="true" /></button>
+      <div class="flex flex-col gap-0.5">
+        {#each agents as a (a.id)}
+          {@const open = isOpenAgent(a)}
+          <div
+            class="rounded-lg {a.active ? 'bg-raised/70' : ''} {dropKind === 'agent' && dropId === a.id && !(dragKind === 'agent' && dragId === a.id) ? 'ring-2 ring-brand' : ''}"
+            data-drop="agent:{a.id}"
+          >
+            {#if editing === a.id}
+              <div class="flex min-h-7 items-center gap-1.5 px-1.5 py-1">
+                <Bot size={12} strokeWidth={1.75} class="shrink-0 text-brand" aria-hidden="true" />
+                <input
+                  bind:value={draft}
+                  aria-label="Agent name"
+                  class="h-6 min-w-0 flex-1 rounded-sm border border-brand bg-canvas px-1 text-[12px] text-ink focus:outline-none"
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") commitRename();
+                    else if (e.key === "Escape") editing = "";
+                  }}
+                  onblur={commitRename}
+                />
+              </div>
+            {:else}
+              <div class="group/agent flex items-center rounded-md">
                 <button
                   type="button"
-                  class="interactive grid size-6 cursor-pointer place-items-center rounded-sm text-ink-faint pointer-coarse:size-11
-                    {w.panes ? 'cursor-not-allowed opacity-40 hover:text-ink-faint' : 'hover:text-ink'}"
-                  aria-label="Close {w.label}"
-                  aria-disabled={w.panes ? "true" : undefined}
-                  title={w.panes ? "Move its panes out first" : "Close this empty window"}
-                  onclick={() => !w.panes && onclosewindow?.(w.id)}
+                  class="interactive grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint pointer-coarse:size-11 hover:text-ink"
+                  aria-expanded={open}
+                  aria-label="{open ? 'Fold' : 'Open'} {a.label}"
+                  title={open ? "Fold" : "Open"}
+                  onclick={() => toggleAgent(a)}
+                >
+                  <ChevronDown size={12} strokeWidth={2.25} class="transition-[rotate] duration-150 {open ? '' : '-rotate-90'}" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  class="interactive flex min-h-7 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1 py-1 text-left pointer-coarse:min-h-11
+                    {a.active ? 'text-ink' : 'text-ink-muted hover:text-ink'}
+                    {dragKind === 'agent' && dragId === a.id ? 'opacity-50' : ''}"
+                  aria-current={a.active ? "true" : undefined}
+                  onclick={() => onopenagent?.(a.id)}
+                  onpointerdown={(e) => rowDown("agent", a.id, e)}
+                  onpointermove={rowMove}
+                  onpointerup={rowUp}
+                  onpointercancel={rowUp}
+                >
+                  <Mascot spec={mascotSpecFor(a.id, a.name ?? a.label)} state={a.state} size={22} class="shrink-0 rounded-lg bg-surface/80 p-px elev-1" />
+                  <span class="min-w-0 flex-1 truncate text-[12px] leading-4">{a.label}</span>
+                  {#if windowTasks[a.id]}
+                    <TasksButton tasks={windowTasks[a.id]} onopen={() => ontasks?.()} />
+                  {/if}
+                  <span class="tnum shrink-0 rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="{a.botCount} {a.botCount === 1 ? 'bot' : 'bots'}">{a.botCount}</span>
+                </button>
+                <button
+                  type="button"
+                  class="interactive grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint opacity-0 hover:text-ink group-hover/agent:opacity-100 group-focus-within/agent:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
+                  aria-label="Rename {a.label}"
+                  title="Rename"
+                  onclick={() => startRename(a)}
+                ><Pencil size={11} strokeWidth={2} aria-hidden="true" /></button>
+                <button
+                  type="button"
+                  class="interactive mr-0.5 grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint pointer-coarse:size-11
+                    {a.botCount ? 'cursor-not-allowed opacity-40 hover:text-ink-faint' : 'hover:text-ink'}"
+                  aria-label="Close {a.label}"
+                  aria-disabled={a.botCount ? "true" : undefined}
+                  title={a.botCount ? "Move its bots out first" : "Close this empty agent"}
+                  onclick={() => !a.botCount && oncloseagent?.(a.id)}
                 ><X size={12} strokeWidth={2} aria-hidden="true" /></button>
-            </div>
-          {/if}
+              </div>
+            {/if}
+            {#if open}
+              <div role="group" aria-label="Bots of {a.label}" class="ml-3 border-l border-line/70 pl-1">
+                {#each a.bots as b (b.paneId)}
+                  {@const isTarget = dropKind === 'bot' && dropId === b.paneId && !(dragKind === 'bot' && dragId === b.paneId)}
+                  <div class="rounded-md {isTarget ? 'ring-2 ring-brand' : ''}" data-drop="bot:{b.paneId}">
+                    <button
+                      type="button"
+                      class="interactive flex min-h-8 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md py-0.5 pr-1 pl-1 text-left pointer-coarse:min-h-11
+                        {dragKind === 'bot' && dragId === b.paneId ? 'opacity-50' : ''}"
+                      title="Open {b.title}"
+                      onclick={() => onopenbot?.(b.paneId)}
+                      onpointerdown={(e) => rowDown("bot", b.paneId, e)}
+                      onpointermove={rowMove}
+                      onpointerup={rowUp}
+                      onpointercancel={rowUp}
+                    >
+                      <span class="relative shrink-0">
+                        <Mascot spec={mascotSpecFor(b.paneId)} state={statusState(b.status)} size={24} class="rounded-lg bg-surface/60 p-px" />
+                        <span
+                          class="absolute -right-0.5 -bottom-0.5 size-2 rounded-full border border-canvas {b.status === 'running'
+                            ? 'pulse-live bg-live'
+                            : b.status === 'done'
+                              ? 'bg-ok'
+                              : b.status === 'error'
+                                ? 'bg-err'
+                                : b.status === 'interrupted'
+                                  ? 'bg-warn'
+                                  : 'bg-line-strong'}"
+                        ></span>
+                      </span>
+                      <span class="min-w-0 flex-1">
+                        <span class="block truncate text-[12px] leading-4 text-ink">{b.title || "New chat"}</span>
+                        <span class="mt-px flex items-center gap-1 text-[10px] leading-3.5 text-ink-faint">
+                          <span class="truncate {b.status === 'running' ? 'font-medium text-live' : ''}">{b.status ? statusLine(b.status) : "New chat"}</span>
+                          {#if b.subs.length}
+                            <span aria-hidden="true">·</span>
+                            <span class="tnum shrink-0" title="{b.subs.length} subagents">{b.subs.length} sub</span>
+                          {/if}
+                          <span class="tnum ml-auto shrink-0">{b.when}</span>
+                        </span>
+                      </span>
+                    </button>
+                    {#if b.subs.length}
+                      <!-- The execution hierarchy: what this bot's agent spawned, as deep as it went. -->
+                      <div role="tree" aria-label="Subagents of {b.title || 'New chat'}" class="pb-1">
+                        {#each b.subs as sub (sub.key)}
+                          <button
+                            type="button"
+                            class="flex w-full min-w-0 items-center gap-1 rounded-sm py-px text-left text-[10.5px] leading-4 text-ink-faint {sub.open ? 'interactive cursor-pointer hover:text-ink' : 'cursor-default'}"
+                            style="padding-left: {sub.depth * 10 + 2}px"
+                            title={subRowLabel(sub)}
+                            aria-label={subRowLabel(sub)}
+                            onclick={sub.open && sub.sessionId ? () => onopen(sub.sessionId!) : undefined}
+                          >
+                            <span class="size-1.5 shrink-0 rounded-full {sub.state === 'running' || sub.state === 'starting' ? 'pulse-live bg-brand' : sub.state === 'dead' ? 'bg-err' : sub.state === 'waiting' ? 'bg-ok' : 'bg-line-strong'}"></span>
+                            <span class="min-w-0 flex-1 truncate">{sub.name}</span>
+                            <span class="tnum shrink-0">{sub.steps}</span>
+                          </button>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+                <button
+                  type="button"
+                  class="interactive my-0.5 flex w-full cursor-pointer items-center gap-1.5 rounded-md py-1 pl-2 text-left text-[11px] text-ink-faint hover:bg-raised/70 hover:text-ink pointer-coarse:min-h-11"
+                  onclick={() => onnewbot?.(a.id)}
+                >
+                  <Plus size={11} strokeWidth={2} aria-hidden="true" />New bot
+                </button>
+              </div>
+            {/if}
+          </div>
         {/each}
       </div>
     </div>
@@ -635,27 +805,19 @@
       <Settings size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
       <span class="text-[12.5px] leading-4 font-medium text-ink-muted">Settings</span>
     </button>
+    {#if pwa.installable}
+      <!-- The browser offered the install: take it before the offer is gone. -->
+      <button
+        class="interactive flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left pointer-coarse:min-h-11 pointer-coarse:py-2.5 hover:bg-raised/70"
+        onclick={() => void promptInstall()}
+      >
+        <Bot size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
+        <span class="min-w-0 flex-1">
+          <span class="block text-[12.5px] leading-4 font-medium text-ink-muted">Install app</span>
+          <span class="block text-[10.5px] leading-4 text-ink-faint">Add mini-tui to your home screen</span>
+        </span>
+      </button>
+    {/if}
   </div>
 </aside>
 
-<style>
-  /* Pane status dots on the window rows. Shape carries the state as well as colour. */
-  .dot {
-    transition-property: background-color, box-shadow;
-    transition-duration: 150ms;
-    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-  }
-  .dot[data-status="live"] {
-    background: var(--color-brand);
-  }
-  .dot[data-status="done"] {
-    background: var(--color-ok);
-  }
-  .dot[data-status="done"].is-error {
-    background: var(--color-err);
-  }
-  .dot[data-status="idle"] {
-    background: transparent;
-    box-shadow: inset 0 0 0 1.25px var(--color-ink-faint);
-  }
-</style>

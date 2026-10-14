@@ -4,39 +4,41 @@
 @import "@fontsource-variable/space-grotesk";
 
 /* ------------------------------------------------------------------ *
- * Design tokens: assistant-persona voice (v2 redesign). Cool deep
- * space, one violet brand accent, warm sunset reserved for "live".
- * Hierarchy comes from surface steps + hairlines, never shadows.
- * Space Grotesk carries the persona surfaces (names, headers);
- * Geist stays for dense UI, JetBrains Mono for every code surface.
+ * Design tokens: assistant-persona voice (v2 redesign). Metal dark:
+ * near-black canvas, cold gray ladder, one silver accent — sober,
+ * Grok/Muse-like. Hierarchy comes from surface steps + hairlines,
+ * never shadows. Space Grotesk carries the persona surfaces (names,
+ * headers); Geist stays for dense UI, JetBrains Mono for every code
+ * surface. The mascots stay the one warm element on the neutral base.
  * ------------------------------------------------------------------ */
 @theme {
-  /* ---- Cool dark ladder: canvas → surface → raised → overlay, each a
+  /* ---- Cold graphite ladder: canvas → surface → raised → overlay, each a
      quiet step up. Text pairs measured as before: body >= 6:1, faint >= 4.5:1. */
-  --color-canvas: #121319;
-  --color-surface: #181a21;
-  --color-raised: #21242d;
-  --color-overlay: #262a34;
+  --color-canvas: #0a0b0d;
+  --color-surface: #101214;
+  --color-raised: #17191d;
+  --color-overlay: #1d2024;
 
   /* Hairlines carry the structure; there are no elevation tiers. */
-  --color-line: #2d3140;
-  --color-line-strong: #41485c;
+  --color-line: #26292f;
+  --color-line-strong: #3b4048;
 
-  --color-ink: #f3f4f8;
-  --color-ink-muted: #a7acbc;
-  --color-ink-faint: #838a9c;
+  --color-ink: #f2f3f5;
+  --color-ink-muted: #9aa0aa;
+  --color-ink-faint: #71767f;
 
-  --color-brand: #9a8cf5;
-  --color-brand-ink: #16102b;
-  --color-brand-soft: rgb(154 140 245 / 0.15);
+  /* The brand is silver: chrome, not colour. Warmth belongs to the mascots. */
+  --color-brand: #c9cdd6;
+  --color-brand-ink: #0a0b0d;
+  --color-brand-soft: rgb(201 205 214 / 0.1);
 
-  /* The live accent: a warm sunset, only ever meaning "working right now". */
-  --color-live: #ffa14a;
-  --color-live-soft: rgb(255 161 74 / 0.16);
+  /* The live accent: a muted ember, only ever meaning "working right now". */
+  --color-live: #d29a5b;
+  --color-live-soft: rgb(210 154 91 / 0.14);
 
-  --color-ok: #46c99a;
-  --color-err: #ff6b8a;
-  --color-warn: #e0a03c;
+  --color-ok: #5fb98f;
+  --color-err: #e06879;
+  --color-warn: #cfa050;
 
   --color-accent: var(--theme-accent, var(--color-brand));
 
@@ -80,30 +82,30 @@
 :root[data-theme="catppuccin"]{ --theme-accent: oklch(0.72 0.12 265); }
 /* "shadcn" is the default palette: it keeps the Cursor orange (no override). */
 
-/* Light mode: a warm paper take on the same roles (Pi's cream, violet ink). */
+/* Light mode: a cool platinum take on the same roles (silver paper, graphite ink). */
 :root.light {
-  --color-canvas: #f7f5ef;
-  --color-surface: #fffefa;
-  --color-raised: #edeade;
+  --color-canvas: #f2f3f5;
+  --color-surface: #fafbfc;
+  --color-raised: #e8eaee;
   --color-overlay: #ffffff;
 
-  --color-line: #e4e1d5;
-  --color-line-strong: #c9c5b4;
+  --color-line: #dfe2e7;
+  --color-line-strong: #c2c7d0;
 
-  --color-ink: #242334;
-  --color-ink-muted: #5b5a6b;
-  --color-ink-faint: #6e6d7e;
+  --color-ink: #1b1d21;
+  --color-ink-muted: #565b64;
+  --color-ink-faint: #6d727b;
 
-  --color-brand: #6553d9;
+  --color-brand: #3e434d;
   --color-brand-ink: #ffffff;
-  --color-brand-soft: rgb(101 83 217 / 0.09);
+  --color-brand-soft: rgb(62 67 77 / 0.08);
 
-  --color-live: #c96a12;
-  --color-live-soft: rgb(201 106 18 / 0.1);
+  --color-live: #a8671c;
+  --color-live-soft: rgb(168 103 28 / 0.1);
 
-  --color-ok: #16724f;
-  --color-err: #b8244c;
-  --color-warn: #8a5508;
+  --color-ok: #22714f;
+  --color-err: #ab3a52;
+  --color-warn: #7d5c14;
 }
 
 /* ---- Elevation: shadows for depth, borders for structure.
@@ -235,8 +237,8 @@
 }
 
 /*
- * Mascot motion (the bizbots pet library, web/public/mascots). Each state has
- * one animation, all opacity/transform so they never reflow anything; the
+ * Mascot motion (the squishmoji avatars, rendered client-side from their specs). Each
+ * state has one animation, all opacity/transform so they never reflow anything; the
  * global reduced-motion switch flattens them with everything else.
  */
 @keyframes pet-float {
@@ -280,6 +282,16 @@
     transform: scale(1.12);
   }
 }
+@keyframes pet-swap {
+  0% {
+    opacity: 0.25;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 @utility pet-idle {
   animation: pet-float 3.8s var(--ease-standard) infinite;
 }
@@ -289,6 +301,10 @@
 /* The greeting: three waves, then it rests (an `animationend` one-shot). */
 @utility pet-wave {
   animation: pet-wave 0.8s var(--ease-emphasized) 3;
+}
+/* An expression swap (state change): a quick soften-in, so the face morphs rather than flashes. */
+@utility pet-swap {
+  animation: pet-swap 0.22s var(--ease-standard);
 }
 @utility pet-halo {
   animation: pet-halo 1.6s var(--ease-standard) infinite;
@@ -352,6 +368,13 @@
        fallback for browsers without dynamic viewport units. */
     height: 100%;
     height: 100dvh;
+  }
+  /* Installed (or phone-browser) edges: keep every surface off the notch and
+     the home bar. The panels scroll internally, so body padding is enough. */
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
   }
   #app {
     /* #app is zoomed (see --ui-scale), so its own height is the screen divided by the zoom. */

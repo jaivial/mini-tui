@@ -72,7 +72,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
     onapp: (action: "settings" | "providers" | "skills" | "resume" | "help" | "hosts") => void;
     onsplit: (dir: "row" | "col") => void;
     onclosepane: () => void;
-    /** The other windows, for "Move to window…". */
+    /** The other agents, for "Move to agent…". */
     windows?: { id: string; label: string }[];
     onmove?: (to: string | "new", name?: string) => void;
     /** Which directions have a neighbour to trade places with. */
@@ -335,9 +335,9 @@ import { windows as windowStore } from "../stores/windows.svelte";
     <span
       role="button"
       tabindex="0"
-      aria-label="Drag pane {number} to swap it with another"
+      aria-label="Drag bot {number} to swap it with another"
       aria-keyshortcuts="Enter"
-      title="Drag to another pane to swap them"
+      title="Drag to another bot to swap them"
       class="grid size-8 shrink-0 cursor-grab place-items-center rounded-sm text-ink-muted hover:bg-raised hover:text-ink active:cursor-grabbing pointer-coarse:size-11 pointer-coarse:rounded-md"
       class:is-dragging={dragging}
       data-dragging={dragging ? "true" : undefined}
@@ -415,7 +415,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
   bind:this={host}
   class="pane relative flex min-h-0 min-w-0 flex-1 bg-canvas"
   class:is-focused={focused && total > 1}
-  aria-label="Pane {number}{session ? `: ${session.title || 'Untitled'}` : ': new chat'}"
+  aria-label="Bot {number}{session ? `: ${session.title || 'Untitled'}` : ': new chat'}"
   aria-current={focused && total > 1 ? "true" : undefined}
   data-pane={pane.id}
   onfocusin={() => panes.focus(pane.id)}

@@ -201,6 +201,12 @@ class PaneStore {
     for (const [id, set] of Object.entries(this.#kept)) if (pane.id in set.panes) return id;
     return this.#wid;
   }
+  /** Which window holds this pane (on screen or shelved): where a sidebar drop lands. */
+  windowOfPane(paneId: string): string | null {
+    if (paneId in this.panes) return this.#wid;
+    for (const [id, set] of Object.entries(this.#kept)) if (paneId in set.panes) return id;
+    return null;
+  }
   /** The pane showing `sessionId`, if any. */
   /** 1-based position in reading order (what the pane's label and the tabs show). */
   numberOf(paneId: string): number {
@@ -379,6 +385,24 @@ class PaneStore {
     const next = moveInTree(this.tree, paneId, dir, w, h);
     if (next === this.tree) return false;
     this.tree = next;
+    this.#save();
+    return true;
+  }
+
+  /**
+   * A drag and drop from the sidebar: `paneId` was let go over `onto`. When both live in the same
+   * agent (on screen or shelved) they trade places; across agents this returns false and the caller
+   * moves the bot instead. Works on a shelved agent too, so the accordion can reorder bots of an
+   * agent that is not the one on screen.
+   */
+  swapAnywhere(paneId: string, onto: string): boolean {
+    if (paneId === onto) return false;
+    if (this.drop(paneId, onto)) return true;
+    const kept = Object.values(this.#kept).find((set) => paneId in set.panes && onto in set.panes);
+    if (!kept) return false;
+    const next = swapInTree(kept.tree, paneId, onto);
+    if (next === kept.tree) return false;
+    kept.tree = next;
     this.#save();
     return true;
   }

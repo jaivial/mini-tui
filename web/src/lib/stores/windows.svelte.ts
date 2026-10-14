@@ -121,19 +121,35 @@ class WindowStore {
     return id || null;
   }
 
-  /** "Window 2", or the name you gave it: the label in the sidebar and in the pane menus. */
+  /**
+   * A drag and drop in the sidebar: the agent dragged landed on `onto`, so the two trade places in
+   * the list. False (and nothing changed) unless both are real and different.
+   */
+  reorder(fromId: string, ontoId: string): boolean {
+    if (fromId === ontoId) return false;
+    const from = this.list.findIndex((w) => w.id === fromId);
+    const onto = this.list.findIndex((w) => w.id === ontoId);
+    if (from < 0 || onto < 0) return false;
+    const list = [...this.list];
+    [list[from], list[onto]] = [list[onto]!, list[from]!];
+    this.list = list;
+    this.save();
+    return true;
+  }
+
+  /** "Agent 2", or the name you gave it: the label in the sidebar and in the bot menus. */
   label(id: string, total: (id: string) => number): string {
     const win = this.list.find((w) => w.id === id);
-    if (!win) return "Window";
+    if (!win) return "Agent";
     void total;
-    return win.name?.trim() ? win.name : `Window ${this.list.indexOf(win) + 1}`;
+    return win.name?.trim() ? win.name : `Agent ${this.list.indexOf(win) + 1}`;
   }
 
   /** A name that is not taken yet, for pre-filling a rename. */
   suggestion(id: string): string {
     const n = this.list.findIndex((w) => w.id === id) + 1;
-    let name = `Window ${n}`;
-    for (let i = 2; this.list.some((w) => w.name === name); i++) name = `Window ${n} (${i})`;
+    let name = `Agent ${n}`;
+    for (let i = 2; this.list.some((w) => w.name === name); i++) name = `Agent ${n} (${i})`;
     return name;
   }
 

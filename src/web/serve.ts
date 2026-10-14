@@ -39,6 +39,18 @@ import {
   skillList,
 } from "./config";
 import type { RemoteHost } from "../../web/src/lib/types";
+import {
+  COOKIE_TTL,
+  RENEW_THRESHOLD,
+  clearCookieHeader,
+  cookieHeader,
+  initAuth,
+  isSecure,
+  loginPage,
+  nonce,
+  verifyHtpasswd,
+  type Auth,
+} from "./auth";
 
 // Shared modules (spawn, sessions) log only when this says they serve the web app
 // (src/web/log.ts): the terminal UI must not get their stderr noise.
@@ -77,6 +89,87 @@ function evoRoute(): ((request: Request) => Promise<Response>) | null {
 }
 
 type Listener = (event: { type: string; [key: string]: unknown }) => void;
+
+// ---- sign-in (cookie session auth, src/web/auth.ts) ---------------------------------------------------------------
+
+/**
+ * The gate. MINITUI_WEB_NO_AUTH=1 turns it off (local development behind nothing); a missing
+ * htpasswd file does the same rather than locking every legitimate visitor out. The Evo
+ * webhook and /health keep their own contracts (shared secret, monitoring) and stay outside.
+ */
+const auth: Auth | null = process.env.MINITUI_WEB_NO_AUTH === "1" ? null : initAuth();
+
+const html = (body: string, status = 200, headers: Record<string, string> = {}): Response =>
+  new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...headers } });
+const redirect = (location: string, headers: Record<string, string> = {}): Response =>
+  new Response(null, { status: 303, headers: { location, "cache-control": "no-store", ...headers } });
+
+/** Sign a visitor in: a fresh nonce, a 30-day cookie, and the nonce on file so logout can find it. */
+function signIn(request: Request, secret: Buffer): string {
+  const id = nonce();
+  auth?.sessions.add(id, Math.floor(Date.now() / 1000) + COOKIE_TTL);
+  return cookieHeader(secret, id, COOKIE_TTL, isSecure(request));
+}
+
+/**
+ * The gate's answer for one request: a Response to send back (login page, redirect, 401), or
+ * null to let the request through. `claims` rides out for the sliding renewal on the shell.
+ */
+async function gate(request: Request, url: URL, pathname: string): Promise<{ claims: ReturnType<Auth["claimsOf"]> } | Response> {
+  if (!auth || auth.disabled) return { claims: null };
+  // The inbound webhook carries its own secret; health is for monitoring. The browser fetches
+  // the manifest, the service worker script and the favicon WITHOUT credentials (the manifest
+  // request carries no cookies), so a signed-in gate would keep the app un-installable — they
+  // are public static files and carry no data.
+  if (pathname === "/channels/evo" || pathname === "/health") return { claims: null };
+  if (url.pathname === "/manifest.webmanifest" || url.pathname === "/sw.js" || url.pathname === "/favicon.ico" || url.pathname.startsWith("/icons/")) return { claims: null };
+
+  const claims = auth.claimsOf(request);
+  if (url.pathname === "/login") {
+    if (request.method === "GET") return claims ? redirect("/") : html(loginPage());
+    return json({ error: "method not allowed" }, 405);
+  }
+  if (url.pathname === "/api/login") {
+    if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+    const fail = (message: string) =>
+      /form/.test(request.headers.get("content-type") ?? "")
+        ? html(loginPage(message === "bad credentials" ? "Wrong user or password." : message), 401)
+        : json({ error: message }, 401);
+    let user = "";
+    let password = "";
+    try {
+      const type = request.headers.get("content-type") ?? "";
+      if (type.includes("json")) {
+        const body = (await request.json()) as { user?: unknown; password?: unknown };
+        user = typeof body.user === "string" ? body.user : "";
+        password = typeof body.password === "string" ? body.password : "";
+      } else {
+        const form = await request.formData();
+        user = String(form.get("user") ?? "");
+        password = String(form.get("password") ?? "");
+      }
+    } catch {
+      return fail("bad request");
+    }
+    if (!user || !password) return fail("bad request");
+    if (!verifyHtpasswd(auth.htpasswd, user, password)) return fail("bad credentials");
+    return redirect("/", { "set-cookie": signIn(request, auth.secret) });
+  }
+  if (url.pathname === "/api/logout") {
+    if (claims) auth.sessions.revoke(claims.nonce); // the signed cookie stops working, not just the browser's copy
+    return redirect("/login", { "set-cookie": clearCookieHeader() });
+  }
+  if (claims) return { claims };
+  // Not signed in: a navigation sees the login page, the app's fetches see a plain 401.
+  if (request.method === "GET" && (request.headers.get("accept") ?? "").includes("text/html")) return redirect("/login");
+  return json({ error: "sign in at /login" }, 401);
+}
+
+/** A fresh cookie when the session is past its half-life: every app load slides the 30 days forward. */
+function renewedCookie(request: Request, claims: ReturnType<Auth["claimsOf"]>): Record<string, string> {
+  if (!auth || !claims || claims.exp - Date.now() / 1000 >= RENEW_THRESHOLD) return {};
+  return { "set-cookie": cookieHeader(auth.secret, claims.nonce, COOKIE_TTL, isSecure(request)) };
+}
 
 /** Providers with a connection test in flight (a test is a real model call: one at a time). */
 const connecting = new Set<string>();
@@ -343,6 +436,10 @@ const server = Bun.serve({
     if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(request.headers)) {
       return json({ error: "cross-origin request refused" }, 403);
     }
+    // Sign-in: everything below needs a live session cookie (or no gate at all).
+    const gated = await gate(request, url, path);
+    if (gated instanceof Response) return gated;
+    const claims = gated.claims;
 
     try {
       // Inbound provider webhook. Account and secret come from the service
@@ -772,6 +869,8 @@ const server = Bun.serve({
                   : rel.startsWith("assets/")
                     ? "public, max-age=31536000, immutable"
                     : "no-cache",
+                // Sliding session: loading the app past the cookie's half-life renews it.
+                ...(isShell ? renewedCookie(request, claims) : {}),
               },
             });
           }
@@ -785,7 +884,11 @@ const server = Bun.serve({
           }
           // SPA fallback: any other unknown path renders the app shell.
           return new Response(Bun.file(join(dist, "index.html")), {
-            headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache, no-store, must-revalidate" },
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "no-cache, no-store, must-revalidate",
+              ...renewedCookie(request, claims),
+            },
           });
         }
       }

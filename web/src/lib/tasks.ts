@@ -1,12 +1,12 @@
 /**
  * The tasks the app shows, apart from any UI: the board's rows (which sessions the drawer lists, in
- * what order, and where each one lives on screen) and each window's own task summary (its panes, the
- * general task its popover is titled with, and what each pane is doing). Pure functions, so the
+ * what order, and where each one lives on screen) and each agent's own task summary (its bots, the
+ * general task its popover is titled with, and what each bot is doing). Pure functions, so the
  * ordering, the grouping and the words are testable without a browser (see tests/web-tasks-board.test.ts).
  */
 import type { SessionTask } from "./types";
 
-/** Where a session is shown right now: which pane (its number) and the window that pane is in. */
+/** Where a session is shown right now: which bot (its number) and the agent that bot is in. */
 export interface TaskWhere {
   pane: number;
   window: string;
@@ -41,9 +41,9 @@ export function boardRows(
   });
 }
 
-/** "Pane 2 · Work" for a session on screen, "Not open in a pane" for one that is not. */
+/** "Bot 2 · Work" for a session on screen, "Not shown on screen" for one that is not. */
 export function whereLabel(where: TaskWhere | null): string {
-  return where ? `Pane ${where.pane} · ${where.window}` : "Not open in a pane";
+  return where ? `Bot ${where.pane} · ${where.window}` : "Not shown on screen";
 }
 
 /**
@@ -52,9 +52,9 @@ export function whereLabel(where: TaskWhere | null): string {
  * without a browser (see tests/web-tasks-board.test.ts).
  */
 export interface PaneTasks {
-  /** 1-based position in the window's reading order: what the pane is called on screen. */
+  /** 1-based position in the agent's reading order: what the bot is called on screen. */
   pane: number;
-  /** The session's title, or "New chat" for a pane with none yet. */
+  /** The session's title, or "New chat" for a bot with none yet. */
   sessionTitle: string;
   /** That session's card, when it has one. */
   task: SessionTask | null;
@@ -63,14 +63,14 @@ export interface PaneTasks {
 }
 
 export interface WindowTasks {
-  /** What you called the window: "Work", "Window 3". */
+  /** What you called the agent: "Work", "Agent 3". */
   window: string;
   /**
-   * The general task of the window: the card of its first pane that has one, in reading order. It is
-   * the popover's title — the one line that says what this whole window is for.
+   * The general task of the agent: the card of its first bot that has one, in reading order. It is
+   * the popover's title — the one line that says what this whole agent is for.
    */
   title: string;
-  /** One row per pane, in reading order, whatever each pane's session is doing. */
+  /** One row per bot, in reading order, whatever each bot's session is doing. */
   panes: PaneTasks[];
   /** How many panes hold a session with a card. */
   withTask: number;
@@ -79,9 +79,9 @@ export interface WindowTasks {
 const EMPTY_COUNTS = { done: 0, pending: 0, left: 0 };
 
 /**
- * One window's rows: the general task (the first pane with a card speaks for the window) and one row
- * per pane. Panes with no session, or a session with no card, are still rows: they say so rather than
- * vanishing, because the row is the pane and the pane is on screen.
+ * One agent's rows: the general task (the first bot with a card speaks for the agent) and one row
+ * per bot. Bots with no session, or a session with no card, are still rows: they say so rather than
+ * vanishing, because the row is the bot and the bot is on screen.
  */
 export function windowTasks(
   windowLabel: string,
@@ -103,14 +103,14 @@ export function windowTasks(
   };
 }
 
-/** The one line a pane's nested popover leads with: what it is doing and how far along it is. */
+/** The one line a bot's nested popover leads with: what it is doing and how far along it is. */
 export function paneSummary(pane: PaneTasks): string {
   if (!pane.task) return "No task card yet";
   const c = pane.counts ?? EMPTY_COUNTS;
   return `${pane.task.title} — ${c.done} done, ${c.pending} pending, ${c.left} left`;
 }
 
-/** The row label inside the popover: the pane's general task, with its number. */
+/** The row label inside the popover: the bot's general task, with its number. */
 export function paneRowLabel(pane: PaneTasks): string {
   return pane.task?.title || pane.sessionTitle;
 }

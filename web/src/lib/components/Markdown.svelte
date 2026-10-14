@@ -5,13 +5,14 @@
   let { text, class: klass = "" }: { text: string; class?: string } = $props();
 
   // The engine arrives with the first message. Until it does the same text shows as plain
-  // lines, so nothing shifts when the HTML replaces it a moment later.
+  // lines, so nothing shifts when the HTML replaces it a moment later. Wide tables are
+  // wrapped here so they scroll sideways instead of clipping (a phone has no spare column).
   let html = $state("");
   $effect(() => {
     const source = boundedText(text, 400, 20_000);
     let live = true;
     void markdown.render(source).then((value) => {
-      if (live) html = value;
+      if (live) html = value.replace(/<table>/g, '<div class="tbl-scroll"><table>').replace(/<\/table>/g, "</table></div>");
     });
     return () => {
       live = false;
@@ -99,6 +100,24 @@
     border-collapse: collapse;
     font-size: 0.85em;
     margin: 0.3rem 0;
+  }
+  /* A wide table scrolls sideways in its own lane; the thin rail and the edge fade say so. */
+  .prose-mini :global(.tbl-scroll) {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+    -webkit-overflow-scrolling: touch;
+  }
+  .prose-mini :global(.tbl-scroll::-webkit-scrollbar) {
+    height: 6px;
+  }
+  .prose-mini :global(.tbl-scroll::-webkit-scrollbar-thumb) {
+    background: var(--color-line-strong);
+    border-radius: 3px;
+  }
+  .prose-mini :global(.tbl-scroll table) {
+    min-width: max-content;
   }
   .prose-mini :global(th),
   .prose-mini :global(td) {

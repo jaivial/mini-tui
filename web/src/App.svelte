@@ -16,7 +16,8 @@
   import { store } from "./lib/stores/sessions.svelte";
   import { panes } from "./lib/stores/panes.svelte";
 import { windows } from "./lib/stores/windows.svelte";
-  import { paneStatus, statusLabel } from "./lib/paneStatus";
+  import { agentState, subagentRows } from "./lib/agents";
+  import { relativeTime } from "./lib/format";
   import { ui } from "./lib/stores/ui.svelte";
   import { tasks } from "./lib/stores/tasks.svelte";
   import { plans } from "./lib/stores/plans.svelte";
@@ -235,17 +236,17 @@ import { windows } from "./lib/stores/windows.svelte";
     if (!onto || onto === from || !panes.drop(from, onto)) return;
     void tick().then(() => refs[panes.focusedId]?.focusComposer());
   }
-  /** A window is born with one pane, so a move into a fresh one is never at the pane limit. */
+  /** A window is born with one pane, so a move into a fresh one is never at the bot limit. */
   const movePane = (paneId: string, to: string | "new", name?: string) => {
     const went = panes.sendTo(paneId, to, name);
-    if (!went) toasts.push("That window is full", { detail: `At most ${MAX_PANES} panes in a window.`, tone: "info" });
+    if (!went) toasts.push("That agent is full", { detail: `At most ${MAX_PANES} bots in an agent.`, tone: "info" });
     else void tick().then(() => refs[panes.focusedId]?.focusComposer());
     return went;
   };
 
   function split(paneId: string, dir: Dir) {
     if (!panes.canSplit) {
-      toasts.push(`At most ${MAX_PANES} panes`, { detail: "Close one to open another.", tone: "info" });
+      toasts.push(`At most ${MAX_PANES} bots`, { detail: "Close one to open another.", tone: "info" });
       return;
     }
     if (!canSplit(paneId, dir)) {
@@ -381,34 +382,64 @@ import { windows } from "./lib/stores/windows.svelte";
     ),
   );
 
-  /** The sidebar's window list: name or number, pane count, and which is on screen. */
-  const windowRows = $derived(
+  /** The sidebar's agent list: each agent with its bots (its panes) and the subagent tree per bot. */
+  const agentRows = $derived(
     windows.list.map((w) => ({
       id: w.id,
       label: windows.label(w.id, (wid) => panes.paneCount(wid)),
       name: w.name,
-      panes: panes.paneCount(w.id),
       active: w.id === windows.activeId,
-      // One dot per pane, in reading order: live, done (until clicked) or idle.
-      dots: panes.panesIn(w.id).map((p) => {
+      // The agent's mascot reacts as its bots do: any one working and the agent is thinking.
+      state: agentState(panes.panesIn(w.id).map((p) => ({ status: (p.sessionId ? store.sessions[p.sessionId]?.status : null) ?? null }))),
+      botCount: panes.paneCount(w.id),
+      bots: panes.panesIn(w.id).map((p) => {
         const s = p.sessionId ? store.sessions[p.sessionId] : null;
-        const status = paneStatus(s, p);
-        return { id: p.id, status, label: `${s?.title || "New chat"}: ${statusLabel(status, s?.status === "error")}`, error: status === "done" && s?.status === "error" };
+        return {
+          paneId: p.id,
+          sessionId: p.sessionId,
+          title: s?.title || "",
+          status: s?.status ?? null,
+          when: s ? relativeTime(s.updatedAt) : "",
+          // The execution hierarchy: this bot's session and everyone it spawned, depth first.
+          subs: subagentRows((id) => store.sessions[id], p.sessionId).map((r) => ({ ...r, open: !!store.sessions[r.sessionId ?? ""] })),
+        };
       }),
     })),
   );
-  /** Another window on screen: these panes are shelved with their prompts, that window's come back. */
-  function switchWindow(id: string) {
+  /** Another agent on screen: these bots are shelved with their prompts, that agent's come back. */
+  function switchAgent(id: string) {
     if (id === windows.activeId) return;
     panes.switchTo(id);
     queueMicrotask(() => refs[panes.focusedId]?.focusComposer());
   }
-  /** A new window: it opens empty (one new chat) and takes the focus. */
-  function newWindow() {
+  /** A new agent: it opens empty (one new chat) and takes the focus. */
+  function newAgent() {
     windows.create();
     if (narrow) sidebarOpen = false;
     panes.openBlank();
     queueMicrotask(() => refs[panes.focusedId]?.focusComposer());
+  }
+  /** Open a bot from the accordion: its agent comes to the screen, the bot takes the focus. */
+  function openBot(paneId: string) {
+    const wid = panes.windowOfPane(paneId);
+    if (wid && wid !== windows.activeId) panes.switchTo(wid);
+    if (panes.panes[paneId] && panes.focusedId !== paneId) panes.focus(paneId);
+    queueMicrotask(() => refs[panes.focusedId]?.focusComposer());
+  }
+  /** A new bot (a new chat) in `agentId`, beside its first bot. */
+  function newBot(agentId: string) {
+    if (agentId !== windows.activeId) panes.switchTo(agentId);
+    split(panes.focusedId, "row");
+  }
+  /** A bot dropped in the accordion: trade places within an agent, or move it to another. */
+  function dropBot(paneId: string, target: { type: "bot"; id: string } | { type: "agent"; id: string }) {
+    if (target.type === "bot") {
+      if (panes.swapAnywhere(paneId, target.id)) return;
+      const dest = panes.windowOfPane(target.id);
+      if (dest) movePane(paneId, dest);
+      return;
+    }
+    movePane(paneId, target.id === "new" ? "new" : target.id);
   }
 
   function scaleBy(dir: 1 | -1, text: boolean) {
@@ -510,14 +541,18 @@ import { windows } from "./lib/stores/windows.svelte";
         onresume={() => (resumeOpen = true)}
         onnewin={newChatIn}
         openingId={openingId}
-        windows={windowRows}
-        onwindow={(id) => switchWindow(id)}
-        onnewwindow={() => newWindow()}
-        onrename={(id, name) => windows.rename(id, name)}
-        onclosewindow={(id) => {
+        agents={agentRows}
+        onopenagent={(id) => switchAgent(id)}
+        onnewagent={() => newAgent()}
+        onrenameagent={(id, name) => windows.rename(id, name)}
+        oncloseagent={(id) => {
           panes.dropWindow(id);
           windows.remove(id);
         }}
+        onnewbot={newBot}
+        onopenbot={openBot}
+        ondropbot={dropBot}
+        onreorderagents={(from, onto) => windows.reorder(from, onto)}
         ontasks={() => (tasksOpen = true)}
         windowTasks={tasksByWindow}
         inOtherWindow={(id) => {
@@ -538,7 +573,7 @@ import { windows } from "./lib/stores/windows.svelte";
     {#if tabbed && panes.count > 1}
       <!-- Narrow screens: the panes are tabs. Same panes, same order, same numbers as the split view. -->
       <div class="flex shrink-0 items-center gap-1 border-b border-line/80 px-2 py-1.5">
-      <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none]" role="tablist" aria-label="Panes">
+      <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none]" role="tablist" aria-label="Bots">
         {#each panes.order as id, i (id)}
           {@const sid = panes.panes[id]?.sessionId}
           {@const s = sid ? store.sessions[sid] : null}
@@ -560,8 +595,8 @@ import { windows } from "./lib/stores/windows.svelte";
             <button
               type="button"
               class="interactive grid size-7 shrink-0 cursor-pointer place-items-center rounded-md hover:bg-overlay pointer-coarse:size-11"
-              aria-label="Close pane {i + 1}"
-              title="Close pane"
+              aria-label="Close bot {i + 1}"
+              title="Close bot"
               onclick={() => closePane(id)}
             ><X size={13} strokeWidth={2} aria-hidden="true" /></button>
           </div>
@@ -570,8 +605,8 @@ import { windows } from "./lib/stores/windows.svelte";
         <button
           type="button"
           class="interactive grid size-9 shrink-0 cursor-pointer place-items-center rounded-md text-ink-muted hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11"
-          aria-label="New pane"
-          title={panes.canSplit ? "New pane" : `At most ${MAX_PANES} panes`}
+          aria-label="New bot"
+          title={panes.canSplit ? "New bot" : `At most ${MAX_PANES} bots`}
           disabled={!panes.canSplit}
           onclick={() => split(panes.focusedId, "row")}
         ><Plus size={15} strokeWidth={2} aria-hidden="true" /></button>
