@@ -101,6 +101,10 @@ export interface SidebarPrefs {
   pinned: string[];
   /** Folders you opened or closed yourself, and which way: this wins over the default. */
   expanded: Record<string, boolean>;
+  /** Which windows show their bots nested under them, keyed by window id. */
+  openWindows: Record<string, boolean>;
+  /** Which of those bots show their own delegates nested, keyed by session id. */
+  openBots: Record<string, boolean>;
 }
 
 /** Expanded? What you chose for this folder; otherwise open when it has open sessions or is pinned. */
@@ -114,9 +118,14 @@ export function loadPrefs(value?: unknown): SidebarPrefs {
     const strings = (x: unknown) => (Array.isArray(x) ? x.filter((s): s is string => typeof s === "string").slice(0, 200) : []);
     const expanded: Record<string, boolean> = {};
     if (v.expanded && typeof v.expanded === "object") for (const [k, b] of Object.entries(v.expanded).slice(0, 500)) if (typeof b === "boolean") expanded[k] = b;
-    return { view: v.view === "folder" ? "folder" : "recent", pinned: strings(v.pinned), expanded };
+    const flags = (x: unknown) => {
+      const out: Record<string, boolean> = {};
+      if (x && typeof x === "object") for (const [k, b] of Object.entries(x).slice(0, 500)) if (typeof b === "boolean") out[k] = b;
+      return out;
+    };
+    return { view: v.view === "folder" ? "folder" : "recent", pinned: strings(v.pinned), expanded, openWindows: flags(v.openWindows), openBots: flags(v.openBots) };
   } catch {
-    return { view: "recent", pinned: [], expanded: {} };
+    return { view: "recent", pinned: [], expanded: {}, openWindows: {}, openBots: {} };
   }
 }
 export function toggleIn(list: string[], item: string): string[] {

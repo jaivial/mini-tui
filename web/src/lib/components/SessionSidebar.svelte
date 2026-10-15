@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers, Search } from "@lucide/svelte";
+  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers, Search, Bot, CalendarClock, Zap, Network, Puzzle } from "@lucide/svelte";
   import Spinner from "./Spinner.svelte";
   import { sidebarHistory } from "../stores/history.svelte";
   import { folderStore } from "../stores/folders.svelte";
@@ -19,8 +19,9 @@
   import { statusLine } from "../mascot";
   import Avatar from "./Avatar.svelte";
   import Mascot from "./Mascot.svelte";
-  import type { SessionState } from "../types";
+  import type { SessionState, SessionTask } from "../types";
   import type { WindowTasks } from "../tasks";
+  import { agentTree, type BotRow } from "../stores/agentTree.svelte";
 
   let {
     onnew,
@@ -41,6 +42,7 @@
     onclosewindow,
     ontasks,
     windowTasks = {},
+    taskCards = [],
     paneOf = () => 0,
     focusedSession = null,
     grid = false,
@@ -73,6 +75,8 @@
       active: boolean;
       /** One per pane, in reading order. */
       dots?: { id: string; status: "live" | "done" | "idle"; label: string; error?: boolean }[];
+      /** The bots (sessions) this window holds, in reading order — the nested rows. */
+      bots?: { id: string; title: string; status: SessionState["status"]; error?: boolean }[];
     }[];
     /** Show a window. */
     onwindow?: (id: string) => void;
@@ -87,6 +91,8 @@
     ontasks?: () => void;
     /** Each window's panes and their tasks, one for the icon on that window's row. */
     windowTasks?: Record<string, WindowTasks>;
+    /** The whole task board, as the hub pushes it: the bots' cards for the accordion rows. */
+    taskCards?: SessionTask[];
 
     /** The window holding a session that no pane on screen shows, or "" when one does. */
     inOtherWindow?: (id: string) => string;
@@ -101,6 +107,7 @@
     class?: string;
   } = $props();
 
+  let railEl: HTMLElement | null = null;
   let filter = $state("");
   let query = $derived(filter.trim().toLowerCase());
 
@@ -150,6 +157,8 @@
       prefs.view = next.view;
       prefs.pinned = next.pinned;
       prefs.expanded = next.expanded;
+      prefs.openWindows = next.openWindows;
+      prefs.openBots = next.openBots;
     }),
   );
   const home = $derived(store.list.find((s) => s.target === "local" && /^\/home\/[^/]+/.test(s.cwd))?.cwd.match(/^\/home\/[^/]+/)?.[0] ?? "");
@@ -216,8 +225,63 @@
     editing = "";
   };
 
-  const statusTone = (s: SessionState) =>
-    s.status === "running" ? "brand" : s.status === "error" ? "err" : s.status === "done" ? "ok" : "neutral";
+  // ---- Nested bots: what each bot has delegated. One shared store polls the agent trees of
+  // exactly the sessions this sidebar lists — nothing else is fetched, and a bot that goes away
+  // stops being polled too.
+  $effect(() => {
+    agentTree.sync([...bots.map((s) => s.id), ...windows.flatMap((w) => (w.bots ?? []).map((b) => b.id))]);
+  });
+  const botsOf = (id: string): { rows: BotRow[]; live: number; total: number } => agentTree.trees[id] ?? { rows: [], live: 0, total: 0 };
+  /** Delegates working anywhere under a window, for the row's pulsing dot. */
+  const liveIn = (id: string) => (windows.find((w) => w.id === id)?.bots ?? []).reduce((n, b) => n + botsOf(b.id).live, 0);
+  /** A window shows its bots unless you closed it; before the first click the active one is open. */
+  const winOpen = (w: { id: string; active: boolean }) => prefs.openWindows[w.id] ?? w.active;
+  const botOpen = (id: string) => prefs.openBots[id] ?? false;
+  function toggleWin(id: string) {
+    const w = windows.find((x) => x.id === id);
+    prefs.openWindows = { ...prefs.openWindows, [id]: !winOpen({ id, active: w?.active ?? false }) };
+  }
+  function toggleBot(id: string) {
+    prefs.openBots = { ...prefs.openBots, [id]: !botOpen(id) };
+  }
+  /** Colour + shape for a bot's state dot: live pulses, the others are quiet. */
+  const BOT_DOT: Record<BotRow["tone"], string> = {
+    live: "bg-live pulse-live",
+    ok: "bg-ok",
+    err: "bg-err",
+    wait: "bg-warn",
+    warn: "bg-warn",
+    idle: "bg-line-strong",
+  };
+
+  // ---- The bots (mockup: Lindy's clean list). Every open session is a bot row: face, bold name, a
+  // one-line preview of what it is doing, and a dot when it needs eyes. Folded open, a bot shows the
+  // work: its task card (mono, like a command line), the delegates it is running, and all its threads.
+  const cardOf = (id: string) => taskCards.find((t) => t.id === id) ?? null;
+  const previewOf = (s: SessionState) => s.task || `${statusLine(s.status)} · ${baseName(s.cwd)}`;
+  /** Bots in reading order: working first, then the quiet open ones, then the finished. */
+  const bots = $derived([...live, ...idle, ...done]);
+  let toolsOpen = $state(false);
+  let teamOpen = $state(false);
+  /** The red dot on Routines: work is queued somewhere. */
+  const queuedWork = $derived(taskCards.some((t) => t.todos.left.length > 0));
+
+  // ---- Keyboard: ↑/↓ walks every row in view (windows, bots, delegates, sessions, history) and
+  // Enter opens the one under the caret — no mouse needed to move around the rail. On the window,
+  // so the non-interactive `<aside>` itself never takes an event listener; anything typed outside
+  // the rail (the chat, the composer) is ignored.
+  function roving(e: KeyboardEvent) {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const rail = railEl;
+    const t = e.target as HTMLElement | null;
+    if (!rail || !t || !rail.contains(t)) return;
+    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+    const rows = Array.from(rail.querySelectorAll<HTMLElement>("[data-nav]")).filter((el) => el.offsetParent !== null);
+    if (!rows.length) return;
+    e.preventDefault();
+    const at = rows.indexOf(document.activeElement as HTMLElement);
+    rows[at === -1 ? 0 : e.key === "ArrowDown" ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1)]?.focus();
+  }
 </script>
 
 {#snippet sessionRow(session: SessionState)}
@@ -230,6 +294,7 @@
             class:bg-raised={focusedSession === session.id}
           >
             <button
+              data-nav
               class="block w-full cursor-pointer text-left pointer-coarse:min-h-11"
               onclick={() => onopen(session.id)}
               title={session.title}
@@ -304,6 +369,7 @@
           {@const reason = unresumableReason(item)}
           <div role="listitem" class="interactive relative rounded-xl py-1.5 pr-2 pl-2.5 hover:bg-raised/70 pointer-coarse:py-2.5" data-history={item.id}>
             <button
+              data-nav
               type="button"
               class="flex w-full cursor-pointer items-center gap-2.5 text-left pointer-coarse:min-h-11"
               title={reason ? `${item.title}: read only. ${reason}` : item.title}
@@ -326,7 +392,211 @@
           </div>
 {/snippet}
 
+{#snippet botRow(bot: { id: string; title: string; status: SessionState["status"]; error?: boolean })}
+  {@const tree = botsOf(bot.id)}
+  <div>
+    <!-- One bot the window holds: its face, its state dot, the delegates it is running folded under it. -->
+    <div class="group/bot flex items-center rounded-md hover:bg-raised/70">
+      {#if tree.total}
+        <button
+          type="button"
+          class="interactive ml-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint hover:text-ink pointer-coarse:size-11"
+          aria-expanded={botOpen(bot.id)}
+          aria-label={botOpen(bot.id) ? `Hide ${bot.title || "Untitled"}'s delegates` : `Show ${bot.title || "Untitled"}'s delegates`}
+          title={botOpen(bot.id) ? "Hide delegates" : "Show delegates"}
+          onclick={() => toggleBot(bot.id)}
+        >
+          <ChevronDown size={10} strokeWidth={2.25} class="transition-[rotate] duration-150 {botOpen(bot.id) ? '' : '-rotate-90'}" aria-hidden="true" />
+        </button>
+      {:else}
+        <span class="ml-0.5 size-5 shrink-0" aria-hidden="true"></span>
+      {/if}
+      <button
+        data-nav
+        type="button"
+        class="interactive flex min-h-8 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1.5 pl-0.5 text-left pointer-coarse:min-h-11"
+        onclick={() => onopen(bot.id)}
+        title={bot.title || "Untitled"}
+      >
+        <span class="relative shrink-0">
+          <Avatar id={bot.id} size={20} />
+          <span
+            class="absolute -right-0.5 -bottom-0.5 size-2 rounded-full border-[1.5px] border-canvas {bot.status === 'running'
+              ? 'pulse-live bg-live'
+              : bot.status === 'done'
+                ? 'bg-ok'
+                : bot.status === 'error'
+                  ? 'bg-err'
+                  : bot.status === 'interrupted'
+                    ? 'bg-warn'
+                    : 'bg-line-strong'}"
+          ></span>
+        </span>
+        <span class="min-w-0 flex-1 truncate text-[12px] leading-4 text-ink-muted">{bot.title || "Untitled"}</span>
+        {#if paneOf(bot.id)}
+          <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-raised px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(bot.id)}">
+            <span aria-hidden="true">{paneOf(bot.id)}</span><span class="sr-only">in pane {paneOf(bot.id)}</span>
+          </span>
+        {/if}
+        {#if tree.live}
+          <span class="flex shrink-0 items-center gap-1 text-[10px] font-medium text-live" title="{tree.live} delegate{tree.live === 1 ? '' : 's'} working">
+            <Bot size={10} strokeWidth={2} aria-hidden="true" /><span class="tnum">{tree.live}</span>
+          </span>
+        {/if}
+      </button>
+    </div>
+    {#if botOpen(bot.id) && tree.total}
+      <!-- Its delegates, each indented under its parent: face, name, live state, task in the tooltip. -->
+      <div class="ml-[15px] border-l border-line/70 pb-0.5 pl-0.5" role="group" aria-label="{bot.title || 'Untitled'}'s delegates">
+        {#each tree.rows as r (r.path)}
+          <button
+            data-nav
+            type="button"
+            class="flex min-h-6 w-full cursor-pointer items-center gap-1.5 rounded-sm py-0.5 pr-1.5 text-left hover:bg-raised/70 pointer-coarse:min-h-9"
+            style="padding-left: {r.depth * 10 + 5}px"
+            title={r.task ? `${r.path}: ${r.task}` : r.path}
+          >
+            <Avatar id={r.id} size={16} />
+            <span class="min-w-0 shrink-0 truncate text-[11px] leading-4 font-medium text-ink-muted">{r.name}</span>
+            {#if r.agent}<span class="min-w-0 truncate text-[10px] leading-4 text-ink-faint">{r.agent}</span>{/if}
+            <span class="ml-auto flex shrink-0 items-center gap-1 text-[10px] leading-4 {r.tone === 'live' ? 'font-medium text-live' : 'text-ink-faint'}">
+              <span class="size-1.5 shrink-0 rounded-full {BOT_DOT[r.tone]}" aria-hidden="true"></span>
+              {r.label}
+            </span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
+<svelte:window onkeydown={roving} />
+
+{#snippet botAccordion(session: SessionState)}
+  {@const card = cardOf(session.id)}
+  {@const tree = botsOf(session.id)}
+  {@const open = botOpen(session.id)}
+  <div role="listitem">
+    <!-- One bot, the mockup's accordion: chevron, face, bold name, a quiet preview line, and a dot
+         only when the bot needs eyes. -->
+    <div class="group/botrow relative flex items-center rounded-xl {focusedSession === session.id ? 'bg-raised' : 'hover:bg-raised/60'}">
+      <button
+        type="button"
+        class="interactive ml-0.5 grid size-7 shrink-0 cursor-pointer place-items-center rounded-full text-ink-faint hover:bg-raised hover:text-ink pointer-coarse:size-9"
+        aria-expanded={open}
+        aria-label={open ? `Hide ${session.title || "Untitled"}'s work` : `Show ${session.title || "Untitled"}'s work`}
+        title={open ? "Hide its work" : "Show its work"}
+        onclick={() => toggleBot(session.id)}
+      >
+        <ChevronRight size={13} strokeWidth={2.25} class="transition-[rotate] duration-150 {open ? 'rotate-90' : ''}" aria-hidden="true" />
+      </button>
+      <button
+        data-nav
+        class="block min-h-11 min-w-0 flex-1 cursor-pointer rounded-xl py-1.5 pr-2 text-left"
+        onclick={() => onopen(session.id)}
+        title={session.title}
+        aria-current={focusedSession === session.id ? "true" : undefined}
+      >
+        <span class="flex items-center gap-2.5">
+          <span class="relative shrink-0">
+            <Avatar id={session.id} size={30} />
+            <span
+              class="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-canvas {session.status === 'running'
+                ? 'pulse-live bg-live'
+                : session.status === 'done'
+                  ? 'bg-ok'
+                  : session.status === 'error'
+                    ? 'bg-err'
+                    : session.status === 'interrupted'
+                      ? 'bg-warn'
+                      : 'bg-line-strong'}"
+            ></span>
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="flex items-center gap-1.5">
+              {#if session.target === "remote"}
+                <Server size={12} class="shrink-0 text-accent" strokeWidth={2} />
+              {/if}
+              <span class="min-w-0 flex-1 truncate text-[13px] leading-4.5 font-semibold tracking-[-0.01em] text-ink">{session.title || "Untitled"}</span>
+              {#if paneOf(session.id)}
+                <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-raised px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(session.id)}">
+                  <span aria-hidden="true">{paneOf(session.id)}</span><span class="sr-only">in pane {paneOf(session.id)}</span>
+                </span>
+              {:else if inOtherWindow?.(session.id)}
+                <span class="shrink-0 text-ink-faint" title="On {inOtherWindow(session.id)}"><AppWindow size={12} strokeWidth={1.75} aria-label="On {inOtherWindow(session.id)}" /></span>
+              {/if}
+              {#if session.status === "error"}
+                <span class="size-2 shrink-0 rounded-full bg-err" title="Error"></span>
+              {:else if session.status === "running"}
+                <span class="pulse-live size-2 shrink-0 rounded-full bg-live" title="Working"></span>
+              {:else if session.status === "done" && !paneOf(session.id) && !inOtherWindow?.(session.id)}
+                <span class="size-2 shrink-0 rounded-full bg-brand" title="Finished — new"></span>
+              {/if}
+            </span>
+            <span class="mt-0.5 block truncate text-[11.5px] leading-4 text-ink-faint">{previewOf(session)}</span>
+          </span>
+        </span>
+      </button>
+      <div class="absolute top-1 right-1 hidden items-center group-hover/botrow:flex group-focus-within/botrow:flex pointer-coarse:top-1/2 pointer-coarse:right-0.5 pointer-coarse:flex pointer-coarse:-translate-y-1/2">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          class="pointer-fine:h-6 pointer-fine:w-6"
+          icon={Square}
+          title={session.status === "running" ? "Interrupt" : "Close session"}
+          onclick={() => onclosesession(session.id)}
+        />
+      </div>
+    </div>
+    {#if open}
+      <!-- Its work, indented under the name: the task card (mono, like a command), the delegates it
+           is running (face, name, live state), and everything it has ever said. -->
+      <div class="mb-1 ml-[34px] flex flex-col items-stretch gap-px" role="group" aria-label="{session.title || 'Untitled'}'s work">
+        {#if card}
+          <div class="flex min-h-7 items-center gap-1.5 rounded-lg px-1.5 py-1" title={card.description || card.title}>
+            <span class="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-ink-muted">{card.title}</span>
+            <span class="tnum shrink-0 text-[10px] text-ink-faint">{relativeTime(card.updatedAt || session.updatedAt)}</span>
+            <span class="size-1.5 shrink-0 rounded-full {session.status === 'running' ? 'pulse-live bg-live' : session.status === 'error' ? 'bg-err' : 'bg-line-strong'}" aria-hidden="true"></span>
+          </div>
+        {:else if session.task}
+          <div class="flex min-h-7 items-center gap-1.5 rounded-lg px-1.5 py-1" title={session.task}>
+            <span class="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-ink-muted">{session.task}</span>
+            <span class="tnum shrink-0 text-[10px] text-ink-faint">{relativeTime(session.updatedAt)}</span>
+          </div>
+        {/if}
+        {#each tree.rows as r (r.path)}
+          <button
+            data-nav
+            type="button"
+            class="flex min-h-7 w-full cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-left hover:bg-raised/70 pointer-coarse:min-h-11"
+            style="padding-left: {r.depth * 10 + 6}px"
+            title={r.task ? `${r.path}: ${r.task}` : r.path}
+            onclick={() => onopen(session.id)}
+          >
+            <Avatar id={r.id} size={16} />
+            <span class="min-w-0 shrink-0 truncate text-[11px] leading-4 font-medium text-ink-muted">{r.name}</span>
+            {#if r.agent}<span class="min-w-0 truncate text-[10px] leading-4 text-ink-faint">{r.agent}</span>{/if}
+            <span class="ml-auto flex shrink-0 items-center gap-1 text-[10px] leading-4 {r.tone === 'live' ? 'font-medium text-live' : 'text-ink-faint'}">
+              <span class="size-1.5 shrink-0 rounded-full {BOT_DOT[r.tone]}" aria-hidden="true"></span>
+              {r.label}
+            </span>
+          </button>
+        {/each}
+        <button
+          data-nav
+          type="button"
+          class="flex min-h-7 cursor-pointer items-center px-1.5 py-1 text-left text-[11px] text-ink-faint hover:text-ink pointer-coarse:min-h-11"
+          onclick={onresume}
+        >
+          {tree.total || card ? "All threads" : "Select threads"}
+        </button>
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
 <aside
+  bind:this={railEl}
   class="flex h-full w-[248px] shrink-0 flex-col border-r border-line/70 bg-canvas pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] max-md:w-[min(20rem,calc(86*var(--vw)))] {klass}"
 >
   <!-- Brand / workspace -->
@@ -376,7 +646,23 @@
             </div>
           {:else}
             <div class="group/win flex items-center rounded-md {w.active ? 'bg-raised' : 'hover:bg-raised/70'}">
+              {#if w.bots?.length}
+                <!-- Fold the window's bots open/closed; the choice sticks (and follows you to other devices). -->
+                <button
+                  type="button"
+                  class="interactive ml-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint hover:text-ink pointer-coarse:size-11"
+                  aria-expanded={winOpen(w)}
+                  aria-label={winOpen(w) ? `Hide ${w.label}'s bots` : `Show ${w.label}'s bots`}
+                  title={winOpen(w) ? "Hide its bots" : "Show its bots"}
+                  onclick={() => toggleWin(w.id)}
+                >
+                  <ChevronDown size={11} strokeWidth={2.25} class="transition-[rotate] duration-150 {winOpen(w) ? '' : '-rotate-90'}" aria-hidden="true" />
+                </button>
+              {:else}
+                <span class="ml-0.5 size-5 shrink-0" aria-hidden="true"></span>
+              {/if}
               <button
+                data-nav
                 type="button"
                 role="radio"
                 aria-checked={w.active}
@@ -405,6 +691,10 @@
                   </span>
                 {/if}
                 <span class="tnum shrink-0 rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="{w.panes} {w.panes === 1 ? 'pane' : 'panes'}">{w.panes}</span>
+                {#if liveIn(w.id)}
+                  <!-- Delegates working under this window's bots, at a glance: one pulsing dot. -->
+                  <span class="pulse-live size-1.5 shrink-0 rounded-full bg-live" title="{liveIn(w.id)} delegate{liveIn(w.id) === 1 ? '' : 's'} working"></span>
+                {/if}
               </button>
               <!--
                 One tasks icon per window, and it is always visible: it is the window's own state, not
@@ -430,6 +720,14 @@
                   onclick={() => !w.panes && onclosewindow?.(w.id)}
                 ><X size={12} strokeWidth={2} aria-hidden="true" /></button>
             </div>
+            {#if winOpen(w) && w.bots?.length}
+              <!-- The window's bots, nested: each with its face, its state, and its own delegates folded under it. -->
+              <div class="mb-1 ml-[15px] border-l border-line/70 pb-0.5 pl-0.5" role="group" aria-label="Bots in {w.label}">
+                {#each w.bots as bot (bot.id)}
+                  {@render botRow(bot)}
+                {/each}
+              </div>
+            {/if}
           {/if}
         {/each}
       </div>
@@ -579,16 +877,10 @@
   {:else}
   <!-- Session list -->
   <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3" role="list">
-    {#each [{ key: "live", label: "Live", items: live }, { key: "idle", label: "Open", items: idle }, { key: "done", label: "Finished", items: done }] as group (group.key)}
-      {#if group.items.length}
-        <div class="mt-3 mb-1 flex items-center gap-1.5 px-2">
-          <span class="text-[10px] font-semibold tracking-wider text-ink-faint uppercase">{group.label}</span>
-          <span class="tnum ml-auto text-[10px] text-ink-faint">{group.items.length}</span>
-        </div>
-        {#each group.items as session (session.id)}
-          {@render sessionRow(session)}
-        {/each}
-      {/if}
+    <!-- The bots, the mockup's clean accordion: working first, then the quiet, then the finished.
+         No headers — the state lives on each row. -->
+    {#each bots as session (session.id)}
+      {@render botAccordion(session)}
     {/each}
 
     <!-- History: saved sessions from the database, newest first, grouped by day. -->
@@ -649,27 +941,101 @@
 
   {/if}
 
-  <!-- Remote hosts -->
-  <div class="border-t border-line/80 p-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]">
-    <button
-      class="interactive flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left pointer-coarse:min-h-11 pointer-coarse:py-2.5 hover:bg-raised/70"
-      onclick={onopenhosts}
-    >
-      <Server size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} />
-      <div class="min-w-0 flex-1">
-        <div class="text-[12.5px] leading-4 font-medium text-ink-muted">Remote hosts</div>
-        <div class="tnum text-[10.5px] leading-4 text-ink-faint">
-          {store.hosts.filter((h) => h.online).length} online · {store.hosts.length} saved
+  <!-- Tools, workspace, you — the mockup's quiet footer: no hard borders, just air. -->
+  <div class="flex flex-col gap-0.5 px-2 pt-1 pb-[max(0.375rem,env(safe-area-inset-bottom))]">
+    <!-- Tools: Routines (the tasks drawer, dotted when work is queued), Triggers and Team map on the way. -->
+    <div>
+      <button
+        type="button"
+        class="interactive flex min-h-9 w-full cursor-pointer items-center gap-1.5 rounded-xl px-1 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
+        aria-expanded={toolsOpen}
+        onclick={() => (toolsOpen = !toolsOpen)}
+      >
+        <span class="text-[12px] leading-4 font-semibold tracking-[-0.01em] text-ink-muted">Tools</span>
+        <ChevronDown size={11} strokeWidth={2.25} class="shrink-0 text-ink-faint transition-[rotate] duration-150 {toolsOpen ? '' : '-rotate-90'}" aria-hidden="true" />
+      </button>
+      {#if toolsOpen}
+        <div class="ml-1 flex flex-col" role="group" aria-label="Tools">
+          <button
+            data-nav
+            type="button"
+            class="interactive flex min-h-9 cursor-pointer items-center gap-2.5 rounded-xl px-2 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
+            onclick={ontasks}
+          >
+            <CalendarClock size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
+            <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Routines</span>
+            {#if queuedWork}<span class="size-2 shrink-0 rounded-full bg-err" title="Work queued"></span>{/if}
+          </button>
+          <button
+            type="button"
+            class="flex min-h-9 items-center gap-2.5 rounded-xl px-2 text-left opacity-50 pointer-coarse:min-h-11"
+            aria-disabled="true"
+            title="Coming soon"
+          >
+            <Zap size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
+            <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Triggers</span>
+          </button>
+          <button
+            type="button"
+            class="flex min-h-9 items-center gap-2.5 rounded-xl px-2 text-left opacity-50 pointer-coarse:min-h-11"
+            aria-disabled="true"
+            title="Coming soon: the agent tree"
+          >
+            <Network size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
+            <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Team map</span>
+          </button>
         </div>
-      </div>
-      <ChevronRight size={14} class="shrink-0 text-ink-faint" />
-    </button>
+      {/if}
+    </div>
+
+    <!-- The workspace: its hosts and its settings, one fold away. -->
+    <div>
+      <button
+        type="button"
+        class="interactive flex min-h-9 w-full cursor-pointer items-center gap-1.5 rounded-xl px-1 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
+        aria-expanded={teamOpen}
+        onclick={() => (teamOpen = !teamOpen)}
+      >
+        <span class="text-[12px] leading-4 font-semibold tracking-[-0.01em] text-ink-muted">mini-tui</span>
+        <span class="tnum text-[10px] text-ink-faint">{store.hosts.filter((h) => h.online).length}/{store.hosts.length} hosts</span>
+        <ChevronDown size={11} strokeWidth={2.25} class="ml-auto shrink-0 text-ink-faint transition-[rotate] duration-150 {teamOpen ? '' : '-rotate-90'}" aria-hidden="true" />
+      </button>
+      {#if teamOpen}
+        <div class="ml-1 flex flex-col" role="group" aria-label="Workspace">
+          <button
+            data-nav
+            type="button"
+            class="interactive flex min-h-9 cursor-pointer items-center gap-2.5 rounded-xl px-2 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
+            onclick={onopenhosts}
+          >
+            <Server size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
+            <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Remote hosts</span>
+            <span class="tnum shrink-0 text-[10.5px] text-ink-faint">{store.hosts.filter((h) => h.online).length} online</span>
+          </button>
+          <button
+            data-nav
+            type="button"
+            class="interactive flex min-h-9 cursor-pointer items-center gap-2.5 rounded-xl px-2 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
+            onclick={onsettings}
+          >
+            <Settings size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
+            <span class="text-[12.5px] leading-4 text-ink">Settings</span>
+          </button>
+        </div>
+      {/if}
+    </div>
+
+    <!-- You: the pet stands in for the face; the puzzle is where plugins will live (settings for now). -->
     <button
-      class="interactive flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left pointer-coarse:min-h-11 pointer-coarse:py-2.5 hover:bg-raised/70"
+      data-nav
+      type="button"
+      class="interactive flex min-h-10 cursor-pointer items-center gap-2.5 rounded-xl px-1 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
       onclick={onsettings}
+      title="Plugins & settings"
     >
-      <Settings size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
-      <span class="text-[12.5px] leading-4 font-medium text-ink-muted">Settings</span>
+      <Mascot mood="idle" size={24} />
+      <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 font-medium text-ink">Jaime</span>
+      <Puzzle size={14} class="shrink-0 text-ink-faint" strokeWidth={1.75} aria-hidden="true" />
     </button>
   </div>
 </aside>
