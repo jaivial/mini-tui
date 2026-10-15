@@ -41,6 +41,7 @@
     onrename,
     onclosewindow,
     ontasks,
+    onteammap,
     windowTasks = {},
     taskCards = [],
     paneOf = () => 0,
@@ -89,6 +90,8 @@
 
     /** Open the window's task board (the panel listing every session's task card). */
     ontasks?: () => void;
+    /** Open the team map (the graph of every open session's delegated agents). */
+    onteammap?: () => void;
     /** Each window's panes and their tasks, one for the icon on that window's row. */
     windowTasks?: Record<string, WindowTasks>;
     /** The whole task board, as the hub pushes it: the bots' cards for the accordion rows. */
@@ -234,6 +237,8 @@
   const botsOf = (id: string): { rows: BotRow[]; live: number; total: number } => agentTree.trees[id] ?? { rows: [], live: 0, total: 0 };
   /** Delegates working anywhere under a window, for the row's pulsing dot. */
   const liveIn = (id: string) => (windows.find((w) => w.id === id)?.bots ?? []).reduce((n, b) => n + botsOf(b.id).live, 0);
+  /** Delegates working anywhere in the team, for the Team map button's pulsing dot. */
+  const liveTeam = $derived(windows.reduce((n, w) => n + (w.bots ?? []).reduce((m, b) => m + botsOf(b.id).live, 0), 0));
   /** A window shows its bots unless you closed it; before the first click the active one is open. */
   const winOpen = (w: { id: string; active: boolean }) => prefs.openWindows[w.id] ?? w.active;
   const botOpen = (id: string) => prefs.openBots[id] ?? false;
@@ -976,13 +981,14 @@
             <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Triggers</span>
           </button>
           <button
+            data-nav
             type="button"
-            class="flex min-h-9 items-center gap-2.5 rounded-xl px-2 text-left opacity-50 pointer-coarse:min-h-11"
-            aria-disabled="true"
-            title="Coming soon: the agent tree"
+            class="interactive flex min-h-9 cursor-pointer items-center gap-2.5 rounded-xl px-2 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
+            onclick={() => onteammap?.()}
           >
             <Network size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
             <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Team map</span>
+            {#if liveTeam}<span class="pulse-live size-2 shrink-0 rounded-full bg-live" title="{liveTeam} working"></span>{/if}
           </button>
         </div>
       {/if}
