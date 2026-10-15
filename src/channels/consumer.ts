@@ -37,6 +37,7 @@ import type { ChannelInbox, Inbound, Attachment } from "./inbox";
 import type { EvoSender, SendLedger } from "./evoSend";
 import type { QueueBridge } from "./queueBridge";
 import type { GroupPlan } from "./groupBridge";
+import type { SessionCommandPlan } from "./sessionCommand";
 import { ensureMediaFrames, lateTranscriptNote, transcribePendingAudio, type LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 
 export interface PendingRow {
@@ -86,6 +87,9 @@ export interface ConsumerOptions {
   /** Group-session bridge (WA-5): strips [[mini-newgroup: …]] from the reply
    * and returns the deferred creation flow; optional. */
   planGroupCreation?: (row: PendingRow, message: Inbound, replyText: string) => GroupPlan;
+  /** Operator chat command (v4-H): recognizes `/newsession <subject>` in an
+   * accepted row; a non-null plan is handled with NO model turn. Optional. */
+  planSessionCommand?: (row: PendingRow, message: Inbound) => SessionCommandPlan | null;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
@@ -189,6 +193,45 @@ async function processOne(
   // its model. An unbound row cannot exist past accept(), so this only fails
   // if the binding was removed mid-flight — then the default chain applies.
   const binding = options.inbox.bindingFor("whatsapp", row.account, row.thread);
+
+  // Own-send echo guard (v4-H): in groups the operator's real sends AND the
+  // bot's own API replies share one number and arrive with fromMe=true. A
+  // delivered id proven present in the thread's outgoing history is OUR send —
+  // acknowledge it unread-by-any-model instead of answering ourselves (the
+  // ledgered replies were already refused at the receiver). History unreadable
+  // fails open: the operator's message must still turn, and the allowlist and
+  // the mention gate still bound what a stray echo could trigger.
+  if (message.fromMe && row.thread.endsWith("@g.us")) {
+    let own = false;
+    try {
+      const recent = await sender.recentOutgoing(row.thread, 25);
+      own = recent.length < 25 && recent.some((m) => m.id === message.messageId);
+    } catch (error) {
+      log("channel.consumer.own_send_history_error", { seq, error: error instanceof Error ? error.message : String(error) });
+    }
+    if (own) {
+      log("channel.consumer.own_send_ignored", { seq, thread: row.thread });
+      ack();
+      return;
+    }
+  }
+
+  // Operator chat command (v4-H): `/newsession` creates a fresh isolated
+  // group session with no model turn. The planner is authority-checked
+  // (allowlist only); handled rows are acknowledged before the deferred
+  // creation runs, so a crash mid-creation replays nothing.
+  const commandPlan = options.planSessionCommand?.(row, message);
+  if (commandPlan) {
+    ack();
+    void (async () => {
+      try {
+        await commandPlan.after();
+      } catch (error) {
+        log("channel.session_command.error", { seq, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return;
+  }
 
   // Group mention gate (WA-5): a bound group thread answers only when the
   // account's own jid is explicitly mentioned, unless the operator set policy

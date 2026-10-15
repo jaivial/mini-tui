@@ -12,9 +12,17 @@ export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[
     const item = raw as Record<string, any>;
     const key = item.key;
     if (!key || typeof key.id !== "string" || typeof key.remoteJid !== "string") throw new Error("missing Evo message identity");
-    // Sent-device mirrors/API echoes must not start recursive bot work.
-    if (key.fromMe === true) return [];
-    if (key.fromMe !== false) throw new Error("ambiguous Evo sender direction");
+    // Direction (v4-H): in GROUPS the direction bit means nothing on this
+    // deployment — the bot shares the operator's number, so the operator's
+    // real sends AND the bot's own API replies both arrive with fromMe=true.
+    // Dropping the bit would eat the operator's group messages; instead group
+    // deliveries are accepted, flagged, and loop-checked downstream by
+    // correlation (send ledger / outgoing history). Outside groups the bit
+    // still means "sent by a linked device of this account": mirrors and API
+    // echoes must not start recursive bot work, so they are dropped.
+    const group = key.remoteJid.endsWith("@g.us");
+    if (key.fromMe !== true && key.fromMe !== false) throw new Error("ambiguous Evo sender direction");
+    if (key.fromMe === true && !group) return [];
     if (key.remoteJid.endsWith("@g.us") && typeof key.participant !== "string") throw new Error("group message lacks participant identity");
     const sender = key.participant || key.remoteJid;
     if (typeof sender !== "string") throw new Error("missing Evo sender");
@@ -58,6 +66,6 @@ export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[
       if (Number.isFinite(parsed) && new Date(parsed).toISOString() === envelope.date_time) sentAt = parsed;
     }
     if (typeof text !== "string" || !Number.isFinite(sentAt) || sentAt < 0) throw new Error("invalid Evo content/time");
-    return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, sentAt: Math.trunc(sentAt), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, mentions: mentions.length ? mentions : undefined, attachments }];
+    return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, sentAt: Math.trunc(sentAt), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, mentions: mentions.length ? mentions : undefined, attachments, ...(key.fromMe === true ? { fromMe: true } : {}) }];
   });
 }

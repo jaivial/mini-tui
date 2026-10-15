@@ -85,7 +85,13 @@ export function planGroupCreation(options: GroupBridgeOptions, row: PendingRow, 
       return;
     }
     try {
-      const created = await createBoundGroup(options, row, message, subject);
+      const created = await createBoundGroupFor(options, {
+        account: row.account,
+        requesterJid: message.sender,
+        requesterThread: row.thread,
+        subject,
+        project: row.project,
+      });
       log("channel.group.created", { seq: row.seq, account: row.account, groupJid: created.groupJid, session: created.session, subject });
       const sender = options.senderFor(row.account);
       if (sender) {
@@ -111,7 +117,7 @@ export function planGroupCreation(options: GroupBridgeOptions, row: PendingRow, 
   return { text, after };
 }
 
-interface CreatedGroup {
+export interface CreatedGroup {
   groupJid: string;
   session: string;
 }
@@ -147,15 +153,28 @@ function findGroupJid(value: unknown, depth = 0): string | null {
   return null;
 }
 
-async function createBoundGroup(options: GroupBridgeOptions, row: PendingRow, message: Inbound, subject: string): Promise<CreatedGroup> {
-  const account = options.accountFor(row.account);
-  if (!account) throw new Error(`account ${row.account} has no instance configured`);
+export interface CreateGroupRequest {
+  account: string;
+  /** The human requester: group participant, allowlist owner and the quoted
+   * author of the confirmation in their own thread. */
+  requesterJid: string;
+  /** The thread the confirmation goes back to (usually the requester's). */
+  requesterThread: string;
+  subject: string;
+  project?: string;
+}
+
+/** The full create → avatar → bind flow, shared by the model directive and
+ * the operator's `/newsession` chat command (sessionCommand.ts). */
+export async function createBoundGroupFor(options: GroupBridgeOptions, request: CreateGroupRequest): Promise<CreatedGroup> {
+  const account = options.accountFor(request.account);
+  if (!account) throw new Error(`account ${request.account} has no instance configured`);
   const created = await callGroupApi(options, account.instance, account.token, "/group/create", {
-    subject,
+    subject: request.subject,
     description: `mini session ${new Date().toISOString()}`,
     // The requester is the (single) human participant; the account itself joins
     // as creator. Groups without the requester would be unreachable to them.
-    participants: [message.sender],
+    participants: [request.requesterJid],
   });
   if (created.status !== 200 && created.status !== 201) throw new Error(`group create failed: ${created.error || `status ${created.status}`}`);
   const groupJid = findGroupJid(created.json);
@@ -166,7 +185,7 @@ async function createBoundGroup(options: GroupBridgeOptions, row: PendingRow, me
   // mascot frame is the fallback when the emoji assets are missing. A photo
   // failure is cosmetic: the group is still created and bound, and the reason
   // is logged by the caller.
-  const session = options.newSessionId(row.account);
+  const session = options.newSessionId(request.account);
   const photoPath = avatarFileFor(session) ?? options.photoPath ?? join(import.meta.dir, "assets", "group-mascot.jpg");
   if (existsSync(photoPath)) {
     try {
@@ -184,11 +203,11 @@ async function createBoundGroup(options: GroupBridgeOptions, row: PendingRow, me
   // turn — the new group starts on the operator/default model until changed.
   options.inbox.bind({
     channel: "whatsapp",
-    account: row.account,
+    account: request.account,
     thread: groupJid,
     session,
-    project: row.project,
-    allowedSenders: [message.sender],
+    project: request.project ?? "wa-assistant",
+    allowedSenders: [request.requesterJid],
     policy: "mentions",
     model: "",
   });

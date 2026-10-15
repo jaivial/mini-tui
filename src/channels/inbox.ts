@@ -26,6 +26,12 @@ export interface Inbound {
    * the group mention policy; never treated as sender identity. */
   mentions?: string[];
   attachments: Attachment[];
+  /** Transport direction bit (v4-H, groups only): on this deployment every
+   * group message — the operator's real sends AND the bot's own API replies —
+   * arrives with fromMe=true, because both share one WhatsApp number. Data,
+   * never authority: loop prevention is identity-by-correlation (the send
+   * ledger / the thread's outgoing history), never this flag. */
+  fromMe?: boolean;
 }
 export interface Binding {
   channel: Channel;
@@ -196,6 +202,17 @@ export class ChannelInbox {
       if (!next || next.seq !== delivery.seq || next.session !== delivery.session || next.project !== delivery.project) throw new Error("acknowledgement does not match next accepted route");
       this.db.query("INSERT INTO channel_consumers(consumer,cursor) VALUES(?1,?2) ON CONFLICT(consumer) DO UPDATE SET cursor=excluded.cursor").run(consumer,delivery.seq);
     }).immediate();
+  }
+  /** Durable send-ledger lookup (channel_sends.reply_id): is this WhatsApp
+   * message id one of OUR delivered replies? Read-only; a store that has no
+   * ledger yet (no send ever recorded by any process) answers false. */
+  isOwnSendId(id: string): boolean {
+    if (!id || id.length > 256) return false;
+    try {
+      return !!this.db.query("SELECT 1 FROM channel_sends WHERE reply_id=?1 LIMIT 1").get(id);
+    } catch {
+      return false;
+    }
   }
   /** A new consumer starts at the present: its cursor begins at the newest
    * accepted seq, so history accepted before it first ran is never replayed.

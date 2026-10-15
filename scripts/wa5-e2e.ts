@@ -24,6 +24,13 @@
  *      account's instance, sets the photo, binds a fresh session with a
  *      mention policy and an allowlist of exactly the requester, and confirms
  *      in-thread through the same account's sender.
+ *   7. v4-H fromMe semantics: a fromMe=true GROUP delivery from an allowed
+ *      sender is ACCEPTED (one shared number), a fromMe=true DM mirror is
+ *      still dropped, and a delivered id that is a ledgered reply id (or is
+ *      in the thread's outgoing history) is refused as input (no self-turns).
+ *   8. v4-H /newsession command: the operator's allowlisted `/newsession`
+ *      creates group + avatar + fresh binding with NO model turn and confirms
+ *      in-thread; a non-allowlisted sender is refused at accept (422).
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -35,6 +42,7 @@ import { evoReceiver } from "../src/channels/evoReceiver";
 import { startChannelConsumer } from "../src/channels/consumer";
 import { SendLedger, type EvoSender } from "../src/channels/evoSend";
 import { planGroupCreation, type GroupBridgeOptions } from "../src/channels/groupBridge";
+import { planSessionCommand } from "../src/channels/sessionCommand";
 
 const fail: string[] = [];
 const ok = (name: string, condition: boolean, detail = "") => {
@@ -86,7 +94,7 @@ const fakeServer = Bun.serve({
 const base = `http://127.0.0.1:${fakeServer.port}`;
 const senderOf = (account: string, instance: string): EvoSender => ({
   async sendText(args) {
-    sent.push({ account, number: args.number, text: args.text });
+    sent.push({ account, number: args.number, text: args.text, quoted: args.quoted?.id ?? null } as any);
     return { kind: "sent", replyId: `ledger-${sent.length}` };
   },
   async recentOutgoing() { return []; },
@@ -218,6 +226,100 @@ const evoMessage = (overrides: Record<string, unknown> = {}) => {
   ok("group created on the owning instance + photo set", createdGroups === 1 && picturesSet === 1);
   ok("fresh session bound with mention policy + requester allowlist", bound?.session === "wa-a-fresh" && bound?.policy === "mentions" && JSON.stringify(bound?.allowedSenders) === JSON.stringify([JAIME]));
   ok("confirmation sent in the requesting thread via the same identity", sent.some((s) => s.account === "bot-a" && s.number === JAIME && s.text.startsWith(`Grupo "Proyecto Cacahuete"`)));
+}
+
+// ---- v4-H: fromMe group semantics + own-send echo guards --------------------
+{
+  // The operator's real group sends arrive fromMe=true (one shared number):
+  // they must be ACCEPTED, never dropped by the direction bit.
+  const fromMeGroup = await post(SECRET_A, evoMessage({ key: { id: "fm-grp-1", remoteJid: GROUP, fromMe: true, participant: JAIME }, message: { extendedTextMessage: { text: `@34000000001 prueba fromMe`, contextInfo: { mentionedJid: [OWN_A], mentionedJidArray: [OWN_A] } } } }));
+  const fmBody = await fromMeGroup.json();
+  ok("fromMe=true GROUP delivery from an allowed sender is ACCEPTED", fromMeGroup.status === 200 && fmBody.accepted === 1, JSON.stringify(fmBody));
+  // Outside groups the bit still means "our own device": mirrors are dropped.
+  const fromMeDm = await post(SECRET_A, evoMessage({ key: { id: "fm-dm-1", fromMe: true } }));
+  const dmBody = await fromMeDm.json();
+  ok("fromMe=true DM mirror still dropped (no recursive bot work)", fromMeDm.status === 200 && dmBody.accepted === 0 && dmBody.duplicates === 0, JSON.stringify(dmBody));
+  // The bot's own ledgered replies echo back with fromMe=true too: a delivered
+  // id that IS a recorded reply id is refused at the accept boundary.
+  const ledger = new SendLedger(inbox.db);
+  ledger.begin(9001, "respuesta propia", null);
+  ledger.markSent(9001, "echo-own-1");
+  const echo = await post(SECRET_A, evoMessage({ key: { id: "echo-own-1", remoteJid: GROUP, fromMe: true, participant: JAIME }, message: { conversation: "respuesta propia" } }));
+  const echoBody = await echo.json();
+  ok("own ledgered reply id echoed back is NOT accepted as input", echo.status === 200 && echoBody.accepted === 0 && echoBody.duplicates === 0, JSON.stringify(echoBody));
+}
+
+// ---- v4-H: consumer-side own-send guard (non-ledgered sends) ----------------
+{
+  // A bridge confirmation is sent outside the ledger; its echo is refused by
+  // correlation with the thread's recent OUTGOING history instead.
+  const senderWithHistory: EvoSender = {
+    ...senderOf("bot-a", "bot-a-instance"),
+    async recentOutgoing(thread) {
+      return thread === GROUP ? [{ id: "own-unledgered-1", text: 'Grupo "X" creado…', quotedStanzaId: null, ts: Math.floor(Date.now() / 1000) }] : [];
+    },
+  };
+  const consumerOwn = startChannelConsumer({
+    inbox,
+    sender: senderWithHistory,
+    ledger: new SendLedger(inbox.db),
+    consumer: "qa-own",
+    sessionsDbPath: join(work, "sessions.sqlite"),
+    cwd: join(work, "cwd-a"),
+    model: "qa-missing-provider/no-model",
+    accountJids: new Map([["bot-a", OWN_A]]),
+    idleMs: 50,
+    turnTimeoutS: 5,
+    log: (event, fields) => console.error("[consumer-own]", event, JSON.stringify(fields ?? {})),
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  await post(SECRET_A, evoMessage({ key: { id: "own-unledgered-1", remoteJid: GROUP, fromMe: true, participant: JAIME }, message: { conversation: 'Grupo "X" creado…' } }));
+  await new Promise((r) => setTimeout(r, 1_500));
+  consumerOwn.stop();
+  await consumerOwn.done.catch(() => {});
+  ok("own unledgered send echoed back is acked with NO turn and NO reply", !sent.some((s) => s.number === GROUP && s.text.includes('Grupo "X" creado…') && s.text.startsWith("(mini")), JSON.stringify(sent.slice(-3)));
+}
+
+// ---- v4-H: the operator's /newsession chat command --------------------------
+{
+  let freshSessions = 0;
+  const options: GroupBridgeOptions = {
+    inbox,
+    accountFor: (account) => (account === "bot-a" ? { instance: "bot-a-instance", token: "t" } : undefined),
+    baseUrl: base,
+    photoPath: join(import.meta.dir, "../src/channels/assets/group-mascot.jpg"),
+    newSessionId: () => `wa-a-cmd-${++freshSessions}`,
+    senderFor: (account) => (account === "bot-a" ? senderOf("bot-a", "bot-a-instance") : undefined),
+    log: (event, fields) => console.error("[sessioncmd]", event, JSON.stringify(fields ?? {})),
+  };
+  const consumerCmd = startChannelConsumer({
+    inbox,
+    sender: senderOf("bot-a", "bot-a-instance"),
+    ledger: new SendLedger(inbox.db),
+    consumer: "qa-cmd",
+    sessionsDbPath: join(work, "sessions.sqlite"),
+    cwd: join(work, "cwd-a"),
+    model: "qa-missing-provider/no-model",
+    accountJids: new Map([["bot-a", OWN_A]]),
+    idleMs: 50,
+    turnTimeoutS: 5,
+    planSessionCommand: (row, message) => planSessionCommand(options, row, message),
+    log: (event, fields) => console.error("[consumer-cmd]", event, JSON.stringify(fields ?? {})),
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  // The operator (allowlisted) types the command in the group — no mention.
+  await post(SECRET_A, evoMessage({ key: { id: "cmd-1", remoteJid: GROUP, participant: JAIME }, message: { conversation: "/newsession Proyecto Nueva Era" } }));
+  await new Promise((r) => setTimeout(r, 1_500));
+  // A non-allowlisted sender never even reaches the consumer: the accept
+  // boundary (same allowlist) refuses the delivery outright (422).
+  const strangerPost = await post(SECRET_A, evoMessage({ key: { id: "cmd-2", remoteJid: GROUP, participant: OWN_A }, message: { conversation: "/newsession Grupo Ajeno" } }));
+  ok("a NON-allowlisted sender's command is refused at accept (no group, no turn)", strangerPost.status === 422 && createdGroups === 2 && !sent.some((s) => (s as any).quoted === "cmd-2"), `status=${strangerPost.status} created=${createdGroups}`);
+  consumerCmd.stop();
+  await consumerCmd.done.catch(() => {});
+  const bound = inbox.bindingFor("whatsapp", "bot-a", "12036377777772@g.us");
+  ok("command created the group + avatar with NO model turn", createdGroups === 2 && picturesSet === 2, `created=${createdGroups} pictures=${picturesSet}`);
+  ok("command bound a FRESH session (mention policy, requester-only allowlist)", bound?.session === "wa-a-cmd-1" && bound?.policy === "mentions" && JSON.stringify(bound?.allowedSenders) === JSON.stringify([JAIME]), JSON.stringify(bound));
+  ok("command confirmed in the requesting thread, origin binding untouched", sent.some((s) => s.number === GROUP && s.text.startsWith(`Grupo "Proyecto Nueva Era"`)) && inbox.bindingFor("whatsapp", "bot-a", GROUP)?.session === "wa-a-group");
 }
 
 inbox.close();
