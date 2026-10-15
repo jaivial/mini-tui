@@ -690,8 +690,13 @@ import { windows as windowStore } from "../stores/windows.svelte";
   .notes-slot.is-terminal {
     width: clamp(20rem, 44%, 40rem);
   }
+  /* Both overrides below must list EVERY variant. They did not: `is-agents` was missing, and its
+     own rule (`width: clamp(20rem, 38%, 30rem)`) is the more specific selector, so it kept winning
+     and the agents panel stayed 320px wide over a 390px phone — 82% of the screen, with the chat
+     and the composer pill left under it. A selector that is not in the list never gets overridden. */
   @container pane (width < 44rem) {
     .notes-slot,
+    .notes-slot.is-agents,
     .notes-slot.is-terminal {
       position: absolute;
       inset: 0 0 0 auto;
@@ -707,6 +712,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
   }
   @container pane (width < 26rem) {
     .notes-slot,
+    .notes-slot.is-agents,
     .notes-slot.is-terminal {
       width: 100%;
       border-left: 0;
