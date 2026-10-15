@@ -87,7 +87,11 @@
   portalled as a child of that same parent by Popover.
 -->
 <Popover open={open} anchor={() => button} placement="bottom" role="menu" label={label} width="w-64" onclose={() => (open = false)}>
-  <div class="flex flex-col" onkeydown={onkeydown} role="presentation">
+  <div
+    class="flex max-h-[min(58vh,26rem)] flex-col overflow-y-auto overscroll-contain"
+    onkeydown={onkeydown}
+    role="presentation"
+  >
     {#each rows as row, i (row.id)}
       {#if row.group && rows[i - 1]?.group !== row.group}
         <div class="mt-1.5 mb-0.5 px-2 text-[10px] font-semibold tracking-wider text-ink-faint uppercase first:mt-0">{row.group}</div>
