@@ -13,8 +13,30 @@ import { UsageStore, usageDbPath, type UsageCall, type UsageSummary, type UsageW
 
 let store: UsageStore | undefined;
 
+/**
+ * Whether this process is a test run. The e2e suites spawn `bun src/index.ts` as
+ * real subprocesses with a curated env, so a preload guard is not enough on its
+ * own: the fixture agent's zero-token calls would land straight in the real
+ * `~/.local/share/mini-tui/usage.sqlite`, polluting the operator's spend.
+ *
+ * `NODE_ENV=test` is the marker: `bun test` exports it and a spawned child
+ * inherits it, so it holds for in-process and subprocess runs alike.
+ * `MINITUI_USAGE_DB` still wins when set, so a test that *wants* a ledger of its
+ * own gets one.
+ */
+function underTest(env: NodeJS.ProcessEnv): boolean {
+  return env.NODE_ENV === "test" || env.MINITUI_TEST === "1";
+}
+
 export function usageStore(env: NodeJS.ProcessEnv = process.env): UsageStore {
-  if (!store) store = new UsageStore(usageDbPath(env));
+  if (!store) {
+    if (underTest(env) && !env.MINITUI_USAGE_DB) {
+      // A test run with no store of its own records nothing rather than into the
+      // real one. `recordUsage` treats a missing store as "nothing to record".
+      throw new Error("usage recording disabled under test");
+    }
+    store = new UsageStore(usageDbPath(env));
+  }
   return store;
 }
 

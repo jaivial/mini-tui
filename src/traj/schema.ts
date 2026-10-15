@@ -11,7 +11,7 @@ export interface TrajectoryInfo {
   model_stats?: { instance_cost?: number; api_calls?: number };
   exit_status?: string;
   submission?: string;
-  config?: { model?: { model_name?: string }; [key: string]: unknown };
+  config?: { model?: { model_name?: string; api_base?: string }; [key: string]: unknown };
   mini_version?: string;
   /** Set while the agent runs a compaction summary ("auto" | "overflow" | "manual"). */
   compacting?: string;
@@ -81,6 +81,8 @@ export type RunEvent =
 /** Header-level facts extracted from `trajectory.info`. */
 export interface RunInfo {
   model?: string;
+  /** The endpoint the run talked to; identifies the provider behind a bare model id. */
+  apiBase?: string;
   cost: number;
   apiCalls: number;
   exitStatus?: string;

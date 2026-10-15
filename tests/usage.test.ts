@@ -17,9 +17,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { recordUsage, resetUsageStore } from "../src/usage";
-import { tokensOf, usageFromMessage, usageFromMessages } from "../src/usage/record";
+import { resolveModel, tokensOf, usageFromMessage, usageFromMessages } from "../src/usage/record";
 import { catalogPath, costFor, loadPriceCatalog, resetPriceCatalogCache } from "../src/usage/prices";
-import { UsageStore, windowFromQuery, windowMs, type UsageCall } from "../src/usage/store";
+import { UsageStore, usageDbPath, windowFromQuery, windowMs, type UsageCall } from "../src/usage/store";
 import { resolveWindow, usageView } from "../src/web/usage";
 import type { TrajectoryMessage } from "../src/traj/schema";
 
@@ -343,8 +343,39 @@ describe("tokensOf", () => {
   });
 });
 
+describe("resolveModel", () => {
+  const providers = [
+    { prefix: "opencode-go", baseUrl: "https://opencode.ai/zen/go/v1" },
+    { prefix: "zai", baseUrl: "https://api.z.ai/api/coding/paas/v4" },
+  ];
+
+  test("an already-qualified id is left alone", () => {
+    expect(resolveModel("openrouter/anthropic/claude-sonnet-4.5", undefined, providers)).toBe("openrouter/anthropic/claude-sonnet-4.5");
+  });
+
+  test("a bare id plus its api_base becomes the catalog's own key", () => {
+    // This is the real shape: the run config names `glm-5.3-flash` and the gateway
+    // omits `model` from its reply, so without this the row has no provider.
+    expect(resolveModel("glm-5.3-flash", "https://opencode.ai/zen/go/v1", providers)).toBe("opencode-go/glm-5.3-flash");
+  });
+
+  test("a base URL with a trailing slash or a deeper path still matches", () => {
+    expect(resolveModel("glm-5.3", "https://api.z.ai/api/coding/paas/v4/", providers)).toBe("zai/glm-5.3");
+    expect(resolveModel("glm-5.3", "https://opencode.ai/zen/go", providers)).toBe("opencode-go/glm-5.3");
+  });
+
+  test("a base URL that names no known provider leaves the id bare, not wrong", () => {
+    expect(resolveModel("glm-5.3", "https://example.invalid/v1", providers)).toBe("glm-5.3");
+  });
+
+  test("no model at all stays empty: tokens are still measured, attribution is not invented", () => {
+    expect(resolveModel(undefined, "https://opencode.ai/zen/go/v1", providers)).toBe("");
+    expect(resolveModel("", "https://opencode.ai/zen/go/v1", providers)).toBe("");
+  });
+});
+
 describe("usageFromMessage", () => {
-  const priced = { loaded: true, path: "", models: 1, price: () => ({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }) };
+  const priced = { loaded: true, path: "", models: 1, price: () => ({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }), providers: () => [] };
 
   const assistant = (extra: Record<string, unknown>): TrajectoryMessage => ({ role: "assistant", content: "ok", extra });
 
@@ -374,7 +405,7 @@ describe("usageFromMessage", () => {
   });
 
   test("a model the catalog does not price is unknown cost even when the agent priced it zero", () => {
-    const uncatalogued = { loaded: false, path: "", models: 0, price: () => null };
+    const uncatalogued = { loaded: false, path: "", models: 0, price: () => null, providers: () => [] };
     const message = assistant({ response: { model: "mystery/model", usage: { prompt_tokens: 10 } }, cost: 0 });
     const row = usageFromMessage(message, 0, { session: "s", catalog: uncatalogued })!;
     expect(row.costUsd).toBeNull();
@@ -382,7 +413,7 @@ describe("usageFromMessage", () => {
   });
 
   test("the agent's own cost is the fallback when the catalog has nothing", () => {
-    const uncatalogued = { loaded: false, path: "", models: 0, price: () => null };
+    const uncatalogued = { loaded: false, path: "", models: 0, price: () => null, providers: () => [] };
     const row = usageFromMessage(assistant({ response: { model: "mystery/model", usage: { prompt_tokens: 10 } }, cost: 0.007 }), 0, { session: "s", catalog: uncatalogued })!;
     expect(row.costSource).toBe("agent");
     expect(row.costUsd).toBe(0.007);
@@ -445,6 +476,26 @@ describe("recordUsage", () => {
     expect(recordUsage([...messages, { role: "assistant", content: "c", extra: { response: { model: "deepseek/deepseek-chat", usage: { prompt_tokens: 7 } }, timestamp: T0 + 2 } }], { session: "live" }, 2)).toBe(1);
     resetUsageStore();
     delete process.env.MINITUI_USAGE_DB;
+  });
+
+  /**
+   * The e2e suites spawn `bun src/index.ts` as real subprocesses with a curated
+   * env. Before this was pinned, a full `bun test` wrote 9 zero-token fixture
+   * rows into the operator's real ledger — every model, provider and cost blank.
+   */
+  test("a run under the test runner never opens the real ledger", () => {
+    const real = usageDbPath({ HOME: process.env.HOME! });
+    const before = existsSync(real);
+    resetUsageStore();
+    delete process.env.MINITUI_USAGE_DB;
+    // NODE_ENV=test is what `bun test` exports, and what a spawned child inherits.
+    const written = recordUsage(
+      [{ role: "assistant", content: "a", extra: { response: { model: "p/m", usage: { prompt_tokens: 5 } }, timestamp: T0 } }],
+      { session: "fixture" },
+      0,
+    );
+    expect(written).toBe(0);
+    expect(existsSync(real)).toBe(before);
   });
 });
 

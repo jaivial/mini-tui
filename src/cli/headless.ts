@@ -327,7 +327,8 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
     // come from. Best-effort (never throws) and deduped per call, so the final
     // re-read below can hand the whole turn over again without double-counting.
     if (messages.length > usageSeen) {
-      recordUsage(messages, { session: sessionId ?? "cli", task: args.taskId ?? "", fallbackModel: model }, usageSeen);
+      const runInfo = parseInfo(traj);
+      recordUsage(messages, { session: sessionId ?? "cli", task: args.taskId ?? "", fallbackModel: runInfo.model ?? model, apiBase: runInfo.apiBase }, usageSeen);
       usageSeen = messages.length;
     }
     if (emitFrom === null) {

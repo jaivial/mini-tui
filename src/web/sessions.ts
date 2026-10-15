@@ -502,6 +502,7 @@ export class SessionManager {
       // through the headless runner instead. Empty here means "no task", not lost.
       task: entry.usageTask ?? "",
       fallbackModel: parseInfo(traj).model,
+      apiBase: parseInfo(traj).apiBase,
     }, from);
     entry.usageConsumed = messages.length;
     if (written) log("usage.recorded", { session: entry.session.id, calls: written });

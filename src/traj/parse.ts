@@ -384,6 +384,7 @@ export function parseInfo(traj: Trajectory): RunInfo {
   const stats = info.model_stats ?? {};
   return {
     model: info.config?.model?.model_name,
+    apiBase: info.config?.model?.api_base,
     cost: typeof stats.instance_cost === "number" ? stats.instance_cost : 0,
     apiCalls: typeof stats.api_calls === "number" ? stats.api_calls : 0,
     exitStatus: info.exit_status,

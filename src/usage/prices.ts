@@ -81,8 +81,9 @@ function parsePrice(raw: unknown): ModelPrice | null {
  * `provider/id` and the bare `id`. OpenRouter-style ids contain slashes
  * (`anthropic/claude-sonnet-4.5`), so the bare form is the last segment.
  */
-function indexCatalog(parsed: unknown): Map<string, ModelPrice> {
+function indexCatalog(parsed: unknown): { prices: Map<string, ModelPrice>; providers: Array<{ prefix: string; baseUrl: string }> } {
   const out = new Map<string, ModelPrice>();
+  const providers: Array<{ prefix: string; baseUrl: string }> = [];
   const add = (key: string, price: ModelPrice | null) => {
     if (!price) return;
     out.set(key, price);
@@ -91,12 +92,14 @@ function indexCatalog(parsed: unknown): Map<string, ModelPrice> {
     if (bare !== key && !out.has(bare)) out.set(bare, price);
   };
   // v6-A's real shape: providers[] each carrying a models[] list.
-  const providers = (parsed as { providers?: unknown })?.providers;
-  if (Array.isArray(providers)) {
-    for (const entry of providers) {
+  const providerRows = (parsed as { providers?: unknown })?.providers;
+  if (Array.isArray(providerRows)) {
+    for (const entry of providerRows) {
       if (!entry || typeof entry !== "object") continue;
       const provider = entry as Record<string, unknown>;
       const prefix = typeof provider.prefix === "string" ? provider.prefix : typeof provider.provider === "string" ? provider.provider : "";
+      const baseUrl = typeof provider.baseUrl === "string" ? provider.baseUrl : "";
+      if (prefix && baseUrl && !providers.some((p) => p.prefix === prefix)) providers.push({ prefix, baseUrl });
       const models = provider.models;
       if (!Array.isArray(models)) continue;
       for (const model of models) {
@@ -107,7 +110,7 @@ function indexCatalog(parsed: unknown): Map<string, ModelPrice> {
         add(prefix && !id.startsWith(`${prefix}/`) ? `${prefix}/${id}` : id, parsePrice(row));
       }
     }
-    if (out.size) return out;
+    if (out.size) return { prices: out, providers };
   }
   const rows = (parsed as { models?: unknown })?.models;
   if (Array.isArray(rows)) {
@@ -119,12 +122,12 @@ function indexCatalog(parsed: unknown): Map<string, ModelPrice> {
       if (!id) continue;
       add(provider && !id.startsWith(`${provider}/`) ? `${provider}/${id}` : id, parsePrice(entry));
     }
-    return out;
+    return { prices: out, providers };
   }
   if (rows && typeof rows === "object") {
     for (const [key, value] of Object.entries(rows as Record<string, unknown>)) add(key, parsePrice(value));
   }
-  return out;
+  return { prices: out, providers };
 }
 
 export interface PriceCatalog {
@@ -136,9 +139,14 @@ export interface PriceCatalog {
   models: number;
   /** Look up a price by model (`provider/id` or bare id). Null when unknown. */
   price(model: string): ModelPrice | null;
+  /**
+   * Providers the catalog knows, with their base URLs. Used to qualify a bare
+   * model id (`glm-5.3-flash`) into the catalog's own key (`zai/glm-5.3-flash`).
+   */
+  providers(): Array<{ prefix: string; baseUrl: string }>;
 }
 
-const EMPTY: PriceCatalog = { loaded: false, path: "", models: 0, price: () => null };
+const EMPTY: PriceCatalog = { loaded: false, path: "", models: 0, price: () => null, providers: () => [] };
 
 /**
  * Read the catalog, cached on its mtime so the price lookup on the hot path
@@ -155,8 +163,11 @@ export function loadPriceCatalog(path: string = catalogPath(), now = Date.now())
   const cached = cache.get(cacheKey);
   if (cached) return cached;
   let table = new Map<string, ModelPrice>();
+  let providers: Array<{ prefix: string; baseUrl: string }> = [];
   try {
-    table = indexCatalog(JSON.parse(readFileSync(path, "utf8")));
+    const indexed = indexCatalog(JSON.parse(readFileSync(path, "utf8")));
+    table = indexed.prices;
+    providers = indexed.providers;
   } catch {
     table = new Map(); // malformed catalog: unknown prices, never invented ones
   }
@@ -168,6 +179,7 @@ export function loadPriceCatalog(path: string = catalogPath(), now = Date.now())
       const key = model.trim();
       return table.get(key) ?? table.get(key.slice(key.lastIndexOf("/") + 1)) ?? null;
     },
+    providers: () => providers,
   };
   if (cache.size > 8) cache.clear();
   cache.set(cacheKey, catalog);
