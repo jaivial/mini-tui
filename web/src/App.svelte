@@ -396,11 +396,13 @@ import { windows } from "./lib/stores/windows.svelte";
         return { id: p.id, status, label: `${s?.title || "New chat"}: ${statusLabel(status, s?.status === "error")}`, error: status === "done" && s?.status === "error" };
       }),
       // The bots this window holds: its panes' sessions, deduped, for the sidebar's nested rows.
+      // A pane can still point at a session the server no longer has (a stale saved workspace):
+      // those drop out here instead of taking the row down.
       bots: [...new Map(
         panes
           .panesIn(w.id)
-          .map((p) => (p.sessionId ? store.sessions[p.sessionId] : null))
-          .filter((s) => s !== null)
+          .map((p) => (p.sessionId ? store.sessions[p.sessionId] : undefined))
+          .filter((s) => s !== undefined)
           .map((s) => [s.id, { id: s.id, title: s.title, status: s.status, error: s.status === "error" }] as const),
       ).values()],
     })),
@@ -529,6 +531,7 @@ import { windows } from "./lib/stores/windows.svelte";
         }}
         ontasks={() => (tasksOpen = true)}
         windowTasks={tasksByWindow}
+        taskCards={taskCards}
         inOtherWindow={(id) => {
           const w = panes.windowOf(id);
           return w && w !== windows.activeId ? windows.label(w, (wid) => panes.paneCount(wid)) : "";
