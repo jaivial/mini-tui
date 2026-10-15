@@ -43,10 +43,7 @@
     oninterrupt,
     onmodel,
     memory,
-    place,
   }: {
-    /** A control drawn after the target switch: the folder picker, for a new chat. */
-    place?: import("svelte").Snippet;
     /** ↑/↓ recall of the prompts sent in this chat (see lib/promptMemory.ts). */
     memory?: PromptMemory;
     value?: string;
@@ -468,8 +465,6 @@
           {/each}
         </div>
       {/if}
-
-      {#if place}{@render place()}{/if}
 
       <ModelPicker value={model} bind:open={modelOpen} busy={switchingModel} {disabled} note={modelNote} onpick={onmodel} />
 

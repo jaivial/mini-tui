@@ -600,7 +600,6 @@
             if (id !== pane.draft.targetId) pane.draft.cwd = "";
             pane.draft.targetId = id;
           }}
-          place={folder}
           model={currentModel}
           {modelNote}
           floating
