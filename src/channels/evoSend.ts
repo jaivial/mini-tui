@@ -75,12 +75,21 @@ export interface EvoSender {
   >;
   /** Newest outgoing messages of `thread`, newest first (bounded page). */
   recentOutgoing(thread: string, limit?: number): Promise<Array<{ id: string; text: string; quotedStanzaId: string | null; ts: number | null }>>;
+  /** One emoji reaction on an existing message (v5-E: the instant "I'm alive"
+   * signal). Best-effort by contract, like the media sends: the caller logs the
+   * outcome and NEVER lets a reaction failure reach the turn. */
+  sendReaction(args: { number: string; key: { id: string; remoteJid: string; participant?: string }; reaction: string; timeoutMs?: number }): Promise<ReactionResult>;
   /** One image as a media message. Best-effort by contract: the caller logs
    * the outcome and never blocks the text reply on it. */
   sendImage(args: { number: string; mediaBase64: string; mimetype?: string; caption?: string }): Promise<SendResult>;
   /** One document (any non-image file) as a media message. Same contract. */
   sendDocument(args: { number: string; mediaBase64: string; mimetype?: string; filename?: string; caption?: string }): Promise<SendResult>;
 };
+
+/** A reaction has no ledger and no uncertainty window worth chasing: the
+ * message it decorates is already in the thread's history, so a lost reaction
+ * costs one emoji, never a duplicate reply. Best-effort by construction. */
+export type ReactionResult = { kind: "sent" } | { kind: "failed"; status?: number; error: string };
 
 /** The fork accepts 1..65536 bytes of text; keep a margin under the cap. */
 export const MAX_SEND_TEXT_BYTES = 60_000;
@@ -94,14 +103,14 @@ export function truncateForSend(text: string): string {
 export function createEvoSender(config: { baseUrl: string; instance: string; token: string; timeoutMs?: number }): EvoSender {
   const base = config.baseUrl.replace(/\/+$/, "");
   const timeoutMs = config.timeoutMs ?? 20_000;
-  const call = async (path: string, body: unknown): Promise<{ status: number; json: any; error: string }> => {
+  const call = async (path: string, body: unknown, callTimeoutMs?: number): Promise<{ status: number; json: any; error: string }> => {
     let response: Response;
     try {
       response = await fetch(`${base}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: config.token },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(callTimeoutMs ?? timeoutMs),
       });
     } catch (error) {
       return { status: 0, json: null, error: error instanceof Error ? error.message : String(error) };
@@ -158,6 +167,19 @@ export function createEvoSender(config: { baseUrl: string; instance: string; tok
         quotedStanzaId: m?.message?.extendedTextMessage?.contextInfo?.stanzaId ? String(m.message.extendedTextMessage.contextInfo.stanzaId) : null,
         ts: typeof m?.messageTimestamp === "number" ? m.messageTimestamp : null,
       }));
+    },
+    async sendReaction({ number, key, reaction, timeoutMs }) {
+      // Verified against the deployed fork (127.0.0.1:8952): the body is
+      // {number, key:{id, remoteJid, fromMe}, reaction} and 201 is the only
+      // success. The field is `reaction`, NOT `emoji` — the fork's deserializer
+      // rejects an unknown `reaction` shape and an object there is a 400.
+      const r = await call(`/message/sendReaction/${encodeURIComponent(config.instance)}`, {
+        number,
+        key: { id: key.id, remoteJid: key.remoteJid, fromMe: true, ...(key.participant ? { participant: key.participant } : {}) },
+        reaction,
+      }, timeoutMs);
+      if (r.status === 201) return { kind: "sent" as const };
+      return { kind: "failed" as const, status: r.status || undefined, error: r.error || (r.json ? JSON.stringify(r.json).slice(0, 200) : `status ${r.status}`) };
     },
     async sendImage({ number, mediaBase64, mimetype, caption }) {
       return sendMedia(call, config.instance, { number, mediaBase64, mimetype: mimetype || "image/png", mediatype: "image", caption, filename: undefined });

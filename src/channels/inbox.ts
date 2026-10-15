@@ -3,6 +3,16 @@ import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+/** v5-E: what one binding overrides about its immediate ack. The TEXT is never
+ * here on purpose — the line is written by the model from the sender's message
+ * (see channels/ack.ts); a binding chooses only the emoji and the patience. */
+export interface AckBinding {
+  /** Reaction emoji on acceptance. "" mutes it. Undefined = inherit. */
+  reaction?: string;
+  /** How long the turn may run before the model's line is sent (ms). */
+  delayMs?: number;
+}
+
 export type Channel = "gmail" | "whatsapp" | "apple-messages";
 export interface Attachment {
   id: string;
@@ -47,6 +57,10 @@ export interface Binding {
   policy?: "" | "mentions" | "all";
   /** Per-binding model for the bound session (empty = consumer default). */
   model?: string;
+  /** v5-E: per-binding immediate-ack settings. Absent = the consumer defaults
+   * (👀 reaction, 4s delay, model-written line). An empty `reaction` is the
+   * documented way to mute the emoji for one thread. */
+  ack?: AckBinding;
 }
 const GROUP_SUFFIX = "@g.us";
 const POLICIES = ["", "mentions", "all"] as const;
@@ -78,6 +92,33 @@ export class ChannelInbox {
     const columns = (this.db.query("PRAGMA table_info(channel_bindings)").all() as Array<{ name: string }>).map((c) => c.name);
     if (!columns.includes("policy")) this.db.exec(`ALTER TABLE channel_bindings ADD COLUMN policy TEXT NOT NULL DEFAULT ''`);
     if (!columns.includes("model")) this.db.exec(`ALTER TABLE channel_bindings ADD COLUMN model TEXT NOT NULL DEFAULT ''`);
+    // v5-E: the ack override, stored as JSON ("" = inherit the consumer default).
+    if (!columns.includes("ack")) this.db.exec(`ALTER TABLE channel_bindings ADD COLUMN ack TEXT NOT NULL DEFAULT ''`);
+  }
+  /** The ack override is operator configuration, so it is validated as strictly
+   * as a model: a bounded emoji and a sane delay, nothing else. A malformed
+   * override is refused at write time rather than read back as a surprise. */
+  private static encodeAck(ack: AckBinding | undefined): string {
+    if (!ack) return "";
+    if (ack.reaction !== undefined && (ack.reaction.length > 8 || /[\x00-\x1f]/u.test(ack.reaction))) throw new Error("invalid binding ack reaction");
+    if (ack.delayMs !== undefined && (!Number.isSafeInteger(ack.delayMs) || ack.delayMs < 0 || ack.delayMs > 120_000)) throw new Error("invalid binding ack delay");
+    if (ack.reaction === undefined && ack.delayMs === undefined) return "";
+    return JSON.stringify({ ...(ack.reaction !== undefined ? { reaction: ack.reaction } : {}), ...(ack.delayMs !== undefined ? { delayMs: ack.delayMs } : {}) });
+  }
+  /** Parse a stored ack override; an unreadable one is ignored (inherit), never
+   * thrown into a turn. */
+  private static decodeAck(raw: string | undefined): AckBinding | undefined {
+    if (!raw) return undefined;
+    try {
+      const parsed = JSON.parse(raw) as AckBinding;
+      if (!parsed || typeof parsed !== "object") return undefined;
+      const out: AckBinding = {};
+      if (typeof parsed.reaction === "string" && parsed.reaction.length <= 8 && !/[\x00-\x1f]/u.test(parsed.reaction)) out.reaction = parsed.reaction;
+      if (typeof parsed.delayMs === "number" && Number.isSafeInteger(parsed.delayMs) && parsed.delayMs >= 0 && parsed.delayMs <= 120_000) out.delayMs = parsed.delayMs;
+      return Object.keys(out).length ? out : undefined;
+    } catch {
+      return undefined;
+    }
   }
   bind(binding: Binding): void {
     checkRoute(binding);
@@ -85,15 +126,15 @@ export class ChannelInbox {
     if (!(POLICIES as readonly string[]).includes(policy)) throw new Error("invalid binding policy");
     checkModel(binding.model);
     if (!bounded(binding.session) || !bounded(binding.project) || !binding.allowedSenders.length || binding.allowedSenders.length > 100 || binding.allowedSenders.some(s => !bounded(s))) throw new Error("invalid binding");
-    this.db.query(`INSERT INTO channel_bindings VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(channel,account,thread) DO UPDATE SET session=excluded.session,project=excluded.project,allowed_senders=excluded.allowed_senders,policy=excluded.policy,model=excluded.model`).run(binding.channel, binding.account, binding.thread, binding.session, binding.project, JSON.stringify(binding.allowedSenders), policy, binding.model ?? "");
+    this.db.query(`INSERT INTO channel_bindings VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(channel,account,thread) DO UPDATE SET session=excluded.session,project=excluded.project,allowed_senders=excluded.allowed_senders,policy=excluded.policy,model=excluded.model,ack=excluded.ack`).run(binding.channel, binding.account, binding.thread, binding.session, binding.project, JSON.stringify(binding.allowedSenders), policy, binding.model ?? "", ChannelInbox.encodeAck(binding.ack));
   }
   /** Read-only route lookup for the receiver's policy gate and the consumer's
    * per-turn model resolution. Never a write path and never authority: the
    * caller still owns every acceptance decision. */
   bindingFor(channel: Channel, account: string, thread: string): Binding | null {
     checkRoute({ channel, account, thread });
-    const row = this.db.query(`SELECT session,project,allowed_senders,policy,model FROM channel_bindings WHERE channel=?1 AND account=?2 AND thread=?3`).get(channel, account, thread) as { session: string; project: string; allowed_senders: string; policy: string; model: string } | null;
-    return row && { channel, account, thread, session: row.session, project: row.project, allowedSenders: JSON.parse(row.allowed_senders) as string[], policy: row.policy as Binding["policy"], model: row.model };
+    const row = this.db.query(`SELECT session,project,allowed_senders,policy,model,ack FROM channel_bindings WHERE channel=?1 AND account=?2 AND thread=?3`).get(channel, account, thread) as { session: string; project: string; allowed_senders: string; policy: string; model: string; ack: string } | null;
+    return row && { channel, account, thread, session: row.session, project: row.project, allowedSenders: JSON.parse(row.allowed_senders) as string[], policy: row.policy as Binding["policy"], model: row.model, ack: ChannelInbox.decodeAck(row.ack) };
   }
   unbind(channel: Channel, account: string, thread: string): boolean {
     checkRoute({ channel, account, thread });
@@ -114,9 +155,9 @@ export class ChannelInbox {
   }
   listBindings(account?: string): Binding[] {
     const rows = (account !== undefined
-      ? this.db.query(`SELECT channel,account,thread,session,project,allowed_senders,policy,model FROM channel_bindings WHERE account=?1 ORDER BY account,thread`).all(account)
-      : this.db.query(`SELECT channel,account,thread,session,project,allowed_senders,policy,model FROM channel_bindings ORDER BY account,thread`).all()) as Array<{ channel: string; account: string; thread: string; session: string; project: string; allowed_senders: string; policy: string; model: string }>;
-    return rows.map((r) => ({ channel: r.channel as Channel, account: r.account, thread: r.thread, session: r.session, project: r.project, allowedSenders: JSON.parse(r.allowed_senders) as string[], policy: r.policy as Binding["policy"], model: r.model }));
+      ? this.db.query(`SELECT channel,account,thread,session,project,allowed_senders,policy,model,ack FROM channel_bindings WHERE account=?1 ORDER BY account,thread`).all(account)
+      : this.db.query(`SELECT channel,account,thread,session,project,allowed_senders,policy,model,ack FROM channel_bindings ORDER BY account,thread`).all()) as Array<{ channel: string; account: string; thread: string; session: string; project: string; allowed_senders: string; policy: string; model: string; ack: string }>;
+    return rows.map((r) => ({ channel: r.channel as Channel, account: r.account, thread: r.thread, session: r.session, project: r.project, allowedSenders: JSON.parse(r.allowed_senders) as string[], policy: r.policy as Binding["policy"], model: r.model, ack: ChannelInbox.decodeAck(r.ack) }));
   }
   accept(message: Inbound): { seq: number; duplicate: boolean; session: string; project: string } {
     checkRoute(message);

@@ -20,6 +20,16 @@
  *   EVO_CONSUMER_CWD        working directory of the agent turns (default ~/wa-assistant)
  *   MINITUI_MODEL           model for new sessions (empty = default chain)
  *   EVO_CONSUMER_TURN_TIMEOUT_S  agent turn wall-clock limit (default 600)
+ *
+ * Immediate ack (v5-E, all optional — the reaction goes out on acceptance and
+ * the MODEL-written one-liner follows only if the turn outruns the timer):
+ *   EVO_ACK_REACTION         emoji sent on acceptance ("" mutes it; default 👀)
+ *   EVO_ACK_DELAY_MS         how long the turn may run before that line (4000)
+ *   EVO_ACK_MODEL            model that writes the line (default MINITUI_MODEL)
+ *   EVO_ACK_MODEL_TIMEOUT_MS ceiling on that model call (6000)
+ *   EVO_ACK_MAX_TOKENS       token cap for that call (60)
+ *   A per-binding override lives in channel_bindings.ack (see bindingsCli ack);
+ *   what was generated and whether it was sent is in channel_acks.
  *   MINITUI_QUEUE_BIN       queue binary with the task-graph feature (default: resolved rust agent)
  *   MINITUI_QUEUE_EMBED_DIR MiniLM directory; when set, chat tasks are embedded
  *   MINITUI_QUEUE_POLL_MS   queue event poll interval (default 5000)
@@ -47,6 +57,7 @@ import { join } from "node:path";
 
 import { ChannelInbox } from "./inbox";
 import { SendLedger, createEvoSender } from "./evoSend";
+import { AckLedger, DEFAULT_ACK } from "./ack";
 import { parseConsumerAccounts } from "./accounts";
 import { createEvoMediaClient, MediaStore } from "./evoMedia";
 import { createWhisperTranscriber } from "./transcribe";
@@ -243,6 +254,19 @@ const { done, stop } = startChannelConsumer({
   // computer_use pool itself wrote are deliverable (validation inside).
   planImages: (row, message, replyText) => planImageMarkers(replyText, process.env.MINITUI_CU_POOL_DIR || join(homedir(), ".local/share/mini-tui/cu-pool")),
   ledger: new SendLedger(inbox.db),
+  // v5-E: the immediate ack. The reaction and the model's one-liner go out
+  // while the turn runs; the 4s timer only decides whether the line is sent.
+  // Every knob is an env override of a sensible default, and EVO_ACK_REACTION=""
+  // disables the reaction without touching the rest.
+  ackLedger: new AckLedger(inbox.db),
+  ackConfig: {
+    ...DEFAULT_ACK,
+    reaction: process.env.EVO_ACK_REACTION ?? DEFAULT_ACK.reaction,
+    delayMs: num(process.env.EVO_ACK_DELAY_MS, DEFAULT_ACK.delayMs),
+    modelTimeoutMs: num(process.env.EVO_ACK_MODEL_TIMEOUT_MS, DEFAULT_ACK.modelTimeoutMs),
+    maxTokens: num(process.env.EVO_ACK_MAX_TOKENS, DEFAULT_ACK.maxTokens),
+  },
+  ackModel: process.env.EVO_ACK_MODEL || process.env.MINITUI_MODEL || "",
   consumer: required("EVO_CONSUMER_NAME"),
   sessionsDbPath: process.env.MINITUI_DB_PATH,
   cwd: process.env.EVO_CONSUMER_CWD,

@@ -33,8 +33,10 @@ import { join } from "node:path";
 import { runHeadless, type HeadlessResult } from "../cli/headless";
 import { DEFAULT_DB_PATH, createSession, fallbackTitle, findSession, getSession, openDb, updateSession } from "../sessions";
 import { mentionsAccount } from "./accounts";
-import type { ChannelInbox, Inbound, Attachment } from "./inbox";
+import type { ChannelInbox, Inbound, Attachment, AckBinding } from "./inbox";
 import type { EvoSender, SendLedger } from "./evoSend";
+import { generateAckLine, type AckConfig, type AckLedger } from "./ack";
+import { DEFAULT_ACK } from "./ack";
 import type { QueueBridge } from "./queueBridge";
 import type { GroupPlan } from "./groupBridge";
 import type { SessionCommandPlan } from "./sessionCommand";
@@ -110,6 +112,15 @@ export interface ConsumerOptions {
   /** v4-F: strips [[mini-image: <path>]] markers from the reply and returns
    * the validated screenshot paths to deliver as media. Optional. */
   planImages?: (row: PendingRow, message: Inbound, replyText: string) => { text: string; images: string[] };
+  /** v5-E: the durable ack audit ledger (channel_acks). Absent = no acks. */
+  ackLedger?: AckLedger;
+  /** v5-E: per-binding ack settings (reaction emoji, delay, model budget).
+   * Absent = the deployed defaults. A binding turns its reaction off with an
+   * empty emoji; there is no way to turn the whole ack off from a binding. */
+  ackConfig?: AckConfig;
+  /** v5-E: the model that writes the acknowledgement line. Defaults to the
+   * consumer's model — same provider the turn itself runs on. */
+  ackModel?: string;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
@@ -373,14 +384,22 @@ async function processOne(
   let imagePlan: { text: string; images: string[] } = { text: "", images: [] };
   let mediaFrames: string[] = [];
   if (!replyText) {
-    // Attachments resolve BEFORE the turn: the transcript is durable by then,
-    // so a crash replays with the transcript already attached to the message.
-    // (A send-retry pass with a stored reply skips this: the late sweep owns
-    // any attachment left pending by the first pass.)
-    if (options.media && message.attachments.length) {
-      mediaFrames = await ensureMediaFrames(options.media, options.inbox, log, seq, message);
-    }
-    const turn = await runTurn(options, log, row, message, maxTurnAttempts, mediaFrames, binding?.model || undefined);
+    // v5-E: the ack runs ALONGSIDE the turn, never in front of it. The
+    // reaction goes out now; the model's line is written in parallel and the
+    // timer decides later whether it is worth saying. `acks` is settled before
+    // this block returns, so the cursor contract is untouched.
+    const acks = startAck(options, log, sender, row, message, binding?.model || undefined, binding?.ack);
+    try {
+      // Attachments resolve BEFORE the turn: the transcript is durable by then,
+      // so a crash replays with the transcript already attached to the message.
+      // (A send-retry pass with a stored reply skips this: the late sweep owns
+      // any attachment left pending by the first pass.)
+      if (options.media && message.attachments.length) {
+        mediaFrames = await ensureMediaFrames(options.media, options.inbox, log, seq, message);
+      }
+      const turn = await acks.race(
+        () => runTurn(options, log, row, message, maxTurnAttempts, mediaFrames, binding?.model || undefined),
+      );
     // Directives leave the reply here: what is journalled and sent is pure chat.
     const planned = options.queueBridge?.planReply(row, message, turn) ?? { text: turn };
     // Group-session directive (WA-5) is parsed from what survives the queue
@@ -420,6 +439,12 @@ async function processOne(
         }
       })();
     }
+    } finally {
+      // The turn is over either way: a thrown turn still cancels the ack (the
+      // honest failure note below is the answer), so the timer never fires into
+      // a reply that is already on its way.
+      acks.cancel();
+    }
   }
 
   const outcome = await sender.sendText({
@@ -455,6 +480,189 @@ async function processOne(
   if (outcome.definitive && attempts >= 10) log("channel.consumer.send_rejected_operator_action", { seq, attempts, status: outcome.status, error: outcome.error.slice(0, 200) });
   log("channel.consumer.send_uncertain", { seq, definitive: outcome.definitive || undefined, status: outcome.status, error: outcome.error.slice(0, 200) });
   throw new Error(`send uncertain for seq ${seq}: ${outcome.error.slice(0, 120)}`);
+}
+
+/** The live ack for one turn. `race` runs the turn and arms the timer; `cancel`
+ * disarms it. Nothing here can reject into the turn's own error path. */
+interface TurnAck {
+  race<T>(turn: () => Promise<T>): Promise<T>;
+  cancel(): void;
+}
+
+/** v5-E: fire the liveness signals for a turn that has just been accepted.
+ *
+ * Order matters and is the whole point:
+ *   - the reaction is sent IMMEDIATELY (sub-second, best-effort, never awaited
+ *     into the turn's critical path);
+ *   - the model's line is generated in PARALLEL with the turn, from the
+ *     sender's real words;
+ *   - the timer only decides WHETHER the generated line is sent.
+ *
+ * Anti-loop: the line is a normal message in the thread, so it comes back
+ * through the webhook exactly like a reply would. It is therefore registered in
+ * the durable own-send ledger BEFORE the HTTP call — `isOwnSendId` is what the
+ * receiver consults, so the echo is refused at the accept boundary and can never
+ * become an inbox row, let alone a new turn. (The `fromMe` flag is not a guard:
+ * the instance runs as the operator's own number, so every group message is
+ * `fromMe`.)
+ *
+ * Every failure is swallowed and logged. No ack is never worse than a broken
+ * turn. */
+function startAck(
+  options: ConsumerOptions,
+  log: (event: string, fields?: Record<string, unknown>) => void,
+  sender: EvoSender,
+  row: PendingRow,
+  message: Inbound,
+  bindingModel?: string,
+  bindingAck?: AckBinding,
+): TurnAck {
+  const ledger = options.ackLedger;
+  // The binding's override beats the consumer default: a thread can mute its
+  // emoji or ask for more patience. Absent fields inherit. The TEXT is never
+  // configurable — the model writes it from the sender's message.
+  const cfg = {
+    ...DEFAULT_ACK,
+    ...(options.ackConfig ?? {}),
+    ...(bindingAck?.reaction !== undefined ? { reaction: bindingAck.reaction } : {}),
+    ...(bindingAck?.delayMs !== undefined ? { delayMs: bindingAck.delayMs } : {}),
+  };
+  const seq = row.seq;
+  // No ledger = no ack at all: the audit row and the anti-loop registration are
+  // the same write, and an ack nobody can prove was ours is worse than none.
+  if (!ledger) return { race: (turn) => turn(), cancel: () => {} };
+
+  const startedAt = Date.now();
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  // The model's line, resolved whenever it lands. `undefined` = still writing.
+  let line: string | null | undefined;
+  let modelMs = 0;
+  let modelName = options.ackModel || options.model || "";
+
+  // 1. The reaction: fire-and-forget so a slow weai cannot delay the turn.
+  if (cfg.reaction) {
+    void (async () => {
+      const at = Date.now();
+      try {
+        const reaction = await sender.sendReaction({
+          number: row.thread,
+          key: { id: message.messageId, remoteJid: row.thread, ...(message.sender ? { participant: message.sender } : {}) },
+          reaction: cfg.reaction,
+          // Short: the point of a reaction is that it is instant. A slow API
+          // gives up rather than holding the liveness signal hostage.
+          timeoutMs: 2_500,
+        });
+        ledger.markReaction(seq, cfg.reaction, reaction.kind === "sent" ? "sent" : "failed", reaction.kind === "failed" ? reaction.error.slice(0, 160) : undefined);
+        log(`channel.ack.reaction_${reaction.kind}`, { seq, reaction: cfg.reaction, ms: Date.now() - at, ...(reaction.kind === "failed" ? { status: reaction.status, error: reaction.error.slice(0, 160) } : {}) });
+      } catch (error) {
+        const message_ = error instanceof Error ? error.message : String(error);
+        ledger.markReaction(seq, cfg.reaction, "failed", message_.slice(0, 160));
+        log("channel.ack.reaction_failed", { seq, reaction: cfg.reaction, error: message_.slice(0, 160) });
+      }
+    })();
+  } else {
+    ledger.markReaction(seq, "", "skipped");
+  }
+
+  // 2. The line: written in parallel with the turn, from the sender's own words.
+  void (async () => {
+    try {
+      const result = await generateAckLine({
+        subject: message.text,
+        model: bindingModel || modelName,
+        config: cfg,
+        log,
+      });
+      modelMs = result.ms;
+      modelName = result.model;
+      line = result.line;
+      // Recorded whether or not it is ever sent: a generated-but-dropped line is
+      // the evidence that the ack was written by the model, not hardcoded.
+      ledger.markGenerated(seq, result.line, result.model, result.ms);
+    } catch (error) {
+      // generateAckLine is already total; this is belt-and-braces so a future
+      // edit can never let a model error reach the turn.
+      line = null;
+      log("channel.ack.model_error", { seq, error: error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160) });
+    }
+  })();
+
+  const sendLine = async (): Promise<void> => {
+    // The timer decides, the model wrote. If the line is not ready yet, give it
+    // one bounded grace period past the timer — a 600 ms model call that loses
+    // a 50 ms race should still be heard, and the total stays inside the ack
+    // budget (timer + model timeout), never unbounded.
+    if (line === undefined) {
+      await new Promise<void>((resolve) => {
+        const grace = setTimeout(resolve, Math.max(0, cfg.modelTimeoutMs));
+        const check = setInterval(() => {
+          if (line !== undefined || cancelled) {
+            clearInterval(check);
+            clearTimeout(grace);
+            resolve();
+          }
+        }, 25);
+      });
+    }
+    if (cancelled || !line) {
+      ledger.markDisposition(seq, "no_line", null, Date.now() - startedAt, line === null ? "model_produced_nothing" : "cancelled");
+      log("channel.ack.no_line", { seq, ms: Date.now() - startedAt });
+      return;
+    }
+    const text = line;
+    try {
+      const sent = await sender.sendText({ number: row.thread, text });
+      if (sent.kind === "sent") {
+        // Anti-loop, by the same mechanism the reply path uses: the delivered
+        // id goes into channel_own_sends, which `isOwnSendId` consults at the
+        // receiver's accept boundary — so the echo of this ack is refused before
+        // it can become an inbox row. There is no id to register before the
+        // call (the fork mints it), exactly as for a reply; what makes this safe
+        // is that the ack is sent before the turn's own reply, so the echo is
+        // matched by the time the turn could have finished and produced one.
+        options.inbox.registerOwnSend(sent.replyId);
+        ledger.markDisposition(seq, "sent", text, Date.now() - startedAt);
+        log("channel.ack.sent", { seq, text, modelMs, sentMs: Date.now() - startedAt, replyId: sent.replyId });
+      } else {
+        // Uncertain: nothing was proven delivered, so nothing is owed. Record it
+        // honestly and move on — a repeated ack is harmless, a stuck turn is not.
+        ledger.markDisposition(seq, "failed", text, Date.now() - startedAt, sent.error.slice(0, 160));
+        log("channel.ack.uncertain", { seq, status: sent.status, error: sent.error.slice(0, 160) });
+      }
+    } catch (error) {
+      const message_ = error instanceof Error ? error.message : String(error);
+      ledger.markDisposition(seq, "failed", text, Date.now() - startedAt, message_.slice(0, 160));
+      log("channel.ack.failed", { seq, error: message_.slice(0, 160) });
+    }
+  };
+
+  return {
+    race<T>(turn: () => Promise<T>): Promise<T> {
+      timer = setTimeout(() => {
+        timer = null;
+        void sendLine();
+      }, cfg.delayMs);
+      // unref so a pending ack never holds the process open on shutdown.
+      (timer as { unref?: () => void }).unref?.();
+      const work = turn();
+      // A synchronous throw in `turn` must still disarm the timer.
+      work.catch(() => {}).then(() => undefined);
+      return work;
+    },
+    cancel(): void {
+      if (cancelled) return;
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+        // The turn won the race: the generated line is deliberately dropped and
+        // stays in the ledger as the audit record.
+        if (line !== null) ledger.markDisposition(seq, "discarded", null, Date.now() - startedAt, "turn_finished_first");
+        log("channel.ack.discarded", { seq, ms: Date.now() - startedAt, generated: line ?? null });
+      }
+    },
+  };
 }
 
 /** Recent-window bound for text-based evidence: a reply counts as delivered by
