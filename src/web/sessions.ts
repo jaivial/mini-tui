@@ -935,7 +935,10 @@ export class SessionManager {
       return this.#createRemote(id, title, options.cwd?.trim() || "", model, options.prompt, host, atts);
     }
     // A local folder must exist here, or the agent would silently start somewhere else.
-    const cwd = options.cwd?.trim() ? expandLocal(options.cwd) : process.cwd();
+    // v6: with the picker gone from the prompt bar, a chat without a folder starts in the user's
+    // HOME, not in the server's working directory (the release checkout). Every session an operator
+    // starts from the web therefore begins at ~, which is what they expect.
+    const cwd = options.cwd?.trim() ? expandLocal(options.cwd) : homedir();
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`${cwd} is not a folder on this machine`);
     return this.#createLocal(id, title, cwd, model, options.prompt, atts);
   }
