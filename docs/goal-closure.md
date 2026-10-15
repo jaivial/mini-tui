@@ -20,7 +20,7 @@ The replacement endpoint receives a JSON object with `goal`, `proposal`, `observ
 {"complete": false, "score": 75, "gaps": ["The required output file is missing"]}
 ```
 
-A successful verdict must have `complete: true`, `score: 100` and an empty `gaps` array. Invalid, contradictory or unavailable verdicts never count as approval. Three consecutive oracle errors produce `GoalOracleUnavailable`, an explicit infrastructure blocker rather than `Submitted`. Model-judge calls have a 4096-token cap and a 60-second request timeout; the replacement endpoint has a 60-second timeout and 64 KB response bound. The worker's model configuration is restored after each judgement. Costs and model-call counts include the provisional judge.
+A successful verdict must have `complete: true`, `score: 100` and an empty `gaps` array. Invalid, contradictory or unavailable verdicts never count as approval. Infrastructure and invalid-response errors retry the same captured goal, proposal and evidence, with a one-second interruptible delay. They do not reopen the worker tool loop or request more changes. Valid rejections still return concrete gaps to the worker. Three consecutive oracle errors produce `GoalOracleUnavailable`, an explicit infrastructure blocker rather than `Submitted`. Model-judge calls have a 4096-token cap and a 60-second request timeout; the replacement endpoint has a 60-second timeout and 64 KB response bound. The worker's model configuration is restored after each judgement. Costs and model-call counts include the provisional judge.
 
 `info.goal_oracle.attempts` records each verdict and error in the trajectory. A post-run Jev notice no longer erases the exit status or submission returned to the caller.
 
