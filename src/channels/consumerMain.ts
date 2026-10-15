@@ -44,11 +44,29 @@
  *   EVO_MEDIA_TIMEOUT_MS         media fetch timeout (default 30000)
  *   EVO_TRANSCRIBE_BIN           whisper-cli path (default ~/tools/whisper.cpp/build/bin/whisper-cli)
  *   EVO_TRANSCRIBE_MODEL         ggml model path (default ~/tools/whisper.cpp/models/ggml-small.bin)
+ *   EVO_TRANSCRIBE_LANG          pin the decode language (default "es"; empty = whisper auto-detects)
  *   EVO_TRANSCRIBE_CPU_QUOTA     systemd scope CPUQuota per whisper run (default 25%; empty = no wrapper)
  *   EVO_TRANSCRIBE_MEM_MAX       systemd scope MemoryMax (default 2G)
  *   EVO_TRANSCRIBE_MAX_AUDIO_S   audio duration cap (default 600)
  *   EVO_TRANSCRIBE_TIMEOUT_S     whole-transcription timeout (default 300)
  *   EVO_LATE_SWEEP_MS            late-transcript/media sweep interval (default 600000)
+ *
+ * v6-E — "escribiendo…", semantic reactions and outgoing voice notes (all
+ * optional; each defaults to ON with a conservative bound):
+ *   EVO_TYPING=0                 disables the presence calls entirely
+ *   EVO_TYPING_DELAY_MS          server-side presence expiry (default 30000)
+ *   EVO_TYPING_REFRESH_MS        re-arm cadence for long turns (default 15000)
+ *   EVO_TYPING_TIMEOUT_MS        per-call timeout (default 2500)
+ *   EVO_TYPING_THREADS           comma list of threads to skip (default empty = all)
+ *   EVO_SEMANTIC_REACTIONS=0     keep the fixed acceptance emoji instead
+ *   EVO_VOICE_DIRS               comma list of dirs a [[mini-voice: path]] may
+ *                                attach from (default ~/.local/share/mini-tui/voice)
+ *   EVO_VOICE_MAX_BYTES          per-note cap (default 5 MB)
+ *
+ * NOTE the systemd lane: the consumer is a SYSTEM unit, so `systemd-run --user`
+ * (the cgroup wrapper transcribe.ts uses) only resolves when XDG_RUNTIME_DIR is
+ * exported. The unit sets it; without it every whisper run fails to spawn the
+ * scope and transcription degrades to "temporarily unavailable".
  */
 
 import { homedir } from "node:os";
@@ -63,7 +81,7 @@ import { createEvoMediaClient, MediaStore } from "./evoMedia";
 import { createWhisperTranscriber } from "./transcribe";
 import { LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 import { startChannelConsumer } from "./consumer";
-import { planImageMarkers } from "./consumer";
+import { planImageMarkers, planVoiceMarkers } from "./consumer";
 import { MirrorStore, type MirrorAttachment } from "./mirror";
 import { QueueBridge } from "./queueBridge";
 import { planGroupCreation as planGroupCreationFlow, setGroupSubject } from "./groupBridge";
@@ -128,6 +146,7 @@ const media: MediaHandling | undefined = mediaEnabled
       transcriber: createWhisperTranscriber({
         bin: whisperBin,
         model: whisperModel,
+        language: process.env.EVO_TRANSCRIBE_LANG ?? "es",
         cpuQuota: /^\d+%$/.test(process.env.EVO_TRANSCRIBE_CPU_QUOTA ?? "") ? (process.env.EVO_TRANSCRIBE_CPU_QUOTA as string) : "25%",
         memMax: /^\d+[GMK]?$/.test(process.env.EVO_TRANSCRIBE_MEM_MAX ?? "") ? (process.env.EVO_TRANSCRIBE_MEM_MAX as string) : "2G",
       }),
@@ -137,6 +156,15 @@ const media: MediaHandling | undefined = mediaEnabled
     }
   : undefined;
 const turnTimeoutS = Number(process.env.EVO_CONSUMER_TURN_TIMEOUT_S ?? 600);
+
+// v6-E: where a [[mini-voice: path]] may point. An explicit allowlist — the
+// default is a dedicated dir the TTS step writes into, so a model can only ever
+// attach audio this stack produced. A malformed list is an empty list (nothing
+// deliverable), never a silently-widened one.
+const voiceDirs = (process.env.EVO_VOICE_DIRS ?? join(homedir(), ".local/share/mini-tui/voice"))
+  .split(",")
+  .map((d) => d.trim())
+  .filter(Boolean);
 
 // Espejo (WhatsApp → web): messages the consumer acks WITHOUT a turn are
 // recorded for the bound session's web transcript. Turn-generating messages
@@ -250,9 +278,25 @@ const { done, stop } = startChannelConsumer({
       if (!result.ok) throw new Error(result.error || `status ${result.status}`);
     });
   },
+  // v6-E: "escribiendo…" presence. On by default with a conservative server-side
+  // expiry (30s) and a re-arm at 15s so a long turn never blinks off, and every
+  // exit path clears it. EVO_TYPING=0 turns the feature off outright.
+  typing: process.env.EVO_TYPING === "0" ? undefined : {
+    delayMs: num(process.env.EVO_TYPING_DELAY_MS, 30_000),
+    refreshMs: num(process.env.EVO_TYPING_REFRESH_MS, 15_000),
+    timeoutMs: num(process.env.EVO_TYPING_TIMEOUT_MS, 2_500),
+    enabled: true,
+  },
+  // v6-E: the acceptance emoji comes from the sender's words when they carry a
+  // signal, and stays the configured 👀 when they do not. EVO_SEMANTIC_REACTIONS=0
+  // restores the fixed emoji.
+  semanticReactions: process.env.EVO_SEMANTIC_REACTIONS !== "0",
   // v4-F: [[mini-image: <path>]] markers become WhatsApp media. Only paths the
   // computer_use pool itself wrote are deliverable (validation inside).
   planImages: (row, message, replyText) => planImageMarkers(replyText, process.env.MINITUI_CU_POOL_DIR || join(homedir(), ".local/share/mini-tui/cu-pool")),
+  // v6-E: [[mini-voice: <path>]] markers become real WhatsApp voice notes. Only
+  // paths under the configured voice dir(s) are deliverable, and only audio.
+  planVoices: (row, message, replyText) => planVoiceMarkers(replyText, voiceDirs),
   ledger: new SendLedger(inbox.db),
   // v5-E: the immediate ack. The reaction and the model's one-liner go out
   // while the turn runs; the 4s timer only decides whether the line is sent.
