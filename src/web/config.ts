@@ -167,6 +167,10 @@ export function patchSettings(patch: Record<string, unknown>): SettingsView {
   // stray string cannot switch Jev on.
   if (typeof patch.jevEnabled === "boolean") next.jevEnabled = patch.jevEnabled;
   if (typeof patch.jevVerifierEnabled === "boolean") next.jevVerifierEnabled = patch.jevVerifierEnabled;
+  // v6-C: the model router. OFF is the default and the documented behaviour — with
+  // it off the router is not consulted at all, so the manual selector is the only
+  // thing that picks a model. Only an explicit boolean flips it.
+  if (typeof patch.modelRouterEnabled === "boolean") next.modelRouterEnabled = patch.modelRouterEnabled;
   saveSettings(next);
   return settingsView();
 }

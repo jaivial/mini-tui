@@ -114,8 +114,22 @@ describe("settings", () => {
     expect(v.outputMode).toBe("expanded");
     expect(v.theme).toBe("shadcn");
     const stored = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
-    expect(Object.keys(stored).sort()).toEqual(["outputMode", "theme"]);
+    // The two Jev toggles and the router toggle are written on every save as
+    // `false` (an absent flag must read as off, never as unknown), so the stored
+    // key set is these four — and nothing else.
+    expect(Object.keys(stored).sort()).toEqual(["jevEnabled", "jevVerifierEnabled", "modelRouterEnabled", "outputMode", "theme"]);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+  test("a toggle is off unless the file says on", () => {
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({ outputMode: "collapsed" }));
+    expect(cfg.settingsView().modelRouterEnabled).toBe(false);
+    cfg.patchSettings({ modelRouterEnabled: true });
+    expect(cfg.settingsView().modelRouterEnabled).toBe(true);
+    // A string is not a boolean: a stray value must not switch the router on.
+    cfg.patchSettings({ modelRouterEnabled: "yes" as unknown as boolean });
+    expect(cfg.settingsView().modelRouterEnabled).toBe(true);
+    cfg.patchSettings({ modelRouterEnabled: false });
+    expect(cfg.settingsView().modelRouterEnabled).toBe(false);
   });
   test("a broken settings file falls back to defaults", () => {
     writeFileSync(join(dir, "settings.json"), "{not json");
