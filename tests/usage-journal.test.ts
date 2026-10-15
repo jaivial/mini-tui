@@ -17,6 +17,7 @@ import { resetUsageStore, recordUsage } from "../src/usage";
 import { resetPriceCatalogCache } from "../src/usage/prices";
 import { UsageStore } from "../src/usage/store";
 import { journalPathFor, readTrajectory } from "../src/traj/watch";
+import { parseInfo } from "../src/traj/parse";
 import { usageView } from "../src/web/usage";
 
 const NOW = Date.now();
@@ -192,5 +193,84 @@ describe("journal to ledger", () => {
     expect(summary.totals.errors).toBe(1);
     expect(store.recent({})[0]!.error).toBe("429 usage limit reached");
     store.close();
+  });
+
+  /**
+   * The exact shape a real run produced, including the two details that only
+   * show up in production data: the gateway omits `model` from its reply, and the
+   * timestamp is seconds-with-fraction. Both were wrong in the first version of
+   * this feature (empty provider, 1970 dates) and neither is visible in a
+   * hand-written fixture.
+   */
+  test("a real run's call: provider from api_base, date from a seconds timestamp", () => {
+    const traj = join(dir, "real.json");
+    appendFileSync(journalOf(traj), journalLine({
+      role: "assistant",
+      content: "Listo",
+      extra: {
+        actions: [{ name: "bash", input: { command: "ls" } }],
+        // OpenCode Go does not put `model` in its reply.
+        response: { choices: [{ message: { content: "Listo" }, finish_reason: "stop" }], usage: { prompt_tokens: 5907, completion_tokens: 54, prompt_tokens_details: { cached_tokens: 4352 } } },
+        cost: 0.00039081,
+        timestamp: 1_792_010_167.2723753,
+        timings: { model: 2298.1 },
+      },
+    }));
+    const info = parseInfo(readTrajectory(traj)!);
+    expect(recordUsage(readTrajectory(traj)!.messages!, {
+      session: "s",
+      fallbackModel: info.model,
+      apiBase: info.apiBase,
+    })).toBe(1);
+
+    const store = new UsageStore(dbPath);
+    const row = store.recent({})[0]!;
+    expect(row.inputTokens).toBe(5907);
+    expect(row.cacheReadTokens).toBe(4352);
+    expect(row.latencyMs).toBe(2298);
+    expect(row.at).toBe(1_792_010_167_272);
+    expect(new Date(row.at).getUTCFullYear()).toBe(2026);
+    store.close();
+  });
+
+  test("a bare model id plus its api_base is attributed to the right provider", () => {
+    const catalog = join(dir, "cat.json");
+    appendFileSync(catalog, JSON.stringify({
+      providers: [
+        { prefix: "opencode-go", baseUrl: "https://opencode.ai/zen/go/v1", models: [{ modelId: "opencode-go/glm-5.3-flash", priceIn: 0.95, priceOut: 4, priceCacheRead: 0.19 }] },
+        { prefix: "zai", baseUrl: "https://api.z.ai/api/coding/paas/v4", models: [{ modelId: "zai/glm-5.3", priceIn: 1.4, priceOut: 4.4 }] },
+      ],
+    }));
+    process.env.MINITUI_MODEL_CATALOG = catalog;
+    resetPriceCatalogCache();
+
+    const traj = join(dir, "attributed.json");
+    appendFileSync(journalOf(traj), journalLine({
+      role: "assistant",
+      content: "ok",
+      extra: {
+        actions: [{ name: "bash", input: {} }],
+        response: { usage: { prompt_tokens: 5907, completion_tokens: 54, prompt_tokens_details: { cached_tokens: 4352 } } },
+        cost: 0,
+        timestamp: NOW,
+        timings: { model: 2298.1 },
+      },
+    }));
+    const messages = readTrajectory(traj)!.messages!;
+    // `parseInfo` reads the model's bare id and its api_base off the info line.
+    const info = parseInfo({ ...readTrajectory(traj)!, info: { config: { model: { model_name: "glm-5.3-flash", api_base: "https://opencode.ai/zen/go/v1" } } } });
+    expect(recordUsage(messages, { session: "s", fallbackModel: info.model, apiBase: info.apiBase })).toBe(1);
+
+    const store = new UsageStore(dbPath);
+    const row = store.recent({})[0]!;
+    expect(row.model).toBe("opencode-go/glm-5.3-flash");
+    expect(row.provider).toBe("opencode-go");
+    // Priced by the catalog: input 5907 minus the 4352 cached tokens (they are
+    // billed at their own rate), plus output.
+    const expected = ((5907 - 4352) * 0.95 + 4352 * 0.19 + 54 * 4) / 1_000_000;
+    expect(row.costSource).toBe("catalog");
+    expect(row.costUsd).toBeCloseTo(expected, 6);
+    store.close();
+    delete process.env.MINITUI_MODEL_CATALOG;
   });
 });

@@ -128,6 +128,22 @@ function latencyOf(extra: Record<string, unknown>): number | null {
   return null;
 }
 
+/**
+ * Epoch **ms** for one call.
+ *
+ * The agent journals `extra.timestamp` from `util::now()`, which is
+ * `SystemTime::now()` as **seconds** with a fractional part — reading it as
+ * milliseconds put every call in January 1970. The magnitude decides: anything
+ * below ~1e11 is seconds (that is year 5138 in seconds, but 1973 in ms), so a
+ * seconds value is scaled and a real millisecond value is left alone. Both are
+ * rounded to ms because a fractional-second precision is noise in a ledger.
+ */
+function epochMs(timestamp: unknown, fallback: number): number {
+  if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= 0) return fallback;
+  const asMs = timestamp > 1e11 ? timestamp : timestamp * 1000;
+  return Math.round(asMs);
+}
+
 export interface UsageContext {
   /** Session id the run belongs to. */
   session: string;
@@ -166,9 +182,7 @@ export function usageFromMessage(message: TrajectoryMessage, index: number, cont
   const model = resolveModel(replyModel || context.fallbackModel, context.apiBase, catalog.providers());
   const tokens = tokensOf(usage);
   const { costUsd, costSource } = resolveCost(model, tokens, extra.cost, catalog);
-  const at = typeof extra.timestamp === "number" && Number.isFinite(extra.timestamp)
-    ? extra.timestamp
-    : (context.now ?? Date.now());
+  const at = epochMs(extra.timestamp, context.now ?? Date.now());
 
   return {
     // The message index is the call's identity in its run: a re-read of the same
