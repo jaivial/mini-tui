@@ -158,6 +158,24 @@ export interface ScoreInput {
 }
 
 /**
+ * How decisively Laya answered, on 0..1.
+ *
+ * The margin between its best option and the runner-up: 0.6 for a 0.8/0.2
+ * split, 0 for a coin flip, and near 0 for a flat distribution over a dozen
+ * models. This is what decides how much Laya's opinion counts — Laya is the
+ * decision model, but a model that cannot tell two options apart has not decided
+ * anything, and averaging its flat distribution in as one term among six is how
+ * a "Laya decided" decision ends up being the catalog's decision wearing Laya's
+ * label.
+ */
+export function layaMargin(probabilities: Map<string, number> | null | undefined): number {
+  if (!probabilities || probabilities.size < 2) return 0;
+  const sorted = [...probabilities.values()].sort((a, b) => b - a);
+  const margin = (sorted[0] ?? 0) - (sorted[1] ?? 0);
+  return Number(Math.max(0, Math.min(1, margin)).toFixed(4));
+}
+
+/**
  * Score the pool. Deterministic given the same inputs and `now` — no clock reads,
  * no randomness, no I/O — which is what makes a decision reproducible in a test
  * and arguable in the audit.
@@ -168,6 +186,7 @@ export function scoreCandidates(input: ScoreInput): ScoredCandidate[] {
   const prices = input.candidates.map(blendedPrice).filter((p): p is number => p !== null);
   const indexes = input.candidates.map((c) => c.intelligenceIndex).filter((i): i is number => i !== null);
   const latencies = input.usage.map((row) => row.avgLatencyMs).filter((l): l is number => l !== null && l > 0);
+  const margin = layaMargin(input.layaProbabilities);
   const now = input.now ?? Date.now();
 
   return input.candidates.map((candidate) => {
@@ -227,12 +246,22 @@ export function scoreCandidates(input: ScoreInput): ScoredCandidate[] {
     add(nQuota, weights.quota);
     add(nLatency, weights.latency);
     add(terms.complexity, weights.complexity);
-    add(terms.laya, weights.laya);
 
     // A model whose index nobody sourced is ranked on what IS known. Dividing by
     // the weight actually applied keeps it from being punished for the gap, and
     // the audit still names the gap.
-    score = weightUsed > 0 ? Number((score / weightUsed).toFixed(6)) : 0;
+    score = weightUsed > 0 ? score / weightUsed : 0;
+
+    // Laya is mixed in *after* the catalog score, not as another averaged term:
+    // a 0.8/0.2 split has to be able to beat a 2-point index gap, or the decision
+    // model decides nothing and every answer is really the catalog's. The
+    // confidence margin sets how far it counts — a confident Laya leads, a flat
+    // one defers to the variables it was shown.
+    if (terms.laya !== null && margin > 0) {
+      score = score * (1 - margin) + terms.laya * margin;
+    }
+
+    score = Number(score.toFixed(6));
 
     why.push(
       candidate.intelligenceIndex === null

@@ -28,7 +28,7 @@ import { breakerStore, classifyFailure, reasonLabel, type BreakerReason, type Br
 import { auditStore, type DecisionSource, type RouteLevel, type RouterAudit } from "./audit";
 import { buildCandidates, loadCatalog, type Candidate } from "./candidates";
 import { askLaya, layaCheckpoint, layaUrl, type LayaResult } from "./laya";
-import { deterministicOrder, rank, scoreCandidates, type ScoredCandidate, type UsageSignal } from "./scoring";
+import { deterministicOrder, layaMargin, rank, scoreCandidates, type ScoredCandidate, type UsageSignal } from "./scoring";
 import { profileSubTask, profileTask, type TaskProfile } from "./task";
 import { loadSettings } from "../settings";
 import { usageDbPath } from "../usage/store";
@@ -362,11 +362,33 @@ export async function route(request: RouteRequest, deps: RouterDeps = {}): Promi
   }
 
   // ---- 3. why, in one sentence ----
-  const source: DecisionSource = layaProbabilities ? "laya" : "deterministic";
+  // The source names WHO decided, so it must survive the cap in `layaQuestion`:
+  // Laya only ever sees the top N options, and a model outside that set is
+  // scored without its Laya term. When the winner is one of those, Laya did not
+  // pick it — the catalog variables did, and calling that "laya" would make the
+  // audit lie about the one thing it exists to record.
+  const winnerLaya = layaProbabilities?.get(best.candidate.id) ?? null;
+  // "Laya decided" has to mean two things at once: it separated its options, and
+  // its pick is the winner. Each failure is common with a capped option set —
+  // the winner may have been outside the set (no probability at all), or inside
+  // it with Laya ranking it last, or Laya may have answered a coin flip that
+  // decided nothing. In every one of those cases the catalog variables chose,
+  // and calling it Laya's decision — with a probability attached — is exactly the
+  // kind of plausible-looking lie the audit exists to prevent.
+  const margin = layaMargin(layaProbabilities);
+  const layaPick = margin > 0 ? [...layaProbabilities!.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null : null;
+  const source: DecisionSource = layaPick !== null && layaPick === best.candidate.id ? "laya" : "deterministic";
   const answer = layaResult?.answers.model_fit;
-  const reason = layaProbabilities
-    ? `laya ${answer?.type === "choice" ? answer.choice : ""} (P=${(layaProbabilities.get(best.candidate.id) ?? 0).toFixed(2)}); ${best.why.join(", ")}`
-    : `laya unavailable (${layaResult?.reason || "not consulted"}); deterministic policy: ${best.why.join(", ")}`;
+  const answerText = answer?.type === "choice" ? `laya ${answer.choice}` : "laya";
+  const layaReason = layaResult?.reason ?? "not consulted";
+  const reason =
+    source === "laya"
+      ? `${answerText} (P=${winnerLaya!.toFixed(2)}); ${best.why.join(", ")}`
+      : layaProbabilities
+        ? margin <= 0
+          ? `${answerText} could not separate its options (margin 0); deterministic policy: ${best.why.join(", ")}`
+          : `${answerText} ranked ${layaPick} instead; deterministic policy: ${best.why.join(", ")}`
+        : `laya unavailable (${layaReason}); deterministic policy: ${best.why.join(", ")}`;
 
   return finish({
     decision: {
@@ -374,7 +396,7 @@ export async function route(request: RouteRequest, deps: RouterDeps = {}): Promi
       level: request.level,
       source,
       reason,
-      layaProbability: layaProbabilities?.get(best.candidate.id) ?? null,
+      layaProbability: winnerLaya,
       layaConfidence: answer && "confidence" in answer ? answer.confidence : null,
       layaCheckpoint: layaResult?.checkpoint ?? "",
       layaReason: layaProbabilities ? "" : layaResult?.reason ?? "offline",

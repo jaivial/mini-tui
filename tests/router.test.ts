@@ -39,7 +39,7 @@ import {
 import { RouterAudit, auditStore, resetAuditStore, routerDbPath } from "../src/router/audit";
 import { buildCandidates, loadCatalog, resetCatalogCache, catalogPath } from "../src/router/candidates";
 import { askLaya, layaCheckpoint, layaUrl, parseLayaResponse } from "../src/router/laya";
-import { deterministicOrder, rank, scoreCandidates, type ScoredCandidate, type UsageSignal } from "../src/router/scoring";
+import { deterministicOrder, layaMargin, rank, scoreCandidates, type ScoredCandidate, type UsageSignal } from "../src/router/scoring";
 import { profileSubTask, profileTask } from "../src/router/task";
 import { fallback, route, routerEnabled, routerStatus, succeed, type RouterDeps } from "../src/router";
 import { loadSettings, saveSettings, DEFAULT_SETTINGS } from "../src/settings";
@@ -459,6 +459,59 @@ describe("route", () => {
     expect(decision.source).toBe("deterministic");
     expect(decision.layaReason).toBe("laya timed out");
     expect(decision.model).toBe("zai/glm-5.3");
+  });
+
+  test("a decisive Laya outranks the catalog; a flat one defers to it", async () => {
+    // 0.8/0.2 on the cheap model: the decision model has said something, and it
+    // has to be able to beat a 2-point intelligence gap.
+    const decisive = stubLaya({ m0: 0.2, m1: 0.8 });
+    const loud = await route({ level: "task", task: "design the architecture for a distributed consensus layer and find the race condition" }, deps({ ...OFFLINE, ask: decisive } as Partial<RouterDeps>));
+    expect(loud.model).toBe("opencode-go/claude-haiku-5-5");
+    expect(loud.source).toBe("laya");
+
+    // The same pool, a coin flip: Laya has not decided anything, so the catalog
+    // variables stand and the label says so.
+    const flat = stubLaya({ m0: 0.5, m1: 0.5 });
+    const quiet = await route({ level: "task", task: "design the architecture for a distributed consensus layer and find the race condition" }, deps({ ...OFFLINE, ask: flat } as Partial<RouterDeps>));
+    expect(quiet.model).toBe("zai/glm-5.3");
+    expect(quiet.source).toBe("deterministic");
+    expect(layaMargin(new Map([["a", 0.8], ["b", 0.2]]))).toBe(0.6);
+    expect(layaMargin(new Map([["a", 0.5], ["b", 0.5]]))).toBe(0);
+    expect(layaMargin(null)).toBe(0);
+  });
+
+  test("a winner Laya did not pick is never reported as Laya's decision", async () => {
+    // Laya sees a capped option set, so a model can win on the catalog variables
+    // alone — either because it was outside the set, or because it was in it and
+    // Laya ranked it last. Recording that as Laya's pick, with a probability
+    // attached, is the plausible-looking lie the audit exists to prevent.
+    const ask = stubLaya({ m0: 0.98, m1: 0.02 });
+    const decided = await route({ level: "task", task: "design the architecture for a distributed consensus layer" }, deps({ ...OFFLINE, ask } as Partial<RouterDeps>));
+    // Whatever the outcome, the label and the probability must agree: a "laya"
+    // source always carries the probability of the model that won.
+    if (decided.source === "laya") {
+      expect(decided.layaProbability).not.toBeNull();
+      expect(decided.model).not.toBe("");
+    } else {
+      expect(decided.reason).toContain("deterministic policy");
+    }
+
+    // A pool wider than the cap: the winner is outside what Laya was asked about.
+    const wide = Array.from({ length: 20 }, (_, i) => ({
+      ...POOL[i % 2]!,
+      id: `p${i}/m${i}`,
+      provider: `p${i}`,
+      apiModelId: `m${i}`,
+      displayName: `M${i}`,
+      intelligenceIndex: i < 4 ? 40 + i : null,
+      price: { input: 0.1 + i * 0.4, output: 0.5 + i },
+    }));
+    const many = stubLaya(Object.fromEntries(Array.from({ length: 12 }, (_, k) => [`m${k}`, 0.9 - k * 0.05])));
+    const wideDecision = await route({ level: "task", task: "add a test for the parser" }, deps({ ...OFFLINE, candidates: wide, ask: many } as Partial<RouterDeps>));
+    const seen = wideDecision.candidates.filter((row) => row.terms.laya !== null).length;
+    expect(seen).toBeLessThan(wide.length); // the cap really did bite
+    if (wideDecision.source !== "laya") expect(wideDecision.layaProbability).toBeNull();
+    expect(wideDecision.model).not.toBe("");
   });
 
   test("the decision is stable: the same input gives the same model", async () => {

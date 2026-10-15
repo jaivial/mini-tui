@@ -202,7 +202,10 @@ export async function layaHealth(url: string = layaUrl(), timeoutMs = 2_500): Pr
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const base = url.replace(/\/v1\/systemone\/?$/, "");
-      const response = await fetch(`${base}/healthz`, { signal: controller.signal });
+      // The SystemOne server answers `/health`; it has no `/healthz`, which
+      // returns a JSON 404 that would read as "Laya is down" on a service that
+      // is up and serving.
+      const response = await fetch(`${base}/health`, { signal: controller.signal });
       if (!response.ok) return { reachable: false, detail: `http ${response.status}`, catalogModels: catalog.models.length };
       const body = (await response.json()) as { status?: string; models?: string[] };
       return {
