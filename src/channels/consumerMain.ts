@@ -53,6 +53,7 @@ import { createWhisperTranscriber } from "./transcribe";
 import { LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 import { startChannelConsumer } from "./consumer";
 import { planImageMarkers } from "./consumer";
+import { MirrorStore, type MirrorAttachment } from "./mirror";
 import { QueueBridge } from "./queueBridge";
 import { planGroupCreation as planGroupCreationFlow, setGroupSubject } from "./groupBridge";
 import { planSessionCommand } from "./sessionCommand";
@@ -126,6 +127,43 @@ const media: MediaHandling | undefined = mediaEnabled
   : undefined;
 const turnTimeoutS = Number(process.env.EVO_CONSUMER_TURN_TIMEOUT_S ?? 600);
 
+// Espejo (WhatsApp → web): messages the consumer acks WITHOUT a turn are
+// recorded for the bound session's web transcript. Turn-generating messages
+// reach the web through the session journal and are NOT mirrored (the web
+// would show them twice). Media rides along best-effort: an image or document
+// whose bytes are here is rendered by the web; one that fails to fetch is
+// still mirrored, as metadata only.
+const mirror = new MirrorStore(inbox.db);
+const mirrorIn = async (row: { seq: number; account: string; thread: string; session: string }, message: { messageId: string; sender: string; sentAt: number; text: string; attachments: Array<{ id: string; kind: "image" | "audio" | "document"; mime?: string; providerRef?: string }> }): Promise<void> => {
+  const handling = media;
+  const attachments: MirrorAttachment[] = [];
+  for (const attachment of message.attachments) {
+    let path: string | null = handling ? handling.store?.find(row.seq, attachment.id) ?? null : null;
+    if (!path && attachment.providerRef && attachment.kind !== "audio" && handling?.store && handling.client) {
+      try {
+        const fetched = await handling.client.fetchMedia({ providerRef: attachment.providerRef, thread: row.thread });
+        path = handling.store.save(row.seq, attachment.id, fetched.bytes, fetched.mime ?? attachment.mime ?? null);
+      } catch (error) {
+        log("channel.mirror.media", { seq: row.seq, attachmentId: attachment.id, error: error instanceof Error ? error.message.slice(0, 160) : String(error) });
+      }
+    }
+    attachments.push({ id: attachment.id, kind: attachment.kind, mime: attachment.mime ?? null, path });
+  }
+  const id = mirror.append({
+    inboxSeq: row.seq,
+    session: row.session,
+    channel: "whatsapp",
+    account: row.account,
+    thread: row.thread,
+    messageId: message.messageId,
+    sender: message.sender,
+    sentAt: message.sentAt,
+    text: message.text,
+    attachments,
+  });
+  if (id) log("channel.mirror.appended", { seq: row.seq, session: row.session, mirrorId: id });
+};
+
 const log = (event: string, fields: Record<string, unknown> = {}): void => {
   // Structured, journal-friendly; the token never appears in any field.
   const parts = Object.entries(fields)
@@ -187,6 +225,7 @@ const { done, stop } = startChannelConsumer({
   sender,
   senderFor: (account) => senders.get(account),
   accountJids,
+  mirrorIn,
   planGroupCreation: (row, message, replyText) => planGroupCreationFlow(groupBridgeOptions, row, message, replyText),
   planSessionCommand: (row, message) => planSessionCommand(groupBridgeOptions, row, message),
   planRenameCommand: (row, message) => planRenameCommand({ ...groupBridgeOptions, sessionsDbPath: process.env.MINITUI_DB_PATH }, row, message),

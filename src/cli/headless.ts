@@ -158,6 +158,10 @@ export function formatEventText(event: RunEvent, color = false): string {
       // The TUI has no rich rendering for generated components (web-only): show
       // what it is so the headless stream stays honest about the turn's shape.
       return paint(ANSI.dim, `· ui-component: ${event.template}\n`);
+    case "channel":
+      // Espejo: a mirrored WhatsApp message (web-only projection). The headless
+      // stream names it honestly instead of pretending it is a turn.
+      return paint(ANSI.dim, `· [${event.channel}] ${event.sender}: ${event.text.trim()}\n`);
   }
 }
 

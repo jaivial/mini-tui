@@ -61,7 +61,22 @@ export type RunEvent =
   /** Generative UI: one component of the closed template set (src/web/uiComponents.ts). */
   | { type: "ui-component"; template: string; props: Record<string, unknown> }
   /** A crashed run's raw `mini.log` tail, posted into the thread at the failure point. */
-  | { type: "error"; text: string };
+  | { type: "error"; text: string }
+  /** A mirrored channel message (espejo WhatsApp ↔ web): a message that lives
+   * on the bound WhatsApp thread but never became an agent turn (a group
+   * message that did not ask for the bot). Data for the transcript only —
+   * never a prompt, never a turn. */
+  | {
+      type: "channel";
+      channel: string;
+      origin: "whatsapp";
+      sender: string;
+      text: string;
+      ts: number;
+      /** The mirror row it came from (dedupes against the saved transcript). */
+      mirrorId: number;
+      attachments: Array<{ id: string; kind: string; mime: string | null; url: string | null }>;
+    };
 
 /** Header-level facts extracted from `trajectory.info`. */
 export interface RunInfo {
