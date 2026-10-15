@@ -54,7 +54,13 @@ export function evoReceiver(inbox: ChannelInbox, config: EvoReceiverConfig) {
       }
       if (timedOut) return reply(408,{error:"delivery_timeout"});
       const payload: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      const messages = normalizeEvo(payload,account);
+      const messages = normalizeEvo(payload,account)
+        // Loop guard at the accept boundary (v4-H): in groups the bot's own
+        // API replies echo back with fromMe=true (one shared number), and a
+        // delivered id that IS a ledgered reply id is provably our own send —
+        // never operator input. Non-ledgered sends (bridge confirmations)
+        // are caught by the consumer's outgoing-history guard.
+        .filter((message) => !(message.fromMe && inbox.isOwnSendId(message.messageId)));
       // Dedupe is durable per message. A rejected batch may have an accepted prefix;
       // retries use the same IDs and never acknowledge the entire failed batch.
       const accepted = messages.map(message => inbox.accept(message));

@@ -54,6 +54,7 @@ import { LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 import { startChannelConsumer } from "./consumer";
 import { QueueBridge } from "./queueBridge";
 import { planGroupCreation as planGroupCreationFlow } from "./groupBridge";
+import { planSessionCommand } from "./sessionCommand";
 import { openDb } from "../sessions";
 
 function required(name: string): string {
@@ -145,33 +146,29 @@ const queueBridge = new QueueBridge({
   reconcileSettleMs: Number(process.env.MINITUI_QUEUE_RECONCILE_SETTLE_S ?? 30) * 1000,
   log,
 });
+// Group-session flow (WA-5 + v4-H): one configuration serves both triggers —
+// the model's [[mini-newgroup: …]] directive and the operator's `/newsession`
+// chat command. The photo is the session's squishmoji avatar; the static
+// bizbots mascot frame is the fallback.
+const groupBridgeOptions = {
+  inbox,
+  accountFor: (account: string) => {
+    const entry = accounts.find((a) => a.account === account);
+    return entry ? { instance: entry.instance, token: entry.token } : undefined;
+  },
+  baseUrl: process.env.EVO_API_URL ?? "",
+  photoPath: process.env.EVO_GROUP_PHOTO || undefined,
+  newSessionId: (account: string) => `wa-${account}-${[...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).padStart(2, "0")).join("")}`,
+  senderFor: (account: string) => senders.get(account),
+  log,
+};
 const { done, stop } = startChannelConsumer({
   inbox,
   sender,
   senderFor: (account) => senders.get(account),
   accountJids,
-  // Group-session bridge (WA-5): [[mini-newgroup: …]] creates a fresh isolated
-  // group session on the requesting account's own instance (works for the
-  // single-account envs too — `accounts` always has one entry). The photo is
-  // the static bizbots mascot frame shipped in src/channels/assets.
-  planGroupCreation: (row, message, replyText) =>
-    planGroupCreationFlow(
-      {
-        inbox,
-        accountFor: (account) => {
-          const entry = accounts.find((a) => a.account === account);
-          return entry ? { instance: entry.instance, token: entry.token } : undefined;
-        },
-        baseUrl: process.env.EVO_API_URL ?? "",
-        photoPath: process.env.EVO_GROUP_PHOTO || undefined,
-        newSessionId: (account) => `wa-${account}-${[...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).padStart(2, "0")).join("")}`,
-        senderFor: (account) => senders.get(account),
-        log,
-      },
-      row,
-      message,
-      replyText,
-    ),
+  planGroupCreation: (row, message, replyText) => planGroupCreationFlow(groupBridgeOptions, row, message, replyText),
+  planSessionCommand: (row, message) => planSessionCommand(groupBridgeOptions, row, message),
   ledger: new SendLedger(inbox.db),
   consumer: required("EVO_CONSUMER_NAME"),
   sessionsDbPath: process.env.MINITUI_DB_PATH,

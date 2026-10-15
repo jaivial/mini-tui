@@ -72,6 +72,47 @@ bridge (src/channels/groupBridge.ts) then, behind the inbox cursor:
    no group ever sees another group's context;
 4. confirms in the requesting thread with the new group's jid.
 
+### The operator's `/newsession` command
+
+Typing
+
+    /newsession <short subject>
+
+in a bound thread (the whole message — a mention inside another sentence is
+just text) starts a brand-new isolated session in ONE deterministic step, with
+NO model turn and no injection surface (src/channels/sessionCommand.ts):
+
+1. creates a fresh WhatsApp group with the requester as participant;
+2. sets that session's squishmoji avatar as the group photo (same face the web
+   sidebar shows; static mascot frame as fallback);
+3. binds it to a fresh `wa-<account>-<hex8>` session — mention policy,
+   allowlist = exactly the requester;
+4. confirms in the requesting thread with the new group's jid (the original
+   thread and its binding stay untouched).
+
+Authority is the binding's own allowlist: only a sender already allowed in
+that thread can run the command — anyone else's `/newsession …` is refused at
+the accept boundary (422) like any other message from an unapproved sender.
+The command deliberately bypasses the group mention gate (an explicit
+operator command is more specific than a mention policy), never the allowlist.
+
+### One number, two authors (`fromMe` in groups)
+
+On this deployment the bot and the operator share ONE WhatsApp number, so in
+groups EVERY delivery — the operator's real messages AND the bot's own API
+replies — arrives with `fromMe=true`. Group deliveries are therefore accepted
+regardless of the direction bit; loop prevention is identity by correlation,
+never by the bit:
+
+- a delivered id that is a recorded reply id (`channel_sends.reply_id`) is
+  refused at the accept boundary (evoReceiver);
+- any other delivered id that appears in the thread's recent outgoing history
+  is the bot's own (non-ledgered) send: the consumer acknowledges it without
+  a turn (consumer.ts own-send guard).
+
+Outside groups the bit still means "sent by a linked device": mirrors and API
+echoes are dropped exactly as before.
+
 ## Operator CLI (bindings)
 
     EVO_INBOX_DB=~/.local/share/mini-tui/channels.sqlite \
