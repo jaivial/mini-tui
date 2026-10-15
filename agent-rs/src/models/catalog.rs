@@ -350,8 +350,14 @@ pub fn build(name: &str, class: &str, mut config: Obj) -> Result<Box<dyn Model>,
             gateway(&mut c, base_env, default_base, key_env, default_key);
             let stripped = strip(c["model_name"].as_str().unwrap_or(""), prefix);
             c.insert("model_name".into(), json!(stripped));
-            // The wire name: a registry row's prefix would be stripped again (e.g. rosetta/zai/x).
-            let wire_name = provider(&stripped).map(|p| strip(&stripped, p.prefix)).unwrap_or(stripped.clone());
+            // Rosetta routes by provider/model, so only its own facade prefix is removed.
+            // Native-provider prefix stripping here turned rosetta/minimax/x into bare x,
+            // which the gateway rejects before the first worker action.
+            let wire_name = if class == "rosetta" {
+                stripped.clone()
+            } else {
+                provider(&stripped).map(|p| strip(&stripped, p.prefix)).unwrap_or(stripped.clone())
+            };
             wire(c, Protocol::Chat, Flavor::Plain, ty, "generic", wire_name)
         }
         "deepseek" => {
