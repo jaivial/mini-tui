@@ -195,6 +195,78 @@ export interface SettingsView {
   /** The model a fresh chat starts on (last one picked anywhere). */
   lastModel: string;
   outputModes: { value: OutputMode; name: string; description: string }[];
+  /**
+   * v6-C. `false`/absent means the router is not consulted at all and the manual
+   * model selector is the only thing that picks a model — the behaviour that
+   * existed before the router, which is why the flag is optional here.
+   */
+  modelRouterEnabled?: boolean;
+}
+
+// ------------------------------------------------------------------ v6-C router
+
+export type RouteLevel = "task" | "delegate" | "subtask";
+
+export interface BreakerStatusView {
+  model: string;
+  state: "closed" | "open" | "half-open";
+  blocked: boolean;
+  reason: string;
+  detail: string;
+  failures: number;
+  /** Epoch ms the circuit reopens, or 0 when it is not time-blocked. */
+  retryAt: number;
+}
+
+export interface RouterDecisionView {
+  id: number;
+  at: number;
+  level: RouteLevel;
+  source: "laya" | "deterministic" | "fallback" | "manual";
+  chosen: string;
+  reason: string;
+  layaProbability: number | null;
+  layaConfidence: number | null;
+  layaCheckpoint: string;
+  layaReason: string;
+  complexity: string;
+  task: string;
+  from: string;
+  fallbackReason: string | null;
+  ranking: {
+    model: string;
+    score: number;
+    why: string[];
+    excluded: string | null;
+    terms: Record<string, number | null>;
+  }[];
+}
+
+export interface RouterStatusView {
+  enabled: boolean;
+  candidates: number;
+  connected: number;
+  layaUrl: string;
+  layaCheckpoint: string;
+  catalogLoaded: boolean;
+  catalogModels: number;
+  /** How many catalogued models have no sourced intelligence index. */
+  catalogUnknownIndex: number;
+  breakers: BreakerStatusView[];
+  decisions24h: number;
+  fallbacks24h: number;
+  laya: { reachable: boolean; detail: string };
+  decisions: RouterDecisionView[];
+}
+
+/** The `/router/preview` answer: one real decision, with the ranking that made it. */
+export interface RouterPreview {
+  model: string;
+  source: RouterDecisionView["source"];
+  reason: string;
+  laya: { probability: number | null; confidence: number | null; checkpoint: string; reason: string };
+  complexity: { complexity: string; score: number; estimatedTokens: number; signals: string[]; summary: string };
+  ranking: RouterDecisionView["ranking"];
 }
 
 export interface ProviderView {

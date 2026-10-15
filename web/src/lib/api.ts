@@ -11,6 +11,9 @@ import type {
   ProviderCatalogEntry,
   ProviderView,
   RemoteHost,
+  RouteLevel,
+  RouterPreview,
+  RouterStatusView,
   SessionMeta,
   SettingsView,
   SkillInfo,
@@ -85,6 +88,14 @@ export const api = {
   compact: (id: string) => call<{ ok: true }>(`/sessions/${id}/compact`, { method: "POST" }),
   settings: () => call<SettingsView>("/settings"),
   patchSettings: (patch: Record<string, unknown>) => call<SettingsView>("/settings", { method: "PATCH", body: JSON.stringify(patch) }),
+  // v6-C: the router's own status and decision trail. Read-only — the toggle is
+  // `patchSettings({ modelRouterEnabled })`, the same act as `/router on|off`.
+  router: (limit = 25, level?: RouteLevel) =>
+    call<RouterStatusView>(`/router?limit=${limit}${level ? `&level=${level}` : ""}`),
+  // A dry run of the real decision path, so the preview is the thing itself.
+  routerPreview: (task: string) => call<RouterPreview>(`/router/preview`, { method: "POST", body: JSON.stringify({ task }) }),
+  // Forget a cooldown so a tripped model can be tried again now.
+  routerResetBreaker: (model: string) => call<{ ok: true; model: string }>(`/router/breaker/${encodeURIComponent(model)}`, { method: "DELETE" }),
   providers: () => call<{ connected: ProviderView[]; catalog: ProviderCatalogEntry[] }>("/providers"),
   // A 400 here is an expected answer ("that key did not work"), not a transport failure.
   connectProvider: async (providerId: string, key: string): Promise<ConnectResult> => {

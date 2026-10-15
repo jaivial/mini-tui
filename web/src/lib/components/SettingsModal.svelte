@@ -9,6 +9,7 @@
   import Skeleton from "./Skeleton.svelte";
   import WhatsAppConnect from "./WhatsAppConnect.svelte";
   import UsageSection from "./UsageSection.svelte";
+  import RouterSection from "./RouterSection.svelte";
   import { catalog } from "../stores/catalog.svelte";
   import { ui, PALETTES } from "../stores/ui.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -27,6 +28,8 @@
     { id: "general", label: "General" },
     { id: "channels", label: "Canales" },
     { id: "providers", label: "Providers" },
+    // v6-C: the model router's switch, its circuits and its decision trail.
+    { id: "router", label: "Router" },
     { id: "skills", label: "Skills" },
   ];
 
@@ -353,6 +356,10 @@
             </ul>
           {/if}
         </section>
+      </div>
+    {:else if tab === "router"}
+      <div role="tabpanel" id="{uid}-panel-router" aria-labelledby="{uid}-tab-router" class="flex flex-col gap-3">
+        <RouterSection />
       </div>
     {:else}
       <div role="tabpanel" id="{uid}-panel-skills" aria-labelledby="{uid}-tab-skills" class="flex flex-col gap-3">
