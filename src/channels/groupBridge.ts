@@ -50,6 +50,11 @@ export interface GroupBridgeOptions {
   newSessionId: (account: string) => string;
   /** Confirmation sender for the requesting thread (the row's own identity). */
   senderFor: (account: string) => EvoSender | undefined;
+  /** Optional participant normalizer for the group-create call: WhatsApp
+   * rejects `@lid` jids there (400 bad-request — a LID has no phone
+   * semantics in group creation). The allowlist keeps the ORIGINAL jid:
+   * deliveries arrive with the same form that was accepted. */
+  resolveParticipant?: (jid: string) => string;
   timeoutMs?: number;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
@@ -174,7 +179,9 @@ export async function createBoundGroupFor(options: GroupBridgeOptions, request: 
     description: `mini session ${new Date().toISOString()}`,
     // The requester is the (single) human participant; the account itself joins
     // as creator. Groups without the requester would be unreachable to them.
-    participants: [request.requesterJid],
+    // The participant form is normalized for the API (a LID is refused here);
+    // the binding's allowlist below keeps the requester's original jid.
+    participants: [options.resolveParticipant ? options.resolveParticipant(request.requesterJid) : request.requesterJid],
   });
   if (created.status !== 200 && created.status !== 201) throw new Error(`group create failed: ${created.error || `status ${created.status}`}`);
   const groupJid = findGroupJid(created.json);
