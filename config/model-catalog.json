@@ -210,6 +210,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "≤200K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 46,
             "variant": "xhigh",
@@ -253,6 +254,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": ">200K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 46,
             "variant": "xhigh",
@@ -296,6 +298,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "≤200K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -340,6 +343,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": ">200K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -384,6 +388,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "≤272K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 38,
             "variant": "max",
@@ -427,6 +432,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": ">272K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 38,
             "variant": "max",
@@ -470,6 +476,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "≤272K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -514,6 +521,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": ">272K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -558,6 +566,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "≤100K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 43,
             "variant": "max",
@@ -601,6 +610,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": ">100K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 43,
             "variant": "max",
@@ -644,6 +654,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "2x usage, limited time",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 53,
             "variant": "high",
@@ -686,6 +697,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 42,
             "variant": "default",
@@ -729,6 +741,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 45,
             "variant": "max",
@@ -772,6 +785,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 34,
             "variant": "max",
@@ -815,6 +829,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 44,
             "variant": "max",
@@ -858,6 +873,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 26,
             "variant": "default",
@@ -901,6 +917,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -945,6 +962,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 19,
             "variant": "default",
@@ -988,6 +1006,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "free, limited time",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -1032,6 +1051,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "free, limited time",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -1076,6 +1096,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "free, limited time; excluded regions",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -1120,6 +1141,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 38,
             "variant": "default",
@@ -1163,6 +1185,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 46,
             "variant": "default",
@@ -1206,6 +1229,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -1250,6 +1274,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -1294,6 +1319,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 29,
             "variant": "default",
@@ -1337,6 +1363,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 23,
             "variant": "default",
@@ -1380,6 +1407,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "limited regions (Meta policy)",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -1424,6 +1452,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "limited regions (Meta policy)",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -1468,6 +1497,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 45,
             "variant": "0902",
@@ -1511,6 +1541,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -1555,6 +1586,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "≤256K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 25,
             "variant": "default",
@@ -1598,6 +1630,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": ">256K tokens",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 25,
             "variant": "default",
@@ -1633,57 +1666,15 @@
           "modelId": "opencode-go/deepseek-v4.1-flash",
           "apiModelId": "deepseek-v4.1-flash",
           "provider": "opencode-go",
-          "priceIn": 0.15,
-          "priceOut": 0.6,
-          "priceCacheRead": 0.003,
+          "priceIn": 0.0,
+          "priceOut": 0.0,
+          "priceCacheRead": 0.0,
           "priceCacheWrite": "desconocido",
           "priceUnit": "USD per 1M tokens",
           "plan": "go",
           "billing": "subscription-quota",
-          "contextTier": "off-peak",
-          "intelligenceIndex": {
-            "value": 39,
-            "variant": "max",
-            "source": "Artificial Analysis Intelligence Index v4.3.2",
-            "sourceUrl": "https://artificialanalysis.ai/models/deepseek-v4-1-flash",
-            "consultedAt": "2026-10-15"
-          },
-          "estimatedRequests": {
-            "go5h": 34670,
-            "goWeek": 86670,
-            "goMonth": 173330,
-            "goPlus5h": 69330,
-            "goPlusWeek": 173330,
-            "goPlusMonth": 346670,
-            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
-          },
-          "limits": {
-            "monthlyLimitUsd": 80,
-            "monthlyLimitUsdGoPlus": 160,
-            "fiveHourPctOfMonthly": 20,
-            "weeklyPctOfMonthly": 50,
-            "monthlyPctOfMonthly": 100,
-            "rpm": "desconocido",
-            "tpm": "desconocido"
-          },
-          "sourceUrls": [
-            "https://opencode.ai/docs/go/"
-          ],
-          "consultedAt": "2026-10-15",
-          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
-        },
-        {
-          "modelId": "opencode-go/deepseek-v4.1-flash",
-          "apiModelId": "deepseek-v4.1-flash",
-          "provider": "opencode-go",
-          "priceIn": 0.3,
-          "priceOut": 1.2,
-          "priceCacheRead": 0.006,
-          "priceCacheWrite": "desconocido",
-          "priceUnit": "USD per 1M tokens",
-          "plan": "go",
-          "billing": "subscription-quota",
-          "contextTier": "peak (01-04 & 06-10 UTC, Mon-Fri)",
+          "contextTier": "gratis (200K contexto)",
+          "contextLength": 200000,
           "intelligenceIndex": {
             "value": 39,
             "variant": "max",
@@ -1727,6 +1718,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "off-peak",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 36,
             "variant": "max",
@@ -1770,6 +1762,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "peak (01-04 & 06-10 UTC, Mon-Fri)",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 36,
             "variant": "max",
@@ -1813,6 +1806,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "preview",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
@@ -1857,6 +1851,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": 25,
             "variant": "default",
@@ -1900,6 +1895,7 @@
           "plan": "go",
           "billing": "subscription-quota",
           "contextTier": "desconocido",
+          "contextLength": "desconocido",
           "intelligenceIndex": {
             "value": "desconocido",
             "variant": "desconocido",
