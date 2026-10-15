@@ -36,16 +36,23 @@ export function recordingStateCanCancel(state: AudioRecorderState): boolean {
 }
 
 /**
- * Record from the microphone, with Control UI's own state machine
- * (`idle → requesting → recording → recorded → submitting`, or `error`).
- *
- * ```svelte
- * const recorder = useAudioRecorder({ onRecordingComplete: (r) => upload(r.blob) });
- * ```
- *
- * Must be called during component init (it holds `$state`), and `destroy()`
- * runs on unmount so the microphone is never left open.
- */
+   * Record from the microphone, with Control UI's own state machine
+   * (`idle → requesting → recording → recorded → submitting`, or `error`).
+   *
+   * ```svelte
+   * const recorder = useAudioRecorder({ onRecordingComplete: (r) => upload(r.blob) });
+   * ```
+   *
+   * Must be called during component init (it holds `$state`), and `destroy()`
+   * runs on unmount so the microphone is never left open.
+   *
+   * `options` is kept as the LIVE object the caller passed, never a copy: the
+   * controller's `setOptions` spreads what it is given, and spreading an object
+   * whose properties are getters would read every reactive prop inside the
+   * `$effect` below — the effect would then depend on the props it just
+   * consumed and re-run forever. Passing the object through also means the
+   * controller always sees the current handler without re-wiring on change.
+   */
 export function useAudioRecorder(options: UseAudioRecorderOptions = {}): AudioRecorder {
   const controller = createAudioRecorderController(options);
   let snapshot = $state<AudioRecorderSnapshot>(controller.getSnapshot());
@@ -55,7 +62,14 @@ export function useAudioRecorder(options: UseAudioRecorderOptions = {}): AudioRe
   });
 
   $effect(() => {
-    controller.setOptions(options);
+    // Read the props so a change re-applies them, but never let the controller
+    // copy the object: the copy would collapse the getters into plain values.
+    const live: UseAudioRecorderOptions = options;
+    void live.disabled;
+    void live.maxDurationMs;
+    void live.onRecordingComplete;
+    void live.onCancel;
+    controller.setOptions(live);
   });
 
   $effect(() => {

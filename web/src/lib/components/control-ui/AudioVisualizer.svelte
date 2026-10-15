@@ -61,16 +61,27 @@
 
   let trackEl = $state<HTMLSpanElement | null>(null);
   let firstBarEl = $state<HTMLSpanElement | null>(null);
-  let previousSample = $state<HistorySample | null>(null);
 
-  /** Control UI reads the first bar only to measure one bar's width. */
-  function firstBar(node: HTMLSpanElement, isFirst: boolean) {
-    firstBarEl = isFirst ? node : firstBarEl;
+  /** Control UI reads the first bar only to measure one bar's width. `firstBarEl`
+   * is written by the action and read by the effect below, so it stays reactive
+   * — but the effect only ever READS it, never writes it, which is what keeps
+   * the effect from depending on its own output. */
+function firstBar(node: HTMLSpanElement, isFirst: boolean) {
+    if (isFirst) firstBarEl = node;
   }
 
   // The track is translated by exactly one bar pitch, so incoming levels slide
   // in from the edge instead of every bar re-growing on its own. Same as
   // Control UI: driven by the WAAPI, cancelled when the frame is superseded.
+  //
+  // `previousSample` must NOT be reactive state read inside this effect: the
+  // effect writes it on every run, so reading it would make it depend on the
+  // value it just wrote and re-run forever (Svelte tears the component down
+  // with `effect_update_depth_exceeded` — 58 remounts before it bailed). A
+  // plain closure variable carries the previous frame without being a
+  // dependency, which is exactly what React's `useRef` does upstream.
+  let previousSample: HistorySample | null = null;
+
   $effect(() => {
     const levelsNow = visible.map(({ level }) => level);
     const next: HistorySample = { levels: levelsNow, time: performance.now(), active };
