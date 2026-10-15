@@ -128,7 +128,7 @@
     {@const gap = i === 0 ? "" : isGrouped ? TUCK : GAP}
     {#if row.kind === "task"}
       <!-- The user speaks in the near-black bubble, at the right (the mockup's). -->
-      <div class="turn group/turn flex flex-col items-end {gap}">
+      <div class="cv-row turn group/turn flex flex-col items-end {gap}">
         {#if !isGrouped}
           {@const at = clock(row.event)}
           {#if at}<div class="tnum pointer-coarse:px-1 pr-1 text-[10px] leading-3 text-ink-faint">{at}</div>{/if}
@@ -154,7 +154,7 @@
     {:else if row.kind === "channel"}
       <!-- Espejo: a message from the bound WhatsApp thread (never a turn).
            Discreet origin marker: the little bubble icon + sender. -->
-      <div class="turn group/turn flex flex-col items-end {gap}">
+      <div class="cv-row turn group/turn flex flex-col items-end {gap}">
         {#if !isGrouped}
           <div class="tnum pointer-coarse:px-1 flex items-center gap-1 pr-1 text-[10px] leading-3 text-ink-faint">
             <MessageCircle size={10} strokeWidth={2} aria-hidden="true" />
@@ -199,7 +199,7 @@
       </div>
     {:else if row.kind === "assistant"}
       <!-- The bot answers in the soft grey bubble, at the left. -->
-      <div class="turn group/turn flex flex-col items-start {gap}">
+      <div class="cv-row turn group/turn flex flex-col items-start {gap}">
         {#if !isGrouped}
           {@const at = clock(row.event)}
           {#if at}<div class="tnum pointer-coarse:px-1 pl-1 text-[10px] leading-3 text-ink-faint">{at}</div>{/if}
@@ -223,10 +223,10 @@
         </div>
       </div>
     {:else if row.kind === "step"}
-      <div class={gap}><StepCard event={row.event} /></div>
+      <div class="cv-row {gap}"><StepCard event={row.event} /></div>
     {:else if row.kind === "ui-component"}
       <!-- Generative UI: a component of the closed set, validated before render. -->
-      <div class="{gap} pl-1">
+      <div class="cv-row {gap} pl-1">
         <UiComponent template={row.event.template} props={row.event.props} {onsubmit} />
       </div>
     {:else if row.kind === "thinking"}
@@ -235,7 +235,7 @@
         timeline stays scannable, and the text is available in <details>.
       -->
       {#if row.event.text}
-        <details class="group/think {gap}">
+        <details class="cv-row group/think {gap}">
           <summary
             class="interactive -mx-1 flex min-h-6 w-56 max-w-full cursor-pointer pointer-coarse:min-h-11 list-none items-center gap-1.5 rounded-sm px-1 text-[11.5px] text-ink-faint hover:bg-raised/60 hover:text-ink-muted"
           >
@@ -253,16 +253,16 @@
         </div>
       {/if}
     {:else if row.kind === "notice"}
-      <div class="px-2.5 read-[11.5px] text-ink-faint {gap}">{row.event.text}</div>
+      <div class="cv-row px-2.5 read-[11.5px] text-ink-faint {gap}">{row.event.text}</div>
     {:else if row.kind === "exit"}
       {@const okExit = row.event.exitStatus === "Submitted"}
-      <div class="{gap} rounded-2xl px-3 py-2 read-[12.5px] {okExit ? 'bg-ok/10 text-ok' : 'bg-warn/10 text-warn'}">
+      <div class="cv-row {gap} rounded-2xl px-3 py-2 read-[12.5px] {okExit ? 'bg-ok/10 text-ok' : 'bg-warn/10 text-warn'}">
         <div class="mb-0.5 flex items-center gap-1.5 font-medium">
           <CheckCircle2 size={12} strokeWidth={2} /> {row.event.exitStatus}
         </div>
       </div>
     {:else if row.kind === "error"}
-      <div class="flex items-start gap-2 rounded-2xl bg-err/10 px-3 py-2 read-[12.5px] text-err {gap}">
+      <div class="cv-row flex items-start gap-2 rounded-2xl bg-err/10 px-3 py-2 read-[12.5px] text-err {gap}">
         <AlertTriangle size={14} class="mt-px shrink-0" strokeWidth={2} />
         <pre class="font-mono break-words whitespace-pre-wrap">{row.event.text}</pre>
       </div>
@@ -331,6 +331,18 @@
       width: 2.75rem;
       height: 2.75rem;
     }
+  }
+
+  /*
+   * Dense transcripts (hundreds of rows) pay style/layout/paint for every row
+   * at mount. Rows the viewport cannot see are skipped entirely until scrolled
+   * to; `contain-intrinsic-size` keeps the scrollbar sized with an estimate
+   * until a row renders, then remembers its real height. Tool cards (the tall
+   * rows) sit near the 64px estimate's error only in scrollbar-thumb terms.
+   */
+  .cv-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 64px;
   }
 
   /* Espejo: a mirrored WhatsApp bubble keeps its own bubble style plus a quiet

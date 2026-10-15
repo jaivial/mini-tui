@@ -4,11 +4,6 @@
   import SessionSidebar from "./lib/components/SessionSidebar.svelte";
   import ChatPane from "./lib/components/ChatPane.svelte";
   import PaneTree from "./lib/components/PaneTree.svelte";
-  import HelpModal from "./lib/components/HelpModal.svelte";
-  import TeamMapModal from "./lib/components/TeamMapModal.svelte";
-  import ResumeModal from "./lib/components/ResumeModal.svelte";
-  import RemoteHostsModal from "./lib/components/RemoteHostsModal.svelte";
-  import SettingsModal from "./lib/components/SettingsModal.svelte";
   import TasksPanel from "./lib/components/TasksPanel.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
   import { history, sidebarHistory } from "./lib/stores/history.svelte";
@@ -91,6 +86,24 @@ import { windows } from "./lib/stores/windows.svelte";
   let helpOpen = $state(false);
   let resumeOpen = $state(false);
   let openingId = $state("");
+
+  // The modals are code-split and imported the first time each is opened (the Team map drags
+  // @xyflow/svelte, ~216 kB with its CSS, that no boot needs). Holders stay null until then,
+  // which keeps the `{#if}` render sites honest: nothing mounts before its chunk arrives.
+  type ModalOf<T> = T extends { default: infer C } ? C : never;
+  let TeamMapModal = $state<ModalOf<typeof import("./lib/components/TeamMapModal.svelte")> | null>(null);
+  let RemoteHostsModal = $state<ModalOf<typeof import("./lib/components/RemoteHostsModal.svelte")> | null>(null);
+  let SettingsModal = $state<ModalOf<typeof import("./lib/components/SettingsModal.svelte")> | null>(null);
+  let HelpModal = $state<ModalOf<typeof import("./lib/components/HelpModal.svelte")> | null>(null);
+  let ResumeModal = $state<ModalOf<typeof import("./lib/components/ResumeModal.svelte")> | null>(null);
+  $effect(() => {
+    // Load on first open, and once more on demand if a later open races the fetch.
+    if (teamMapOpen && !TeamMapModal) void import("./lib/components/TeamMapModal.svelte").then((m) => (TeamMapModal = m.default));
+    if (hostsOpen && !RemoteHostsModal) void import("./lib/components/RemoteHostsModal.svelte").then((m) => (RemoteHostsModal = m.default));
+    if (settingsOpen && !SettingsModal) void import("./lib/components/SettingsModal.svelte").then((m) => (SettingsModal = m.default));
+    if (helpOpen && !HelpModal) void import("./lib/components/HelpModal.svelte").then((m) => (HelpModal = m.default));
+    if (resumeOpen && !ResumeModal) void import("./lib/components/ResumeModal.svelte").then((m) => (ResumeModal = m.default));
+  });
   let loading = $state(true);
   const refs: Record<string, { focusComposer: () => void; focusNotes: () => void; focusTerminal: () => void } | undefined> = $state({});
 
@@ -659,11 +672,11 @@ import { windows } from "./lib/stores/windows.svelte";
 </div>
 
 <TasksPanel open={tasksOpen} rows={taskRows} live={tasksLive} plans={planList} onclose={() => (tasksOpen = false)} />
-<TeamMapModal bind:open={teamMapOpen} onopensession={openInFocused} />
-<RemoteHostsModal bind:open={hostsOpen} />
-<SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />
-<HelpModal bind:open={helpOpen} />
-<ResumeModal bind:open={resumeOpen} opening={openingId} onopen={resume} ondelete={deleteSaved} />
+{#if TeamMapModal}<TeamMapModal bind:open={teamMapOpen} onopensession={openInFocused} />{/if}
+{#if RemoteHostsModal}<RemoteHostsModal bind:open={hostsOpen} />{/if}
+{#if SettingsModal}<SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />{/if}
+{#if HelpModal}<HelpModal bind:open={helpOpen} />{/if}
+{#if ResumeModal}<ResumeModal bind:open={resumeOpen} opening={openingId} onopen={resume} ondelete={deleteSaved} />{/if}
 <Toasts />
 
 <style>

@@ -49,7 +49,12 @@ function load(options: MarkdownOptions): Promise<Engine> {
       ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts));
     md.renderer.rules.image = (tokens, idx, opts, env, self) => {
       const token = tokens[idx]!;
-      if ((String(token.attrGet("src") ?? "")).startsWith("/api/attachments/")) token.attrSet("class", "chat-img");
+      if ((String(token.attrGet("src") ?? "")).startsWith("/api/attachments/")) {
+        token.attrSet("class", "chat-img");
+        // Offscreen images cost nothing until scrolled to: the transcript can be long.
+        token.attrSet("loading", "lazy");
+        token.attrSet("decoding", "async");
+      }
       return defaultImage(tokens, idx, opts, env, self);
     };
     return md;
