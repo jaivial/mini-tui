@@ -70,6 +70,14 @@
 
 <svelte:window onkeydown={onkey} onpointerdown={onpress} />
 
+<style>
+  /* The drawer slides in from its right edge; closing is instant (a dialog's
+     close is synchronous, and an exit animation would only delay the click). */
+  dialog[open] {
+    animation: drawer-in var(--duration-slow) var(--ease-emphasized);
+  }
+</style>
+
 <dialog
   bind:this={dialog}
   class="fixed top-0 right-0 bottom-auto left-auto z-50 m-0 h-[calc(100*var(--vh))] max-h-[calc(100*var(--vh))] w-[26rem] max-w-[calc(100*var(--vw))] rounded-l-2xl border-l border-line bg-canvas p-0 text-ink shadow-2xl"

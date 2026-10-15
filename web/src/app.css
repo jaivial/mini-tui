@@ -142,7 +142,9 @@
    press is interruptible. Durations ride the motion tokens. */
 @utility interactive {
   transition-property: background-color, border-color, color, opacity, box-shadow, transform, scale;
-  transition-duration: var(--duration-fast);
+  /* Hover/press feedback in the 150-200 ms band: fast enough to feel direct,
+     slow enough to read as motion. */
+  transition-duration: 150ms;
   transition-timing-function: var(--ease-standard);
 }
 

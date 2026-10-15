@@ -297,7 +297,7 @@
 
 <div class="shrink-0 bg-canvas px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pane-sm:px-3">
   <div
-    class="relative mx-auto max-w-3xl rounded-[26px] border border-transparent bg-raised transition-[border-color,box-shadow,background-color] duration-[--duration-fast] ease-[--ease-standard] focus-within:border-brand focus-within:bg-canvas focus-within:shadow-[0_0_0_3px_var(--color-brand-soft)]"
+    class="relative mx-auto max-w-3xl rounded-[26px] border border-transparent bg-raised transition-[border-color,box-shadow,background-color] duration-(--duration-fast) ease-(--ease-standard) focus-within:border-brand focus-within:bg-canvas focus-within:shadow-[0_0_0_3px_var(--color-brand-soft)]"
   >
     {#if menu}
       <CompletionMenu completion={menu} {active} id={menuId} onpick={pick} onhover={(i) => (active = i)} />

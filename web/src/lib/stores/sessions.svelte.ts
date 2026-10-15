@@ -13,6 +13,7 @@
 import { api } from "../api";
 import { SessionSocket, type SocketState } from "../session-socket";
 import { shallowEqual } from "../equal";
+import { markArrival, markCallEnd, markCallStart } from "../toolTimings";
 import type { Frame, RemoteHost, SessionMeta, SessionState, WireSession } from "../types";
 
 export type Link = "idle" | "connecting" | "live" | "reconnecting" | "gone";
@@ -228,7 +229,34 @@ class SessionStore {
         this.#sockets.get(frame.id)?.resync();
         return;
       }
-      if (frame.events.length) session.events.push(...frame.events);
+      if (frame.events.length) {
+        // Live clocks for the transcript: each arrival is stamped, and a tool
+        // call is paired with its observation to measure how long it took. A
+        // snapshot (history) never passes here, so the past shows no fake times.
+        // The marks key on the object as the transcript reads it — the pushed
+        // event comes back wrapped by Svelte's reactive proxy, and a key taken
+        // from the raw frame object would never be found again.
+        for (const event of frame.events) {
+          session.events.push(event);
+          const stored = session.events[session.events.length - 1];
+          markArrival(stored);
+          if (event.type === "tool_call") {
+            markCallStart(stored);
+          } else if (event.type === "observation") {
+            // Pair with the nearest preceding call: by id when both carry one,
+            // else the previous call (the parser streams them separately).
+            const events = session.events;
+            for (let i = events.length - 2; i >= 0 && i >= events.length - 12; i--) {
+              const candidate = events[i];
+              if (candidate.type !== "tool_call") continue;
+              if (!event.toolCallId || !candidate.id || candidate.id === event.toolCallId) {
+                markCallEnd(candidate);
+                break;
+              }
+            }
+          }
+        }
+      }
       session.partial = frame.partial ?? undefined;
       Object.assign(session, frame.meta);
     } else if (frame.t === "gone") {
