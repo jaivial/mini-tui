@@ -18,6 +18,7 @@ cd web && bun run e2e                      # real browser + real server: sockets
 cd web && bun scripts/e2e-windows.mjs      # windows: move a pane, switch, reload, rename, close
 cd web && bun scripts/e2e-pane-layout.mjs  # rearranging: move pane, drag to swap, layouts, notes width
 cd web && bun run e2e-tasks                   # the task board: button, live cards, panes, hover glance
+cd web && bun run e2e-qa-v5                    # the v5-C QA round: 57 checks over every area, both modes
 ```
 
 Open <http://127.0.0.1:4317>.
