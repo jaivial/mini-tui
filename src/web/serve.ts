@@ -253,8 +253,13 @@ function mediaUrlFor(ctx: MirrorContext): (path: string) => string | null {
     return /^seq\d+-[A-Za-z0-9._-]+$/.test(name) ? `/api/channel-media/${name}` : null;
   };
 }
-/** Push new mirror rows into every open session they belong to. */
+/** Push new mirror rows into every open session they belong to.
+ * Nobody watching (no tab holds the hub socket) means nobody would ever see an
+ * injected row, so the sqlite query waits: the cursor stays put and the rows are
+ * picked up on the first tick after a tab connects — the same "only poll while
+ * anyone watches" rule the task board follows. */
 function mirrorPoll(): void {
+  if (hub.clients === 0) return;
   const ctx = openMirrorContext();
   if (!ctx) return;
   try {

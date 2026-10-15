@@ -30,6 +30,24 @@
   let now = $state(Date.now() / 1000);
   let panel = $state<HTMLElement | null>(null);
 
+  /**
+   * Resolves once the browser has painted and gone idle, so the graph's library is fetched
+   * after first paint instead of during it. Two animation frames guarantee the frame that
+   * renders this panel has been committed; the idle callback then waits for the main thread
+   * to drain whatever boot still has queued (parsing, the transcript mount, the hub socket).
+   * The promise is created once and never reset: the graph is not re-fetched per panel open.
+   */
+  const graphReady = new Promise<void>((resolve) => {
+    const afterPaint = () => {
+      const idle = (globalThis as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+        .requestIdleCallback;
+      if (idle) idle(() => resolve(), { timeout: 2000 });
+      else setTimeout(resolve, 200);
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => requestAnimationFrame(afterPaint));
+    else afterPaint();
+  });
+
   export function focus() {
     panel?.focus();
   }
@@ -211,7 +229,17 @@
 
       {#if tab === "graph" && view}
         <div class="min-h-0 flex-1">
-          {#await import("./AgentGraph.svelte") then m}
+          <!-- The graph drags @xyflow/svelte (~160 kB decoded with its CSS). The pane tree is
+               shared through the server, so a tab left on "Agents" remounts this panel on
+               every boot — and with the graph as the default tab that pulled the whole
+               library into first paint. Wait until the panel has actually been on screen
+               for a beat before importing: the bytes still arrive, just after paint and
+               only for someone who is really looking at the graph. -->
+          {#await graphReady.then(() => import("./AgentGraph.svelte"))}
+            <div class="flex h-full min-h-[320px] items-center justify-center" role="status">
+              <Spinner size={14} label="Loading the graph" />
+            </div>
+          {:then m}
             <m.default {view} {onopen} />
           {/await}
         </div>
