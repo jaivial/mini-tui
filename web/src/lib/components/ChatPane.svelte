@@ -6,6 +6,7 @@
   import SubagentStrip from "./SubagentStrip.svelte";
   import Transcript from "./Transcript.svelte";
   import Composer from "./Composer.svelte";
+  import Lightbox from "./Lightbox.svelte";
   import Skeleton from "./Skeleton.svelte";
   import FloatingMascot from "./FloatingMascot.svelte";
   import PixelLoader from "./PixelLoader.svelte";
@@ -244,10 +245,13 @@ import { windows as windowStore } from "../stores/windows.svelte";
   async function send(message: string) {
     const text = message.trim();
     const current = session;
-    if (!text || sending) return;
+    const atts = pane.attachments;
+    if ((!text && !atts.length) || sending) return;
+    // Files alone are still a message: the names travel as the text, the ids as metadata.
+    const sent = text || `📎 ${atts.map((a) => a.name).join(", ")}`;
     sending = true;
     try {
-      if (await runCommand(text)) return;
+      if (await runCommand(sent)) return;
       if (!current) {
         // The first message creates the session, on the target and model chosen in this pane's draft.
         const host = store.hosts.find((h) => h.id === pane.draft.targetId);
@@ -255,11 +259,12 @@ import { windows as windowStore } from "../stores/windows.svelte";
         const draft = { ...pane.draft, cwd: pane.draft.cwd.trim() };
         try {
           const created = await api.create({
-            prompt: text,
+            prompt: sent,
             target: host ? "remote" : "local",
             hostId: host?.id,
             model: draft.model || undefined,
             cwd: draft.cwd || undefined,
+            attachments: atts,
           });
           if (draft.cwd) rememberRecent(draft.targetId, created.cwd || draft.cwd);
           store.adopt(created);
@@ -271,11 +276,13 @@ import { windows as windowStore } from "../stores/windows.svelte";
         }
         pane.prompt = "";
         pane.chips = [];
+        pane.attachments = [];
         return;
       }
-      await api.send(current.id, text);
+      await api.send(current.id, sent, atts);
       pane.prompt = "";
       pane.chips = [];
+      pane.attachments = [];
     } catch (error) {
       // The text stays in the box, so a failed send is never a lost message.
       toasts.push("Could not send", { detail: (error as Error).message, tone: "err" });
@@ -509,6 +516,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
           bind:this={composer}
           bind:value={pane.prompt}
           bind:chips={pane.chips}
+          bind:attachments={pane.attachments}
           bind:modelOpen
           running={session.status === "running"}
           {sending}
@@ -564,6 +572,7 @@ import { windows as windowStore } from "../stores/windows.svelte";
           bind:this={composer}
           bind:value={pane.prompt}
           bind:chips={pane.chips}
+          bind:attachments={pane.attachments}
           bind:modelOpen
           {sending}
           {targets}
@@ -650,6 +659,9 @@ import { windows as windowStore } from "../stores/windows.svelte";
       </div>
     </div>
   {/if}
+
+  <!-- One image viewer per pane: opened from any bubble's inline image above. -->
+  <Lightbox />
 </section>
 
 <style>

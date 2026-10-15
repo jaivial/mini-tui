@@ -3,6 +3,7 @@
  * src/sessions.ts) exactly, so the same parser drives both front ends.
  */
 import type { RunEvent, RunInfo, TrajectoryMessage } from "../../../src/traj/schema";
+import type { AttachmentRef } from "./attachments";
 
 export type { RunEvent, RunInfo, TrajectoryMessage };
 
@@ -169,6 +170,8 @@ export interface CreateSessionBody {
   model?: string;
   target: TargetKind;
   hostId?: string;
+  /** Already-uploaded files (POST /attachments): only ids travel the wire. */
+  attachments?: AttachmentRef[];
 }
 
 export interface CommandInfo {

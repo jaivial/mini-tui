@@ -261,6 +261,8 @@ import { findSkillRefs } from "./skillMatch";
 const SKILLS_BLOCK = /^<skills>\n[\s\S]*?\n<\/skills>\n\n/;
 const SKILL_BLOCK_LEGACY = /^<skill name="([^"]+)"[^>]*>[\s\S]*?<\/skill>\s*/;
 const REQUEST_HEADER = "Follow the skills above where the request references them ($name):\n";
+/** Uploaded files, appended after the prompt by the web server (src/web/attachments.ts). */
+const ATTACHMENTS_BLOCK = /\n?<attachments>\n[\s\S]*?\n<\/attachments>\n?$/;
 
 /**
  * The task mini receives: the instructions of every skill referenced with `$name`, then the
@@ -285,6 +287,9 @@ export function expandSkills(text: string, dir: string = SKILLS_DIR): { task: st
 
 /** Transcript view of an expanded prompt: the prompt as typed (other text is unchanged). */
 export function collapseSkillPrompt(text: string): string {
+  // The attachments block trails the prompt (the skills block leads it), so it comes off first.
+  const atts = ATTACHMENTS_BLOCK.exec(text);
+  if (atts) text = text.slice(0, atts.index).replace(/\s+$/, "");
   const block = SKILLS_BLOCK.exec(text);
   if (block) return text.slice(block[0].length).replace(REQUEST_HEADER, "").trim();
   const legacy = SKILL_BLOCK_LEGACY.exec(text);

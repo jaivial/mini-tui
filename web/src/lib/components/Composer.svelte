@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowUp, Square, Terminal as TerminalIcon, Globe, SquareSlash, Sparkles } from "@lucide/svelte";
+  import { ArrowUp, Square, Terminal as TerminalIcon, Globe, SquareSlash, Sparkles, Paperclip, FileText, X, CircleAlert } from "@lucide/svelte";
   import { untrack } from "svelte";
   import Chip from "./Chip.svelte";
   import Button from "./Button.svelte";
@@ -12,6 +12,8 @@
   import { step } from "../models";
   import { fitHeight } from "../grow";
   import type { PromptMemory } from "../promptMemory";
+  import { humanSize, uploadAttachment, ATTACH_ACCEPT, ATTACH_MAX, type AttachmentRef } from "../attachments";
+  import { toasts } from "../stores/toast.svelte";
 
   /**
    * The prompt bar. One surface, one row of controls: where the run executes, which model, and
@@ -21,6 +23,7 @@
   let {
     value = $bindable(""),
     chips = $bindable<ChipT[]>([]),
+    attachments = $bindable<AttachmentRef[]>([]),
     running = false,
     sending = false,
     targets = [],
@@ -49,6 +52,8 @@
     value?: string;
     /** Commands and skills picked from the menus; joined to `value` only when the message is sent. */
     chips?: ChipT[];
+    /** Files uploaded for this message (kept by the pane, sent as ids). */
+    attachments?: AttachmentRef[];
     running?: boolean;
     /** A send is in flight. */
     sending?: boolean;
@@ -109,7 +114,52 @@
     });
   }
   const slashBlocked = $derived(!!value.trim() || chips.length > 0);
-  const canSend = $derived(hasMessage(chips, value) && !disabled && !sending);
+  // ---- attachments: pick, drop, upload
+  /** Files on their way to the server; the finished ones move into `attachments`. */
+  let uploading = $state<{ key: string; name: string; size: number }[]>([]);
+  let fileInput = $state<HTMLInputElement | null>(null);
+  let dragging = $state(false);
+  const canSend = $derived((hasMessage(chips, value) || attachments.length > 0) && !uploading.length && !disabled && !sending);
+
+  function pickFiles() {
+    fileInput?.click();
+  }
+
+  async function addFiles(list: FileList | File[]) {
+    const files = [...list].slice(0, 10 - attachments.length - uploading.length);
+    for (const file of files.slice(0, 10)) {
+      if (file.size > ATTACH_MAX) {
+        toasts.push(`${file.name} pasa de ${Math.round(ATTACH_MAX / 1024 / 1024)} MB`, { tone: "err" });
+        continue;
+      }
+      const key = `${file.name}:${file.size}:${Math.random().toString(36).slice(2, 7)}`;
+      uploading = [...uploading, { key, name: file.name, size: file.size }];
+      try {
+        const ref = await uploadAttachment(file);
+        attachments = [...attachments, ref];
+      } catch (error) {
+        toasts.push("Could not attach the file", { detail: (error as Error).message, tone: "err" });
+      } finally {
+        uploading = uploading.filter((u) => u.key !== key);
+      }
+    }
+  }
+
+  function removeAttachment(index: number) {
+    attachments = attachments.filter((_, i) => i !== index);
+    area?.focus();
+  }
+
+  function onDrop(event: DragEvent) {
+    event.preventDefault();
+    dragging = false;
+    if (event.dataTransfer?.files?.length) void addFiles(event.dataTransfer.files);
+  }
+  function onDragOver(event: DragEvent) {
+    if (!event.dataTransfer?.types?.includes("Files")) return;
+    event.preventDefault();
+    dragging = true;
+  }
 
   /** What a screen reader hears when the rail changes (a chip appearing is otherwise silent). */
   let liveMessage = $state("");
@@ -118,10 +168,12 @@
     if (!canSend) return;
     const message = composePrompt(chips, value);
     // Recall is a convenience: whatever happens to it, the message still goes out.
-    try {
-      memory?.push({ chips: [...chips], text: value });
-    } catch (error) {
-      console.error("prompt memory", error);
+    if (message) {
+      try {
+        memory?.push({ chips: [...chips], text: value });
+      } catch (error) {
+        console.error("prompt memory", error);
+      }
     }
     onsend(message);
   }
@@ -311,7 +363,15 @@
     class={floating
       ? "pill-float isolate pointer-events-auto relative mx-auto max-w-3xl rounded-[26px] border border-line/60 shadow-[0_12px_32px_-12px_oklch(0_0_0/0.3)] transition-[border-color,box-shadow] duration-(--duration-fast) ease-(--ease-standard) focus-within:border-brand focus-within:shadow-[0_0_0_3px_var(--color-brand-soft),0_12px_32px_-12px_oklch(0_0_0/0.3)]"
       : "relative mx-auto max-w-3xl rounded-[26px] border border-transparent bg-raised transition-[border-color,box-shadow,background-color] duration-(--duration-fast) ease-(--ease-standard) focus-within:border-brand focus-within:bg-canvas focus-within:shadow-[0_0_0_3px_var(--color-brand-soft)]"}
+    ondragover={onDragOver}
+    ondragleave={() => (dragging = false)}
+    ondrop={onDrop}
   >
+    {#if dragging}
+      <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-[26px] border-2 border-dashed border-brand bg-brand-soft/60 text-[13px] font-medium text-ink" aria-hidden="true">
+        Suelta los archivos aquí
+      </div>
+    {/if}
     {#if menu}
       <CompletionMenu completion={menu} {active} id={menuId} onpick={pick} onhover={(i) => (active = i)} />
     {/if}
@@ -319,6 +379,32 @@
       <ul class="flex flex-wrap gap-1.5 px-2.5 pt-2.5" aria-label="Added to this message">
         {#each chips as chip, i (chip.kind + chip.name)}
           <li class="max-w-full"><Chip {chip} onremove={() => remove(i)} /></li>
+        {/each}
+      </ul>
+    {/if}
+    {#if attachments.length || uploading.length}
+      <ul class="flex flex-wrap gap-1.5 px-2.5 pt-2.5" aria-label="Archivos adjuntos">
+        {#each attachments as att, i (att.id)}
+          <li class="group/att flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-line bg-canvas py-1 pl-2 pr-1 text-[12px]">
+            <FileText size={13} strokeWidth={1.75} class="shrink-0 text-ink-muted" aria-hidden="true" />
+            <span class="max-w-44 truncate text-ink" title={att.name}>{att.name}</span>
+            <span class="tnum shrink-0 text-ink-faint">{humanSize(att.size)}</span>
+            <button
+              type="button"
+              class="interactive grid size-7 shrink-0 cursor-pointer place-items-center rounded-md text-ink-faint hover:bg-raised hover:text-ink pointer-coarse:size-11"
+              aria-label="Quitar {att.name}"
+              onclick={() => removeAttachment(i)}
+            >
+              <X size={12} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </li>
+        {/each}
+        {#each uploading as up (up.key)}
+          <li class="flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-line/70 bg-canvas py-1 pl-2 pr-2 text-[12px] text-ink-faint" role="status">
+            <span class="size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-line-strong border-t-brand" aria-hidden="true"></span>
+            <span class="max-w-44 truncate" title={up.name}>{up.name}</span>
+            <span class="tnum shrink-0">{humanSize(up.size)}</span>
+          </li>
         {/each}
       </ul>
     {/if}
@@ -388,6 +474,30 @@
       <ModelPicker value={model} bind:open={modelOpen} busy={switchingModel} {disabled} note={modelNote} onpick={onmodel} />
 
       <div class="ml-auto flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          class="interactive grid size-8 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11 pointer-coarse:min-w-11"
+          aria-label="Adjuntar archivos"
+          title="Adjuntar archivos (o arrástralos aquí)"
+          {disabled}
+          onclick={pickFiles}
+        >
+          <Paperclip size={16} strokeWidth={1.75} aria-hidden="true" />
+        </button>
+        <input
+          bind:this={fileInput}
+          type="file"
+          multiple
+          accept={ATTACH_ACCEPT}
+          class="sr-only"
+          tabindex="-1"
+          aria-hidden="true"
+          onchange={(event) => {
+            const files = (event.currentTarget as HTMLInputElement).files;
+            if (files?.length) void addFiles(files);
+            (event.currentTarget as HTMLInputElement).value = "";
+          }}
+        />
         <!-- Touch only: on a keyboard, typing / or $ is faster than reaching for these. -->
         <button
           type="button"
