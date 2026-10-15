@@ -18,6 +18,7 @@
   import { baseName, relativeTime, cost } from "../format";
   import { statusLine } from "../mascot";
   import Avatar from "./Avatar.svelte";
+  import Mascot from "./Mascot.svelte";
   import type { SessionState } from "../types";
   import type { WindowTasks } from "../tasks";
 
@@ -309,7 +310,7 @@
               disabled={openingId === item.id}
               onclick={() => onopenhistory(item)}
             >
-              <span class="opacity-70 saturate-[0.6]"><Avatar id={item.id} size={28} /></span>
+              <span class="opacity-90 saturate-[0.85]"><Avatar id={item.id} size={28} /></span>
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-1.5">
                   <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 font-medium tracking-[-0.01em] text-ink-muted">{item.title || "Untitled"}</span>
@@ -450,17 +451,18 @@
   </div>
 
   {#if grid && !query}
-    <!-- Phone: the room of bots first (the mockup's grid), the chats below. -->
-    <div class="grid grid-cols-4 gap-1 px-2.5 pb-2" role="group" aria-label="Bots">
-      {#each visible.slice(0, 8) as session (session.id)}
+    <!-- Phone: the room of bots first (the mockup's grid), the chats below.
+         Three big pets a row, like the mockup's phone panel. -->
+    <div class="grid grid-cols-3 gap-0.5 px-1.5 pb-2" role="group" aria-label="Bots">
+      {#each visible.slice(0, 9) as session (session.id)}
         <button
           type="button"
-          class="interactive flex min-h-20 cursor-pointer flex-col items-center gap-1 rounded-xl px-1 py-2 hover:bg-raised/70 pointer-coarse:min-h-24"
+          class="interactive flex min-h-24 cursor-pointer flex-col items-center gap-1.5 rounded-xl px-1 py-2.5 hover:-translate-y-0.5 hover:bg-raised/70 active:translate-y-0 active:scale-[0.97] pointer-coarse:min-h-28"
           onclick={() => onopen(session.id)}
           aria-label="Open {session.title || 'Untitled'}"
         >
           <span class="relative">
-            <Avatar id={session.id} size={48} />
+            <Avatar id={session.id} size={64} />
             <span
               class="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-canvas {session.status === 'running'
                 ? 'pulse-live bg-live'
@@ -473,7 +475,7 @@
                       : 'bg-line-strong'}"
             ></span>
           </span>
-          <span class="w-full truncate text-center text-[10.5px] leading-3.5 text-ink-muted">{session.title || "Untitled"}</span>
+          <span class="w-full truncate text-center text-[11px] leading-4 text-ink-muted">{session.title || "Untitled"}</span>
         </button>
       {/each}
     </div>
@@ -637,8 +639,10 @@
         <Skeleton class="h-9" />
       </div>
     {:else if !visible.length && !saved.length && sidebarHistory.status === "ready"}
-      <div class="px-2 py-8 text-center text-[12px] text-ink-muted">
-        {query ? `No sessions match “${filter}”` : "No sessions yet"}
+      <!-- The empty room: the pet keeps you company while the first bot boots. -->
+      <div class="flex flex-col items-center gap-2 px-2 py-8 text-center">
+        <Mascot mood="idle" size={56} />
+        <div class="text-[12px] text-ink-muted">{query ? `No sessions match “${filter}”` : "No sessions yet — say hello to your first bot"}</div>
       </div>
     {/if}
   </div>

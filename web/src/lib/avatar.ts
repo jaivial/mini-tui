@@ -1,10 +1,12 @@
 /**
- * Bot avatars: one blob emoji per session, from the Blobmoji set
- * (web/public/emoji, see CREDITS.md there). The mapping is deterministic — a
- * session always wears the same face, on every device, without storing
- * anything: the hash of its id picks from the set. New sessions drift through
- * the faces as ids arrive, which is fine: a face is decoration, never identity
- * (the title is), and it matches the mockup's room of blob characters.
+ * Bot avatars: one squishmoji per session, from the SpaceUI squishmoji set
+ * (web/public/squish, see CREDITS.md there — static SVGs pre-rendered from
+ * @usespaceui/squishmoji by scripts/gen-squishmoji.ts). The mapping is
+ * deterministic — a session always wears the same face, on every device,
+ * without storing anything: the hash of its id picks from the set. New
+ * sessions drift through the faces as ids arrive, which is fine: a face is
+ * decoration, never identity (the title is), and it matches the mockup's room
+ * of squishy characters.
  */
 
 /** The set, in display order: the faces and the tools of the trade. */
@@ -40,7 +42,7 @@ export const avatarSrc = (id: string): string => {
   let hash = 0;
   for (let i = 0; i < id.length; i++) hash = (Math.imul(31, hash) + id.charCodeAt(i)) | 0;
   const face = FACES[Math.abs(hash) % FACES.length];
-  return `/emoji/${face}.png`;
+  return `/squish/${face}.svg`;
 };
 
 /**
