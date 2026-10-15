@@ -7,6 +7,7 @@
   import Transcript from "./Transcript.svelte";
   import Composer from "./Composer.svelte";
   import Skeleton from "./Skeleton.svelte";
+  import FloatingMascot from "./FloatingMascot.svelte";
   import PixelLoader from "./PixelLoader.svelte";
   import Spinner from "./Spinner.svelte";
   import NotesPanel from "./NotesPanel.svelte";
@@ -440,37 +441,43 @@ import { windows as windowStore } from "../stores/windows.svelte";
         <SubagentStrip {session} onopen={openSubagent} />
       </div>
 
-      <main bind:this={scroller} class="relative z-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
-        <div class="mx-auto max-w-3xl">
-          {#if !store.hydrated[session.id] && !session.events.length}
-            <div class="flex flex-col gap-4 py-2" role="status" aria-label="Loading conversation">
-              <Skeleton class="h-4 w-2/5" />
-              <Skeleton class="h-16 w-full" />
-              <Skeleton class="h-4 w-3/5" />
-              <Skeleton class="h-10 w-full" />
-            </div>
-          {:else}
-            <Transcript events={session.events} partial={session.partial} />
-            {#if !session.events.length}
-              <div class="py-16 text-center">
-                <p class="text-[13px] text-ink-muted">Nothing here yet.</p>
-                <p class="mt-1 text-[12px] text-ink-muted">Send a prompt to start this session.</p>
+      <!-- The chat's overlay layer: transcript plus its status lines, with the session's
+           pet floating over the bottom-right corner (never over the composer). -->
+      <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <main bind:this={scroller} class="relative z-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
+          <div class="mx-auto max-w-3xl">
+            {#if !store.hydrated[session.id] && !session.events.length}
+              <div class="flex flex-col gap-4 py-2" role="status" aria-label="Loading conversation">
+                <Skeleton class="h-4 w-2/5" />
+                <Skeleton class="h-16 w-full" />
+                <Skeleton class="h-4 w-3/5" />
+                <Skeleton class="h-10 w-full" />
               </div>
+            {:else}
+              <Transcript events={session.events} partial={session.partial} />
+              {#if !session.events.length}
+                <div class="py-16 text-center">
+                  <p class="text-[13px] text-ink-muted">Nothing here yet.</p>
+                  <p class="mt-1 text-[12px] text-ink-muted">Send a prompt to start this session.</p>
+                </div>
+              {/if}
             {/if}
-          {/if}
-        </div>
-      </main>
+          </div>
+        </main>
 
-      {#if link === "reconnecting" || link === "connecting"}
-        <div class="mx-auto flex w-full max-w-3xl items-center gap-2 px-4 pb-1 text-[12.5px] text-ink-muted pane-sm:px-3" role="status">
-          <WifiOff size={13} strokeWidth={2} aria-hidden="true" />
-          {link === "connecting" ? "Connecting to this session" : "Connection lost. Reconnecting"}<Spinner size={12} label="" />
-        </div>
-      {:else if session.status === "running"}
-        <div class="mx-auto w-full max-w-3xl px-4 pb-1.5 pane-sm:px-3">
-          <PixelLoader label={session.partial?.text ? "Writing" : session.partial?.thinking ? "Thinking" : "Working"} since={session.startedAt} />
-        </div>
-      {/if}
+        {#if link === "reconnecting" || link === "connecting"}
+          <div class="mx-auto flex w-full max-w-3xl items-center gap-2 px-4 pb-1 text-[12.5px] text-ink-muted pane-sm:px-3" role="status">
+            <WifiOff size={13} strokeWidth={2} aria-hidden="true" />
+            {link === "connecting" ? "Connecting to this session" : "Connection lost. Reconnecting"}<Spinner size={12} label="" />
+          </div>
+        {:else if session.status === "running"}
+          <div class="mx-auto w-full max-w-3xl px-4 pb-1.5 pane-sm:px-3">
+            <PixelLoader label={session.partial?.text ? "Writing" : session.partial?.thinking ? "Thinking" : "Working"} since={session.startedAt} />
+          </div>
+        {/if}
+
+        <FloatingMascot id={session.id} />
+      </div>
 
       <Composer
         bind:this={composer}
@@ -498,29 +505,33 @@ import { windows as windowStore } from "../stores/windows.svelte";
         {@render tools()}
       </header>
 
-      <main class="relative z-0 flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto overscroll-contain px-4 py-8 pane-sm:px-3">
-        <div class="enter-3 flex w-full max-w-xl flex-col items-center gap-5 text-center">
-          <div class="grid size-11 place-items-center rounded-lg bg-brand text-brand-ink" aria-hidden="true"><SquarePen size={20} strokeWidth={2} /></div>
-          <div>
-            <h2 class="text-[20px] font-semibold tracking-tight pane-xs:text-[17px]">What should we work on?</h2>
-            <p class="mt-1.5 text-[13.5px] text-ink-muted">
-              {pane.draft.targetId === "local" ? "Runs on this machine" : `Runs headless on ${store.hosts.find((h) => h.id === pane.draft.targetId)?.label ?? "the remote host"}`}{#if pane.draft.cwd}{" "}in <span class="font-mono text-ink">{pane.draft.cwd}</span>{/if}.
-              The chat starts when you send your first message.
-            </p>
+      <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <main class="relative z-0 flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto overscroll-contain px-4 py-8 pane-sm:px-3">
+          <div class="enter-3 flex w-full max-w-xl flex-col items-center gap-5 text-center">
+            <div class="grid size-11 place-items-center rounded-lg bg-brand text-brand-ink" aria-hidden="true"><SquarePen size={20} strokeWidth={2} /></div>
+            <div>
+              <h2 class="text-[20px] font-semibold tracking-tight pane-xs:text-[17px]">What should we work on?</h2>
+              <p class="mt-1.5 text-[13.5px] text-ink-muted">
+                {pane.draft.targetId === "local" ? "Runs on this machine" : `Runs headless on ${store.hosts.find((h) => h.id === pane.draft.targetId)?.label ?? "the remote host"}`}{#if pane.draft.cwd}{" "}in <span class="font-mono text-ink">{pane.draft.cwd}</span>{/if}.
+                The chat starts when you send your first message.
+              </p>
+            </div>
+            <ul class="flex flex-wrap justify-center gap-2" aria-label="Starters">
+              <li><button type="button" class="starter" onclick={() => { pane.prompt = "/"; pane.chips = []; composer?.focus(); }}><SquareSlash size={14} strokeWidth={1.75} aria-hidden="true" />Commands</button></li>
+              <li><button type="button" class="starter" onclick={() => { pane.prompt = "$"; composer?.focus(); }}><Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />Skills</button></li>
+              <li><button type="button" class="starter" onclick={() => onapp("resume")}><RotateCcw size={14} strokeWidth={1.75} aria-hidden="true" />Resume a session</button></li>
+              <li><button type="button" class="starter" onclick={() => onapp("providers")}>Connect a provider</button></li>
+            </ul>
+            {#if loading}
+              <Skeleton class="h-3 w-28" />
+            {:else if store.list.length}
+              <p class="tnum text-[12.5px] text-ink-muted">{store.open.length} open · {store.list.length} total</p>
+            {/if}
           </div>
-          <ul class="flex flex-wrap justify-center gap-2" aria-label="Starters">
-            <li><button type="button" class="starter" onclick={() => { pane.prompt = "/"; pane.chips = []; composer?.focus(); }}><SquareSlash size={14} strokeWidth={1.75} aria-hidden="true" />Commands</button></li>
-            <li><button type="button" class="starter" onclick={() => { pane.prompt = "$"; composer?.focus(); }}><Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />Skills</button></li>
-            <li><button type="button" class="starter" onclick={() => onapp("resume")}><RotateCcw size={14} strokeWidth={1.75} aria-hidden="true" />Resume a session</button></li>
-            <li><button type="button" class="starter" onclick={() => onapp("providers")}>Connect a provider</button></li>
-          </ul>
-          {#if loading}
-            <Skeleton class="h-3 w-28" />
-          {:else if store.list.length}
-            <p class="tnum text-[12.5px] text-ink-muted">{store.open.length} open · {store.list.length} total</p>
-          {/if}
-        </div>
-      </main>
+        </main>
+        <!-- No session yet: the pane's own id picks the pet, stable across visits. -->
+        <FloatingMascot id={pane.id} />
+      </div>
       <Composer
         bind:this={composer}
         bind:value={pane.prompt}
