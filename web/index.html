@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" class="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#161612" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#f7f7f4" media="(prefers-color-scheme: light)" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#121319" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <title>mini-tui</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
@@ -16,11 +16,18 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="mini-tui" />
     <script>
-      // Apply the saved theme before first paint so there is no light flash.
+      // Apply the saved theme before first paint so there is no flash of the wrong one.
+      //
+      // The default is LIGHT, matching the app: UiStore reads the same key and only goes dark on an
+      // explicit "dark". The static class above says "light" to match. When the key says nothing,
+      // leave BOTH classes alone — the document then paints what the app will keep, instead of
+      // painting the dark ladder and snapping to white once the bundle boots.
       try {
         const t = localStorage.getItem("minitui.theme");
-        if (t) document.documentElement.classList.toggle("dark", t !== "light");
-        if (t === "light") document.documentElement.classList.remove("dark");
+        if (t === "dark" || t === "light") {
+          document.documentElement.classList.toggle("dark", t === "dark");
+          document.documentElement.classList.toggle("light", t === "light");
+        }
       } catch {}
     </script>
   </head>
