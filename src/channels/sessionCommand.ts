@@ -11,7 +11,8 @@
  *   - The command bypasses the group mention gate on purpose (an explicit
  *     operator command is more specific than a mention policy), but it never
  *     grants the sender anything new: the created group's allowlist starts
- *     with exactly the requester, mention-gated like every other session.
+ *     with exactly the requester (every trusted jid form), policy "all" —
+ *     the owner talks and the group answers, no mention needed.
  *   - The requesting thread stays intact: it only receives the confirmation
  *     (or an honest failure note) as a quoted reply.
  *   - Handled rows are acknowledged BEFORE the deferred creation runs: a
@@ -64,7 +65,7 @@ export function planSessionCommand(options: GroupBridgeOptions, row: PendingRow,
       log("channel.session_command.created", { seq: row.seq, account: row.account, groupJid: created.groupJid, session: created.session, subject });
       await sender?.sendText({
         number: row.thread,
-        text: `Grupo "${subject}" creado con sesión nueva y aislada (${created.session}). Escríbeme allí mencionándome para hablar en ese hilo.`,
+        text: `Grupo "${subject}" creado con sesión nueva y aislada (${created.session}). Escríbeme allí directamente: te respondo sin necesidad de mencionarme.`,
         quoted,
       });
     } catch (error) {

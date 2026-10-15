@@ -102,7 +102,7 @@ export function planGroupCreation(options: GroupBridgeOptions, row: PendingRow, 
       if (sender) {
         await sender.sendText({
           number: row.thread,
-          text: `Grupo "${subject}" creado con sesión nueva y aislada (${created.session}). Escríbeme allí mencionándome para hablar en ese hilo.`,
+          text: `Grupo "${subject}" creado con sesión nueva y aislada (${created.session}). Escríbeme allí directamente: te respondo sin necesidad de mencionarme.`,
           quoted: { id: message.messageId, remoteJid: row.thread, participant: message.sender },
         });
       }
@@ -205,17 +205,23 @@ export async function createBoundGroupFor(options: GroupBridgeOptions, request: 
     options.log?.("channel.group.photo_missing", { groupJid, photoPath });
   }
 
-  // The binding IS the isolation: fresh session id, its own allowlist, default
-  // (mention-gated) policy, and the consumer resolves the binding model per
-  // turn — the new group starts on the operator/default model until changed.
+  // The binding IS the isolation: fresh session id, its own allowlist, and a
+  // policy that answers the owner WITHOUT a mention. v4-H fix: the group's
+  // allowlist owner is the requester who created the group — a bound group
+  // whose only human speaks and is ignored is a broken channel, so bot-created
+  // groups are bound with policy "all" (the allowlist still bounds who can
+  // trigger a turn). The allowlist keeps EVERY trusted jid form of the
+  // requester (group deliveries arrive with the LID form while the participant
+  // API needed the phone form): a form mismatch would mute the owner.
+  const ownerForms = [...new Set([request.requesterJid, options.resolveParticipant ? options.resolveParticipant(request.requesterJid) : request.requesterJid])].filter((jid) => jid);
   options.inbox.bind({
     channel: "whatsapp",
     account: request.account,
     thread: groupJid,
     session,
     project: request.project ?? "wa-assistant",
-    allowedSenders: [request.requesterJid],
-    policy: "mentions",
+    allowedSenders: ownerForms,
+    policy: "all",
     model: "",
   });
   return { groupJid, session };

@@ -56,6 +56,7 @@ import { planImageMarkers } from "./consumer";
 import { QueueBridge } from "./queueBridge";
 import { planGroupCreation as planGroupCreationFlow } from "./groupBridge";
 import { planSessionCommand } from "./sessionCommand";
+import { startControlGroupWatcher } from "./controlGroup";
 import { openDb } from "../sessions";
 
 function required(name: string): string {
@@ -201,7 +202,30 @@ const { done, stop } = startChannelConsumer({
   log,
 });
 queueBridge.start();
+// Control group on connect (v4-H): poll each account's instance state and, on
+// the transition to connected, guarantee ONE bound command channel — same
+// create → avatar → bind flow as /newsession, policy "all", allowlist = the
+// owner's trusted jid forms, announced in the group. Idempotent forever: one
+// durable marker row per account (channel_control_groups), so re-connects and
+// restarts never duplicate groups. A disabled watcher is a no-op (EVO_CONTROL_GROUP_POLL_MS=0).
+const controlGroupPollMs = Number(process.env.EVO_CONTROL_GROUP_POLL_MS ?? 30_000);
+const controlGroup = Number.isFinite(controlGroupPollMs) && controlGroupPollMs > 0
+  ? startControlGroupWatcher({
+      inbox,
+      baseUrl: process.env.EVO_API_URL ?? "",
+      bridge: groupBridgeOptions,
+      pollMs: controlGroupPollMs,
+      accounts: accounts.map((account) => ({
+        account: account.account,
+        instance: account.instance,
+        token: account.token,
+        ownerJids: (account.jid ?? "").split(",").map((jid) => jid.trim()).filter(Boolean),
+      })),
+      log,
+    })
+  : undefined;
 const stopAll = () => {
+  controlGroup?.stop();
   queueBridge.stop();
   stop();
 };
