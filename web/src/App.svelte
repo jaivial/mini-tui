@@ -395,6 +395,14 @@ import { windows } from "./lib/stores/windows.svelte";
         const status = paneStatus(s, p);
         return { id: p.id, status, label: `${s?.title || "New chat"}: ${statusLabel(status, s?.status === "error")}`, error: status === "done" && s?.status === "error" };
       }),
+      // The bots this window holds: its panes' sessions, deduped, for the sidebar's nested rows.
+      bots: [...new Map(
+        panes
+          .panesIn(w.id)
+          .map((p) => (p.sessionId ? store.sessions[p.sessionId] : null))
+          .filter((s) => s !== null)
+          .map((s) => [s.id, { id: s.id, title: s.title, status: s.status, error: s.status === "error" }] as const),
+      ).values()],
     })),
   );
   /** Another window on screen: these panes are shelved with their prompts, that window's come back. */

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers, Search } from "@lucide/svelte";
+  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers, Search, Bot } from "@lucide/svelte";
   import Spinner from "./Spinner.svelte";
   import { sidebarHistory } from "../stores/history.svelte";
   import { folderStore } from "../stores/folders.svelte";
@@ -21,6 +21,7 @@
   import Mascot from "./Mascot.svelte";
   import type { SessionState } from "../types";
   import type { WindowTasks } from "../tasks";
+  import { agentTree, type BotRow } from "../stores/agentTree.svelte";
 
   let {
     onnew,
@@ -73,6 +74,8 @@
       active: boolean;
       /** One per pane, in reading order. */
       dots?: { id: string; status: "live" | "done" | "idle"; label: string; error?: boolean }[];
+      /** The bots (sessions) this window holds, in reading order — the nested rows. */
+      bots?: { id: string; title: string; status: SessionState["status"]; error?: boolean }[];
     }[];
     /** Show a window. */
     onwindow?: (id: string) => void;
@@ -101,6 +104,7 @@
     class?: string;
   } = $props();
 
+  let railEl: HTMLElement | null = null;
   let filter = $state("");
   let query = $derived(filter.trim().toLowerCase());
 
@@ -150,6 +154,8 @@
       prefs.view = next.view;
       prefs.pinned = next.pinned;
       prefs.expanded = next.expanded;
+      prefs.openWindows = next.openWindows;
+      prefs.openBots = next.openBots;
     }),
   );
   const home = $derived(store.list.find((s) => s.target === "local" && /^\/home\/[^/]+/.test(s.cwd))?.cwd.match(/^\/home\/[^/]+/)?.[0] ?? "");
@@ -218,6 +224,52 @@
 
   const statusTone = (s: SessionState) =>
     s.status === "running" ? "brand" : s.status === "error" ? "err" : s.status === "done" ? "ok" : "neutral";
+
+  // ---- Nested bots: what each window's sessions have delegated. One shared store polls the agent
+  // trees of exactly the sessions these windows hold — nothing else is fetched, and a tree a
+  // window stops showing stops being polled too.
+  $effect(() => {
+    agentTree.sync(windows.flatMap((w) => (w.bots ?? []).map((b) => b.id)));
+  });
+  const botsOf = (id: string): { rows: BotRow[]; live: number; total: number } => agentTree.trees[id] ?? { rows: [], live: 0, total: 0 };
+  /** Delegates working anywhere under a window, for the row's pulsing dot. */
+  const liveIn = (id: string) => (windows.find((w) => w.id === id)?.bots ?? []).reduce((n, b) => n + botsOf(b.id).live, 0);
+  /** A window shows its bots unless you closed it; before the first click the active one is open. */
+  const winOpen = (w: { id: string; active: boolean }) => prefs.openWindows[w.id] ?? w.active;
+  const botOpen = (id: string) => prefs.openBots[id] ?? false;
+  function toggleWin(id: string) {
+    const w = windows.find((x) => x.id === id);
+    prefs.openWindows = { ...prefs.openWindows, [id]: !winOpen({ id, active: w?.active ?? false }) };
+  }
+  function toggleBot(id: string) {
+    prefs.openBots = { ...prefs.openBots, [id]: !botOpen(id) };
+  }
+  /** Colour + shape for a bot's state dot: live pulses, the others are quiet. */
+  const BOT_DOT: Record<BotRow["tone"], string> = {
+    live: "bg-live pulse-live",
+    ok: "bg-ok",
+    err: "bg-err",
+    wait: "bg-warn",
+    warn: "bg-warn",
+    idle: "bg-line-strong",
+  };
+
+  // ---- Keyboard: ↑/↓ walks every row in view (windows, bots, delegates, sessions, history) and
+  // Enter opens the one under the caret — no mouse needed to move around the rail. On the window,
+  // so the non-interactive `<aside>` itself never takes an event listener; anything typed outside
+  // the rail (the chat, the composer) is ignored.
+  function roving(e: KeyboardEvent) {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const rail = railEl;
+    const t = e.target as HTMLElement | null;
+    if (!rail || !t || !rail.contains(t)) return;
+    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+    const rows = Array.from(rail.querySelectorAll<HTMLElement>("[data-nav]")).filter((el) => el.offsetParent !== null);
+    if (!rows.length) return;
+    e.preventDefault();
+    const at = rows.indexOf(document.activeElement as HTMLElement);
+    rows[at === -1 ? 0 : e.key === "ArrowDown" ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1)]?.focus();
+  }
 </script>
 
 {#snippet sessionRow(session: SessionState)}
@@ -230,6 +282,7 @@
             class:bg-raised={focusedSession === session.id}
           >
             <button
+              data-nav
               class="block w-full cursor-pointer text-left pointer-coarse:min-h-11"
               onclick={() => onopen(session.id)}
               title={session.title}
@@ -304,6 +357,7 @@
           {@const reason = unresumableReason(item)}
           <div role="listitem" class="interactive relative rounded-xl py-1.5 pr-2 pl-2.5 hover:bg-raised/70 pointer-coarse:py-2.5" data-history={item.id}>
             <button
+              data-nav
               type="button"
               class="flex w-full cursor-pointer items-center gap-2.5 text-left pointer-coarse:min-h-11"
               title={reason ? `${item.title}: read only. ${reason}` : item.title}
@@ -326,7 +380,88 @@
           </div>
 {/snippet}
 
+{#snippet botRow(bot: { id: string; title: string; status: SessionState["status"]; error?: boolean })}
+  {@const tree = botsOf(bot.id)}
+  <div>
+    <!-- One bot the window holds: its face, its state dot, the delegates it is running folded under it. -->
+    <div class="group/bot flex items-center rounded-md hover:bg-raised/70">
+      {#if tree.total}
+        <button
+          type="button"
+          class="interactive ml-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint hover:text-ink pointer-coarse:size-8"
+          aria-expanded={botOpen(bot.id)}
+          aria-label={botOpen(bot.id) ? `Hide ${bot.title || "Untitled"}'s delegates` : `Show ${bot.title || "Untitled"}'s delegates`}
+          title={botOpen(bot.id) ? "Hide delegates" : "Show delegates"}
+          onclick={() => toggleBot(bot.id)}
+        >
+          <ChevronDown size={10} strokeWidth={2.25} class="transition-[rotate] duration-150 {botOpen(bot.id) ? '' : '-rotate-90'}" aria-hidden="true" />
+        </button>
+      {:else}
+        <span class="ml-0.5 size-5 shrink-0" aria-hidden="true"></span>
+      {/if}
+      <button
+        data-nav
+        type="button"
+        class="interactive flex min-h-8 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1.5 pl-0.5 text-left pointer-coarse:min-h-11"
+        onclick={() => onopen(bot.id)}
+        title={bot.title || "Untitled"}
+      >
+        <span class="relative shrink-0">
+          <Avatar id={bot.id} size={20} />
+          <span
+            class="absolute -right-0.5 -bottom-0.5 size-2 rounded-full border-[1.5px] border-canvas {bot.status === 'running'
+              ? 'pulse-live bg-live'
+              : bot.status === 'done'
+                ? 'bg-ok'
+                : bot.status === 'error'
+                  ? 'bg-err'
+                  : bot.status === 'interrupted'
+                    ? 'bg-warn'
+                    : 'bg-line-strong'}"
+          ></span>
+        </span>
+        <span class="min-w-0 flex-1 truncate text-[12px] leading-4 text-ink-muted">{bot.title || "Untitled"}</span>
+        {#if paneOf(bot.id)}
+          <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-raised px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(bot.id)}">
+            <span aria-hidden="true">{paneOf(bot.id)}</span><span class="sr-only">in pane {paneOf(bot.id)}</span>
+          </span>
+        {/if}
+        {#if tree.live}
+          <span class="flex shrink-0 items-center gap-1 text-[10px] font-medium text-live" title="{tree.live} delegate{tree.live === 1 ? '' : 's'} working">
+            <Bot size={10} strokeWidth={2} aria-hidden="true" /><span class="tnum">{tree.live}</span>
+          </span>
+        {/if}
+      </button>
+    </div>
+    {#if botOpen(bot.id) && tree.total}
+      <!-- Its delegates, each indented under its parent: face, name, live state, task in the tooltip. -->
+      <div class="ml-[15px] border-l border-line/70 pb-0.5 pl-0.5" role="group" aria-label="{bot.title || 'Untitled'}'s delegates">
+        {#each tree.rows as r (r.path)}
+          <button
+            data-nav
+            type="button"
+            class="flex min-h-6 w-full cursor-pointer items-center gap-1.5 rounded-sm py-0.5 pr-1.5 text-left hover:bg-raised/70 pointer-coarse:min-h-9"
+            style="padding-left: {r.depth * 10 + 5}px"
+            title={r.task ? `${r.path}: ${r.task}` : r.path}
+          >
+            <Avatar id={r.id} size={16} />
+            <span class="min-w-0 shrink-0 truncate text-[11px] leading-4 font-medium text-ink-muted">{r.name}</span>
+            {#if r.agent}<span class="min-w-0 truncate text-[10px] leading-4 text-ink-faint">{r.agent}</span>{/if}
+            <span class="ml-auto flex shrink-0 items-center gap-1 text-[10px] leading-4 {r.tone === 'live' ? 'font-medium text-live' : 'text-ink-faint'}">
+              <span class="size-1.5 shrink-0 rounded-full {BOT_DOT[r.tone]}" aria-hidden="true"></span>
+              {r.label}
+            </span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
+<svelte:window onkeydown={roving} />
+
 <aside
+  bind:this={railEl}
   class="flex h-full w-[248px] shrink-0 flex-col border-r border-line/70 bg-canvas pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] max-md:w-[min(20rem,calc(86*var(--vw)))] {klass}"
 >
   <!-- Brand / workspace -->
@@ -376,7 +511,23 @@
             </div>
           {:else}
             <div class="group/win flex items-center rounded-md {w.active ? 'bg-raised' : 'hover:bg-raised/70'}">
+              {#if w.bots?.length}
+                <!-- Fold the window's bots open/closed; the choice sticks (and follows you to other devices). -->
+                <button
+                  type="button"
+                  class="interactive ml-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint hover:text-ink pointer-coarse:size-8"
+                  aria-expanded={winOpen(w)}
+                  aria-label={winOpen(w) ? `Hide ${w.label}'s bots` : `Show ${w.label}'s bots`}
+                  title={winOpen(w) ? "Hide its bots" : "Show its bots"}
+                  onclick={() => toggleWin(w.id)}
+                >
+                  <ChevronDown size={11} strokeWidth={2.25} class="transition-[rotate] duration-150 {winOpen(w) ? '' : '-rotate-90'}" aria-hidden="true" />
+                </button>
+              {:else}
+                <span class="ml-0.5 size-5 shrink-0" aria-hidden="true"></span>
+              {/if}
               <button
+                data-nav
                 type="button"
                 role="radio"
                 aria-checked={w.active}
@@ -405,6 +556,10 @@
                   </span>
                 {/if}
                 <span class="tnum shrink-0 rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="{w.panes} {w.panes === 1 ? 'pane' : 'panes'}">{w.panes}</span>
+                {#if liveIn(w.id)}
+                  <!-- Delegates working under this window's bots, at a glance: one pulsing dot. -->
+                  <span class="pulse-live size-1.5 shrink-0 rounded-full bg-live" title="{liveIn(w.id)} delegate{liveIn(w.id) === 1 ? '' : 's'} working"></span>
+                {/if}
               </button>
               <!--
                 One tasks icon per window, and it is always visible: it is the window's own state, not
@@ -430,6 +585,14 @@
                   onclick={() => !w.panes && onclosewindow?.(w.id)}
                 ><X size={12} strokeWidth={2} aria-hidden="true" /></button>
             </div>
+            {#if winOpen(w) && w.bots?.length}
+              <!-- The window's bots, nested: each with its face, its state, and its own delegates folded under it. -->
+              <div class="mb-1 ml-[15px] border-l border-line/70 pb-0.5 pl-0.5" role="group" aria-label="Bots in {w.label}">
+                {#each w.bots as bot (bot.id)}
+                  {@render botRow(bot)}
+                {/each}
+              </div>
+            {/if}
           {/if}
         {/each}
       </div>
