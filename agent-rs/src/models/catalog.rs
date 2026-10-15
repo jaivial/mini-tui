@@ -28,6 +28,12 @@ const PROVIDERS: &[Provider] = &[
     Provider { id: "zai", prefix: "zai/", base_env: "ZAI_API_BASE", default_base: "https://api.z.ai/api/coding/paas/v4", key_env: "ZAI_API_KEY", protocol: Protocol::Chat },
     Provider { id: "minimax", prefix: "minimax/", base_env: "MINIMAX_API_BASE", default_base: "https://api.minimax.io/v1", key_env: "MINIMAX_API_KEY", protocol: Protocol::Chat },
     Provider { id: "openrouter", prefix: "openrouter/", base_env: "OPENROUTER_API_BASE", default_base: "https://openrouter.ai/api/v1", key_env: "OPENROUTER_API_KEY", protocol: Protocol::Chat },
+    // Token Harbor: gateway OpenAI-compatible. Su catalogo usa ids con sufijo
+    // `:free` (p. ej. `deepseek-v4.1-flash:free`), que son los unicos gratis de
+    // verdad. Sin esta entrada el nombre viajaba con el prefijo `tokenharbor/`
+    // incluido y el gateway lo rechazaba con 404 ("no es un nombre de modelo
+    // valido"), bloqueando el tier gratis entero.
+    Provider { id: "tokenharbor", prefix: "tokenharbor/", base_env: "TOKENHARBOR_API_BASE", default_base: "https://tokenharbor.ai/v1", key_env: "TOKENHARBOR_API_KEY", protocol: Protocol::Chat },
 ];
 
 fn provider(name: &str) -> Option<&'static Provider> {
