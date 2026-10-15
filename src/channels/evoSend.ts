@@ -17,6 +17,10 @@ import type { Database } from "bun:sqlite";
 
 export type SendState = "sending" | "sent" | "uncertain";
 
+/** The one outcome shape every send answers with: a 201 from the fork is the
+ * only "sent" and carries the server-generated message id. */
+export type SendResult = { kind: "sent"; replyId: string } | { kind: "uncertain"; status?: number; error: string; definitive: boolean };
+
 export interface LedgerEntry {
   seq: number;
   state: SendState;
@@ -71,9 +75,11 @@ export interface EvoSender {
   >;
   /** Newest outgoing messages of `thread`, newest first (bounded page). */
   recentOutgoing(thread: string, limit?: number): Promise<Array<{ id: string; text: string; quotedStanzaId: string | null; ts: number | null }>>;
-  /** One image (PNG bytes) as a media message. Best-effort by contract: the
-   * caller logs the outcome and never blocks the text reply on it. */
-  sendImage(args: { number: string; mediaBase64: string; caption?: string }): Promise<{ kind: "sent"; replyId: string } | { kind: "uncertain"; status?: number; error: string; definitive: boolean }>;
+  /** One image as a media message. Best-effort by contract: the caller logs
+   * the outcome and never blocks the text reply on it. */
+  sendImage(args: { number: string; mediaBase64: string; mimetype?: string; caption?: string }): Promise<SendResult>;
+  /** One document (any non-image file) as a media message. Same contract. */
+  sendDocument(args: { number: string; mediaBase64: string; mimetype?: string; filename?: string; caption?: string }): Promise<SendResult>;
 };
 
 /** The fork accepts 1..65536 bytes of text; keep a margin under the cap. */
@@ -153,17 +159,31 @@ export function createEvoSender(config: { baseUrl: string; instance: string; tok
         ts: typeof m?.messageTimestamp === "number" ? m.messageTimestamp : null,
       }));
     },
-    async sendImage({ number, mediaBase64, caption }) {
-      const r = await call(`/message/sendMedia/${encodeURIComponent(config.instance)}`, {
-        number,
-        mediatype: "image",
-        media: mediaBase64,
-        mimetype: "image/png",
-        ...(caption ? { caption: truncateForSend(caption) } : {}),
-      });
-      if (r.status === 201 && r.json?.key?.id) return { kind: "sent", replyId: String(r.json.key.id) };
-      const definitive = r.status >= 400 && r.status < 500;
-      return { kind: "uncertain", definitive, status: r.status || undefined, error: r.error || (r.json ? JSON.stringify(r.json).slice(0, 300) : `status ${r.status}`) };
+    async sendImage({ number, mediaBase64, mimetype, caption }) {
+      return sendMedia(call, config.instance, { number, mediaBase64, mimetype: mimetype || "image/png", mediatype: "image", caption, filename: undefined });
+    },
+    async sendDocument({ number, mediaBase64, mimetype, filename, caption }) {
+      return sendMedia(call, config.instance, { number, mediaBase64, mimetype: mimetype || "application/octet-stream", mediatype: "document", caption, filename });
     },
   };
+}
+
+/** The shared /message/sendMedia body: mediatype picks the fork's branch,
+ * mimetype the actual bytes, fileName the document's name as WhatsApp shows it. */
+async function sendMedia(
+  call: (path: string, body: unknown) => Promise<{ status: number; json: any; error: string }>,
+  instance: string,
+  args: { number: string; mediaBase64: string; mimetype: string; mediatype: "image" | "document"; caption?: string; filename?: string },
+): Promise<SendResult> {
+  const r = await call(`/message/sendMedia/${encodeURIComponent(instance)}`, {
+    number: args.number,
+    mediatype: args.mediatype,
+    media: args.mediaBase64,
+    mimetype: args.mimetype,
+    ...(args.filename ? { fileName: args.filename } : {}),
+    ...(args.caption ? { caption: truncateForSend(args.caption) } : {}),
+  });
+  if (r.status === 201 && r.json?.key?.id) return { kind: "sent", replyId: String(r.json.key.id) };
+  const definitive = r.status >= 400 && r.status < 500;
+  return { kind: "uncertain", definitive, status: r.status || undefined, error: r.error || (r.json ? JSON.stringify(r.json).slice(0, 300) : `status ${r.status}`) };
 }

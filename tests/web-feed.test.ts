@@ -1,6 +1,6 @@
 /** The per-session transcript feed: isolation, deltas, resync and the origin guard. */
 import { describe, expect, test } from "bun:test";
-import { SessionFeed, sameOrigin, summarize, toWire, type Frame } from "../src/web/feed";
+import { allowedCorsOrigin, SessionFeed, sameOrigin, summarize, toWire, type Frame } from "../src/web/feed";
 import type { LiveSession } from "../src/web/sessions";
 
 function session(id: string, events: LiveSession["events"] = []): LiveSession {
@@ -132,6 +132,18 @@ describe("summaries", () => {
     expect("messages" in summarize(s)).toBe(false);
     expect("events" in toWire(s)).toBe(true);
     expect("messages" in toWire(s)).toBe(false);
+  });
+});
+
+describe("allowedCorsOrigin", () => {
+  const h = (headers: Record<string, string>): Headers => new Headers(headers);
+  test("only loopback dev origins are echoed", () => {
+    expect(allowedCorsOrigin(h({ origin: "http://localhost:4318" }))).toBe("http://localhost:4318");
+    expect(allowedCorsOrigin(h({ origin: "http://127.0.0.1:4318" }))).toBe("http://127.0.0.1:4318");
+    expect(allowedCorsOrigin(h({ origin: "https://evil.example" }))).toBe(null);
+    expect(allowedCorsOrigin(h({ origin: "http://127.0.0.1.evil.example" }))).toBe(null);
+    expect(allowedCorsOrigin(new Headers())).toBe(null);
+    expect(allowedCorsOrigin(h({ origin: "not a url" }))).toBe(null);
   });
 });
 

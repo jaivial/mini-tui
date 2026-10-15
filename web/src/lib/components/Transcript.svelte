@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, CheckCircle2, AlertTriangle, Copy, Sparkles } from "@lucide/svelte";
+  import { Check, CheckCircle2, AlertTriangle, Copy, Sparkles, MessageCircle } from "@lucide/svelte";
   import type { RunEvent } from "../types";
   import Markdown from "./Markdown.svelte";
   import StepCard from "./StepCard.svelte";
@@ -25,6 +25,7 @@
     | { kind: "error"; event: Extract<RunEvent, { type: "error" }> }
     | { kind: "thinking"; event: Extract<RunEvent, { type: "thinking" }> }
     | { kind: "ui-component"; event: Extract<RunEvent, { type: "ui-component" }> }
+    | { kind: "channel"; event: Extract<RunEvent, { type: "channel" }> }
     | { kind: "step"; event: RunEvent };
 
   /** The most recent tool_call, used to pair a result that carries no id. */
@@ -87,7 +88,12 @@
   const TUCK = "mt-1";
 
   function grouped(prev: Row | undefined, row: Row) {
-    return prev !== undefined && prev.kind === row.kind && (row.kind === "assistant" || row.kind === "task");
+    return prev !== undefined && prev.kind === row.kind && (row.kind === "assistant" || row.kind === "task" || row.kind === "channel");
+  }
+
+  /** A WhatsApp sender jid reads as a name: the phone part, else the jid. */
+  function senderName(sender: string): string {
+    return sender.replace(/@.*$/, "").slice(0, 24) || sender.slice(0, 24);
   }
 
   function clock(event: object) {
@@ -138,6 +144,52 @@
             onclick={() => copyTurn(row.event.text, `t${i}`)}
           >
             {#if copiedId === `t${i}`}
+              <Check size={12} strokeWidth={2} aria-hidden="true" />
+            {:else}
+              <Copy size={12} strokeWidth={1.75} aria-hidden="true" />
+            {/if}
+          </button>
+        </div>
+      </div>
+    {:else if row.kind === "channel"}
+      <!-- Espejo: a message from the bound WhatsApp thread (never a turn).
+           Discreet origin marker: the little bubble icon + sender. -->
+      <div class="turn group/turn flex flex-col items-end {gap}">
+        {#if !isGrouped}
+          <div class="tnum pointer-coarse:px-1 flex items-center gap-1 pr-1 text-[10px] leading-3 text-ink-faint">
+            <MessageCircle size={10} strokeWidth={2} aria-hidden="true" />
+            <span>{senderName(row.event.sender)}</span>
+            {new Date(row.event.ts > 1e12 ? row.event.ts : row.event.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </div>
+        {/if}
+        <div class="flex items-end gap-1">
+          <div class="msg-user wa-mirror max-w-[85%] rounded-2xl rounded-br-md bg-bubble-user px-3.5 py-2 pointer-coarse:px-4">
+            {#if row.event.text.trim()}
+              <Markdown text={row.event.text} class="read-[14px] leading-[1.55] text-bubble-user-ink" />
+            {/if}
+            {#each row.event.attachments as att (att.id)}
+              {#if att.kind === "image" && att.url}
+                <a href={att.url} target="_blank" rel="noreferrer" class="mt-1.5 block">
+                  <img src={att.url} alt="imagen de WhatsApp" loading="lazy" class="max-h-64 w-auto rounded-lg" />
+                </a>
+              {:else if att.url}
+                <a href={att.kind === "audio" ? att.url : `${att.url}?dl=1`} target="_blank" rel="noreferrer" class="mt-1.5 flex items-center gap-1 read-[12px] underline decoration-dotted text-bubble-user-ink/80">
+                  {att.kind === "audio" ? " nota de voz" : " adjunto"} ({att.mime ?? att.kind})
+                </a>
+              {:else}
+                <div class="mt-1.5 flex items-center gap-1 read-[12px] text-bubble-user-ink/60">
+                  {att.kind === "image" ? " imagen" : att.kind === "audio" ? " nota de voz" : " adjunto"} (sin descargar)
+                </div>
+              {/if}
+            {/each}
+          </div>
+          <button
+            type="button"
+            class="turn-action"
+            aria-label="Copiar mensaje"
+            onclick={() => copyTurn(row.event.text, `c${row.event.mirrorId}`)}
+          >
+            {#if copiedId === `c${row.event.mirrorId}`}
               <Check size={12} strokeWidth={2} aria-hidden="true" />
             {:else}
               <Copy size={12} strokeWidth={1.75} aria-hidden="true" />
@@ -279,6 +331,12 @@
       width: 2.75rem;
       height: 2.75rem;
     }
+  }
+
+  /* Espejo: a mirrored WhatsApp bubble keeps its own bubble style plus a quiet
+     green underline — the origin marker the timestamp row already names. */
+  .wa-mirror {
+    box-shadow: inset 0 -2px 0 rgb(37 211 102 / 0.45);
   }
 
   /* Inside the near-black bubble the palette flips: links go light blue,

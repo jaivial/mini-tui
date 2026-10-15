@@ -114,11 +114,16 @@ export class MediaStore {
     return path;
   }
   has(seq: number, attachmentId: string): boolean {
+    return this.find(seq, attachmentId) !== null;
+  }
+  /** The stored path for one attachment, when its bytes are here. */
+  find(seq: number, attachmentId: string): string | null {
     const prefix = `seq${seq}-${sanitize(attachmentId)}`;
     try {
-      return readdirSync(this.dir).some((f) => f.startsWith(prefix) && !f.includes(".tmp-"));
+      const name = readdirSync(this.dir).find((f) => f.startsWith(prefix) && !f.includes(".tmp-"));
+      return name ? join(this.dir, name) : null;
     } catch {
-      return false;
+      return null;
     }
   }
   /** Deletes expired entries first, then — if still over the size bound — the

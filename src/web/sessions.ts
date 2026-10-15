@@ -123,12 +123,10 @@ function titleFor(task: string): string {
   return clean.length <= 48 ? clean : `${clean.slice(0, 47)}…`;
 }
 
-/**
- * Client-supplied attachment references (only ids travel the wire) resolved
+/** Client-supplied attachment references (only ids travel the wire) resolved
  * against the store: a reference to anything not actually stored is dropped,
- * so a prompt can never name an arbitrary path.
- */
-function resolveAttachments(list: unknown): Attachment[] {
+ * so a prompt can never name an arbitrary path. */
+export function resolveAttachments(list: unknown): Attachment[] {
   if (!Array.isArray(list)) return [];
   const out: Attachment[] = [];
   for (const ref of list.slice(0, 10)) {
@@ -184,6 +182,9 @@ interface Internal {
   /** Transcript counts at the last mid-run save: a running session persists at most every PERSIST_MS. */
   persistedCount?: number;
   persistedAt?: number;
+  /** Mirror events already shown for this session (espejo): re-appended whenever the
+   * transcript is rebuilt from the journal, so a rebuild never drops them. */
+  mirrorEvents?: RunEvent[];
 }
 
 /** How often held sessions are checked for agents and saves made by other UIs (a terminal). */
@@ -241,11 +242,38 @@ export class SessionManager {
   #syncEvery = 0;
   #syncing = false;
   #subagents = new SubagentSync(() => this.db());
+  /** Durable mirror source (espejo): absent when no channel store exists. */
+  #mirror?: (sessionId: string, existing: readonly RunEvent[]) => RunEvent[];
 
-  constructor(onChange: (session: LiveSession) => void, options: { syncMs?: number } = {}) {
+  constructor(onChange: (session: LiveSession) => void, options: { syncMs?: number; mirror?: (sessionId: string, existing: readonly RunEvent[]) => RunEvent[] } = {}) {
     this.#onChange = onChange;
     this.#syncEvery = options.syncMs ?? SYNC_MS;
+    this.#mirror = options.mirror;
     this.#scheduleSync();
+  }
+
+  /** The mirror events a session shows (loaded once per entry from the durable
+   * store, skipping what its saved transcript already carries). */
+  #mirrorFor(entry: Internal): RunEvent[] {
+    entry.mirrorEvents ??= this.#mirror?.(entry.session.id, entry.session.events) ?? [];
+    return entry.mirrorEvents;
+  }
+
+  /** Re-attach mirror events after the transcript was replaced wholesale. */
+  #withMirror(entry: Internal): void {
+    const extra = this.#mirrorFor(entry);
+    if (extra.length) entry.session.events.push(...extra);
+  }
+
+  /** A mirrored channel message arrived for a held session (the web server's mirror
+   * poller). Data for the transcript only; never starts anything. */
+  injectChannel(id: string, event: RunEvent): boolean {
+    const entry = this.#live.get(id);
+    if (!entry) return false;
+    (entry.mirrorEvents ??= []).push(event);
+    entry.session.events.push(event);
+    this.#emit(entry);
+    return true;
   }
 
   /**
@@ -465,6 +493,7 @@ export class SessionManager {
       entry.parseState = createParseState();
       entry.session.events = entry.session.events.filter((event) => event.type === "notice" && event.interruptType === "attach");
       entry.pendingTasks = [];
+      this.#withMirror(entry);
     }
     if (messages.length < entry.consumed) {
       // A rewrite from scratch: replay the whole thing.
@@ -472,6 +501,7 @@ export class SessionManager {
       entry.parseState = createParseState();
       entry.session.events = [];
       entry.pendingTasks = [];
+      this.#withMirror(entry);
     }
     // The in-flight message: streamed fragments arrive here long before the message that
     // carries them, so they are the only thing the UI can show while the model is writing.
@@ -1017,6 +1047,7 @@ export class SessionManager {
     entry.consumed = restored.messages.length;
     entry.parseState = createParseState(restored.messages);
     entry.pendingTasks = [];
+    this.#withMirror(entry);
     this.#emit(entry);
   }
 
@@ -1494,6 +1525,9 @@ export class SessionManager {
       syncedAt: row.updated_at,
     };
     this.#live.set(row.id, entry);
+    // The mirror rides along on a restored session (deduped against what the
+    // saved transcript already shows).
+    this.#withMirror(entry);
     // Opened while a terminal is running it: follow that agent live instead of a frozen copy.
     await this.#attachExternal(entry);
     return session;

@@ -12,7 +12,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 
 import { SessionManager, loadHosts, saveHosts, probeHost, type RemoteHostRecord } from "./sessions";
-import { SessionFeed, sameOrigin, summarize, toWire } from "./feed";
+import { resolveAttachments } from "./sessions";
+import { allowedCorsOrigin, SessionFeed, sameOrigin, summarize, toWire } from "./feed";
 import { NOTE_MAX, getNote, listTasks, saveNote } from "../sessions";
 import { FolderError, listLocal, listRemote } from "./folders";
 import { Hub, type HubClient } from "./hub";
@@ -24,10 +25,13 @@ import { homedir } from "node:os";
 import { rustAgentBin } from "../mini/spawn";
 import { ChannelInbox } from "../channels/inbox";
 import { evoReceiver } from "../channels/evoReceiver";
-import { parseReceiverAccounts } from "../channels/accounts";
+import { parseReceiverAccounts, parseConsumerAccounts } from "../channels/accounts";
+import { MirrorStore, mirrorEvent } from "../channels/mirror";
+import { createEvoSender, type EvoSender } from "../channels/evoSend";
 import { channelsView, evoPairingCode, evoQr, evoStatus } from "./channels";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
+import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
 import { syncAllSkills } from "../skills";
 import {
@@ -84,6 +88,26 @@ type Listener = (event: { type: string; [key: string]: unknown }) => void;
 /** Providers with a connection test in flight (a test is a real model call: one at a time). */
 const connecting = new Set<string>();
 
+/**
+ * Budgets for the expensive routes (per client IP, see rateLimit.ts). A spawn,
+ * a model turn, a provider key test, an ssh probe, an ssh folder walk and an
+ * attachment upload each get their own bucket; everything else is cheap JSON.
+ */
+const LIMITS = {
+  sessionCreate: new RateLimiter(6, 60_000), // spawns an agent process
+  prompt: new RateLimiter(30, 60_000), // a model turn
+  attachment: new RateLimiter(20, 60_000), // 15 MB a piece: disk and memory
+  providerConnect: new RateLimiter(5, 60_000), // real API calls upstream
+  hostProbe: new RateLimiter(6, 60_000), // an ssh dial
+  folders: new RateLimiter(60, 60_000), // a directory walk (ssh when remote)
+};
+function rateLimited(which: keyof typeof LIMITS, request: Request, srv: unknown): Response | null {
+  const ip = (srv as { requestIP?: (r: Request) => { address: string } | null }).requestIP?.(request)?.address ?? "local";
+  const taken = LIMITS[which].take(ip);
+  if (taken.ok) return null;
+  return json({ error: "too many requests" }, 429, { "retry-after": String(taken.retryAfter) });
+}
+
 /** A per-session transcript socket, or the one hub socket of a tab. */
 type SocketData =
   | { kind: "session"; id: string; sub?: { unsubscribe: () => void; resync: () => void; ping: () => void } }
@@ -128,7 +152,7 @@ let hub: Hub;
 const sessions = new SessionManager((session) => {
   broadcast({ type: "session", session: summarize(session) });
   feed.publish(session);
-});
+}, { mirror: mirrorLoader });
 
 // Terminals start where the session works: its folder on this machine, or an ssh shell on its host.
 const terminals = new Terminals();
@@ -163,6 +187,166 @@ if (tasksSyncMs > 0) {
   }, tasksSyncMs);
   (tasksTimer as { unref?: () => void }).unref?.();
 }
+// Espejo WhatsApp ↔ web. The mirror store lives in the shared channel store:
+// the consumer (its own service) appends every no-turn message it acks, this
+// server reads new rows and pushes them into the open sessions' transcripts.
+// The relay (web prompt → bound WhatsApp thread) exists only when the sender
+// environment is configured (EVO_ACCOUNTS, or EVO_INSTANCE + EVO_INSTANCE_TOKEN
+// with EVO_API_URL): without it the mirror is read-only and prompts stay web-only.
+interface MirrorContext {
+  inbox: ChannelInbox;
+  mirror: MirrorStore;
+  senders: Map<string, EvoSender>;
+  defaultSender: EvoSender;
+  mediaDir: string;
+}
+let mirrorCtx: MirrorContext | null | undefined;
+function inboxDbPath(): string {
+  return process.env.EVO_INBOX_DB ?? join(homedir(), ".local/share/mini-tui/channels.sqlite");
+}
+function mirrorMediaDir(): string {
+  return process.env.EVO_MEDIA_DIR ?? join(homedir(), ".local/share/mini-tui/media");
+}
+function openMirrorContext(): MirrorContext | null {
+  if (mirrorCtx !== undefined) return mirrorCtx;
+  let inbox: ChannelInbox | null = null;
+  try {
+    inbox = new ChannelInbox(inboxDbPath());
+  } catch (error) {
+    log(`mirror disabled: no channel store (${error instanceof Error ? error.message : "open failed"})`);
+    return (mirrorCtx = null);
+  }
+  const accounts = parseConsumerAccounts();
+  const senders = new Map<string, EvoSender>();
+  const baseUrl = process.env.EVO_API_URL ?? "";
+  for (const account of accounts) {
+    if (!baseUrl || !account.instance || !account.token) continue;
+    senders.set(account.account, createEvoSender({ baseUrl, instance: account.instance, token: account.token }));
+  }
+  mirrorCtx = {
+    inbox,
+    mirror: new MirrorStore(inbox.db),
+    senders,
+    defaultSender: senders.get(accounts[0]?.account ?? "") ?? [...senders.values()][0]!,
+    mediaDir: mirrorMediaDir(),
+  };
+  if (!mirrorCtx.defaultSender) log("mirror: outbound relay disabled (no evo sender configured); inbound mirror stays on");
+  return mirrorCtx;
+}
+/** The sessions' durable mirror loader: rows for a session the saved transcript
+ * does not already show (channel events saved with the transcript carry mirrorId). */
+function mirrorLoader(sessionId: string, existing: readonly unknown[]): ReturnType<typeof mirrorEvent>[] {
+  const ctx = openMirrorContext();
+  if (!ctx) return [];
+  try {
+    return ctx.mirror.forSession(sessionId, existing, 200).map((row) => mirrorEvent(row, mediaUrlFor(ctx)));
+  } catch {
+    return []; // a busy store: the poller catches up on a later tick
+  }
+}
+function mediaUrlFor(ctx: MirrorContext): (path: string) => string | null {
+  return (path) => {
+    // Only files inside this deployment's media store ever get a URL, and only
+    // by the store's own naming (`seq<seq>-<attachment id>`).
+    if (!path.startsWith(ctx.mediaDir + "/")) return null;
+    const name = path.slice(ctx.mediaDir.length + 1);
+    return /^seq\d+-[A-Za-z0-9._-]+$/.test(name) ? `/api/channel-media/${name}` : null;
+  };
+}
+/** Push new mirror rows into every open session they belong to. */
+function mirrorPoll(): void {
+  const ctx = openMirrorContext();
+  if (!ctx) return;
+  try {
+    for (const row of ctx.mirror.after(mirrorCursor, 200)) {
+      mirrorCursor = row.id;
+      sessions.injectChannel(row.session, mirrorEvent(row, mediaUrlFor(ctx)));
+    }
+  } catch {
+    // a busy store: try again on the next tick
+  }
+}
+let mirrorCursor = 0;
+{
+  const ctx = openMirrorContext();
+  if (ctx) {
+    try {
+      mirrorCursor = ctx.mirror.lastId();
+    } catch {
+      mirrorCursor = 0;
+    }
+    const mirrorMs = Number(process.env.MINITUI_MIRROR_POLL_MS ?? 1000);
+    if (mirrorMs > 0) {
+      const timer = setInterval(mirrorPoll, mirrorMs);
+      (timer as { unref?: () => void }).unref?.();
+    }
+  }
+}
+
+// --- web → WhatsApp relay (espejo, outbound) -------------------------------
+
+/** A quiet system line in a held session's transcript (relay failures). */
+function sessionNotice(id: string, text: string): void {
+  try {
+    sessions.injectChannel(id, { type: "notice", text });
+  } catch {
+    // a session nobody holds has no transcript to tell
+  }
+}
+
+const RELAY_MAX_BYTES = 12 * 1024 * 1024;
+
+/** Mirror one web prompt into every WhatsApp thread bound to its session.
+ * Fire-and-forget by contract: the prompt is already accepted web-side; the
+ * relay never blocks the answer and never rewrites it. Anti-echo: every sent
+ * id is registered as our own send BEFORE the echo can arrive, so the
+ * receiver refuses it and no loop (web → WhatsApp → web, or a turn) can
+ * start. Attachments ride along: images as images, everything else as a
+ * document. */
+function relayPromptToWhatsApp(sessionId: string, prompt: string, attachments: unknown): void {
+  const ctx = openMirrorContext();
+  if (!ctx?.defaultSender) return;
+  let bindings;
+  try {
+    bindings = ctx.inbox.bindingsForSession(sessionId);
+  } catch {
+    return;
+  }
+  if (!bindings.length) return;
+  const atts = resolveAttachments(attachments);
+  const sender = (account: string) => ctx.senders.get(account) ?? ctx.defaultSender;
+  void (async () => {
+    for (const binding of bindings) {
+      const send = sender(binding.account);
+      const own = (result: Awaited<ReturnType<EvoSender["sendText"]>>) => {
+        if (result.kind === "sent") {
+          try {
+            ctx.inbox.registerOwnSend(result.replyId);
+          } catch { /* the consumer's own-send history guard still catches the echo */ }
+          log("mirror.relay.sent", { session: sessionId, thread: binding.thread, replyId: result.replyId });
+        } else {
+          log("mirror.relay.uncertain", { session: sessionId, thread: binding.thread, definitive: result.definitive || undefined, error: result.error.slice(0, 160) });
+          sessionNotice(sessionId, `no se pudo reflejar en WhatsApp (${binding.thread}): ${result.error.slice(0, 120)}`);
+        }
+      };
+      if (prompt) own(await send.sendText({ number: binding.thread, text: prompt }));
+      for (const att of atts) {
+        try {
+          if (statSync(att.path).size > RELAY_MAX_BYTES) throw new Error(`attachment exceeds ${RELAY_MAX_BYTES} bytes`);
+          const mediaBase64 = readFileSync(att.path).toString("base64");
+          const result = att.mime.startsWith("image/")
+            ? await send.sendImage({ number: binding.thread, mediaBase64, mimetype: att.mime })
+            : await send.sendDocument({ number: binding.thread, mediaBase64, mimetype: att.mime, filename: att.name });
+          own(result);
+        } catch (error) {
+          log("mirror.relay.attachment_failed", { session: sessionId, attachment: att.id, error: error instanceof Error ? error.message.slice(0, 160) : String(error) });
+          sessionNotice(sessionId, `no se pudo reflejar el adjunto ${att.name} en WhatsApp`);
+        }
+      }
+    }
+  })();
+}
+
 // No shell outlives the server (a restart, a deploy, Ctrl+C in a dev shell).
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.once(sig, () => {
@@ -210,10 +394,10 @@ function dropSession(id: string): void {
   broadcast({ type: "session-gone", id });
 }
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
   });
 }
 
@@ -240,7 +424,6 @@ function hostToApi(host: RemoteHostRecord): RemoteHost {
   };
 }
 
-/** CORS, so `vite dev` (4318) can reach this server directly if proxied. */
 /** Built Svelte app, served from the same process when present. */
 const STATIC_DIR = resolve(import.meta.dir, "..", "..", "web", "dist");
 const MIME: Record<string, string> = {
@@ -253,11 +436,36 @@ const MIME: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-const CORS = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-  "access-control-allow-headers": "content-type",
+/** The mirrored-media types the transcript renders inline (espejo). */
+const MEDIA_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain; charset=utf-8",
+  ".ogg": "audio/ogg",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
+  ".wav": "audio/wav",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
+
+/**
+ * CORS headers for one request: preflight allowance plus an echoed origin —
+ * loopback dev servers only (see allowedCorsOrigin). Everything else, the app
+ * included, is same-origin and needs no ACAO header.
+ */
+function corsHeaders(request: Request): Record<string, string> {
+  const headers: Record<string, string> = {
+    "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "access-control-allow-headers": "content-type",
+  };
+  const origin = allowedCorsOrigin(request.headers);
+  if (origin) headers["access-control-allow-origin"] = origin;
+  return headers;
+}
 
 // Bundled skills (e.g. $e2e) and new ~/.claude skills, as the terminal UI does at startup.
 try {
@@ -339,7 +547,7 @@ const server = Bun.serve({
   async fetch(request, srv) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/api/, "") || "/";
-    if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
+    if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders(request) });
     // A page on another site must not be able to drive this server (start agents, write
     // provider keys) just because it is reachable: state-changing requests have to come from
     // this app's own origin. Non-browser clients send no Origin and are unaffected.
@@ -452,10 +660,13 @@ const server = Bun.serve({
           },
           cancel() { close(); },
         });
-        return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no", ...CORS } });
+        return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no", ...corsHeaders(request) } });
       }
       // ---------------------------------------------------------- stream
       if (path === "/stream" && request.method === "GET") {
+        // The live session feed is private: a page on another site must not be able to
+        // subscribe to it (EventSource sends Origin, so the check is exact).
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
         const encoder = new TextEncoder();
         let cleanup = () => {};
         const stream = new ReadableStream({
@@ -498,7 +709,7 @@ const server = Bun.serve({
             // SSE through nginx: without this, a buffering proxy holds the first
             // agent view back and the panel sits on "Loading agents".
             "x-accel-buffering": "no",
-            ...CORS,
+            ...corsHeaders(request),
           },
         });
       }
@@ -509,6 +720,14 @@ const server = Bun.serve({
       // what the client sends on with its next prompt (ids only).
       if (path === "/attachments" && request.method === "POST") {
         if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        const limited = rateLimited("attachment", request, srv);
+        if (limited) return limited;
+        // Refuse the upload before reading it: formData() would buffer the whole
+        // body in memory before the size rule could answer 413. A declared
+        // content-length already past the cap never gets parsed. (A missing
+        // header still parses and is bounded by ATTACH_MAX_BYTES afterwards.)
+        const declared = Number(request.headers.get("content-length") ?? "");
+        if (Number.isFinite(declared) && declared > ATTACH_MAX_BYTES + 8192) return json({ error: `el archivo pasa de ${Math.round(ATTACH_MAX_BYTES / 1024 / 1024)} MB` }, 413);
         const form = await request.formData().catch(() => null);
         const file = form?.get("file");
         if (!file || typeof file === "string") return json({ error: "expected multipart/form-data with a `file` field" }, 400);
@@ -526,6 +745,9 @@ const server = Bun.serve({
       // ids are opaque and only resolve through the index, never a client path.
       const attMatch = path.match(/^\/attachments\/([0-9a-f]{16})$/);
       if (attMatch && request.method === "GET") {
+        // Private data: a browser page on another site must not read it (fetch would
+        // need CORS, which is no longer wildcarded; this closes navigation tricks too).
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
         const att = getAttachment(attMatch[1] as string);
         if (!att) return json({ error: "not found" }, 404);
         const download = url.searchParams.get("dl") === "1";
@@ -537,7 +759,28 @@ const server = Bun.serve({
             "content-disposition": `${download ? "attachment" : "inline"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(att.name)}`,
             "x-content-type-options": "nosniff",
             "cache-control": "private, max-age=31536000, immutable",
-            ...CORS,
+            ...corsHeaders(request),
+          },
+        });
+      }
+      // Espejo media: a WhatsApp attachment the consumer downloaded (an image
+      // or document on a bound thread) renders in the session's transcript
+      // through this route. Only the store's own names resolve — a client can
+      // never name a path, and containment is re-checked on disk.
+      const mediaMatch = path.match(/^\/channel-media\/(seq\d+-[A-Za-z0-9._-]+)$/);
+      if (mediaMatch && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        const ctx = openMirrorContext();
+        if (!ctx) return json({ error: "not found" }, 404);
+        const file = resolve(ctx.mediaDir, mediaMatch[1] as string);
+        if (!file.startsWith(ctx.mediaDir + "/") || !existsSync(file) || !statSync(file).isFile()) return json({ error: "not found" }, 404);
+        const ext = extname(file).toLowerCase();
+        return new Response(Bun.file(file), {
+          headers: {
+            "content-type": MEDIA_MIME[ext] ?? "application/octet-stream",
+            "x-content-type-options": "nosniff",
+            "cache-control": "private, max-age=86400",
+            ...corsHeaders(request),
           },
         });
       }
@@ -565,6 +808,8 @@ const server = Bun.serve({
 
       if (path === "/sessions" && request.method === "GET") return json(sessions.list().map(summarize));
       if (path === "/sessions" && request.method === "POST") {
+        const spawnLimit = rateLimited("sessionCreate", request, srv);
+        if (spawnLimit) return spawnLimit;
         const body = await readJson(request);
         log("api.session.create", { cwd: body.cwd ?? "", model: body.model ?? "", target: body.target ?? "local" });
         let session;
@@ -640,7 +885,7 @@ const server = Bun.serve({
             // SSE through nginx: without this, a buffering proxy holds the first
             // agent view back and the panel sits on "Loading agents".
             "x-accel-buffering": "no",
-            ...CORS,
+            ...corsHeaders(request),
           },
         });
       }
@@ -649,6 +894,8 @@ const server = Bun.serve({
         const id = decodeURIComponent(sessionMatch[1] as string);
         const action = sessionMatch[2];
         if (action === "/prompt" && request.method === "POST") {
+          const turnLimit = rateLimited("prompt", request, srv);
+          if (turnLimit) return turnLimit;
           const body = await readJson(request);
           log("api.session.prompt", { id, len: String(body.prompt ?? "").length });
           try {
@@ -657,6 +904,10 @@ const server = Bun.serve({
             // e.g. a saved session with no conversation to continue from: the reason is the answer.
             return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 409);
           }
+          // Espejo: a prompt written on a WhatsApp-bound session also goes to
+          // the bound thread. Fire-and-forget: it never delays or blocks the
+          // agent, and its echo is refused on the WhatsApp side (own-send).
+          relayPromptToWhatsApp(id, String(body.prompt ?? "").trim(), body.attachments);
           return json({ ok: true });
         }
         if (action === "/model" && request.method === "POST") {
@@ -746,6 +997,8 @@ const server = Bun.serve({
       // `GET /folders?path=` (this machine) or `?hostId=&path=` (a saved remote host, over ssh): the
       // subfolders of a folder, for the "where should this chat run" picker. Names only, never contents.
       if (path === "/folders" && request.method === "GET") {
+        const folderLimit = rateLimited("folders", request, srv);
+        if (folderLimit) return folderLimit;
         const hostId = url.searchParams.get("hostId") ?? "";
         const asked = url.searchParams.get("path") ?? "";
         if (asked.length > 4096 || asked.includes("\0")) return json({ error: "invalid path" }, 400);
@@ -763,6 +1016,8 @@ const server = Bun.serve({
       // ----------------------------------------------------------- hosts
       if (path === "/hosts" && request.method === "GET") return json(loadHosts().map(hostToApi));
       if (path === "/hosts/probe" && request.method === "POST") {
+        const probeLimit = rateLimited("hostProbe", request, srv);
+        if (probeLimit) return probeLimit;
         const body = await readJson(request);
         const result = await probeHost({
           host: String(body.host ?? ""),
@@ -815,6 +1070,8 @@ const server = Bun.serve({
       // Keys go in through /providers/connect and never come back out: reads are masked.
       if (path === "/providers" && request.method === "GET") return json({ connected: connectedProviders(), catalog: providerCatalog() });
       if (path === "/providers/connect" && request.method === "POST") {
+        const connectLimit = rateLimited("providerConnect", request, srv);
+        if (connectLimit) return connectLimit;
         const body = await readJson(request);
         const providerId = String(body.providerId ?? "");
         if (connecting.has(providerId)) return json({ error: "already connecting this provider" }, 409);
