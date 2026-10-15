@@ -184,7 +184,14 @@ export async function generateAckLine(args: {
   // still bounded, and it is the only way to serve a reasoning model here.
   if (result.status === 400 && /enable_thinking|unknown_param/i.test(result.error)) {
     args.log?.("channel.ack.retry_without_thinking_flag", { model: auditModel });
-    result = await attempt(payload);
+    // …and the retry needs a REAL token budget. Without the flag the model
+    // reasons first, and measured against the deployed provider it spends the
+    // whole budget doing so: at 60 tokens it returns finish=length with an
+    // EMPTY content (264 chars of reasoning, nothing to send), while 200
+    // returns the line in ~600 ms. Reusing the fast path's budget here would
+    // make the fallback silently useless — which is how this shipped wrong the
+    // first time (a live ack that generated nothing).
+    result = await attempt({ ...payload, max_tokens: Math.max(cfg.maxTokens, cfg.maxTokens * 4) });
   }
   const ms = clock() - started;
   const line = result.status === 200 ? cleanAckLine(result.content, cfg.maxChars) : "";

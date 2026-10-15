@@ -23,7 +23,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { ChannelInbox, type Inbound } from "../src/channels/inbox";
 import { startChannelConsumer } from "../src/channels/consumer";
 import { SendLedger, type EvoSender } from "../src/channels/evoSend";
-import { AckLedger, cleanAckLine, DEFAULT_ACK } from "../src/channels/ack";
+import { AckLedger, cleanAckLine, generateAckLine, DEFAULT_ACK } from "../src/channels/ack";
 import { makeFakeAgent } from "./helpers/fake-agent";
 
 const SENDER = "242554100576489@lid";
@@ -153,6 +153,69 @@ async function runTurn(args: { modelLine: string | null; turnMs: number; ack?: P
 
   return { ackTexts, reactions, reply, ackRow: ackLedger.get(1), agentCalls: agent.calls().length };
 }
+
+describe("generateAckLine", () => {
+  const connectionsPath = join(tmpdir(), "ack-connections.json");
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    rmSync(connectionsPath, { force: true });
+  });
+
+  function stubProvider(): void {
+    Bun.write(
+      connectionsPath,
+      JSON.stringify([
+        { id: "t", name: "T", route: "openai-compat", prefix: "t", baseUrl: "http://127.0.0.1:1/v1", keyEnv: "T_KEY", key: "k".repeat(40), models: ["tiny"], defaultModel: "tiny" },
+      ]),
+    );
+    process.env.MINITUI_CONNECTIONS_PATH = connectionsPath;
+  }
+
+  test("a reasoning model that rejects enable_thinking gets a REAL token budget on retry", async () => {
+    stubProvider();
+    const budgets: number[] = [];
+    globalThis.fetch = (async (_input: any, init: any) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { max_tokens: number; enable_thinking?: boolean };
+      budgets.push(body.max_tokens);
+      // The gateway refuses the flag. (`false` is falsy: test for the KEY, not
+      // for a truthy value — a stub written the obvious way never fires.)
+      if ("enable_thinking" in body) return new Response('{"error":{"param":"enable_thinking","message":"unknown_parameter"}}', { status: 400 });
+      // …and the reasoning model burns the budget and returns nothing.
+      const reasoningRoom = body.max_tokens >= 200;
+      return new Response(
+        JSON.stringify({ choices: [{ finish_reason: reasoningRoom ? "stop" : "length", message: { content: reasoningRoom ? "Busco los trenes" : null, reasoning_content: reasoningRoom ? null : "pensando…" } }] }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    const result = await generateAckLine({ subject: "Buscame trenes de Valencia a Madrid", model: "t/tiny", config: { maxTokens: 60, modelTimeoutMs: 5_000 } });
+    // The fallback would be useless at the fast path's budget — that is the bug.
+    expect(budgets).toEqual([60, 240]);
+    expect(result.line).toBe("Busco los trenes");
+    expect(result.model).toBe("t/tiny");
+  });
+
+  test("the fast path keeps the tiny budget when the model accepts the flag", async () => {
+    stubProvider();
+    const budgets: number[] = [];
+    globalThis.fetch = (async (_input: any, init: any) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { max_tokens: number };
+      budgets.push(body.max_tokens);
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Busco los trenes" } }] }), { status: 200 });
+    }) as typeof fetch;
+    const result = await generateAckLine({ subject: "Buscame trenes", model: "t/tiny", config: { maxTokens: 60 } });
+    expect(budgets).toEqual([60]);
+    expect(result.line).toBe("Busco los trenes");
+  });
+
+  test("an unresolvable model yields no line rather than a canned one", async () => {
+    stubProvider();
+    const result = await generateAckLine({ subject: "hola", model: "nope/none", config: { maxTokens: 60 } });
+    expect(result.line).toBeNull();
+    expect(result.reason).toBe("unresolved_model");
+  });
+});
 
 describe("the immediate ack", () => {
   test("a slow turn gets the model's own line, generated from the sender's words", async () => {
