@@ -177,7 +177,7 @@
 
   const KIND: Record<string, { icon: typeof Bot; label: string; cls: string }> = {
     delegate: { icon: GitFork, label: "delegated", cls: "text-brand bg-brand-soft" },
-    handoff: { icon: Forward, label: "handed off", cls: "text-violet-400 bg-violet-400/12" },
+    handoff: { icon: Forward, label: "handed off", cls: "text-silver bg-silver-soft" },
     message: { icon: MessageSquare, label: "message", cls: "text-sky-400 bg-sky-400/12" },
     reply: { icon: Reply, label: "reply", cls: "text-sky-300 bg-sky-300/10" },
     fanout: { icon: Split, label: "fan-out", cls: "text-amber-400 bg-amber-400/12" },
@@ -279,7 +279,7 @@
                   <span class="flex min-w-0 items-center gap-1.5">
                     <span class="truncate text-[12.5px] font-medium text-ink">{node.name}</span>
                     {#if node.origin === "handoff"}
-                      <span class="inline-flex shrink-0 items-center gap-0.5 text-[10.5px] text-violet-400" title="handed over by {node.from}"><Forward size={10} strokeWidth={2} />{node.from}</span>
+                      <span class="inline-flex shrink-0 items-center gap-0.5 text-[10.5px] text-silver" title="handed over by {node.from}"><Forward size={10} strokeWidth={2} />{node.from}</span>
                     {/if}
                     {#if node.agent && node.agent !== node.name}
                       <span class="shrink-0 rounded bg-raised px-1 text-[10.5px] text-ink-muted">{node.agent}</span>
@@ -365,7 +365,7 @@
                   <time class="tnum text-[10.5px] text-ink-faint">{clock(e.at)}</time>
                 </div>
                 {#if e.chain?.length}
-                  <div class="mt-1 flex flex-wrap items-center gap-1 text-[10.5px] text-violet-400">
+                  <div class="mt-1 flex flex-wrap items-center gap-1 text-[10.5px] text-silver">
                     {#each e.chain as c, j (j)}{#if j}<ArrowRight size={9} strokeWidth={2} />{/if}<span>{c}</span>{/each}
                   </div>
                 {/if}

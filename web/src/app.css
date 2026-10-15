@@ -5,8 +5,10 @@
 
 /* ------------------------------------------------------------------ *
  * Design tokens: assistant-persona voice (v2 redesign). Cool deep
- * space, one violet brand accent, warm sunset reserved for "live".
+ * space, one silver brand accent, warm sunset reserved for "live".
  * Hierarchy comes from surface steps + hairlines, never shadows.
+ * Silver is a RAMP, not one grey: steps carry the hierarchy so the
+ * UI keeps identity instead of flattening into a single grey wash.
  * Space Grotesk carries the persona surfaces (names, headers);
  * Geist stays for dense UI, JetBrains Mono for every code surface.
  * ------------------------------------------------------------------ */
@@ -30,6 +32,24 @@
   --color-brand: #2f6bee;
   --color-brand-ink: #ffffff;
   --color-brand-soft: rgb(47 107 238 / 0.1);
+
+  /* ---- The silver ramp (v6). Silver replaces violet as the accent family,
+     but only as a RAMP: these steps are measured, not eyeballed, and the
+     three pairs below are the ones that ship.
+       silver-700  light mode  6.8:1 on canvas  (accent on white)
+       silver-400  dark mode   7.2:1 worst dark surface
+       silver-300  dark mode   9.2:1 worst dark surface (brand itself)
+       silver-900  on-silver ink 11.9:1 on silver-300
+     Never collapse the ramp to one grey: that flattens the hierarchy. */
+  --color-silver-300: #cbd0d4;
+  --color-silver-400: #b3b8bd;
+  --color-silver-700: #565b62;
+  --color-silver-900: #111419;
+  /* Accent that sits ON silver: graphite, 11.9:1 on silver-300. Never white
+     on silver — that pair is 1.45:1 and fails everything. */
+  --color-on-silver: var(--color-silver-900);
+  --color-silver: var(--color-silver-700);
+  --color-silver-soft: rgb(86 91 98 / 0.12);
 
   /* The live accent: a warm sunset, only ever meaning "working right now". */
   --color-live: #ad5c0d;
@@ -79,12 +99,17 @@
     "Liberation Mono", monospace;
 }
 
-/* Six themes, mirroring src/ui/theme.ts of the TUI. */
+/* Six themes, mirroring src/ui/theme.ts of the TUI.
+   Accents are mode-aware: the same silver reads as a graphite step on a
+   white canvas and as a bright step on the dark ladder. A single hex per
+   theme cannot serve both — light needs L<=0.47, dark needs L>=0.76.
+   nord (blue 233) and gruvbox (amber 78) keep their colour: neither is
+   violet, so the silver pass does not touch them. */
 :root[data-theme="nord"]      { --theme-accent: oklch(0.72 0.12 233); }
-:root[data-theme="dracula"]   { --theme-accent: oklch(0.72 0.14 328); }
 :root[data-theme="gruvbox"]   { --theme-accent: oklch(0.76 0.13 78); }
-:root[data-theme="tokyo"]     { --theme-accent: oklch(0.72 0.13 258); }
-:root[data-theme="catppuccin"]{ --theme-accent: oklch(0.72 0.12 265); }
+:root[data-theme="dracula"]   { --theme-accent: oklch(0.47 0.03 330); }
+:root[data-theme="tokyo"]     { --theme-accent: oklch(0.47 0.026 252); }
+:root[data-theme="catppuccin"]{ --theme-accent: oklch(0.47 0.022 268); }
 /* "shadcn" is the default palette: it keeps the Cursor orange (no override). */
 
 /* Dark mode: the cool deep-space ladder this app wore before the light
@@ -102,9 +127,20 @@
   --color-ink-muted: #a7acbc;
   --color-ink-faint: #838a9c;
 
-  --color-brand: #9a8cf5;
-  --color-brand-ink: #16102b;
-  --color-brand-soft: rgb(154 140 245 / 0.15);
+  /* Brand is silver now. silver-300 carries 9.2:1 on the darkest surface
+     (overlay) and 11.9:1 on the canvas, so it holds AA as body text and
+     as a 3:1 UI boundary everywhere in the ladder. */
+  --color-brand: var(--color-silver-300);
+  /* The ink ON brand inverted with it: the old violet-on-silver pairing
+     put a near-black violet on a light violet and only survived by
+     accident. Graphite on silver-300 is 11.9:1 — measured, not guessed. */
+  --color-brand-ink: var(--color-on-silver);
+  --color-brand-soft: rgb(203 208 212 / 0.15);
+
+  /* Silver steps for the dark ladder: the accents above sit on a near-black
+     canvas, so they take the bright end of the ramp. */
+  --color-silver: var(--color-silver-400);
+  --color-silver-soft: rgb(179 184 189 / 0.14);
 
   --color-live: #ffa14a;
   --color-live-soft: rgb(255 161 74 / 0.16);
@@ -118,6 +154,14 @@
   --color-bubble-user-ink: #17171d;
   --color-bubble-bot: #262a34;
 }
+
+/* Dark-mode theme accents. Same three themes as above, bright end of the
+   silver ramp so they keep >=8.9:1 on the darkest surface. Each keeps a
+   whisper of its old hue so dracula still reads cooler than tokyo — the
+   themes stay tellable apart, they just stopped being violet. */
+:root.dark[data-theme="dracula"]    { --theme-accent: oklch(0.855 0.016 320); }
+:root.dark[data-theme="tokyo"]      { --theme-accent: oklch(0.845 0.013 250); }
+:root.dark[data-theme="catppuccin"] { --theme-accent: oklch(0.855 0.010 268); }
 
 /* ---- Elevation: shadows for depth, borders for structure.
    Flat and quiet by default: these only lift on a real surface edge. */
