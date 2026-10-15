@@ -30,7 +30,10 @@
 
   --color-ink: #1a1a21;
   --color-ink-muted: #5d5d68;
-  --color-ink-faint: #74747f;
+  /* Quiet text sits on `raised` (#f2f2f6) too — the selected bot row, a tool card's body — and
+     #74747f only carried 4.14:1 there. #6d6d78 is the step that clears AA (4.58:1) on the raised
+     surface and 5.11:1 on the canvas, so the token holds on every surface it is used on. */
+  --color-ink-faint: #6d6d78;
 
   --color-brand: #2f6bee;
   --color-brand-ink: #ffffff;
@@ -128,7 +131,10 @@
 
   --color-ink: #f3f4f8;
   --color-ink-muted: #a7acbc;
-  --color-ink-faint: #838a9c;
+  /* Same audit as light: on the raised/overlay surfaces #838a9c reads 4.49:1 / 4.16:1, just under
+     AA. #8c93a6 holds 5.05:1 on raised, 4.67:1 on overlay (its lightest background) and 6.04:1 on
+     the canvas. */
+  --color-ink-faint: #8c93a6;
 
   /* Brand is silver now. silver-300 carries 9.2:1 on the darkest surface
      (overlay) and 11.9:1 on the canvas, so it holds AA as body text and
