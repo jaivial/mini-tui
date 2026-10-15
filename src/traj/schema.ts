@@ -58,6 +58,8 @@ export type RunEvent =
     }
   | { type: "notice"; text: string; interruptType?: string }
   | { type: "exit"; exitStatus: string; submission: string }
+  /** Generative UI: one component of the closed template set (src/web/uiComponents.ts). */
+  | { type: "ui-component"; template: string; props: Record<string, unknown> }
   /** A crashed run's raw `mini.log` tail, posted into the thread at the failure point. */
   | { type: "error"; text: string };
 
