@@ -94,11 +94,16 @@
     sessionId: string;
   }
 
-  /** Rows come flattened (children after their parent); index them by path. */
+  /** Rows come flattened (children after their parent); index them by path.
+   *  A resumed run can briefly list the same delegate twice: keep the first row
+   *  per path, or duplicate keys (and duplicate node ids) would throw. */
   function byPathOf(rows: BotRow[]): Map<string, Pet> {
-    return new Map(
-      rows.map((r) => [r.path, { id: r.id, path: r.path, name: r.name, label: r.label, tone: r.tone, task: r.task, sessionId: r.id } satisfies Pet]),
-    );
+    const map = new Map<string, Pet>();
+    for (const r of rows) {
+      if (map.has(r.path)) continue;
+      map.set(r.path, { id: r.id, path: r.path, name: r.name, label: r.label, tone: r.tone, task: r.task, sessionId: r.id });
+    }
+    return map;
   }
 
   // The poll ticks every few seconds; only rebuild the graph when a value
@@ -118,11 +123,11 @@
     for (const s of sessions) {
       const bots = agentTree.trees[s.id] ?? { rows: [], live: 0, total: 0 };
       const byPath = byPathOf(bots.rows);
-      // Each agent's children, by path, in spawn order.
+      // Each agent's children, by path, in spawn order (from the deduped rows).
       const kidsOf = new Map<string, string[]>();
-      for (const r of bots.rows) {
-        const parent = r.path.includes("/") ? r.path.split("/").slice(0, -1).join("/") : "";
-        kidsOf.set(parent, [...(kidsOf.get(parent) ?? []), r.path]);
+      for (const path of byPath.keys()) {
+        const parent = path.includes("/") ? path.split("/").slice(0, -1).join("/") : "";
+        kidsOf.set(parent, [...(kidsOf.get(parent) ?? []), path]);
       }
       // Measure: subtree width per path.
       const widthOf = new Map<string, number>();
