@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { GripVertical, PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Network, Settings as SettingsIcon } from "@lucide/svelte";
+  import { GripVertical, PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Network, Settings as SettingsIcon, ArrowDown } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import SessionHeader from "./SessionHeader.svelte";
   import SubagentStrip from "./SubagentStrip.svelte";
@@ -141,6 +141,21 @@ import { windows as windowStore } from "../stores/windows.svelte";
     session?.events.length;
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   });
+
+  /**
+   * False once the reader has scrolled up far enough that newer messages hide under the floating
+   * prompt pill: a jump-to-latest button appears above it until they are back in view.
+   */
+  let atBottom = $state(true);
+  function onScroll() {
+    if (!scroller) return;
+    atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+  }
+  function jumpToLatest() {
+    if (!scroller) return;
+    scroller.scrollTop = scroller.scrollHeight;
+    atBottom = true;
+  }
 
   // Where a NEW chat can run. An existing chat already runs somewhere, so it shows no choice.
   const targets = $derived(session ? [] : store.hosts.map((h) => ({ id: h.id, label: h.label })));
@@ -441,11 +456,12 @@ import { windows as windowStore } from "../stores/windows.svelte";
         <SubagentStrip {session} onopen={openSubagent} />
       </div>
 
-      <!-- The chat's overlay layer: transcript plus its status lines, with the session's
-           pet floating over the bottom-right corner (never over the composer). -->
+      <!-- The chat's overlay layer: the transcript runs the pane's FULL height; the prompt pill,
+           the session's pet and the jump-to-latest button float over its bottom edge. -->
       <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        <main bind:this={scroller} class="relative z-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
-          <div class="mx-auto max-w-3xl">
+        <main bind:this={scroller} onscroll={onScroll} class="relative z-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
+          <!-- Bottom padding clears the floating prompt pill so the newest message is never under it. -->
+          <div class="mx-auto max-w-3xl pb-[7rem]">
             {#if !store.hydrated[session.id] && !session.events.length}
               <div class="flex flex-col gap-4 py-2" role="status" aria-label="Loading conversation">
                 <Skeleton class="h-4 w-2/5" />
@@ -466,34 +482,46 @@ import { windows as windowStore } from "../stores/windows.svelte";
         </main>
 
         {#if link === "reconnecting" || link === "connecting"}
-          <div class="mx-auto flex w-full max-w-3xl items-center gap-2 px-4 pb-1 text-[12.5px] text-ink-muted pane-sm:px-3" role="status">
+          <div class="mx-auto mb-[calc(6.5rem+env(safe-area-inset-bottom))] flex w-full max-w-3xl items-center gap-2 px-4 text-[12.5px] text-ink-muted pane-sm:px-3" role="status">
             <WifiOff size={13} strokeWidth={2} aria-hidden="true" />
             {link === "connecting" ? "Connecting to this session" : "Connection lost. Reconnecting"}<Spinner size={12} label="" />
           </div>
         {:else if session.status === "running"}
-          <div class="mx-auto w-full max-w-3xl px-4 pb-1.5 pane-sm:px-3">
+          <div class="mx-auto mb-[calc(6.5rem+env(safe-area-inset-bottom))] w-full max-w-3xl px-4 pane-sm:px-3">
             <PixelLoader label={session.partial?.text ? "Writing" : session.partial?.thinking ? "Thinking" : "Working"} since={session.startedAt} />
           </div>
         {/if}
 
-        <FloatingMascot id={session.id} />
-      </div>
+        {#if !atBottom && session.events.length}
+          <button
+            type="button"
+            class="absolute bottom-[calc(7.25rem+env(safe-area-inset-bottom))] left-1/2 z-25 grid size-11 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line/60 bg-raised/80 text-ink-muted shadow-[0_8px_24px_-8px_oklch(0_0_0/0.3)] backdrop-blur-md transition-colors duration-(--duration-fast) ease-(--ease-standard) hover:text-ink"
+            aria-label="Scroll to the latest message"
+            onclick={jumpToLatest}
+          >
+            <ArrowDown size={18} strokeWidth={2} aria-hidden="true" />
+          </button>
+        {/if}
 
-      <Composer
-        bind:this={composer}
-        bind:value={pane.prompt}
-        bind:chips={pane.chips}
-        bind:modelOpen
-        running={session.status === "running"}
-        {sending}
-        model={currentModel}
-        {switchingModel}
-        {modelNote}
-        onsend={send}
-        oninterrupt={interrupt}
-        onmodel={pickModel}
-        memory={pane.memory}
-      />
+        <FloatingMascot id={session.id} />
+
+        <Composer
+          bind:this={composer}
+          bind:value={pane.prompt}
+          bind:chips={pane.chips}
+          bind:modelOpen
+          running={session.status === "running"}
+          {sending}
+          model={currentModel}
+          {switchingModel}
+          {modelNote}
+          floating
+          onsend={send}
+          oninterrupt={interrupt}
+          onmodel={pickModel}
+          memory={pane.memory}
+        />
+      </div>
     {:else}
       <!-- A new chat. Nothing exists on the server yet: the first message creates the session. -->
       <header class="relative z-30 flex min-h-13 shrink-0 items-center gap-1 border-b border-line/80 px-3.5 py-1.5">
@@ -531,28 +559,30 @@ import { windows as windowStore } from "../stores/windows.svelte";
         </main>
         <!-- No session yet: the pane's own id picks the pet, stable across visits. -->
         <FloatingMascot id={pane.id} />
+
+        <Composer
+          bind:this={composer}
+          bind:value={pane.prompt}
+          bind:chips={pane.chips}
+          bind:modelOpen
+          {sending}
+          {targets}
+          targetId={pane.draft.targetId}
+          ontarget={(id) => {
+            // Another machine, another file system: a folder picked on one means nothing on the other.
+            if (id !== pane.draft.targetId) pane.draft.cwd = "";
+            pane.draft.targetId = id;
+          }}
+          place={folder}
+          model={currentModel}
+          {modelNote}
+          floating
+          onsend={send}
+          oninterrupt={interrupt}
+          onmodel={pickModel}
+          memory={pane.memory}
+        />
       </div>
-      <Composer
-        bind:this={composer}
-        bind:value={pane.prompt}
-        bind:chips={pane.chips}
-        bind:modelOpen
-        {sending}
-        {targets}
-        targetId={pane.draft.targetId}
-        ontarget={(id) => {
-          // Another machine, another file system: a folder picked on one means nothing on the other.
-          if (id !== pane.draft.targetId) pane.draft.cwd = "";
-          pane.draft.targetId = id;
-        }}
-        place={folder}
-        model={currentModel}
-        {modelNote}
-        onsend={send}
-        oninterrupt={interrupt}
-        onmodel={pickModel}
-        memory={pane.memory}
-      />
     {/if}
   </div>
 
