@@ -87,8 +87,15 @@ const fakeServer = Bun.serve({
       return Response.json({ data: { groupJid: `1203637777777${createdGroups}@g.us` } }, { status: 200 });
     }
     if (url.pathname.startsWith("/group/updateGroupPicture/")) {
+      // Behave like the DEPLOYED fork: multipart is refused with a
+      // content-type rejection; only the JSON {image: base64} shape works.
+      const contentType = (request.headers.get("content-type") ?? "").split(";", 1)[0]!.trim();
+      if (contentType === "multipart/form-data") {
+        await request.formData().catch(() => {});
+        return Response.json({ error: "Bad Request", message: "Expected request with `Content-Type: application/json`", status: 400 }, { status: 400 });
+      }
+      await request.json();
       picturesSet++;
-      await request.formData();
       return Response.json({ ok: true }, { status: 200 });
     }
     return Response.json({ error: "not found" }, { status: 404 });
