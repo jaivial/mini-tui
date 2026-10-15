@@ -108,7 +108,7 @@
    * always visible on touch — the Control-UI chat pattern: actions live on the
    * row, never inside the text flow, and a copied state confirms the click.
    */
-  let copiedId: string | null = null;
+  let copiedId = $state<string | null>(null);
   async function copyTurn(text: string, key: string) {
     try {
       await navigator.clipboard.writeText(text);
