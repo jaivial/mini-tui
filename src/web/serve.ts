@@ -13,7 +13,7 @@ import { extname, join, normalize, resolve } from "node:path";
 
 import { SessionManager, loadHosts, saveHosts, probeHost, type RemoteHostRecord } from "./sessions";
 import { resolveAttachments } from "./sessions";
-import { SessionFeed, sameOrigin, summarize, toWire } from "./feed";
+import { allowedCorsOrigin, SessionFeed, sameOrigin, summarize, toWire } from "./feed";
 import { NOTE_MAX, getNote, listTasks, saveNote } from "../sessions";
 import { FolderError, listLocal, listRemote } from "./folders";
 import { Hub, type HubClient } from "./hub";
@@ -403,7 +403,6 @@ function hostToApi(host: RemoteHostRecord): RemoteHost {
   };
 }
 
-/** CORS, so `vite dev` (4318) can reach this server directly if proxied. */
 /** Built Svelte app, served from the same process when present. */
 const STATIC_DIR = resolve(import.meta.dir, "..", "..", "web", "dist");
 const MIME: Record<string, string> = {
@@ -432,11 +431,20 @@ const MEDIA_MIME: Record<string, string> = {
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
 
-const CORS = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-  "access-control-allow-headers": "content-type",
-};
+/**
+ * CORS headers for one request: preflight allowance plus an echoed origin —
+ * loopback dev servers only (see allowedCorsOrigin). Everything else, the app
+ * included, is same-origin and needs no ACAO header.
+ */
+function corsHeaders(request: Request): Record<string, string> {
+  const headers: Record<string, string> = {
+    "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "access-control-allow-headers": "content-type",
+  };
+  const origin = allowedCorsOrigin(request.headers);
+  if (origin) headers["access-control-allow-origin"] = origin;
+  return headers;
+}
 
 // Bundled skills (e.g. $e2e) and new ~/.claude skills, as the terminal UI does at startup.
 try {
@@ -518,7 +526,7 @@ const server = Bun.serve({
   async fetch(request, srv) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/api/, "") || "/";
-    if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
+    if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders(request) });
     // A page on another site must not be able to drive this server (start agents, write
     // provider keys) just because it is reachable: state-changing requests have to come from
     // this app's own origin. Non-browser clients send no Origin and are unaffected.
@@ -631,10 +639,13 @@ const server = Bun.serve({
           },
           cancel() { close(); },
         });
-        return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no", ...CORS } });
+        return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no", ...corsHeaders(request) } });
       }
       // ---------------------------------------------------------- stream
       if (path === "/stream" && request.method === "GET") {
+        // The live session feed is private: a page on another site must not be able to
+        // subscribe to it (EventSource sends Origin, so the check is exact).
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
         const encoder = new TextEncoder();
         let cleanup = () => {};
         const stream = new ReadableStream({
@@ -677,7 +688,7 @@ const server = Bun.serve({
             // SSE through nginx: without this, a buffering proxy holds the first
             // agent view back and the panel sits on "Loading agents".
             "x-accel-buffering": "no",
-            ...CORS,
+            ...corsHeaders(request),
           },
         });
       }
@@ -716,7 +727,7 @@ const server = Bun.serve({
             "content-disposition": `${download ? "attachment" : "inline"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(att.name)}`,
             "x-content-type-options": "nosniff",
             "cache-control": "private, max-age=31536000, immutable",
-            ...CORS,
+            ...corsHeaders(request),
           },
         });
       }
@@ -736,7 +747,7 @@ const server = Bun.serve({
             "content-type": MEDIA_MIME[ext] ?? "application/octet-stream",
             "x-content-type-options": "nosniff",
             "cache-control": "private, max-age=86400",
-            ...CORS,
+            ...corsHeaders(request),
           },
         });
       }
@@ -839,7 +850,7 @@ const server = Bun.serve({
             // SSE through nginx: without this, a buffering proxy holds the first
             // agent view back and the panel sits on "Loading agents".
             "x-accel-buffering": "no",
-            ...CORS,
+            ...corsHeaders(request),
           },
         });
       }
