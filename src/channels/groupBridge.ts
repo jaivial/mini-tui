@@ -11,8 +11,9 @@
  *
  *   1. create the group on the account's own weai instance
  *      (POST /group/create/{instance}, participants = the requesting sender);
- *   2. set the static mascot frame as group photo (WhatsApp group photos are
- *      JPG — the animated pet lives in the web panel / stickers, not here);
+ *   2. set the session's blob-emoji avatar as the group photo (the same face
+ *      the web panel shows; a missing asset falls back to the static mascot
+ *      frame — WhatsApp group photos are a static image either way);
  *   3. bind the new @g.us thread to a FRESH session id (`wa-<account>-<hex8>`,
  *      its own conversation, its own binding model, allowlist = the requester
  *      only, default mention policy) — one group id is one isolated session
@@ -24,11 +25,13 @@
  * confirmation hook.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ChannelInbox, type Inbound } from "./inbox";
 import type { EvoSender } from "./evoSend";
 import type { PendingRow } from "./consumer";
+import { avatarFileFor } from "./groupAvatar";
+import { setGroupPicture } from "./groupPicture";
 
 export const NEWGROUP_DIRECTIVE = /\[\[mini-newgroup:\s*([^\]]*)\]\]/g;
 const MAX_SUBJECT_BYTES = 200;
@@ -40,7 +43,8 @@ export interface GroupBridgeOptions {
    * account's instance with its own token — never another identity's. */
   accountFor: (account: string) => { instance: string; token: string } | undefined;
   baseUrl: string;
-  /** Static JPG frame for the group photo (WhatsApp rejects animated formats). */
+  /** Fallback JPG frame for the group photo when the session's emoji avatar
+   * asset is missing (WhatsApp rejects animated formats). */
   photoPath?: string;
   /** Session id prefix/source for fresh sessions (repo convention wa-<account>-<hex8>). */
   newSessionId: (account: string) => string;
@@ -157,17 +161,19 @@ async function createBoundGroup(options: GroupBridgeOptions, row: PendingRow, me
   const groupJid = findGroupJid(created.json);
   if (!groupJid) throw new Error("group create response carried no @g.us jid");
 
-  // Static mascot frame. The fork takes JSON {image: <base64>} with the target
-  // groupJid in the query. A missing photo file is a cosmetic failure: the
-  // group is still created and bound, and the reason is logged by the caller.
-  const photoPath = options.photoPath ?? join(import.meta.dir, "assets", "group-mascot.jpg");
+  // The session id comes first: its deterministic avatar IS the group photo
+  // (the same face the web sidebar shows; see groupAvatar.ts). The static
+  // mascot frame is the fallback when the emoji assets are missing. A photo
+  // failure is cosmetic: the group is still created and bound, and the reason
+  // is logged by the caller.
+  const session = options.newSessionId(row.account);
+  const photoPath = avatarFileFor(session) ?? options.photoPath ?? join(import.meta.dir, "assets", "group-mascot.jpg");
   if (existsSync(photoPath)) {
     try {
-      const image = readFileSync(photoPath).toString("base64");
-      const photo = await callGroupApi(options, account.instance, account.token, "/group/updateGroupPicture", { image }, `?groupJid=${encodeURIComponent(groupJid)}`);
-      if (photo.status !== 200 && photo.status !== 201) throw new Error(`status ${photo.status}: ${photo.error.slice(0, 120)}`);
+      const photo = await setGroupPicture(options.baseUrl, account.instance, account.token, groupJid, photoPath, { timeoutMs: options.timeoutMs });
+      if (!photo.ok) throw new Error(`status ${photo.status}: ${photo.error.slice(0, 120)}`);
     } catch (error) {
-      options.log?.("channel.group.photo_failed", { groupJid, error: error instanceof Error ? error.message : String(error) });
+      options.log?.("channel.group.photo_failed", { groupJid, photoPath, error: error instanceof Error ? error.message : String(error) });
     }
   } else {
     options.log?.("channel.group.photo_missing", { groupJid, photoPath });
@@ -176,7 +182,6 @@ async function createBoundGroup(options: GroupBridgeOptions, row: PendingRow, me
   // The binding IS the isolation: fresh session id, its own allowlist, default
   // (mention-gated) policy, and the consumer resolves the binding model per
   // turn — the new group starts on the operator/default model until changed.
-  const session = options.newSessionId(row.account);
   options.inbox.bind({
     channel: "whatsapp",
     account: row.account,

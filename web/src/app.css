@@ -11,32 +11,39 @@
  * Geist stays for dense UI, JetBrains Mono for every code surface.
  * ------------------------------------------------------------------ */
 @theme {
-  /* ---- Cool dark ladder: canvas → surface → raised → overlay, each a
-     quiet step up. Text pairs measured as before: body >= 6:1, faint >= 4.5:1. */
-  --color-canvas: #121319;
-  --color-surface: #181a21;
-  --color-raised: #21242d;
-  --color-overlay: #262a34;
+  /* ---- Light, the mockup's own palette: white surfaces on a white canvas,
+     soft grey steps for anything that recedes, one blue accent for links and
+     focus. Text pairs measured: body >= 6:1, faint >= 4.5:1. */
+  --color-canvas: #ffffff;
+  --color-surface: #fbfbfd;
+  --color-raised: #f2f2f6;
+  --color-overlay: #ffffff;
 
   /* Hairlines carry the structure; there are no elevation tiers. */
-  --color-line: #2d3140;
-  --color-line-strong: #41485c;
+  --color-line: #ececf1;
+  --color-line-strong: #d9d9e2;
 
-  --color-ink: #f3f4f8;
-  --color-ink-muted: #a7acbc;
-  --color-ink-faint: #838a9c;
+  --color-ink: #1a1a21;
+  --color-ink-muted: #5d5d68;
+  --color-ink-faint: #74747f;
 
-  --color-brand: #9a8cf5;
-  --color-brand-ink: #16102b;
-  --color-brand-soft: rgb(154 140 245 / 0.15);
+  --color-brand: #2f6bee;
+  --color-brand-ink: #ffffff;
+  --color-brand-soft: rgb(47 107 238 / 0.1);
 
   /* The live accent: a warm sunset, only ever meaning "working right now". */
-  --color-live: #ffa14a;
-  --color-live-soft: rgb(255 161 74 / 0.16);
+  --color-live: #ad5c0d;
+  --color-live-soft: rgb(173 92 13 / 0.1);
 
-  --color-ok: #46c99a;
-  --color-err: #ff6b8a;
-  --color-warn: #e0a03c;
+  --color-ok: #157c4e;
+  --color-err: #c22e57;
+  --color-warn: #8a5508;
+
+  /* Chat bubbles (the mockup's): the user speaks in near-black, the bot in a
+     soft grey. The ink tokens keep the bubble text pairs accessible. */
+  --color-bubble-user: #1f1f26;
+  --color-bubble-user-ink: #f5f5f8;
+  --color-bubble-bot: #f1f1f5;
 
   --color-accent: var(--theme-accent, var(--color-brand));
 
@@ -80,30 +87,36 @@
 :root[data-theme="catppuccin"]{ --theme-accent: oklch(0.72 0.12 265); }
 /* "shadcn" is the default palette: it keeps the Cursor orange (no override). */
 
-/* Light mode: a warm paper take on the same roles (Pi's cream, violet ink). */
-:root.light {
-  --color-canvas: #f7f5ef;
-  --color-surface: #fffefa;
-  --color-raised: #edeade;
-  --color-overlay: #ffffff;
+/* Dark mode: the cool deep-space ladder this app wore before the light
+   redesign — kept as a switchable theme, same roles. */
+:root.dark {
+  --color-canvas: #121319;
+  --color-surface: #181a21;
+  --color-raised: #21242d;
+  --color-overlay: #262a34;
 
-  --color-line: #e4e1d5;
-  --color-line-strong: #c9c5b4;
+  --color-line: #2d3140;
+  --color-line-strong: #41485c;
 
-  --color-ink: #242334;
-  --color-ink-muted: #5b5a6b;
-  --color-ink-faint: #6e6d7e;
+  --color-ink: #f3f4f8;
+  --color-ink-muted: #a7acbc;
+  --color-ink-faint: #838a9c;
 
-  --color-brand: #6553d9;
-  --color-brand-ink: #ffffff;
-  --color-brand-soft: rgb(101 83 217 / 0.09);
+  --color-brand: #9a8cf5;
+  --color-brand-ink: #16102b;
+  --color-brand-soft: rgb(154 140 245 / 0.15);
 
-  --color-live: #c96a12;
-  --color-live-soft: rgb(201 106 18 / 0.1);
+  --color-live: #ffa14a;
+  --color-live-soft: rgb(255 161 74 / 0.16);
 
-  --color-ok: #16724f;
-  --color-err: #b8244c;
-  --color-warn: #8a5508;
+  --color-ok: #46c99a;
+  --color-err: #ff6b8a;
+  --color-warn: #e0a03c;
+
+  /* Bubbles invert: the user speaks in near-white, the bot in a raised grey. */
+  --color-bubble-user: #f3f4f8;
+  --color-bubble-user-ink: #17171d;
+  --color-bubble-bot: #262a34;
 }
 
 /* ---- Elevation: shadows for depth, borders for structure.
@@ -417,7 +430,7 @@
     outline: 1px solid oklch(1 0 0 / 0.1);
     outline-offset: -1px;
   }
-  :root.light .outline-img {
+  :root:not(.dark) .outline-img {
     outline-color: oklch(0 0 0 / 0.1);
   }
 }

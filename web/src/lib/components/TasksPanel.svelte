@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, ChevronRight, ListChecks, X } from "@lucide/svelte";
+  import { Check, Clock, ListChecks, X } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import PlanDag from "./PlanDag.svelte";
   import QueueSection from "./QueueSection.svelte";
@@ -9,10 +9,12 @@
   import type { SessionPlan } from "../types";
 
   /**
-   * The window's task board: every session with a task card (the agents fill them with
-   * `mini-tui tasks set`), what the task is and what is left of it, and the pane showing that
-   * session right now. A drawer on the window's right edge — one click of the window's button
-   * opens it, and it stays live while open: a card written anywhere lands in it at once.
+   * The window's routine board (the mockup's "Routines"): every session with a
+   * task card (the agents fill them with `mini-tui tasks set`), what the task
+   * is and what is left of it, and the pane showing that session right now.
+   * A drawer on the window's right edge — one click of the window's button
+   * opens it, and it stays live while open: a card written anywhere lands in
+   * it at once.
    *
    * Each card is a title (always visible) with its description and to-dos in an accordion.
    */
@@ -70,14 +72,14 @@
 
 <dialog
   bind:this={dialog}
-  class="fixed top-0 right-0 bottom-auto left-auto z-50 m-0 h-[calc(100*var(--vh))] max-h-[calc(100*var(--vh))] w-[26rem] max-w-[calc(100*var(--vw))] rounded-none border-l border-line bg-canvas p-0 text-ink shadow-2xl"
+  class="fixed top-0 right-0 bottom-auto left-auto z-50 m-0 h-[calc(100*var(--vh))] max-h-[calc(100*var(--vh))] w-[26rem] max-w-[calc(100*var(--vw))] rounded-l-2xl border-l border-line bg-canvas p-0 text-ink shadow-2xl"
   aria-label="Session tasks"
   onclose={oncloseevent}
 >
   <div class="flex h-full min-h-0 flex-col" role="document">
     <header class="flex items-center gap-2 border-b border-line/80 px-4 py-3">
       <ListChecks size={15} strokeWidth={2} class="shrink-0 text-brand" aria-hidden="true" />
-      <h2 class="min-w-0 flex-1 text-[14px] leading-5 font-medium">Session tasks</h2>
+      <h2 class="min-w-0 flex-1 text-[14px] leading-5 font-semibold">Routines</h2>
       <span class="flex items-center gap-1.5 text-[11px] text-ink-faint" title={live ? "Live" : "Reconnecting…"}>
         <span class="size-1.5 shrink-0 rounded-full {live ? 'bg-ok' : 'pulse-live bg-warn'}" aria-hidden="true"></span>
         <span class="tnum">{rows.length}</span>
@@ -96,12 +98,12 @@
       {:else}
         {#each rows as row (row.task.id)}
           {@const c = todoCounts(row.task)}
-          <details class="group rounded-lg border border-transparent px-2 py-1.5 hover:border-line hover:bg-raised/50">
+          <details class="group rounded-xl border border-transparent px-2 py-1.5 hover:border-line hover:bg-raised/50">
             <summary class="flex cursor-pointer list-none items-start gap-2 [&::-webkit-details-marker]:hidden">
-              <ChevronRight
-                size={13}
-                strokeWidth={2}
-                class="mt-0.5 shrink-0 text-ink-faint transition-transform group-open:rotate-90"
+              <Clock
+                size={15}
+                strokeWidth={1.75}
+                class="mt-0.5 shrink-0 text-ink-faint"
                 aria-hidden="true"
               />
               <div class="min-w-0 flex-1">
