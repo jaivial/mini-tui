@@ -21,6 +21,8 @@ const QR_MAX_BYTES = 200_000;
 /** The weai connect endpoint regenerates the QR every call (~60 s TTL). */
 const QR_MIN_INTERVAL_MS = 5_000;
 const QR_TTL_MS = 60_000;
+/** The pairing code lives about a minute (WhatsApp-side), like the QR. */
+const CODE_TTL_MS = 60_000;
 const FETCH_TIMEOUT_MS = 5_000;
 
 export interface ChannelsAttachmentView {
@@ -177,6 +179,14 @@ export interface EvoQrView {
   error?: string;
 }
 
+export interface EvoPairView {
+  configured: boolean;
+  state?: EvoStatusView["state"];
+  code?: string;
+  expiresAt?: number;
+  error?: string;
+}
+
 interface EvoConfig {
   baseUrl: string;
   instance: string;
@@ -280,4 +290,55 @@ export async function evoQr(): Promise<EvoQrView> {
     return { configured: true, state: status.state === "unreachable" ? undefined : status.state, error: qr === undefined && code === undefined && status.state === "connected" ? "already_connected" : "no_qr_available" };
   }
   return { configured: true, qr, code, expiresAt: Date.now() + QR_TTL_MS };
+}
+
+/** Same shape weai's own normalize_number accepts: digits with optional separators, 7–15 long, no leading 0. */
+export function normalizePairingNumber(raw: string): string | null {
+  let digits = "";
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]!;
+    if (c >= "0" && c <= "9") digits += c;
+    else if ((c === "+" && i === 0) || c === " " || c === "-" || c === "." || c === "(" || c === ")") continue;
+    else return null;
+  }
+  return digits.length >= 7 && digits.length <= 15 && !digits.startsWith("0") ? digits : null;
+}
+
+/** A Baileys pairing code: uppercase alphanumerics, optionally dashed ("ABCD-WXYZ"). */
+function pairingCode(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Z0-9]{4,8}(-[A-Z0-9]{4})?$/.test(value) ? value : undefined;
+}
+
+let lastCodeAt = 0;
+
+/** Test hook: the 5 s pairing rate limit is module state. */
+export function resetPairingRateLimit(): void {
+  lastCodeAt = 0;
+}
+
+/**
+ * Pairing by code: asks weai for a connect with the phone number and returns
+ * the short code the user types on the phone. Like the QR, every upstream
+ * call restarts a login, so calls are rate-limited (5 s) and a code already
+ * live on the socket is answered as is — the same code, not a new one.
+ */
+export async function evoPairingCode(rawNumber: string): Promise<EvoPairView> {
+  const digits = normalizePairingNumber(rawNumber);
+  if (!digits) return { configured: true, error: "invalid_number" };
+  const config = evoConfig();
+  if (!config) return { configured: false, error: "evo connect not configured" };
+  if (Date.now() - lastCodeAt < QR_MIN_INTERVAL_MS) return { configured: true, error: "code_rate_limited", expiresAt: lastCodeAt + CODE_TTL_MS };
+  lastCodeAt = Date.now();
+  const data = await weaiGet(`/instance/connect/${encodeURIComponent(config.instance)}?number=${digits}`, config);
+  if (!data) return { configured: true, state: "unreachable", error: "weai-mini did not answer on loopback" };
+  const raw = rawState(data);
+  if (raw.toLowerCase() === "open") return { configured: true, state: "connected", error: "already_connected" };
+  const code = pairingCode(data.pairingCode);
+  if (!code) {
+    // No code on the socket within the wait window: report the state we see
+    // instead of inventing one (a connecting instance may still emit one).
+    const status = await evoStatus();
+    return { configured: true, state: status.state === "unreachable" ? undefined : status.state, error: "no_code_available" };
+  }
+  return { configured: true, code, expiresAt: Date.now() + CODE_TTL_MS };
 }

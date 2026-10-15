@@ -75,6 +75,14 @@ export interface EvoQr {
   error?: string;
 }
 
+export interface EvoPair {
+  configured: boolean;
+  state?: EvoState;
+  code?: string;
+  expiresAt?: number;
+  error?: string;
+}
+
 const MAX_MESSAGES = 40;
 const MAX_BINDINGS = 200;
 const MAX_TEXT = 2_000;
@@ -137,6 +145,16 @@ export class ChannelsClient {
     const res = await fetch(`${this.base}/channels/evo/qr`);
     const view = await res.json().catch(() => null) as EvoQr | null;
     if (!view || typeof view.configured !== "boolean") throw new Error(`QR unavailable (${res.status})`);
+    return view;
+  }
+
+  /** Pairing by phone number: fail-closed on anything that is not a code-shaped answer. */
+  async evoPairingCode(number: string): Promise<EvoPair> {
+    const res = await fetch(`${this.base}/channels/evo/code?number=${encodeURIComponent(number)}`);
+    const view = await res.json().catch(() => null) as EvoPair | null;
+    if (!view || typeof view.configured !== "boolean") throw new Error(`pairing code unavailable (${res.status})`);
+    if (view.code !== undefined && !/^[A-Z0-9]{4,8}(-[A-Z0-9]{4})?$/.test(view.code)) throw new Error("invalid pairing code");
+    if (typeof view.expiresAt !== "undefined" && typeof view.expiresAt !== "number") throw new Error("invalid pairing code");
     return view;
   }
 }

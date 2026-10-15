@@ -25,7 +25,7 @@ import { rustAgentBin } from "../mini/spawn";
 import { ChannelInbox } from "../channels/inbox";
 import { evoReceiver } from "../channels/evoReceiver";
 import { parseReceiverAccounts } from "../channels/accounts";
-import { channelsView, evoQr, evoStatus } from "./channels";
+import { channelsView, evoPairingCode, evoQr, evoStatus } from "./channels";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { syncAllSkills } from "../skills";
@@ -375,6 +375,14 @@ const server = Bun.serve({
         // Rate-limited inside: the upstream connect call regenerates the QR.
         const view = await evoQr();
         return json(view, view.error === "qr_rate_limited" ? 429 : 200);
+      }
+      if (path === "/channels/evo/code" && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        // Pairing by phone number: rate-limited inside like the QR (each
+        // upstream call restarts a login); a bad number is a client error.
+        const number = url.searchParams.get("number") ?? "";
+        const view = await evoPairingCode(number);
+        return json(view, view.error === "code_rate_limited" ? 429 : view.error === "invalid_number" ? 400 : 200);
       }
       // Read-only projection of the local task registry. No worker launch, model
       // call, schema creation or browser-selected filesystem path.
