@@ -1,4 +1,36 @@
 /**
+ * v6-B: the identity of the model a run was using, resolved from the parts that
+ * are actually available.
+ *
+ * `info.config.model.model_name` is a **bare** id (`glm-5.3-flash`), so on its own
+ * it names neither the provider nor the catalog key — a row keyed by that would
+ * aggregate every provider's model under an empty provider and could never be
+ * priced. The reply often omits `model` too (the OpenCode Go gateway does), so
+ * this combines the config's own `api_base` with the catalog's provider list:
+ * a base URL that identifies one provider in the catalog qualifies the bare id.
+ *
+ * Anything still unresolved stays empty. An empty model is honest — the tokens are
+ * still measured, and the row says plainly that it could not be priced or attributed.
+ */
+export function resolveModel(
+  infoModel: string | undefined,
+  apiBase: string | undefined,
+  knownProviders: ReadonlyArray<{ prefix: string; baseUrl?: string }>,
+): string {
+  const bare = (infoModel ?? "").trim();
+  if (bare.includes("/")) return bare; // already qualified
+  const base = (apiBase ?? "").trim().replace(/\/+$/, "");
+  if (!bare) return "";
+  if (!base) return bare;
+  const owner = knownProviders.find((p) => {
+    const url = (p.baseUrl ?? "").trim().replace(/\/+$/, "");
+    if (!url) return false;
+    return base === url || base.startsWith(`${url}/`) || url.startsWith(`${base}/`);
+  });
+  return owner ? `${owner.prefix}/${bare}` : bare;
+}
+
+/**
  * v6-B: turn one journalled assistant message into a usage row.
  *
  * The agent already journals everything needed per call — the API reply
@@ -103,6 +135,8 @@ export interface UsageContext {
   task?: string;
   /** Model the run was configured with, used when the reply does not name one. */
   fallbackModel?: string;
+  /** The run's `api_base`, which qualifies a bare model id into `provider/id`. */
+  apiBase?: string;
   catalog?: PriceCatalog;
   /** Epoch ms used when the message carries no timestamp of its own. */
   now?: number;
@@ -126,10 +160,11 @@ export function usageFromMessage(message: TrajectoryMessage, index: number, cont
   // time and often tokens, and the router needs to see the failure, so it counts.
   if (!response && !usage && !hasActions && !error) return null;
 
-  const replyModel = typeof response?.model === "string" ? response.model : "";
-  const model = (replyModel || context.fallbackModel || "").trim();
-  const tokens = tokensOf(usage);
   const catalog = context.catalog ?? loadPriceCatalog();
+  const replyModel = typeof response?.model === "string" ? response.model : "";
+  // The reply's model wins; otherwise qualify the run's configured id with its base.
+  const model = resolveModel(replyModel || context.fallbackModel, context.apiBase, catalog.providers());
+  const tokens = tokensOf(usage);
   const { costUsd, costSource } = resolveCost(model, tokens, extra.cost, catalog);
   const at = typeof extra.timestamp === "number" && Number.isFinite(extra.timestamp)
     ? extra.timestamp
