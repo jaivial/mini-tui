@@ -37,6 +37,10 @@ export interface AckConfig {
   maxTokens: number;
   /** Bound on the stored/generated line, so the prompt cannot smuggle a paragraph. */
   maxChars: number;
+  /** How many times an EMPTY model answer is retried with a bigger budget.
+   * Bounded on purpose: the reaction is already out, and a second miss means
+   * reaction-only rather than a late, noisy ack. */
+  escalations: number;
 }
 
 /** The deployed defaults: react instantly, speak at 4s, give up on the model
@@ -48,6 +52,7 @@ export const DEFAULT_ACK: AckConfig = {
   modelTimeoutMs: 6_000,
   maxTokens: 60,
   maxChars: 200,
+  escalations: 2,
 };
 
 const MAX_SUBJECT_CHARS = 1_200;
@@ -117,6 +122,19 @@ export interface AckLineResult {
   reason?: string;
 }
 
+/** Words that make a line say nothing about THIS message. A model that ignores
+ * the "name what was asked" rule answers with one of these plus a verb, and
+ * such a line is exactly the canned ack this feature exists to avoid — so it is
+ * rejected and the attempt counts as a miss, same as an empty answer. */
+const GENERIC_ACK_RE = /^(?:ok(?:ay)?|got it|gotcha|understood|received|noted|recibido|entendido|perfecto|vale|recibido!|listo|hecho|on it|working on it|sure|thank you|gracias)[.!¡…]*\s*$/i;
+
+/** Is this line actually about the sender's message? A short subject can be
+ * legitimately vague ("hola"), so the bar is LOW (12 characters) — but a line
+ * that is pure boilerplate never passes, whatever its length. */
+function isGenericAck(line: string): boolean {
+  return GENERIC_ACK_RE.test(line.trim());
+}
+
 /** One cheap chatCompletion. Bounded by `timeoutMs`, capped at `maxTokens`, and
  * strict about what counts as a usable answer. Never throws.
  *
@@ -153,7 +171,11 @@ export async function generateAckLine(args: {
       { role: "system", content: ACK_SYSTEM_PROMPT },
       { role: "user", content: `Message from the user: ${subject}` },
     ],
-    temperature: 0.2,
+    // No temperature: measured against the deployed gateway it made reliability
+    // WORSE (glm-5.3-flash: 3/12 usable answers at 0.2 vs 5/12 unset, and the
+    // failures are silent empty contents, not refusals). The line is short and
+    // constrained by the prompt plus cleanAckLine, so the sampling knob buys
+    // nothing here.
     max_tokens: cfg.maxTokens,
   };
   // opencode's gateway routes on this header (a missing one is a 400), and other
@@ -165,12 +187,22 @@ export async function generateAckLine(args: {
   };
 
   const attempt = async (body: Record<string, unknown>): Promise<{ status: number; content: string; error: string }> => {
+    // The deadline is the WHOLE ack budget, shared by every attempt: a line that
+    // arrives after the turn is already 10s old is worse than no line. Measured
+    // worst case before this was 7.1s of escalation alone.
+    const left = cfg.modelTimeoutMs - (clock() - started);
+    if (left <= 250) return { status: 0, content: "", error: "ack_budget_exhausted" };
     try {
-      const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(cfg.modelTimeoutMs) });
+      const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(left) });
       if (response.status === 200) {
         const data = (await response.json()) as { choices?: Array<{ message?: { content?: string | null } }> };
         const content = data.choices?.[0]?.message?.content ?? "";
-        return { status: 200, content, error: content.trim() ? "" : "empty_content" };
+        // A 200 whose only content is boilerplate is a MISS, not a line: the
+        // whole point is that the ack names what was asked.
+        const line = content.trim() ? cleanAckLine(content, cfg.maxChars) : "";
+        if (!line) return { status: 200, content: "", error: "empty_content" };
+        if (isGenericAck(line)) return { status: 200, content: "", error: "generic_content" };
+        return { status: 200, content: line, error: "" };
       }
       const text = await response.text().catch(() => "");
       return { status: response.status, content: "", error: `HTTP ${response.status}: ${text.slice(0, 160)}` };
@@ -184,17 +216,22 @@ export async function generateAckLine(args: {
   // still bounded, and it is the only way to serve a reasoning model here.
   if (result.status === 400 && /enable_thinking|unknown_param/i.test(result.error)) {
     args.log?.("channel.ack.retry_without_thinking_flag", { model: auditModel });
-    // …and the retry needs a REAL token budget. Without the flag the model
-    // reasons first, and measured against the deployed provider it spends the
-    // whole budget doing so: at 60 tokens it returns finish=length with an
-    // EMPTY content (264 chars of reasoning, nothing to send), while 200
-    // returns the line in ~600 ms. Reusing the fast path's budget here would
-    // make the fallback silently useless — which is how this shipped wrong the
-    // first time (a live ack that generated nothing).
     result = await attempt({ ...payload, max_tokens: Math.max(cfg.maxTokens, cfg.maxTokens * 4) });
   }
+  // A 200 that carries no usable line — empty (the reasoning models spent the
+  // budget thinking) or pure boilerplate — is a MISS, and a miss escalates.
+  // Measured against the deployed gateway (which load-balances across upstreams,
+  // so this is bimodal): glm-5.3-flash returned usable content on only 3/12 and
+  // 5/12 calls at 60 tokens, and a bigger budget alone did not fix it; the
+  // sibling model on the same provider (qwen3.8-flash) answered 12/12. After
+  // the last escalation a miss means reaction-only — never a canned line.
+  for (let step = 0; result.status === 200 && !result.content && step < cfg.escalations; step++) {
+    args.log?.("channel.ack.escalate", { model: auditModel, step: step + 1, reason: result.error });
+    result = await attempt({ ...payload, max_tokens: cfg.maxTokens * (4 ** (step + 1)) });
+  }
   const ms = clock() - started;
-  const line = result.status === 200 ? cleanAckLine(result.content, cfg.maxChars) : "";
+  // `attempt` already cleaned and vetted the text.
+  const line = result.status === 200 ? result.content : "";
   if (!line) {
     args.log?.("channel.ack.model_failed", { model: auditModel, status: result.status || undefined, ms, reason: result.error || "empty_content" });
     return { line: null, ms, model: auditModel, reason: result.error || "empty_content" };
