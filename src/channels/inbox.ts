@@ -71,7 +71,8 @@ export class ChannelInbox {
       CREATE TABLE IF NOT EXISTS channel_bindings(channel TEXT,account TEXT,thread TEXT,session TEXT NOT NULL,project TEXT NOT NULL,allowed_senders TEXT NOT NULL,PRIMARY KEY(channel,account,thread));
       CREATE TABLE IF NOT EXISTS channel_updates(update_seq INTEGER PRIMARY KEY AUTOINCREMENT,inbox_seq INTEGER NOT NULL,attachment_id TEXT NOT NULL,state TEXT NOT NULL,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS channel_consumers(consumer TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS channel_inbox(seq INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,account TEXT NOT NULL,thread TEXT NOT NULL,message_id TEXT NOT NULL,sender TEXT NOT NULL,sent_at INTEGER NOT NULL,payload TEXT NOT NULL,session TEXT NOT NULL,project TEXT NOT NULL,received_at INTEGER NOT NULL,original TEXT NOT NULL,UNIQUE(channel,account,thread,message_id));`);
+      CREATE TABLE IF NOT EXISTS channel_inbox(seq INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,account TEXT NOT NULL,thread TEXT NOT NULL,message_id TEXT NOT NULL,sender TEXT NOT NULL,sent_at INTEGER NOT NULL,payload TEXT NOT NULL,session TEXT NOT NULL,project TEXT NOT NULL,received_at INTEGER NOT NULL,original TEXT NOT NULL,UNIQUE(channel,account,thread,message_id));
+      CREATE TABLE IF NOT EXISTS channel_own_sends(message_id TEXT PRIMARY KEY,created_at INTEGER NOT NULL);`);
     // WA-5 group policy + per-binding model: additive columns on pre-existing
     // stores (CREATE IF NOT EXISTS alone never widens an existing table).
     const columns = (this.db.query("PRAGMA table_info(channel_bindings)").all() as Array<{ name: string }>).map((c) => c.name);
@@ -203,13 +204,38 @@ export class ChannelInbox {
       this.db.query("INSERT INTO channel_consumers(consumer,cursor) VALUES(?1,?2) ON CONFLICT(consumer) DO UPDATE SET cursor=excluded.cursor").run(consumer,delivery.seq);
     }).immediate();
   }
+  /** Every binding of one session (the web's relay path): a session the
+   * operator bound to one or more threads mirrors what is written there.
+   * Read-only, bounded; write paths stay with the receiver/consumer. */
+  bindingsForSession(session: string, channel: Channel = "whatsapp", limit = 4): Binding[] {
+    if (!bounded(session)) throw new Error("invalid session id");
+    return this.listBindings().filter((b) => b.channel === channel && b.session === session).slice(0, limit);
+  }
+
+  /** Durable own-send registry (the web relay's anti-echo): the id a send
+   * came back with is recorded BEFORE the echo can arrive, so the receiver
+   * refuses it exactly like a ledgered consumer reply. Cross-process by
+   * construction: the relay (web server) and the receiver may be different
+   * processes over the same store. Best-effort prune keeps the table small. */
+  registerOwnSend(messageId: string): void {
+    if (!bounded(messageId)) throw new Error("invalid own-send id");
+    this.db.query(`INSERT OR IGNORE INTO channel_own_sends VALUES(?1,?2)`).run(messageId, Date.now());
+    try {
+      this.db.query(`DELETE FROM channel_own_sends WHERE created_at < ?1`).run(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    } catch {
+      // a busy database loses only the prune
+    }
+  }
+
   /** Durable send-ledger lookup (channel_sends.reply_id): is this WhatsApp
    * message id one of OUR delivered replies? Read-only; a store that has no
    * ledger yet (no send ever recorded by any process) answers false. */
   isOwnSendId(id: string): boolean {
     if (!id || id.length > 256) return false;
     try {
-      return !!this.db.query("SELECT 1 FROM channel_sends WHERE reply_id=?1 LIMIT 1").get(id);
+      return !!this.db
+        .query(`SELECT 1 FROM channel_sends WHERE reply_id=?1 UNION ALL SELECT 1 FROM channel_own_sends WHERE message_id=?1 LIMIT 1`)
+        .get(id);
     } catch {
       return false;
     }

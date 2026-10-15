@@ -12,6 +12,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 
 import { SessionManager, loadHosts, saveHosts, probeHost, type RemoteHostRecord } from "./sessions";
+import { resolveAttachments } from "./sessions";
 import { SessionFeed, sameOrigin, summarize, toWire } from "./feed";
 import { NOTE_MAX, getNote, listTasks, saveNote } from "../sessions";
 import { FolderError, listLocal, listRemote } from "./folders";
@@ -24,7 +25,9 @@ import { homedir } from "node:os";
 import { rustAgentBin } from "../mini/spawn";
 import { ChannelInbox } from "../channels/inbox";
 import { evoReceiver } from "../channels/evoReceiver";
-import { parseReceiverAccounts } from "../channels/accounts";
+import { parseReceiverAccounts, parseConsumerAccounts } from "../channels/accounts";
+import { MirrorStore, mirrorEvent } from "../channels/mirror";
+import { createEvoSender, type EvoSender } from "../channels/evoSend";
 import { channelsView, evoPairingCode, evoQr, evoStatus } from "./channels";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
@@ -128,7 +131,7 @@ let hub: Hub;
 const sessions = new SessionManager((session) => {
   broadcast({ type: "session", session: summarize(session) });
   feed.publish(session);
-});
+}, { mirror: mirrorLoader });
 
 // Terminals start where the session works: its folder on this machine, or an ssh shell on its host.
 const terminals = new Terminals();
@@ -163,6 +166,166 @@ if (tasksSyncMs > 0) {
   }, tasksSyncMs);
   (tasksTimer as { unref?: () => void }).unref?.();
 }
+// Espejo WhatsApp ↔ web. The mirror store lives in the shared channel store:
+// the consumer (its own service) appends every no-turn message it acks, this
+// server reads new rows and pushes them into the open sessions' transcripts.
+// The relay (web prompt → bound WhatsApp thread) exists only when the sender
+// environment is configured (EVO_ACCOUNTS, or EVO_INSTANCE + EVO_INSTANCE_TOKEN
+// with EVO_API_URL): without it the mirror is read-only and prompts stay web-only.
+interface MirrorContext {
+  inbox: ChannelInbox;
+  mirror: MirrorStore;
+  senders: Map<string, EvoSender>;
+  defaultSender: EvoSender;
+  mediaDir: string;
+}
+let mirrorCtx: MirrorContext | null | undefined;
+function inboxDbPath(): string {
+  return process.env.EVO_INBOX_DB ?? join(homedir(), ".local/share/mini-tui/channels.sqlite");
+}
+function mirrorMediaDir(): string {
+  return process.env.EVO_MEDIA_DIR ?? join(homedir(), ".local/share/mini-tui/media");
+}
+function openMirrorContext(): MirrorContext | null {
+  if (mirrorCtx !== undefined) return mirrorCtx;
+  let inbox: ChannelInbox | null = null;
+  try {
+    inbox = new ChannelInbox(inboxDbPath());
+  } catch (error) {
+    log(`mirror disabled: no channel store (${error instanceof Error ? error.message : "open failed"})`);
+    return (mirrorCtx = null);
+  }
+  const accounts = parseConsumerAccounts();
+  const senders = new Map<string, EvoSender>();
+  const baseUrl = process.env.EVO_API_URL ?? "";
+  for (const account of accounts) {
+    if (!baseUrl || !account.instance || !account.token) continue;
+    senders.set(account.account, createEvoSender({ baseUrl, instance: account.instance, token: account.token }));
+  }
+  mirrorCtx = {
+    inbox,
+    mirror: new MirrorStore(inbox.db),
+    senders,
+    defaultSender: senders.get(accounts[0]?.account ?? "") ?? [...senders.values()][0]!,
+    mediaDir: mirrorMediaDir(),
+  };
+  if (!mirrorCtx.defaultSender) log("mirror: outbound relay disabled (no evo sender configured); inbound mirror stays on");
+  return mirrorCtx;
+}
+/** The sessions' durable mirror loader: rows for a session the saved transcript
+ * does not already show (channel events saved with the transcript carry mirrorId). */
+function mirrorLoader(sessionId: string, existing: readonly unknown[]): ReturnType<typeof mirrorEvent>[] {
+  const ctx = openMirrorContext();
+  if (!ctx) return [];
+  try {
+    return ctx.mirror.forSession(sessionId, existing, 200).map((row) => mirrorEvent(row, mediaUrlFor(ctx)));
+  } catch {
+    return []; // a busy store: the poller catches up on a later tick
+  }
+}
+function mediaUrlFor(ctx: MirrorContext): (path: string) => string | null {
+  return (path) => {
+    // Only files inside this deployment's media store ever get a URL, and only
+    // by the store's own naming (`seq<seq>-<attachment id>`).
+    if (!path.startsWith(ctx.mediaDir + "/")) return null;
+    const name = path.slice(ctx.mediaDir.length + 1);
+    return /^seq\d+-[A-Za-z0-9._-]+$/.test(name) ? `/api/channel-media/${name}` : null;
+  };
+}
+/** Push new mirror rows into every open session they belong to. */
+function mirrorPoll(): void {
+  const ctx = openMirrorContext();
+  if (!ctx) return;
+  try {
+    for (const row of ctx.mirror.after(mirrorCursor, 200)) {
+      mirrorCursor = row.id;
+      sessions.injectChannel(row.session, mirrorEvent(row, mediaUrlFor(ctx)));
+    }
+  } catch {
+    // a busy store: try again on the next tick
+  }
+}
+let mirrorCursor = 0;
+{
+  const ctx = openMirrorContext();
+  if (ctx) {
+    try {
+      mirrorCursor = ctx.mirror.lastId();
+    } catch {
+      mirrorCursor = 0;
+    }
+    const mirrorMs = Number(process.env.MINITUI_MIRROR_POLL_MS ?? 1000);
+    if (mirrorMs > 0) {
+      const timer = setInterval(mirrorPoll, mirrorMs);
+      (timer as { unref?: () => void }).unref?.();
+    }
+  }
+}
+
+// --- web → WhatsApp relay (espejo, outbound) -------------------------------
+
+/** A quiet system line in a held session's transcript (relay failures). */
+function sessionNotice(id: string, text: string): void {
+  try {
+    sessions.injectChannel(id, { type: "notice", text });
+  } catch {
+    // a session nobody holds has no transcript to tell
+  }
+}
+
+const RELAY_MAX_BYTES = 12 * 1024 * 1024;
+
+/** Mirror one web prompt into every WhatsApp thread bound to its session.
+ * Fire-and-forget by contract: the prompt is already accepted web-side; the
+ * relay never blocks the answer and never rewrites it. Anti-echo: every sent
+ * id is registered as our own send BEFORE the echo can arrive, so the
+ * receiver refuses it and no loop (web → WhatsApp → web, or a turn) can
+ * start. Attachments ride along: images as images, everything else as a
+ * document. */
+function relayPromptToWhatsApp(sessionId: string, prompt: string, attachments: unknown): void {
+  const ctx = openMirrorContext();
+  if (!ctx?.defaultSender) return;
+  let bindings;
+  try {
+    bindings = ctx.inbox.bindingsForSession(sessionId);
+  } catch {
+    return;
+  }
+  if (!bindings.length) return;
+  const atts = resolveAttachments(attachments);
+  const sender = (account: string) => ctx.senders.get(account) ?? ctx.defaultSender;
+  void (async () => {
+    for (const binding of bindings) {
+      const send = sender(binding.account);
+      const own = (result: Awaited<ReturnType<EvoSender["sendText"]>>) => {
+        if (result.kind === "sent") {
+          try {
+            ctx.inbox.registerOwnSend(result.replyId);
+          } catch { /* the consumer's own-send history guard still catches the echo */ }
+          log("mirror.relay.sent", { session: sessionId, thread: binding.thread, replyId: result.replyId });
+        } else {
+          log("mirror.relay.uncertain", { session: sessionId, thread: binding.thread, definitive: result.definitive || undefined, error: result.error.slice(0, 160) });
+          sessionNotice(sessionId, `no se pudo reflejar en WhatsApp (${binding.thread}): ${result.error.slice(0, 120)}`);
+        }
+      };
+      if (prompt) own(await send.sendText({ number: binding.thread, text: prompt }));
+      for (const att of atts) {
+        try {
+          if (statSync(att.path).size > RELAY_MAX_BYTES) throw new Error(`attachment exceeds ${RELAY_MAX_BYTES} bytes`);
+          const mediaBase64 = readFileSync(att.path).toString("base64");
+          const result = att.mime.startsWith("image/")
+            ? await send.sendImage({ number: binding.thread, mediaBase64, mimetype: att.mime })
+            : await send.sendDocument({ number: binding.thread, mediaBase64, mimetype: att.mime, filename: att.name });
+          own(result);
+        } catch (error) {
+          log("mirror.relay.attachment_failed", { session: sessionId, attachment: att.id, error: error instanceof Error ? error.message.slice(0, 160) : String(error) });
+          sessionNotice(sessionId, `no se pudo reflejar el adjunto ${att.name} en WhatsApp`);
+        }
+      }
+    }
+  })();
+}
+
 // No shell outlives the server (a restart, a deploy, Ctrl+C in a dev shell).
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.once(sig, () => {
@@ -251,6 +414,22 @@ const MIME: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".woff2": "font/woff2",
+};
+
+/** The mirrored-media types the transcript renders inline (espejo). */
+const MEDIA_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain; charset=utf-8",
+  ".ogg": "audio/ogg",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
+  ".wav": "audio/wav",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
 
 const CORS = {
@@ -541,6 +720,26 @@ const server = Bun.serve({
           },
         });
       }
+      // Espejo media: a WhatsApp attachment the consumer downloaded (an image
+      // or document on a bound thread) renders in the session's transcript
+      // through this route. Only the store's own names resolve — a client can
+      // never name a path, and containment is re-checked on disk.
+      const mediaMatch = path.match(/^\/channel-media\/(seq\d+-[A-Za-z0-9._-]+)$/);
+      if (mediaMatch && request.method === "GET") {
+        const ctx = openMirrorContext();
+        if (!ctx) return json({ error: "not found" }, 404);
+        const file = resolve(ctx.mediaDir, mediaMatch[1] as string);
+        if (!file.startsWith(ctx.mediaDir + "/") || !existsSync(file) || !statSync(file).isFile()) return json({ error: "not found" }, 404);
+        const ext = extname(file).toLowerCase();
+        return new Response(Bun.file(file), {
+          headers: {
+            "content-type": MEDIA_MIME[ext] ?? "application/octet-stream",
+            "x-content-type-options": "nosniff",
+            "cache-control": "private, max-age=86400",
+            ...CORS,
+          },
+        });
+      }
       // ------------------------------------------------------------- hub
       // The one socket a tab keeps for the right sidebar (notes): watch, live pushes, saves. See hub.ts.
       if (path === "/hub" && request.method === "GET") {
@@ -657,6 +856,10 @@ const server = Bun.serve({
             // e.g. a saved session with no conversation to continue from: the reason is the answer.
             return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 409);
           }
+          // Espejo: a prompt written on a WhatsApp-bound session also goes to
+          // the bound thread. Fire-and-forget: it never delays or blocks the
+          // agent, and its echo is refused on the WhatsApp side (own-send).
+          relayPromptToWhatsApp(id, String(body.prompt ?? "").trim(), body.attachments);
           return json({ ok: true });
         }
         if (action === "/model" && request.method === "POST") {

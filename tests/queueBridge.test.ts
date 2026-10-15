@@ -45,6 +45,11 @@ function fakeSender(): EvoSender & { sent: Array<{ number: string; text: string;
       sent.push({ number: args.number, text: "[[image]]", quotedId: null });
       return { kind: "sent", replyId: id };
     },
+    async sendDocument(args) {
+      const id = `w-doc-${sent.length + 1}`;
+      sent.push({ number: args.number, text: "[[document]]", quotedId: null });
+      return { kind: "sent", replyId: id };
+    },
   };
 }
 

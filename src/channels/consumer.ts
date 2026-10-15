@@ -102,6 +102,11 @@ export interface ConsumerOptions {
   generateSessionTitle?: (task: string, model: string, onTitle: (title: string) => void) => void;
   /** v5-A: rename the bound group's subject to match the session title. */
   renameGroupSubject?: (account: string, groupJid: string, subject: string) => Promise<void>;
+  /** Espejo (mirror): a message the consumer acks WITHOUT a turn (a gated
+   * group message, a chat command) still belongs on the bound session's web
+   * transcript. The sink appends the mirror row (media best-effort) — it is
+   * data for the web only, never a prompt. Optional. */
+  mirrorIn?: (row: PendingRow, message: Inbound) => Promise<void>;
   /** v4-F: strips [[mini-image: <path>]] markers from the reply and returns
    * the validated screenshot paths to deliver as media. Optional. */
   planImages?: (row: PendingRow, message: Inbound, replyText: string) => { text: string; images: string[] };
@@ -145,6 +150,25 @@ export function planImageMarkers(replyText: string, poolDir: string): { text: st
   }
   chunks.push(replyText.slice(last));
   return { text: chunks.join("").replace(/\n{3,}/g, "\n\n").trim(), images };
+}
+
+// ---- espejo (WhatsApp → web, no-turn messages) ----------------------------
+
+/** Mirror one message the consumer will NOT turn on. Best-effort by
+ * contract: a mirror failure is logged and the ack proceeds — the cursor
+ * never blocks on a browser's transcript. */
+async function mirrorNoTurn(
+  options: ConsumerOptions,
+  log: (event: string, fields?: Record<string, unknown>) => void,
+  row: PendingRow,
+  message: Inbound,
+): Promise<void> {
+  if (!options.mirrorIn) return;
+  try {
+    await options.mirrorIn(row, message);
+  } catch (error) {
+    log("channel.mirror.error", { seq: row.seq, session: row.session, error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 /** The sender that speaks AS this row's account. Identity hygiene: a message
@@ -274,6 +298,7 @@ async function processOne(
   // creation runs, so a crash mid-creation replays nothing.
   const commandPlan = options.planSessionCommand?.(row, message);
   if (commandPlan) {
+    await mirrorNoTurn(options, log, row, message);
     ack();
     void (async () => {
       try {
@@ -290,6 +315,7 @@ async function processOne(
   // allowlist only, acknowledged before the deferred work runs.
   const renamePlan = options.planRenameCommand?.(row, message);
   if (renamePlan) {
+    await mirrorNoTurn(options, log, row, message);
     ack();
     void (async () => {
       try {
@@ -309,6 +335,9 @@ async function processOne(
     const gated = (binding?.policy ?? "") !== "all" && !mentionsAccount(message.mentions, options.accountJids?.get(row.account));
     if (gated) {
       log("channel.consumer.group_ignored", { seq, thread: row.thread, account: row.account, reason: options.accountJids?.get(row.account) ? "no_mention" : "no_jid_configured" });
+      // Espejo: this message will never reach the session's journal (no turn
+      // runs), so the web transcript learns of it through the mirror store.
+      await mirrorNoTurn(options, log, row, message);
       ack();
       return;
     }
