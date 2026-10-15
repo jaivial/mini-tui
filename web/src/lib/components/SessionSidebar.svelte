@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { Search, Server, Square, ChevronRight, PanelLeftClose, X, Pencil, Plus } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import Skeleton from "./Skeleton.svelte";
@@ -92,10 +93,17 @@
   /** Delegates working anywhere in the team, for the header's Team map badge. */
   const liveTeam = $derived(bots.reduce((n, s) => n + treeOf(s.id).live, 0));
 
-  // One shared poller, fed exactly the sessions this list shows: a bot that goes away stops
-  // being polled too. The Team map reads the same store.
+  // One shared poller, fed exactly the sessions this list shows: a bot that goes away stops being
+  // polled too. The Team map reads the same store.
+  //
+  // Only the ids go in, and they are snapshotted with `untrack`: `agentTree.sync` writes to the
+  // store's `$state`, and a row's counters read that same state back through `treeOf`. Letting the
+  // effect depend on it makes it feed itself — every poll tick (3s) re-runs the effect, which
+  // re-runs the effect, until Svelte throws `effect_update_depth_exceeded`. The list of ids is all
+  // this effect actually needs, so that is all it may read.
   $effect(() => {
-    agentTree.sync(bots.map((s) => s.id));
+    const ids = untrack(() => bots.map((s) => s.id));
+    agentTree.sync(ids);
   });
 
   const BOT_DOT: Record<BotRow["tone"], string> = {
