@@ -16,6 +16,10 @@
  *   unbind --account A --thread T [--channel C]
  *   allow --account A --thread T (--add jid | --remove jid) [--channel C]
  *   model --account A --thread T --model provider/model   (empty string clears)
+ *   ack --account A --thread T [--reaction 👀] [--delay-ms 4000]
+ *        [--clear]  — v5-E immediate ack: the emoji on acceptance and how long
+ *        the turn may run before the MODEL-WRITTEN line is sent. There is no
+ *        text option on purpose: the line is generated from the sender's message.
  *   models — the model ids mini currently has configured (the validation set)
  *   groups --account A — the groups the account's instance is in
  *   refresh-icons --account A — re-upload the emoji avatar of every bound
@@ -52,6 +56,7 @@ function usage(code: number): never {
   unbind  --account A --thread T [--channel C]
   allow   --account A --thread T (--add jid | --remove jid) [--channel C]
   model   --account A --thread T --model provider/model
+  ack     --account A --thread T [--reaction 👀] [--delay-ms 4000] [--clear]
   refresh-icons --account A   re-upload every bound group's emoji avatar
 env: EVO_INBOX_DB (default ~/.local/share/mini-tui/channels.sqlite)`);
   process.exit(code);
@@ -182,6 +187,25 @@ try {
     if (!existing) throw new Error(`no binding for ${channel}/${f.account}/${f.thread}`);
     inbox.bind({ ...existing, model });
     console.log(`model for ${channel}/${f.account}/${f.thread} → ${model || "(consumer default)"}`);
+  } else if (command === "ack") {
+    // The line itself is not settable here on purpose (see the module header):
+    // it is written by the model from the sender's message. An operator chooses
+    // the emoji and the patience, nothing else.
+    const f = flags(["account", "thread", "reaction", "delay-ms", "clear", "channel"]);
+    if (!f.account || !f.thread) usage(2);
+    const channel = (f.channel ?? "whatsapp") as Channel;
+    const existing = inbox.bindingFor(channel, f.account, f.thread);
+    if (!existing) throw new Error(`no binding for ${channel}/${f.account}/${f.thread}`);
+    if (f.clear) {
+      inbox.bind({ ...existing, ack: undefined });
+      console.log(`ack for ${channel}/${f.account}/${f.thread} → consumer default`);
+    } else {
+      const delayMs = f["delay-ms"] === undefined ? existing.ack?.delayMs : Number(f["delay-ms"]);
+      const reaction = f.reaction === undefined ? existing.ack?.reaction : f.reaction;
+      if (delayMs !== undefined && (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 120_000)) die("--delay-ms must be 0..120000");
+      inbox.bind({ ...existing, ack: { ...(reaction !== undefined ? { reaction } : {}), ...(delayMs !== undefined ? { delayMs } : {}) } });
+      console.log(`ack for ${channel}/${f.account}/${f.thread} → reaction=${JSON.stringify(reaction ?? "(default)")} delayMs=${delayMs ?? "(default)"} (the text is written by the model)`);
+    }
   } else if (command === "models") {
     flags([]);
     for (const model of [...new Set(connectionModelOptions(loadConnections()).map((option) => option.value))].sort()) console.log(model);
