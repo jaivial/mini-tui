@@ -19,6 +19,15 @@ export interface Settings {
    * it may be on while Jev is off (the phase then degrades to reader-only) and off while Jev is on.
    */
   jevVerifierEnabled?: boolean;
+  /**
+   * Toggle 3 (v6-C) — the model router. OFF by default and, when off, the router
+   * is not consulted at all: the manual model selector is the only thing that
+   * picks a model, exactly as before this existed. When on, a task, a delegated
+   * subagent and a sub-task inside a running agent each get a model chosen from
+   * the catalog's index/price, the usage ledger's quota/latency/failures, and
+   * the circuit breaker — see `src/router/`.
+   */
+  modelRouterEnabled?: boolean;
 }
 
 export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description: string }> = [
@@ -33,6 +42,10 @@ export const DEFAULT_SETTINGS: Settings = {
   // Both Jev pieces ship OFF: they cost money per call and the user must opt in, one at a time.
   jevEnabled: false,
   jevVerifierEnabled: false,
+  // The router ships OFF too, for the same reason: with it off, the manual model
+  // selector is the only thing that picks a model, which is the behaviour that
+  // existed before v6-C and must not change.
+  modelRouterEnabled: false,
 };
 
 /** Read on every call, not once at import: tests (and embedders) set the env var after modules load. */
@@ -52,12 +65,14 @@ export function loadSettings(): Settings {
     const theme = data?.theme;
     const jev = enabled(data?.jevEnabled);
     const verifier = enabled(data?.jevVerifierEnabled);
+    const router = enabled(data?.modelRouterEnabled);
     if (mode === "collapsed" || mode === "trim" || mode === "expanded") {
       return {
         outputMode: mode,
         theme: typeof theme === "string" ? theme : DEFAULT_SETTINGS.theme,
         jevEnabled: jev,
         jevVerifierEnabled: verifier,
+        modelRouterEnabled: router,
       };
     }
   } catch {

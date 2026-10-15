@@ -43,6 +43,8 @@ import type { QueueBridge } from "./queueBridge";
 import type { GroupPlan } from "./groupBridge";
 import type { SessionCommandPlan } from "./sessionCommand";
 import type { RenameCommandPlan } from "./renameCommand";
+import type { RouterCommandPlan } from "./routerCommand";
+import { route as routerRoute, routerEnabled } from "../router";
 import { readFileSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { ensureMediaFrames, lateTranscriptNote, transcribePendingAudio, type LateTranscriptLog, type MediaHandling } from "./mediaTurn";
@@ -101,6 +103,10 @@ export interface ConsumerOptions {
    * row; a non-null plan renames the session (and the group subject) with NO
    * model turn. Optional. */
   planRenameCommand?: (row: PendingRow, message: Inbound) => RenameCommandPlan | null;
+  /** Operator chat command (v6-C): recognizes `/router on|off|status|why` in an
+   * accepted row; a non-null plan toggles or reports the model router with NO
+   * model turn. Optional. */
+  planRouterCommand?: (row: PendingRow, message: Inbound) => RouterCommandPlan | null;
   /** v5-A: best-effort AI title for a fresh session's first message (the same
    * helper the web server uses). Absent = the fallback title stays. */
   generateSessionTitle?: (task: string, model: string, onTitle: (title: string) => void) => void;
@@ -396,7 +402,24 @@ async function processOne(
       try {
         await renamePlan.after();
       } catch (error) {
-        log("channel.rename_command.error", { seq, error: error instanceof Error ? error.message : String(error) });
+        log("channel.rename_command.error", { seq: row.seq, error: error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160) });
+      }
+    })();
+    return;
+  }
+
+  // Operator chat command (v6-C): `/router on|off|status|why` drives the model
+  // router from the thread. Same authority shape: allowlist only, no model turn,
+  // acknowledged before the deferred work runs.
+  const routerPlan = options.planRouterCommand?.(row, message);
+  if (routerPlan) {
+    await mirrorNoTurn(options, log, row, message);
+    ack();
+    void (async () => {
+      try {
+        await routerPlan.after();
+      } catch (error) {
+        log("channel.router_command.error", { seq: row.seq, error: error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160) });
       }
     })();
     return;
@@ -858,6 +881,22 @@ function scheduleFirstTurnTitle(
   });
 }
 
+/**
+ * v6-C: the model a channel turn runs on, decided by the router.
+ *
+ * Returns "" for every failure — Laya down, nothing connected, a catalog with
+ * no usable model — because the consumer already treats "" as "the agent's own
+ * default", which is exactly the behaviour that must survive a router problem.
+ */
+async function routedModel(task: string): Promise<string> {
+  try {
+    const decision = await routerRoute({ level: "task", task });
+    return decision.model;
+  } catch {
+    return "";
+  }
+}
+
 /** One agent turn in the binding's session; resolves with the reply text.
  * Throws while the turn keeps failing (bounded retries, then an honest note). */
 async function runTurn(
@@ -875,7 +914,12 @@ async function runTurn(
   // The binding's model (operator CLI) wins; the consumer default is the
   // fallback. The choice persists with the session: it is saved on create and
   // re-applied on every resume so the conversation never silently drifts.
-  const model = bindingModel || options.model || "";
+  //
+  // v6-C: when neither the binding nor the consumer pinned a model AND the
+  // router is on, the message itself decides. A pinned model is a manual
+  // choice and short-circuits the router entirely, so an operator who configured
+  // a model for a thread keeps it.
+  const model = bindingModel || options.model || (routerEnabled() ? await routedModel(message.text) : "");
   let lastError = "";
   for (let attempt = 1; attempt <= maxTurnAttempts; attempt++) {
     try {

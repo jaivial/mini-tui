@@ -30,6 +30,9 @@ import { MirrorStore, mirrorEvent } from "../channels/mirror";
 import { createEvoSender, type EvoSender } from "../channels/evoSend";
 import { channelsView, evoPairingCode, evoQr, evoStatus } from "./channels";
 import { usageView } from "./usage";
+import { route, routerStatus, auditStore, breakerStore } from "../router";
+import { layaHealth } from "../router/laya";
+import type { RouteLevel } from "../router/audit";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { RateLimiter } from "./rateLimit";
@@ -101,12 +104,27 @@ const LIMITS = {
   providerConnect: new RateLimiter(5, 60_000), // real API calls upstream
   hostProbe: new RateLimiter(6, 60_000), // an ssh dial
   folders: new RateLimiter(60, 60_000), // a directory walk (ssh when remote)
+  // v6-C: a preview runs the real decision path, which is a loopback call to Laya
+  // and a write to the audit trail — cheaper than a model turn, but not free.
+  routerPreview: new RateLimiter(20, 60_000),
 };
 function rateLimited(which: keyof typeof LIMITS, request: Request, srv: unknown): Response | null {
   const ip = (srv as { requestIP?: (r: Request) => { address: string } | null }).requestIP?.(request)?.address ?? "local";
   const taken = LIMITS[which].take(ip);
   if (taken.ok) return null;
   return json({ error: "too many requests" }, 429, { "retry-after": String(taken.retryAfter) });
+}
+
+/** v6-C: a bounded `?limit=`, so a panel can page the decision trail. */
+function limitParam(url: URL, fallback: number): number {
+  const raw = Number(url.searchParams.get("limit"));
+  return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 200) : fallback;
+}
+
+/** v6-C: an optional `?level=` filter over the three decision levels. */
+function levelParam(url: URL): RouteLevel | undefined {
+  const raw = (url.searchParams.get("level") ?? "").trim();
+  return raw === "task" || raw === "delegate" || raw === "subtask" ? raw : undefined;
 }
 
 /** A per-session transcript socket, or the one hub socket of a tab. */
@@ -1073,6 +1091,41 @@ const server = Bun.serve({
 
       // ----------------------------------------------------------- misc
       if (path === "/models" && request.method === "GET") return json(modelCatalog());
+
+      // ------------------------------------------------- v6-C model router
+      // What the router can see and would pick: the catalog's coverage, the Laya
+      // service's health, the open circuits and the last decisions. Same-origin and
+      // read-only; the toggle itself is `PATCH /settings`.
+      if (path === "/router" && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        try {
+          const [status, laya] = await Promise.all([Promise.resolve(routerStatus()), layaHealth()]);
+          return json({ ...status, laya: { reachable: laya.reachable, detail: laya.detail }, decisions: auditStore().recent(limitParam(url, 25), levelParam(url)) });
+        } catch (error) {
+          return json({ error: "router_read_failed", detail: (error as Error).message.slice(0, 120) }, 503);
+        }
+      }
+      // A dry run: what would this task get right now? Runs the real decision
+      // path and audits it, so the panel's "preview" is the real thing.
+      if (path === "/router/preview" && request.method === "POST") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        const routerLimit = rateLimited("routerPreview", request, srv);
+        if (routerLimit) return routerLimit;
+        try {
+          const body = await readJson(request);
+          const decision = await route({ level: "task", task: String(body.task ?? "").slice(0, 8_000) });
+          return json({ model: decision.model, source: decision.source, reason: decision.reason, laya: { probability: decision.layaProbability, confidence: decision.layaConfidence, checkpoint: decision.layaCheckpoint, reason: decision.layaReason }, complexity: decision.profile, ranking: decision.candidates.slice(0, 8).map((row) => ({ model: row.candidate.id, score: row.score, terms: row.terms, why: row.why, excluded: row.excluded })) });
+        } catch (error) {
+          return json({ error: "router_preview_failed", detail: (error as Error).message.slice(0, 120) }, 503);
+        }
+      }
+      // Forget a cooldown, so an operator can retry a tripped model now.
+      const breakerMatch = path.match(/^\/router\/breaker\/([\w./-]+)$/);
+      if (breakerMatch && request.method === "DELETE") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        const model = decodeURIComponent(breakerMatch[1]!).slice(0, 200);
+        return breakerStore().reset(model) ? json({ ok: true, model }) : json({ error: "no open circuit" }, 404);
+      }
 
       // ---------------------------------------------- commands, skills, settings
       if (path === "/commands" && request.method === "GET") return json(COMMANDS);

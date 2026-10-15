@@ -9,16 +9,17 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { expandLocal } from "./folders";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { attachMini, foreignRunAlive, runnerSupportsCompactOnly, spawnMini, type MiniRun } from "../mini/spawn";
 import { modelEnv } from "../providers";
 import { DEFAULT_MODEL } from "../config";
 import { loadLastModel, saveLastModel } from "../lastModel";
 import { expandSkills } from "../skills";
+import { route as routerRoute, routerEnabled, fallback as routerFallback, succeed as routerSucceed, profileSubTask } from "../router";
 import {
   defaultDbPath,
   createSession,
@@ -192,6 +193,16 @@ interface Internal {
   usageConsumed?: number;
   /** Queue task this session's calls belong to, when one drove the run (v6-B). */
   usageTask?: string;
+  /** v6-C: messages the router supervisor has already looked at, so each pass
+   * reads only what is new and never re-decides the same step. */
+  routerConsumed?: number;
+  /** v6-C: the complexity class the router last acted on. A switch needs a real
+   * change of class, not a wobble, because a mid-context switch costs a cache miss. */
+  routerComplexity?: string;
+  /** v6-C: the model the router last put on this run. */
+  routerModel?: string;
+  /** v6-C: a decision is already in flight for this entry (one at a time). */
+  routerBusy?: boolean;
 }
 
 /** How often held sessions are checked for agents and saves made by other UIs (a terminal). */
@@ -208,6 +219,105 @@ function waitingAtExit(messages: TrajectoryMessage[]): boolean {
     if (itype !== "Compaction" && itype !== "CompactionSkipped") return false;
   }
   return false;
+}
+
+// ------------------------------------------------------------- v6-C router helpers
+
+/**
+ * Did this assistant message delegate or hand over to another agent?
+ *
+ * The native tools journal their arguments in `extra.actions[].command` as JSON,
+ * so this reads the parsed object when there is one and falls back to matching the
+ * tool name on the message's own `tool_calls`. Both are the same fact; the
+ * actions array is the one the rest of the pipeline already trusts.
+ */
+const DELEGATE_TOOLS = new Set(["agent_delegate", "agent_handoff", "agent spawn", "agent_spawn"]);
+
+function delegationCalls(message: TrajectoryMessage): string[] {
+  const out: string[] = [];
+  for (const action of Array.isArray((message.extra ?? {}).actions) ? ((message.extra as Record<string, unknown>).actions as unknown[]) : []) {
+    if (action && typeof action === "object") {
+      const command = (action as Record<string, unknown>).command;
+      if (typeof command === "string") out.push(command);
+    }
+  }
+  for (const call of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
+    const name = typeof call.function?.name === "string" ? call.function.name : "";
+    if (DELEGATE_TOOLS.has(name) || /agent[ _](delegate|handoff|spawn)/.test(name)) out.push(call.function?.arguments ?? "");
+  }
+  return out;
+}
+
+export function hasDelegation(message: TrajectoryMessage): boolean {
+  if (message.role !== "assistant") return false;
+  return delegationCalls(message).length > 0;
+}
+
+/**
+ * The brief a delegation carries. The first delegated task, or the fan-out's
+ * first task when several were passed at once — the router re-decides per
+ * delegation, so it needs the text the child was actually given.
+ */
+export function delegationTask(message: TrajectoryMessage): string {
+  for (const raw of delegationCalls(message)) {
+    try {
+      const spec = parseJson<Record<string, unknown>>(raw, {});
+      const tasks = Array.isArray(spec.tasks) ? spec.tasks : [];
+      for (const task of tasks.length ? tasks : [spec]) {
+        const text = typeof task === "object" && task ? String((task as Record<string, unknown>).task ?? "") : "";
+        if (text.trim()) return text;
+      }
+    } catch {
+      // A command that is not JSON is not a delegation spec; keep looking.
+    }
+  }
+  return "";
+}
+
+/**
+ * The HTTP status a provider's error text carries, or null.
+ *
+ * Agents wrap provider errors in prose ("Error code: 429 - rate limit…"), so the
+ * status is read from the text. Returning null for an unrecognised error is the
+ * honest answer: the classifier then falls back to the message patterns, and a
+ * call that succeeded (no error) never reaches here at all.
+ */
+export function statusOf(message: string): number | null {
+  const match = /\b([1-5]\d\d)\b/.exec(message ?? "");
+  if (!match) return null;
+  const status = Number(match[1]);
+  return status >= 400 && status <= 599 ? status : null;
+}
+
+/**
+ * The control file of a delegated child, once the hub has written its roster.
+ *
+ * The hub's own `agent model` command reaches a running child the same way, by
+ * appending to that file; the router uses the same channel so it needs no new
+ * protocol and no change to the agent. Returns "" when the child is not on disk
+ * yet (the roster is written after the launch) — the caller then does nothing,
+ * because a switch that cannot be delivered must not be recorded as done.
+ */
+export function childControlPath(traj: Trajectory, model: string): string {
+  const dir = trajPathOf(traj);
+  if (!dir) return "";
+  const index = join(dir, "subagents", "index.json");
+  try {
+    const data = JSON.parse(readFileSync(index, "utf8")) as { children?: Array<{ model?: string; control_path?: string }> };
+    const match = (data.children ?? []).find((child) => typeof child.control_path === "string" && child.control_path && child.model === model);
+    const control = match?.control_path ?? "";
+    if (!control || !existsSync(control)) return "";
+    return control;
+  } catch {
+    return "";
+  }
+}
+
+/** The run directory a trajectory came from, from its own path (never guessed). */
+function trajPathOf(traj: Trajectory): string {
+  const info = traj.info as Record<string, unknown> | undefined;
+  const path = typeof info?.traj_path === "string" ? info.traj_path : "";
+  return path ? dirname(path) : "";
 }
 
 function parseJson<T>(text: string | null | undefined, fallback: T): T {
@@ -513,6 +623,177 @@ export class SessionManager {
     this.#onChange(entry.session);
   }
 
+  // ------------------------------------------------------------------ v6-C router
+
+  /**
+   * Level 1: the model a brand-new task runs on. Returns "" when the router is
+   * off, has nothing connected to choose from, or cannot decide — every one of
+   * those means the caller keeps the model it already had, which is what makes
+   * a router mistake a non-event rather than a failed task.
+   */
+  async #routeTask(task: string): Promise<string> {
+    try {
+      const decision = await routerRoute({ level: "task", task });
+      if (!decision.model) {
+        log("router.no_decision", { level: "task", reason: decision.reason.slice(0, 160) });
+        return "";
+      }
+      log("router.decided", {
+        level: "task",
+        model: decision.model,
+        source: decision.source,
+        laya: decision.layaProbability,
+        confidence: decision.layaConfidence,
+        reason: decision.reason.slice(0, 200),
+        auditId: decision.auditId,
+      });
+      return decision.model;
+    } catch (error) {
+      log("router.error", { level: "task", error: error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160) });
+      return "";
+    }
+  }
+
+  /**
+   * Levels 2 and 3, plus fallback, over one pass of the journal's new messages.
+   *
+   * This is the only place in the whole house that can see all three at once,
+   * because it is the one place that sees every model call as it happens:
+   *
+   * - **fallback**: an assistant message carrying `extra.error` is a call that
+   *   failed. Classifying it and opening its circuit is what makes the next
+   *   attempt silent. The switch is written to the control file, so the agent
+   *   picks it up from its next step — a failed call does not need the run to
+   *   restart, only to change model.
+   * - **level 2 (delegate)**: an `agent_delegate`/`agent_handoff` action names a
+   *   child and its model. The router re-decides that child's model from the
+   *   delegated brief and issues the same `MODEL` control line the hub's own
+   *   `agent model` command uses.
+   * - **level 3 (subtask)**: between steps, the run's own trajectory is
+   *   classified. A switch only happens when the complexity class genuinely
+   *   changed — a mid-run switch costs a cache miss and a re-read of the prefix,
+   *   so a wobble must not pay that price.
+   *
+   * Every write goes through the run's own control file, the one channel the
+   * agent already reads before each model call.
+   */
+  #supervise(entry: Internal, messages: TrajectoryMessage[], traj: Trajectory): void {
+    const from = entry.routerConsumed ?? 0;
+    if (messages.length <= from) return;
+    entry.routerConsumed = messages.length;
+    const fresh = messages.slice(from);
+    // One decision in flight per entry: two in flight would race on the control file.
+    if (entry.routerBusy || entry.exited || !entry.run) return;
+
+    const failed = fresh.find((message) => {
+      const extra = (message.extra ?? {}) as Record<string, unknown>;
+      return typeof extra.error === "string" && extra.error.trim().length > 0;
+    });
+    const delegated = fresh.find((message) => hasDelegation(message));
+
+    void (async () => {
+      entry.routerBusy = true;
+      try {
+        const current = parseInfo(traj).model || entry.session.model || "";
+
+        // ---- healing: a call that WORKED closes its circuit ----
+        // Without this a tripped model can only come back by an operator
+        // pressing "clear the circuit": a provider whose quota window reset
+        // itself would stay out of the pool for the rest of the process's
+        // life, and each trip would escalate the cooldown instead of clearing
+        // it. A successful assistant message on the run's current model is the
+        // evidence that the circuit should close.
+        if (!failed && current) {
+          const worked = fresh.some(
+            (message) =>
+              message.role === "assistant" &&
+              !((message.extra ?? {}) as Record<string, unknown>).error &&
+              typeof message.content === "string" &&
+              message.content.trim().length > 0,
+          );
+          if (worked) routerSucceed(current);
+        }
+
+        // ---- fallback: a call that failed takes its model out of circulation ----
+        if (failed) {
+          const extra = (failed.extra ?? {}) as Record<string, unknown>;
+          const message = String(extra.error ?? "");
+          const failedModel = current || entry.routerModel || entry.session.model;
+          if (failedModel) {
+            const decision = await routerFallback(
+              { level: "task", task: entry.session.task },
+              failedModel,
+              // A 200 with a null body is the house's known glm-5.3-flash case, and
+              // it is a fallback reason like any other: retrying the same budget
+              // reproduces it exactly.
+              { status: statusOf(message), message, emptyContent: /content[^\n]{0,20}(null|None)|returned no content/i.test(message) },
+            );
+            if (decision.model && decision.model !== failedModel) {
+              entry.run?.switchModel(decision.model);
+              entry.routerModel = decision.model;
+              log("router.fallback", {
+                session: entry.session.id,
+                from: failedModel,
+                to: decision.model,
+                reason: decision.reason.slice(0, 200),
+                auditId: decision.auditId,
+              });
+            } else {
+              // The failed model was the only one: say so rather than pretending.
+              log("router.fallback_exhausted", { session: entry.session.id, model: failedModel, reason: decision.reason.slice(0, 160) });
+            }
+          }
+        }
+
+        // ---- level 2: a subagent the run just delegated ----
+        if (delegated) {
+          const brief = delegationTask(delegated);
+          if (brief) {
+            const decision = await routerRoute({ level: "delegate", task: brief });
+            if (decision.model && decision.model !== current) {
+              // The child's own control file, when the hub already started it; the
+              // hub's `agent model` command writes exactly this line.
+              const child = childControlPath(traj, decision.model);
+              if (child) {
+                appendFileSync(child, `MODEL ${decision.model}\n`);
+                log("router.delegate", { session: entry.session.id, model: decision.model, source: decision.source, auditId: decision.auditId });
+              }
+            }
+          }
+        }
+
+        // ---- level 3: a sub-task whose shape changed ----
+        const sub = profileSubTask(messages);
+        if (sub.complexity !== entry.routerComplexity) {
+          const previous = entry.routerComplexity;
+          entry.routerComplexity = sub.complexity;
+          // The first classification is the baseline, not a change: acting on it
+          // would switch the model on the run's very first step for no reason.
+          if (previous) {
+            const decision = await routerRoute({ level: "subtask", task: sub.summary, from: entry.routerModel ?? "" });
+            if (decision.model && decision.model !== (entry.routerModel ?? "")) {
+              entry.run?.switchModel(decision.model);
+              entry.routerModel = decision.model;
+              entry.session.model = decision.model;
+              log("router.subtask", {
+                session: entry.session.id,
+                from: previous,
+                to: sub.complexity,
+                model: decision.model,
+                source: decision.source,
+                auditId: decision.auditId,
+              });
+            }
+          }
+        }
+      } catch (error) {
+        log("router.error", { session: entry.session.id, error: error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160) });
+      } finally {
+        entry.routerBusy = false;
+      }
+    })();
+  }
+
   /** Parse new messages and append the resulting events. */
   #ingest(entry: Internal, traj: Trajectory, showSystem = false): void {
     const messages = traj.messages ?? [];
@@ -537,6 +818,12 @@ export class SessionManager {
     // events are derived, so a call is measured even if the UI never renders it.
     // Never throws into the run (see recordUsage).
     this.#measure(entry, messages, traj);
+
+    // v6-C: the router watches the same journal, for the three things it can
+    // only learn from a running agent: a model that just failed (fallback), a
+    // subagent that was just delegated (level 2), and a sub-task whose shape has
+    // changed since the last step (level 3). One pass, off by default.
+    if (routerEnabled()) this.#supervise(entry, messages, traj);
 
     // The in-flight message: streamed fragments arrive here long before the message that
     // carries them, so they are the only thing the UI can show while the model is writing.
@@ -631,8 +918,13 @@ export class SessionManager {
   }): Promise<LiveSession> {
     const id = newId();
     const title = titleFor(options.prompt);
-    if (options.model?.trim()) saveLastModel(options.model.trim());
-    const model = options.model || "";
+    // v6-C level 1: when the router is on and the operator did not pin a model
+    // for this chat, the task text decides it. Awaited here — a decision is a
+    // few hundred ms at worst, and the run must start on the chosen model rather
+    // than switch mid-context. With the toggle off (the shipped default) the
+    // boolean short-circuits and `options.model` is used exactly as before.
+    const model = options.model?.trim() || (routerEnabled() ? await this.#routeTask(options.prompt) : "");
+    if (model) saveLastModel(model);
     const atts = resolveAttachments(options.attachments);
 
     if (options.target === "remote") {
