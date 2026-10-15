@@ -1,0 +1,195 @@
+/* ------------------------------------------------------------------ *
+ * Control UI — audio recipes.
+ *
+ * Copied from control-ui.dev's registry source (items `audio-visualizer`,
+ * `audio-recorder`, `level-meter`; fetched 2026-10-15). MIT, © Damien
+ * Schneider. https://control-ui.dev/kits/audio-visualizer
+ *
+ * Only the token defaults are re-pointed at this app's palette: Control UI
+ * reads `--primary` / `--muted-foreground` / `--destructive` / `--radius-control`
+ * / `--blur-xs`, which mini-tui does not define. The selectors, the `@property`
+ * registrations, the state selectors and the reduced-motion block are Control
+ * UI's, so its `data-slot` anatomy still drives the paint.
+ * ------------------------------------------------------------------ */
+
+:root {
+  /* Control UI's token vocabulary, mapped once onto this app's scales. */
+  --cui-primary: var(--color-brand);
+  --cui-muted-foreground: var(--color-ink-muted);
+  --cui-foreground: var(--color-ink);
+  --cui-destructive: var(--color-err);
+  --radius-control: var(--radius-sm);
+  --blur-xs: 2px;
+}
+
+/* ---- audio-visualizer --------------------------------------------- */
+@layer components {
+  :where([data-control-family="audio-visualizer"][data-variant]) {
+    --cui-audio-visualizer-radius: var(--radius-control);
+    --cui-audio-visualizer-bar-background: var(--cui-primary);
+    --cui-audio-visualizer-bar-radius: var(--radius-control);
+    --cui-audio-visualizer-bar-size: 3px;
+    --cui-audio-visualizer-bar-gap: 2px;
+    --cui-audio-visualizer-line-fill: color-mix(in oklab, var(--cui-primary) 18%, transparent);
+    --cui-audio-visualizer-line-stroke: var(--cui-primary);
+    --cui-audio-visualizer-baseline-stroke: color-mix(in oklab, var(--color-line-strong) 55%, transparent);
+    --_audio-visualizer-inline-sign: 1;
+  }
+  :where([data-control-family="audio-visualizer"][data-variant]:dir(rtl)) {
+    --_audio-visualizer-inline-sign: -1;
+  }
+  :where([data-control-family="audio-visualizer"][data-slot="root"][data-variant="bars"]) {
+    padding-block: 6px;
+    border-radius: var(--cui-audio-visualizer-radius);
+  }
+
+  :where([data-control-family="audio-visualizer"][data-slot="track"]) {
+    gap: var(--cui-audio-visualizer-bar-gap);
+    opacity: 0.45;
+    transition: opacity var(--duration-base) var(--ease-standard);
+  }
+
+  :where([data-control-family="audio-visualizer"][data-slot="track"][data-active="true"]) {
+    opacity: 1;
+  }
+
+  :where([data-control-family="audio-visualizer"][data-slot="bar-track"]) {
+    inline-size: var(--cui-audio-visualizer-bar-size);
+    min-inline-size: 0;
+    flex-shrink: 1;
+  }
+
+  :where([data-control-family="audio-visualizer"][data-slot="bar"]) {
+    background: var(--cui-audio-visualizer-bar-background);
+    border-radius: var(--cui-audio-visualizer-bar-radius);
+    opacity: var(--_audio-visualizer-level-opacity, 0.48);
+    transition:
+      clip-path var(--duration-base) var(--ease-standard),
+      opacity var(--duration-base) var(--ease-standard);
+  }
+
+  :where([data-control-family="audio-visualizer"][data-slot="baseline"]) {
+    stroke: var(--cui-audio-visualizer-baseline-stroke);
+  }
+
+  :where([data-control-family="audio-visualizer"][data-slot="waveform"]) {
+    fill: var(--cui-audio-visualizer-line-fill);
+    stroke: var(--cui-audio-visualizer-line-stroke);
+  }
+
+  /* Live: the track is already sliding, so the bars must not ease twice. */
+  :where([data-control-family="audio-visualizer"][data-variant="bars"][data-active="true"] [data-slot="bar"]) {
+    transition: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :where([data-control-family="audio-visualizer"] [data-slot]) {
+      animation: none;
+      transition: none;
+    }
+  }
+}
+
+/* ---- audio-recorder ----------------------------------------------- */
+@layer components {
+  :where([data-control-ui="audio-recorder"][data-slot="root"]) {
+    --cui-audio-recorder-foreground: var(--cui-muted-foreground);
+    --cui-audio-recorder-recording-foreground: var(--cui-foreground);
+    --cui-audio-recorder-recorded-foreground: var(--cui-foreground);
+    --cui-audio-recorder-recording-ring-color: color-mix(in oklab, var(--cui-destructive) 25%, transparent);
+    --cui-audio-recorder-error-foreground: var(--cui-destructive);
+    --cui-audio-recorder-meta-foreground: var(--cui-muted-foreground);
+    color: var(--cui-audio-recorder-foreground);
+    transition: color var(--duration-base) var(--ease-standard);
+  }
+
+  :where([data-control-ui="audio-recorder"][data-slot="root"][data-state="recording"]),
+  :where([data-control-ui="audio-recorder"][data-slot="root"][data-state="recorded"]) {
+    color: var(--cui-audio-recorder-recording-foreground);
+  }
+
+  :where([data-control-ui="audio-recorder"][data-slot="status"]) {
+    color: var(--cui-audio-recorder-meta-foreground);
+  }
+
+  :where([data-control-ui="audio-recorder"][data-slot="status"][data-tone="error"]) {
+    color: var(--cui-audio-recorder-error-foreground);
+  }
+
+  :where([data-control-ui="audio-recorder"][data-slot="duration"]) {
+    color: var(--cui-audio-recorder-meta-foreground);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Knob registrations (Control UI's, verbatim). */
+@property --cui-audio-visualizer-bar-size {
+  syntax: "<length-percentage>";
+  inherits: true;
+  initial-value: 0px;
+}
+@property --cui-audio-visualizer-bar-gap {
+  syntax: "<length-percentage>";
+  inherits: true;
+  initial-value: 0px;
+}
+@property --cui-audio-visualizer-radius {
+  syntax: "<length-percentage>";
+  inherits: true;
+  initial-value: 0px;
+}
+@property --cui-audio-visualizer-bar-radius {
+  syntax: "<length-percentage>";
+  inherits: true;
+  initial-value: 0px;
+}
+@property --cui-audio-visualizer-bar-background {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --cui-audio-visualizer-line-fill {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --cui-audio-visualizer-line-stroke {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --cui-audio-visualizer-baseline-stroke {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --cui-audio-recorder-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --cui-audio-recorder-recording-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --cui-audio-recorder-recorded-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --cui-audio-recorder-recording-ring-color {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --cui-audio-recorder-error-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+@property --cui-audio-recorder-meta-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}

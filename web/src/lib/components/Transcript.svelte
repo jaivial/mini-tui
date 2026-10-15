@@ -6,6 +6,7 @@
   import Spinner from "./Spinner.svelte";
   import { arrivalOf, callDuration } from "../toolTimings";
   import UiComponent from "./ui/UiComponent.svelte";
+  import VoiceNote from "./VoiceNote.svelte";
 
   let {
     events,
@@ -136,6 +137,9 @@
         <div class="flex items-end gap-1">
           <div class="msg-user max-w-[85%] rounded-2xl rounded-br-md bg-bubble-user px-3.5 py-2 pointer-coarse:px-4">
             <Markdown text={row.event.text} class="read-[14px] leading-[1.55] text-bubble-user-ink" />
+            {#each (row.event.attachments ?? []).filter((a) => a.kind === "audio" && a.url) as att (att.id)}
+              <VoiceNote url={att.url!} name={att.name} />
+            {/each}
           </div>
           <button
             type="button"
@@ -172,9 +176,11 @@
                 <a href={att.url} target="_blank" rel="noreferrer" class="mt-1.5 block">
                   <img src={att.url} alt="imagen de WhatsApp" loading="lazy" class="max-h-64 w-auto rounded-lg" />
                 </a>
+              {:else if att.kind === "audio" && att.url}
+                <VoiceNote url={att.url} />
               {:else if att.url}
-                <a href={att.kind === "audio" ? att.url : `${att.url}?dl=1`} target="_blank" rel="noreferrer" class="mt-1.5 flex items-center gap-1 read-[12px] underline decoration-dotted text-bubble-user-ink/80">
-                  {att.kind === "audio" ? " nota de voz" : " adjunto"} ({att.mime ?? att.kind})
+                <a href={`${att.url}?dl=1`} target="_blank" rel="noreferrer" class="mt-1.5 flex items-center gap-1 read-[12px] underline decoration-dotted text-bubble-user-ink/80">
+                  adjunto ({att.mime ?? att.kind})
                 </a>
               {:else}
                 <div class="mt-1.5 flex items-center gap-1 read-[12px] text-bubble-user-ink/60">
