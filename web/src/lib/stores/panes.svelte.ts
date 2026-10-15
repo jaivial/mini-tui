@@ -15,6 +15,7 @@
 import { MAX_PANES, count, leaves, neighbour, remove, restore, setRatio, split, type Dir, type Node } from "../panes";
 import { canMove, has, move as moveInTree, preset as presetTree, swap as swapInTree, type MoveDir, type Shape } from "../paneLayout";
 import type { Chip } from "../chips";
+import type { AttachmentRef } from "../attachments";
 import { PromptMemory } from "../promptMemory";
 import { legacy, windows } from "./windows.svelte";
 import { shallowEqual } from "../equal";
@@ -32,6 +33,8 @@ export interface Pane {
   draft: { targetId: string; model: string; cwd: string };
   prompt: string;
   chips: Chip[];
+  /** Files uploaded for this pane's next message (see lib/attachments.ts). */
+  attachments: AttachmentRef[];
   notesOpen: boolean;
   /** Which tab the right sidebar shows while it is open. */
   sideTab: SideTab;
@@ -55,7 +58,7 @@ interface PanesDoc {
 
 const KEY = "minitui.panes";
 const uid = (p: string) => `${p}${Math.random().toString(36).slice(2, 9)}`;
-const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], notesOpen: false, sideTab: "notes", sideWidth: null, memory: new PromptMemory(), memoryOf: null, liveTurn: null, seenTurn: null });
+const blank = (id = uid("p")): Pane => ({ id, sessionId: null, draft: { targetId: "local", model: "", cwd: "" }, prompt: "", chips: [], attachments: [], notesOpen: false, sideTab: "notes", sideWidth: null, memory: new PromptMemory(), memoryOf: null, liveTurn: null, seenTurn: null });
 
 /** The first pane of a first visit. Any id works; it only has to be unique like every other one. */
 const FIRST = uid("p");
@@ -275,7 +278,7 @@ class PaneStore {
       shelf.focused = pane.id;
       return;
     }
-    shelf.panes[pane.id] = { ...pane, prompt: "", chips: [] };
+    shelf.panes[pane.id] = { ...pane, prompt: "", chips: [], attachments: [] };
     shelf.tree = split(shelf.tree, first, "row", pane.id, `s${pane.id.slice(1)}`);
     shelf.focused = pane.id;
   }
@@ -451,6 +454,7 @@ class PaneStore {
       pane.sessionId = sessionId;
       pane.prompt = "";
       pane.chips = [];
+      pane.attachments = [];
       // Another conversation: a finish seen for the old one means nothing for this one.
       pane.liveTurn = null;
       pane.seenTurn = null;

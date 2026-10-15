@@ -28,14 +28,29 @@ function load(options: MarkdownOptions): Promise<Engine> {
       linkify: options.linkify ?? true,
       breaks: options.breaks ?? true,
     });
-    // External links open in a new tab, and the rel is set here.
+    // External links open in a new tab, and the rel is set here. Links to a
+    // stored attachment download the file instead of navigating away from the chat.
     const defaultLinkOpen =
       md.renderer.rules.link_open ??
       ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts));
     md.renderer.rules.link_open = (tokens, idx, opts, env, self) => {
-      tokens[idx]!.attrSet("target", "_blank");
-      tokens[idx]!.attrSet("rel", "noopener noreferrer");
+      const href = String(tokens[idx]!.attrGet("href") ?? "");
+      if (href.startsWith("/api/attachments/")) {
+        tokens[idx]!.attrSet("download", "");
+      } else {
+        tokens[idx]!.attrSet("target", "_blank");
+        tokens[idx]!.attrSet("rel", "noopener noreferrer");
+      }
       return defaultLinkOpen(tokens, idx, opts, env, self);
+    };
+    // Served images get the class the bubbles style (and the lightbox listens for).
+    const defaultImage =
+      md.renderer.rules.image ??
+      ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts));
+    md.renderer.rules.image = (tokens, idx, opts, env, self) => {
+      const token = tokens[idx]!;
+      if ((String(token.attrGet("src") ?? "")).startsWith("/api/attachments/")) token.attrSet("class", "chat-img");
+      return defaultImage(tokens, idx, opts, env, self);
     };
     return md;
   });

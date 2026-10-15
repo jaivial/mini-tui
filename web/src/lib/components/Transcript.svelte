@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Sparkles, CheckCircle2, AlertTriangle } from "@lucide/svelte";
+  import { Check, CheckCircle2, AlertTriangle, Copy, Sparkles } from "@lucide/svelte";
   import type { RunEvent } from "../types";
   import Markdown from "./Markdown.svelte";
   import StepCard from "./StepCard.svelte";
@@ -92,6 +92,24 @@
     if (at === undefined) return "";
     return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
+
+  /**
+   * Copy action on a turn, revealed on hover/focus-within (pointer devices) and
+   * always visible on touch — the Control-UI chat pattern: actions live on the
+   * row, never inside the text flow, and a copied state confirms the click.
+   */
+  let copiedId: string | null = null;
+  async function copyTurn(text: string, key: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copiedId = key;
+      setTimeout(() => {
+        if (copiedId === key) copiedId = null;
+      }, 1500);
+    } catch {
+      // a denied clipboard is silent: the button simply does nothing
+    }
+  }
 </script>
 
 <div class="flex flex-col {klass}">
@@ -101,24 +119,52 @@
     {@const gap = i === 0 ? "" : isGrouped ? TUCK : GAP}
     {#if row.kind === "task"}
       <!-- The user speaks in the near-black bubble, at the right (the mockup's). -->
-      <div class="flex flex-col items-end {gap}">
+      <div class="turn group/turn flex flex-col items-end {gap}">
         {#if !isGrouped}
           {@const at = clock(row.event)}
           {#if at}<div class="tnum pointer-coarse:px-1 pr-1 text-[10px] leading-3 text-ink-faint">{at}</div>{/if}
         {/if}
-        <div class="msg-user max-w-[85%] rounded-2xl rounded-br-md bg-bubble-user px-3.5 py-2 pointer-coarse:px-4">
-          <Markdown text={row.event.text} class="read-[14px] leading-[1.55] text-bubble-user-ink" />
+        <div class="flex items-end gap-1">
+          <div class="msg-user max-w-[85%] rounded-2xl rounded-br-md bg-bubble-user px-3.5 py-2 pointer-coarse:px-4">
+            <Markdown text={row.event.text} class="read-[14px] leading-[1.55] text-bubble-user-ink" />
+          </div>
+          <button
+            type="button"
+            class="turn-action"
+            aria-label="Copiar mensaje"
+            onclick={() => copyTurn(row.event.text, `t${i}`)}
+          >
+            {#if copiedId === `t${i}`}
+              <Check size={12} strokeWidth={2} aria-hidden="true" />
+            {:else}
+              <Copy size={12} strokeWidth={1.75} aria-hidden="true" />
+            {/if}
+          </button>
         </div>
       </div>
     {:else if row.kind === "assistant"}
       <!-- The bot answers in the soft grey bubble, at the left. -->
-      <div class="flex flex-col items-start {gap}">
+      <div class="turn group/turn flex flex-col items-start {gap}">
         {#if !isGrouped}
           {@const at = clock(row.event)}
           {#if at}<div class="tnum pointer-coarse:px-1 pl-1 text-[10px] leading-3 text-ink-faint">{at}</div>{/if}
         {/if}
-        <div class="max-w-[85%] rounded-2xl rounded-bl-md bg-bubble-bot px-3.5 py-2 pointer-coarse:px-4">
-          <Markdown text={row.event.text} class="read-[14px] leading-[1.55] text-ink" />
+        <div class="flex items-end gap-1">
+          <div class="max-w-[85%] rounded-2xl rounded-bl-md bg-bubble-bot px-3.5 py-2 pointer-coarse:px-4">
+            <Markdown text={row.event.text} class="read-[14px] leading-[1.55] text-ink" />
+          </div>
+          <button
+            type="button"
+            class="turn-action"
+            aria-label="Copiar respuesta"
+            onclick={() => copyTurn(row.event.text, `a${i}`)}
+          >
+            {#if copiedId === `a${i}`}
+              <Check size={12} strokeWidth={2} aria-hidden="true" />
+            {:else}
+              <Copy size={12} strokeWidth={1.75} aria-hidden="true" />
+            {/if}
+          </button>
         </div>
       </div>
     {:else if row.kind === "step"}
@@ -190,6 +236,43 @@
 </div>
 
 <style>
+  /*
+   * Turn hover action (Control-UI chat pattern): the row's copy affordance lives
+   * beside the bubble, invisible until the row is hovered or focused with a
+   * pointer; on touch it is always visible at a quiet opacity (no hover to
+   * reveal it) and meets the 44px target. Colors come from the theme tokens, so
+   * light and dark both read.
+   */
+  .turn-action {
+    display: grid;
+    place-items: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    margin-bottom: 2px;
+    border-radius: var(--radius-sm, 6px);
+    color: var(--color-ink-faint);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-fast, 120ms) var(--ease-standard, ease);
+  }
+  .turn:hover .turn-action,
+  .turn:focus-within .turn-action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .turn-action:hover {
+    background: var(--color-raised);
+    color: var(--color-ink);
+  }
+  @media (pointer: coarse) {
+    .turn-action {
+      opacity: 1;
+      pointer-events: auto;
+      width: 2.75rem;
+      height: 2.75rem;
+    }
+  }
+
   /* Inside the near-black bubble the palette flips: links go light blue,
      strong text to the bubble's own ink, code to a translucent chip — the
      prose-mini defaults assume a page-coloured surface and would vanish. */

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { boundedText } from "../format";
   import { markdown } from "../markdown";
+  import { openLightbox } from "../lightbox.svelte";
 
   let { text, class: klass = "" }: { text: string; class?: string } = $props();
 
@@ -17,11 +18,32 @@
       live = false;
     };
   });
+
+  /** A click on a served image opens the lightbox; every other click is left alone. */
+  function onclick(event: MouseEvent) {
+    const img = (event.target as HTMLElement).closest("img.chat-img");
+    if (!img) return;
+    event.preventDefault();
+    openLightbox(img.getAttribute("src") ?? "", img.getAttribute("alt") ?? "");
+  }
 </script>
 
-<div class="prose-mini {klass}">{@html html}</div>
+<div class="prose-mini {klass}" onclick={onclick}>{@html html}</div>
 
 <style>
+  /* Images the bot made (or received) sit inside the bubble: bounded, rounded,
+     and visibly interactive — the lightbox owns the full-size view. */
+  .prose-mini :global(img.chat-img) {
+    display: block;
+    max-width: min(100%, 320px);
+    max-height: 280px;
+    width: auto;
+    margin: 0.4rem 0;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-line);
+    cursor: zoom-in;
+    background: var(--color-canvas);
+  }
   .prose-mini :global(p) {
     margin: 0 0 0.5rem;
   }

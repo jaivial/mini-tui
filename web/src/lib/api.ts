@@ -1,4 +1,5 @@
 /** Thin fetch wrapper around the mini-tui web server. */
+import type { AttachmentRef } from "./attachments";
 import type {
   CommandInfo,
   ConnectResult,
@@ -55,8 +56,8 @@ export const api = {
   session: (id: string) => call<WireSession>(`/sessions/${id}`),
   create: (body: CreateSessionBody) =>
     call<WireSession>("/sessions", { method: "POST", body: JSON.stringify(body) }),
-  send: (id: string, prompt: string) =>
-    call<{ ok: true }>(`/sessions/${id}/prompt`, { method: "POST", body: JSON.stringify({ prompt }) }),
+  send: (id: string, prompt: string, attachments?: AttachmentRef[]) =>
+    call<{ ok: true }>(`/sessions/${id}/prompt`, { method: "POST", body: JSON.stringify({ prompt, attachments }) }),
   setModel: (id: string, model: string) =>
     call<{ ok: true }>(`/sessions/${id}/model`, { method: "POST", body: JSON.stringify({ model }) }),
   interrupt: (id: string) => call<{ ok: true }>(`/sessions/${id}/interrupt`, { method: "POST" }),

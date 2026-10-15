@@ -44,6 +44,7 @@ import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 import { probeHost, startRemoteRun, type RemoteRun, type SshTarget } from "./ssh";
+import { attachmentAgentBlock, attachmentLinksLine, getAttachment, inlineWorkspaceImages, registerFile, type Attachment } from "./attachments";
 import { readPlan, type SessionPlan } from "../mini/plans";
 import { SubagentSync, readSubagentIndex, subagentIndexFresh, type SubagentView } from "../mini/subagents";
 
@@ -118,6 +119,22 @@ function newId(): string {
 function titleFor(task: string): string {
   const clean = task.replace(/\s+/g, " ").trim();
   return clean.length <= 48 ? clean : `${clean.slice(0, 47)}…`;
+}
+
+/**
+ * Client-supplied attachment references (only ids travel the wire) resolved
+ * against the store: a reference to anything not actually stored is dropped,
+ * so a prompt can never name an arbitrary path.
+ */
+function resolveAttachments(list: unknown): Attachment[] {
+  if (!Array.isArray(list)) return [];
+  const out: Attachment[] = [];
+  for (const ref of list.slice(0, 10)) {
+    const id = typeof (ref as { id?: unknown })?.id === "string" ? (ref as { id: string }).id : "";
+    const att = getAttachment(id);
+    if (att) out.push(att);
+  }
+  return out;
 }
 
 export function loadHosts(): RemoteHostRecord[] {
@@ -482,7 +499,19 @@ export class SessionManager {
       });
       entry.pendingTasks = pending;
     }
-    if (fresh.length) entry.session.events.push(...fresh.map(boundEvent));
+    if (fresh.length) {
+      // Agent-produced images referenced by path become inline served images
+      // (local sessions only: a remote workspace is not this machine's disk).
+      if (entry.session.target === "local") {
+        const cwd = entry.session.cwd;
+        fresh = fresh.map((event) => {
+          if (event.type === "assistant" && event.text) return { ...event, text: inlineWorkspaceImages(event.text, cwd) };
+          if (event.type === "exit" && event.submission) return { ...event, submission: inlineWorkspaceImages(event.submission, cwd) };
+          return event;
+        });
+      }
+      entry.session.events.push(...fresh.map(boundEvent));
+    }
 
     const info = parseInfo(traj);
     entry.session.info = info;
@@ -515,23 +544,26 @@ export class SessionManager {
     model?: string;
     target: "local" | "remote";
     hostId?: string;
+    /** Files already uploaded (POST /attachments); only ids travel the wire. */
+    attachments?: unknown;
   }): Promise<LiveSession> {
     const id = newId();
     const title = titleFor(options.prompt);
     if (options.model?.trim()) saveLastModel(options.model.trim());
     const model = options.model || "";
+    const atts = resolveAttachments(options.attachments);
 
     if (options.target === "remote") {
       if (!options.hostId) throw new Error("a remote session needs a host");
       const host = loadHosts().find((h) => h.id === options.hostId);
       if (!host) throw new Error("unknown remote host");
       // A remote folder is the host's path, never resolved against this machine.
-      return this.#createRemote(id, title, options.cwd?.trim() || "", model, options.prompt, host);
+      return this.#createRemote(id, title, options.cwd?.trim() || "", model, options.prompt, host, atts);
     }
     // A local folder must exist here, or the agent would silently start somewhere else.
     const cwd = options.cwd?.trim() ? expandLocal(options.cwd) : process.cwd();
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`${cwd} is not a folder on this machine`);
-    return this.#createLocal(id, title, cwd, model, options.prompt);
+    return this.#createLocal(id, title, cwd, model, options.prompt, atts);
   }
 
   #createLocal(
@@ -540,13 +572,14 @@ export class SessionManager {
     cwd: string,
     model: string,
     prompt: string,
+    atts: Attachment[] = [],
   ): LiveSession {
     // A connected provider's key is injected only for a model that belongs to it, exactly as the
     // terminal UI does; without this a BYOK model has no credentials in a web session.
     const effective = model || DEFAULT_MODEL || loadLastModel();
     const expanded = expandSkills(prompt);
     const run = spawnMini({
-      task: expanded.task,
+      task: atts.length ? `${expanded.task}\n\n${attachmentAgentBlock(atts)}` : expanded.task,
       model: effective || undefined,
       // The agent fills this session's task card (`mini-tui tasks set`): it must know which session
       // it is, and this is the one place that knows.
@@ -582,6 +615,12 @@ export class SessionManager {
       parseState: createParseState(),
     };
     this.#live.set(id, entry);
+    // Attached files show as download links under the first prompt; the agent's own
+    // echo of it (collapsed to the prompt as typed) is dropped via pendingTasks.
+    if (atts.length) {
+      entry.pendingTasks = [prompt];
+      session.events.push({ type: "task", text: `${prompt}\n\n${attachmentLinksLine(atts)}` });
+    }
     log("session.created", { id, pid: run.pid, model: effective, cwd, target: "local", task: prompt.slice(0, 120) });
 
     try {
@@ -623,6 +662,7 @@ export class SessionManager {
     model: string,
     prompt: string,
     host: RemoteHostRecord,
+    atts: Attachment[] = [],
   ): Promise<LiveSession> {
     // The folder picked for this chat, else the host's default folder.
     const workdir = cwd || host.workdir;
@@ -665,11 +705,13 @@ export class SessionManager {
       // persistence is best-effort
     }
 
-    // Echo the prompt immediately, exactly like the TUI does on submit.
-    session.events.push({ type: "task", text: prompt });
+    // Echo the prompt immediately, exactly like the TUI does on submit. Attached
+    // files show as download links under the prompt, as in every later turn.
+    session.events.push({ type: "task", text: atts.length ? `${prompt}\n\n${attachmentLinksLine(atts)}` : prompt });
+    if (atts.length) entry.pendingTasks = [prompt];
     this.#emit(entry);
 
-    const remote = startRemoteRun(target, expandSkills(prompt).task, (stderr) => {
+    const remote = startRemoteRun(target, atts.length ? `${expandSkills(prompt).task}\n\n${attachmentAgentBlock(atts)}` : expandSkills(prompt).task, (stderr) => {
       const text = stderr.trim();
       if (!text) return;
       session.events.push({ type: "notice", text });
@@ -957,11 +999,12 @@ export class SessionManager {
   }
 
   /** Follow-up: continues the same conversation through the control channel. */
-  async send(id: string, prompt: string): Promise<void> {
+  async send(id: string, prompt: string, attachments?: unknown): Promise<void> {
     const entry = this.#live.get(id);
     if (!entry) throw new Error("unknown session");
     const text = prompt.trim();
     if (!text) return;
+    const atts = resolveAttachments(attachments);
     // A terminal may be running (or may have just continued) this conversation: talk to its agent,
     // or at least continue from its latest save, never from a stale copy that would fork it.
     if (!(entry.run && !entry.exited) && entry.session.target === "local") {
@@ -974,10 +1017,12 @@ export class SessionManager {
       // starting an agent with no context that would answer as if the conversation had never happened.
       throw new Error("this session has no saved conversation and cannot be continued: start a new chat");
     }
-    // The agent gets each referenced skill's instructions ahead of the prompt; the transcript
-    // shows the prompt as typed (the parser collapses the block again on replay).
+    // The agent gets each referenced skill's instructions ahead of the prompt, and the
+    // attachments block behind it; the transcript shows the prompt as typed plus the
+    // files as download links (the parser collapses both blocks again on replay).
     const expanded = expandSkills(text);
-    entry.session.events.push({ type: "task", text });
+    const task = atts.length ? `${expanded.task}\n\n${attachmentAgentBlock(atts)}` : expanded.task;
+    entry.session.events.push({ type: "task", text: atts.length ? `${text}\n\n${attachmentLinksLine(atts)}` : text });
     (entry.pendingTasks ??= []).push(text);
     if (expanded.missing.length) {
       entry.session.events.push({
@@ -993,16 +1038,16 @@ export class SessionManager {
     if (entry.run && !entry.exited) {
       // The agent is holding at its control file: it picks the message up
       // before the next model call.
-      entry.run.sendUserMessage(expanded.task);
+      entry.run.sendUserMessage(task);
       entry.watch ??= watchTrajectory(entry.run.session.trajPath, (traj) => this.#ingest(entry, traj));
     } else if (entry.session.target === "remote") {
       // A remote headless run already exited: start a fresh turn that resumes
       // the same conversation from the saved messages.
-      void this.#continueRemote(entry, expanded.task);
+      void this.#continueRemote(entry, task);
     } else {
       // A local session nothing is running for: one restored from history, or one whose agent has
       // exited. Start an agent on the saved conversation, exactly as the terminal's /resume does.
-      this.#resumeLocal(entry, expanded.task);
+      this.#resumeLocal(entry, task);
     }
   }
 

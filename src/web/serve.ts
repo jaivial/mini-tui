@@ -28,6 +28,7 @@ import { parseReceiverAccounts } from "../channels/accounts";
 import { channelsView, evoPairingCode, evoQr, evoStatus } from "./channels";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
+import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
 import { syncAllSkills } from "../skills";
 import {
   COMMANDS,
@@ -502,6 +503,44 @@ const server = Bun.serve({
         });
       }
 
+      // ------------------------------------------------------ attachments
+      // Upload from the prompt bar: multipart/form-data with one `file` field.
+      // The bytes land in the local store (see attachments.ts); the reply is
+      // what the client sends on with its next prompt (ids only).
+      if (path === "/attachments" && request.method === "POST") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        const form = await request.formData().catch(() => null);
+        const file = form?.get("file");
+        if (!file || typeof file === "string") return json({ error: "expected multipart/form-data with a `file` field" }, 400);
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const att = saveAttachment(file.name || "file", bytes);
+          log("api.attachment.save", { id: att.id, name: att.name, size: att.size, mime: att.mime });
+          return json({ ...att, accept: ATTACH_ACCEPT, max: ATTACH_MAX_BYTES }, 201);
+        } catch (error) {
+          if (error instanceof AttachError) return json({ error: error.message }, error.status);
+          return json({ error: "attachment could not be saved" }, 500);
+        }
+      }
+      // Fetch one stored attachment. `?dl=1` downloads instead of rendering;
+      // ids are opaque and only resolve through the index, never a client path.
+      const attMatch = path.match(/^\/attachments\/([0-9a-f]{16})$/);
+      if (attMatch && request.method === "GET") {
+        const att = getAttachment(attMatch[1] as string);
+        if (!att) return json({ error: "not found" }, 404);
+        const download = url.searchParams.get("dl") === "1";
+        const ascii = att.name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+        return new Response(Bun.file(att.path), {
+          headers: {
+            "content-type": att.mime,
+            "content-length": String(att.size),
+            "content-disposition": `${download ? "attachment" : "inline"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(att.name)}`,
+            "x-content-type-options": "nosniff",
+            "cache-control": "private, max-age=31536000, immutable",
+            ...CORS,
+          },
+        });
+      }
       // ------------------------------------------------------------- hub
       // The one socket a tab keeps for the right sidebar (notes): watch, live pushes, saves. See hub.ts.
       if (path === "/hub" && request.method === "GET") {
@@ -536,6 +575,7 @@ const server = Bun.serve({
           model: body.model ? String(body.model) : undefined,
           target: body.target === "remote" ? "remote" : "local",
           hostId: body.hostId ? String(body.hostId) : undefined,
+          attachments: body.attachments,
           });
         } catch (error) {
           // A bad folder or an unknown host is the request's fault: say which, and keep the prompt client-side.
@@ -612,7 +652,7 @@ const server = Bun.serve({
           const body = await readJson(request);
           log("api.session.prompt", { id, len: String(body.prompt ?? "").length });
           try {
-            await sessions.send(id, String(body.prompt ?? ""));
+            await sessions.send(id, String(body.prompt ?? ""), body.attachments);
           } catch (error) {
             // e.g. a saved session with no conversation to continue from: the reason is the answer.
             return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 409);
