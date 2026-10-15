@@ -6,6 +6,10 @@
   let { props }: { props: Record<string, unknown> } = $props();
 
   const chart = $derived(validateChart(props));
+  // The reason is pulled out as its own `$derived` because `chart` is a `$derived` too: the template's
+  // `{:else}` branch cannot narrow it to the `Invalid` variant, so reading `chart.reason` there is a
+  // type error (`web:check` / CI red) even though only an invalid chart ever reaches that branch.
+  const chartReason = $derived(chart.ok ? "" : chart.reason);
   // One band per value, shared by the plot and the label row below it. The geometry lives in
   // `ui/chartGeometry` so it can be tested, and it keeps every mark inside the viewBox: positions
   // used to be spread edge to edge (`i * (W-2*PAD)/(n-1)`, the right scale for a line) while bars
@@ -61,7 +65,7 @@
   </div>
 {:else}
   <div class="flex items-start gap-2 rounded-lg border border-dashed border-line px-3 py-2 text-[12px] text-ink-faint" role="note">
-    Gráfico no renderizado: {chart.reason}
+    Gráfico no renderizado: {chartReason}
   </div>
 {/if}
 
