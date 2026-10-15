@@ -5,7 +5,12 @@
    * "Conectar WhatsApp" block (state + QR + pairing code, in
    * WhatsAppConnect.svelte). Nothing here can advance a cursor, replay a
    * delivery or send.
+   *
+   * v3.3: same visual bill as the rest of the Routines drawer — card
+   * sections with the chat's radii and tokens, hairline rows that lift on
+   * hover, section labels in the drawer's small-caps voice.
    */
+  import { Radio } from "@lucide/svelte";
   import { ChannelsClient, type ChannelsView } from "../channelsClient";
   import WhatsAppConnect from "./WhatsAppConnect.svelte";
 
@@ -37,14 +42,17 @@
 
   function time(ts: number) {
     if (!ts) return "";
-    return new Date(ts).toLocaleTimeString();
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 </script>
 
-<section class="mb-3 rounded-lg border border-line bg-raised/40 p-3" aria-label="Canales">
-  <div class="flex items-center justify-between gap-2">
-    <h3 class="text-[12.5px] font-medium text-ink">Canales</h3>
-    <span class="text-[10.5px] text-ink-faint">Solo lectura</span>
+<section class="mb-3 rounded-2xl border border-line/80 bg-surface/70 p-3" aria-label="Canales">
+  <div class="flex items-center gap-2">
+    <span class="grid size-6 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand" aria-hidden="true">
+      <Radio size={13} strokeWidth={1.75} />
+    </span>
+    <h3 class="min-w-0 flex-1 text-[12.5px] font-semibold tracking-[-0.01em] text-ink">Canales</h3>
+    <span class="text-[10px] font-semibold tracking-wider text-ink-faint uppercase">Solo lectura</span>
   </div>
 
   {#if error}
@@ -56,17 +64,17 @@
   {/if}
 
   {#if view?.configured}
-    <div class="mt-2">
-      <h4 class="text-[11px] font-medium text-ink-muted">Rutas enlazadas ({view.bindings.length})</h4>
+    <div class="mt-3">
+      <h4 class="text-[10px] font-semibold tracking-wider text-ink-faint uppercase">Rutas enlazadas · {view.bindings.length}</h4>
       {#if !view.bindings.length}
         <p class="mt-1 text-[11px] text-ink-faint">Ninguna ruta enlazada todavía.</p>
       {:else}
         <ul class="mt-1 flex flex-col gap-1">
           {#each view.bindings as b (b.channel + b.account + b.thread)}
-            <li class="rounded-md border border-line/70 px-2 py-1 text-[10.5px] leading-4">
+            <li class="interactive rounded-lg border border-line/70 bg-canvas/60 px-2 py-1.5 text-[10.5px] leading-4 hover:border-line-strong">
               <span class="font-medium text-ink">{b.channel}</span>
               <span class="text-ink-muted"> · {b.account} · hilo {b.thread}</span>
-              <span class="block text-ink-faint">→ sesión {b.session} · proyecto {b.project}</span>
+              <span class="block font-mono text-[10px] text-ink-faint">→ sesión {b.session} · proyecto {b.project}</span>
               <span class="block text-ink-faint">Permitidos: {b.allowedSenders.join(", ")}</span>
             </li>
           {/each}
@@ -75,14 +83,14 @@
     </div>
 
     <div class="mt-3">
-      <h4 class="text-[11px] font-medium text-ink-muted">Mensajes recientes ({view.messages.length} de seq {view.lastSeq})</h4>
+      <h4 class="text-[10px] font-semibold tracking-wider text-ink-faint uppercase">Mensajes recientes · {view.messages.length} de seq {view.lastSeq}</h4>
       {#if !view.messages.length}
         <p class="mt-1 text-[11px] text-ink-faint">Ningún mensaje aceptado todavía.</p>
       {:else}
         <ul class="mt-1 flex flex-col gap-1">
           {#each view.messages as m (m.seq)}
-            <li class="rounded-md border border-line/70 px-2 py-1 text-[10.5px] leading-4">
-              <span class="font-medium text-ink">#{m.seq}</span>
+            <li class="interactive rounded-lg border border-line/70 bg-canvas/60 px-2 py-1.5 text-[10.5px] leading-4 hover:border-line-strong">
+              <span class="tnum font-medium text-ink">#{m.seq}</span>
               <span class="text-ink-muted"> {m.sender} · {time(m.receivedAt)}</span>
               <span class="block break-words text-ink-muted">{m.text}{m.truncated ? "…" : ""}</span>
               {#if m.attachments.length}
@@ -90,7 +98,7 @@
                   Adjuntos: {m.attachments.map(a => `${a.kind}${a.transcriptionState ? ` (${a.transcriptionState})` : ""}`).join(", ")}
                 </span>
               {/if}
-              <span class="block text-ink-faint">→ {m.session} · {m.project}</span>
+              <span class="block font-mono text-[10px] text-ink-faint">→ {m.session} · {m.project}</span>
             </li>
           {/each}
         </ul>
@@ -98,14 +106,14 @@
     </div>
 
     <div class="mt-3">
-      <h4 class="text-[11px] font-medium text-ink-muted">Consumidores</h4>
+      <h4 class="text-[10px] font-semibold tracking-wider text-ink-faint uppercase">Consumidores</h4>
       {#if !view.consumers.length}
         <p class="mt-1 text-[11px] text-ink-faint">Ninguno registrado.</p>
       {:else}
-        <ul class="mt-1 flex flex-col gap-1">
+        <ul class="mt-1 flex flex-col gap-0.5">
           {#each view.consumers as c (c.consumer)}
-            <li class="text-[10.5px] leading-4">
-              <span class="text-ink">{c.consumer}</span>
+            <li class="tnum rounded-md px-1 py-0.5 text-[10.5px] leading-4">
+              <span class="font-sans text-ink">{c.consumer}</span>
               <span class="text-ink-muted"> · cursor {c.cursor}</span>
               {#if c.lag > 0}<span class="text-warn"> · {c.lag} sin confirmar</span>{/if}
             </li>
