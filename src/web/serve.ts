@@ -699,6 +699,12 @@ const server = Bun.serve({
       // what the client sends on with its next prompt (ids only).
       if (path === "/attachments" && request.method === "POST") {
         if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        // Refuse the upload before reading it: formData() would buffer the whole
+        // body in memory before the size rule could answer 413. A declared
+        // content-length already past the cap never gets parsed. (A missing
+        // header still parses and is bounded by ATTACH_MAX_BYTES afterwards.)
+        const declared = Number(request.headers.get("content-length") ?? "");
+        if (Number.isFinite(declared) && declared > ATTACH_MAX_BYTES + 8192) return json({ error: `el archivo pasa de ${Math.round(ATTACH_MAX_BYTES / 1024 / 1024)} MB` }, 413);
         const form = await request.formData().catch(() => null);
         const file = form?.get("file");
         if (!file || typeof file === "string") return json({ error: "expected multipart/form-data with a `file` field" }, 400);
@@ -716,6 +722,9 @@ const server = Bun.serve({
       // ids are opaque and only resolve through the index, never a client path.
       const attMatch = path.match(/^\/attachments\/([0-9a-f]{16})$/);
       if (attMatch && request.method === "GET") {
+        // Private data: a browser page on another site must not read it (fetch would
+        // need CORS, which is no longer wildcarded; this closes navigation tricks too).
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
         const att = getAttachment(attMatch[1] as string);
         if (!att) return json({ error: "not found" }, 404);
         const download = url.searchParams.get("dl") === "1";
@@ -737,6 +746,7 @@ const server = Bun.serve({
       // never name a path, and containment is re-checked on disk.
       const mediaMatch = path.match(/^\/channel-media\/(seq\d+-[A-Za-z0-9._-]+)$/);
       if (mediaMatch && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
         const ctx = openMirrorContext();
         if (!ctx) return json({ error: "not found" }, 404);
         const file = resolve(ctx.mediaDir, mediaMatch[1] as string);

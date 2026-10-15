@@ -13,7 +13,7 @@
  * zip). SVG is excluded on purpose — served inline it is executable markup.
  */
 import { randomBytes } from "node:crypto";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -131,6 +131,51 @@ export function getAttachment(id: string): Attachment | null {
  * Store uploaded bytes. Throws AttachError (client-fault status inside) for a
  * disallowed type or an oversized file: the caller answers 400/413 with the reason.
  */
+/** Magic-byte signatures for the binary types on the allowlist. `null` = a
+ * text type (checked for NUL bytes instead) and `false` = no signature known. */
+const MAGIC: Record<string, ((b: Uint8Array) => boolean) | null> = {
+  ".png": (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47,
+  ".jpg": (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  ".jpeg": (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  ".gif": (b) => b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38,
+  ".webp": (b) => b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && ascii(b, 8, 12) === "WEBP",
+  ".bmp": (b) => b[0] === 0x42 && b[1] === 0x4d,
+  ".avif": (b) => ascii(b, 4, 8) === "ftyp",
+  ".pdf": (b) => b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46,
+  ".zip": (b) => b[0] === 0x50 && b[1] === 0x4b && (b[2] === 3 || b[2] === 5 || b[2] === 7),
+  ".mp3": (b) => ascii(b, 0, 3) === "ID3" || (b[0] === 0xff && (b[1]! & 0xe0) === 0xe0), // ID3 tag or an MPEG frame sync
+  ".wav": (b) => b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && ascii(b, 8, 12) === "WAVE",
+  ".ogg": (b) => b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53,
+  ".m4a": (b) => ascii(b, 4, 8) === "ftyp",
+  ".mp4": (b) => ascii(b, 4, 8) === "ftyp",
+  ".webm": (b) => b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3,
+  ".txt": null,
+  ".md": null,
+  ".csv": null,
+  ".json": null,
+  ".log": null,
+};
+
+function ascii(b: Uint8Array, from: number, to: number): string {
+  let out = "";
+  for (let i = from; i < to && i < b.length; i += 1) out += String.fromCharCode(b[i]!);
+  return out;
+}
+
+/**
+ * The declared type must look like the bytes. An upload is untrusted input:
+ * an `evil.png` that is really HTML (or a polyglot PDF/JS) is refused here,
+ * so what `/api/attachments/:id` serves always matches its Content-Type
+ * (which, with `nosniff`, is the browser's only truth).
+ */
+export function sniffMatches(ext: string, bytes: Uint8Array): boolean {
+  const check = MAGIC[ext];
+  if (check === undefined) return false;
+  const head = bytes.subarray(0, 4096);
+  if (check === null) return !head.includes(0); // a text type never carries NUL
+  return check(head);
+}
+
 export function saveAttachment(name: string, bytes: Uint8Array): Attachment {
   const clean = safeName(name);
   const ext = extname(clean).toLowerCase();
@@ -138,6 +183,7 @@ export function saveAttachment(name: string, bytes: Uint8Array): Attachment {
   if (!mime) throw new AttachError(`tipo de archivo no aceptado (${ext || "sin extensión"}). Aceptados: ${ATTACH_ACCEPT}`);
   if (!bytes.length) throw new AttachError("el archivo está vacío");
   if (bytes.length > ATTACH_MAX_BYTES) throw new AttachError(`el archivo pasa de ${Math.round(ATTACH_MAX_BYTES / 1024 / 1024)} MB`, 413);
+  if (!sniffMatches(ext, bytes)) throw new AttachError(`el contenido no es un ${ext} válido`, 400);
   return write(clean, ext, mime, bytes);
 }
 
@@ -170,6 +216,14 @@ export function registerFile(absPath: string): Attachment | null {
   }
   if (!stat.isFile() || !stat.size || stat.size > ATTACH_MAX_BYTES) return null;
   loadIndex();
+  try {
+    const head = new Uint8Array(stat.size > 4096 ? 4096 : stat.size);
+    const fd = openSync(absPath, "r");
+    try { readSync(fd, head, 0, head.length, 0); } finally { closeSync(fd); }
+    if (!sniffMatches(ext, head)) return null;
+  } catch {
+    return null;
+  }
   const cached = registerCache.get(absPath);
   if (cached && cached.size === stat.size && cached.mtime === stat.mtimeMs && getAttachment(cached.id)) return byId.get(cached.id)!;
   const id = randomBytes(8).toString("hex");

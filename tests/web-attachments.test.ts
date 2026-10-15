@@ -30,6 +30,18 @@ describe("attachment store", () => {
     expect(() => saveAttachment("vacio.txt", new Uint8Array([]))).toThrow(AttachError);
   });
 
+  test("the bytes must match the declared type (PoC: HTML served as image/png)", () => {
+    const html = new TextEncoder().encode("<html><script>alert(1)</script></html>");
+    try {
+      saveAttachment("evil.png", html);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as AttachError).status).toBe(400);
+    }
+    // …and a text type never hides binary content
+    expect(() => saveAttachment("bin.txt", new Uint8Array([104, 0, 105]))).toThrow(AttachError);
+  });
+
   test("refuses an oversized file with 413", () => {
     try {
       saveAttachment("big.png", new Uint8Array(ATTACH_MAX_BYTES + 1));
@@ -52,7 +64,7 @@ describe("attachment store", () => {
 
   test("registerFile copies an existing image once and refuses the rest", () => {
     const img = join(DIR, "made.png");
-    writeFileSync(img, new Uint8Array([1, 2, 3, 4]));
+    writeFileSync(img, new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]));
     const first = registerFile(img);
     expect(first?.mime).toBe("image/png");
     expect(first?.path).not.toBe(img); // copied into the store
@@ -86,7 +98,7 @@ describe("attachment prompt blocks", () => {
 
   test("inlineWorkspaceImages rewrites real workspace images, nothing else", () => {
     const img = join(DIR, "made-inline.png");
-    writeFileSync(img, new Uint8Array([9, 9, 9]));
+    writeFileSync(img, new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 9, 9, 9]));
     // markdown image
     expect(inlineWorkspaceImages(`mira ![g](file://${encodeURI(img)}) y ya`, DIR)).toMatch(/^mira !\[g\]\(\/api\/attachments\/[0-9a-f]{16}\) y ya$/);
     // bare absolute path outside code spans
