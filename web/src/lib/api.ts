@@ -60,6 +60,9 @@ export const api = {
     call<{ ok: true }>(`/sessions/${id}/prompt`, { method: "POST", body: JSON.stringify({ prompt, attachments }) }),
   setModel: (id: string, model: string) =>
     call<{ ok: true }>(`/sessions/${id}/model`, { method: "POST", body: JSON.stringify({ model }) }),
+  /** v5-A: rename a session at any time (the sidebar's pencil / double-click). */
+  setTitle: (id: string, title: string) =>
+    call<{ ok: true }>(`/sessions/${id}/title`, { method: "POST", body: JSON.stringify({ title }) }),
   interrupt: (id: string) => call<{ ok: true }>(`/sessions/${id}/interrupt`, { method: "POST" }),
   close: (id: string) => call<{ ok: true }>(`/sessions/${id}`, { method: "DELETE" }),
   history: (query = "", limit = 50, cwd?: string) =>

@@ -39,6 +39,7 @@
     onwindow,
     onnewwindow,
     onrename,
+    onrenamebot,
     onclosewindow,
     ontasks,
     onteammap,
@@ -85,6 +86,8 @@
     onnewwindow?: () => void;
     /** Rename a window (an empty name goes back to "Window 3"). */
     onrename?: (id: string, name: string) => void;
+    /** v5-A: rename a bot's session (an empty title keeps the old one). The name is the session's, everywhere. */
+    onrenamebot?: (id: string, title: string) => void;
     /** Close a window. Only one with no panes can go; the button says so otherwise. */
     onclosewindow?: (id: string) => void;
 
@@ -226,6 +229,20 @@
   const commitRename = () => {
     if (editing) onrename?.(editing, draft);
     editing = "";
+  };
+
+  // v5-A: renaming a bot's session works the same way — pencil or double-click
+  // on the row, one-line input, Enter commits and Escape backs out. The title
+  // is the session's own (web, WhatsApp group subject and history all show it).
+  let editingBot = $state("");
+  let botDraft = $state("");
+  const startBotRename = (bot: { id: string; title: string }) => {
+    editingBot = bot.id;
+    botDraft = bot.title;
+  };
+  const commitBotRename = () => {
+    if (editingBot && botDraft.trim()) onrenamebot?.(editingBot, botDraft.trim());
+    editingBot = "";
   };
 
   // ---- Nested bots: what each bot has delegated. One shared store polls the agent trees of
@@ -416,28 +433,42 @@
       {:else}
         <span class="ml-0.5 size-5 shrink-0" aria-hidden="true"></span>
       {/if}
-      <button
-        data-nav
-        type="button"
-        class="interactive flex min-h-8 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1.5 pl-0.5 text-left pointer-coarse:min-h-11"
-        onclick={() => onopen(bot.id)}
-        title={bot.title || "Untitled"}
-      >
-        <span class="relative shrink-0">
-          <Avatar id={bot.id} size={20} />
-          <span
-            class="absolute -right-0.5 -bottom-0.5 size-2 rounded-full border-[1.5px] border-canvas {bot.status === 'running'
-              ? 'pulse-live bg-live'
-              : bot.status === 'done'
-                ? 'bg-ok'
-                : bot.status === 'error'
-                  ? 'bg-err'
-                  : bot.status === 'interrupted'
-                    ? 'bg-warn'
-                    : 'bg-line-strong'}"
-          ></span>
-        </span>
-        <span class="min-w-0 flex-1 truncate text-[12px] leading-4 text-ink-muted">{bot.title || "Untitled"}</span>
+      {#if editingBot === bot.id}
+        <!-- v5-A: the row becomes a one-line input; Enter renames, Escape backs out. -->
+        <input
+          bind:value={botDraft}
+          aria-label="Session title"
+          class="h-6 min-w-0 flex-1 rounded-sm border border-brand bg-canvas px-1 text-[12px] text-ink focus:outline-none"
+          onkeydown={(e) => {
+            if (e.key === "Enter") commitBotRename();
+            else if (e.key === "Escape") editingBot = "";
+          }}
+          onblur={commitBotRename}
+        />
+      {:else}
+        <button
+          data-nav
+          type="button"
+          class="interactive flex min-h-8 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1.5 pl-0.5 text-left pointer-coarse:min-h-11"
+          onclick={() => onopen(bot.id)}
+          ondblclick={() => startBotRename(bot)}
+          title={bot.title || "Untitled"}
+        >
+          <span class="relative shrink-0">
+            <Avatar id={bot.id} size={20} />
+            <span
+              class="absolute -right-0.5 -bottom-0.5 size-2 rounded-full border-[1.5px] border-canvas {bot.status === 'running'
+                ? 'pulse-live bg-live'
+                : bot.status === 'done'
+                  ? 'bg-ok'
+                  : bot.status === 'error'
+                    ? 'bg-err'
+                    : bot.status === 'interrupted'
+                      ? 'bg-warn'
+                      : 'bg-line-strong'}"
+            ></span>
+          </span>
+          <span class="min-w-0 flex-1 truncate text-[12px] leading-4 text-ink-muted">{bot.title || "Untitled"}</span>
         {#if paneOf(bot.id)}
           <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-raised px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(bot.id)}">
             <span aria-hidden="true">{paneOf(bot.id)}</span><span class="sr-only">in pane {paneOf(bot.id)}</span>
@@ -448,7 +479,16 @@
             <Bot size={10} strokeWidth={2} aria-hidden="true" /><span class="tnum">{tree.live}</span>
           </span>
         {/if}
-      </button>
+        </button>
+        <!-- v5-A: the row's pencil (a hover extra, like the window's) renames the session. -->
+        <button
+          type="button"
+          class="interactive mr-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint opacity-0 hover:text-ink group-hover/bot:opacity-100 group-focus-within/bot:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
+          aria-label="Rename {bot.title || 'Untitled'}"
+          title="Rename"
+          onclick={() => startBotRename(bot)}
+        ><Pencil size={10} strokeWidth={2} aria-hidden="true" /></button>
+      {/if}
     </div>
     {#if botOpen(bot.id) && tree.total}
       <!-- Its delegates, each indented under its parent: face, name, live state, task in the tooltip. -->

@@ -644,7 +644,7 @@ const server = Bun.serve({
           },
         });
       }
-      const sessionMatch = path.match(/^\/sessions\/([^/]+)(\/prompt|\/model|\/interrupt|\/compact)?$/);
+      const sessionMatch = path.match(/^\/sessions\/([^/]+)(\/prompt|\/model|\/title|\/interrupt|\/compact)?$/);
       if (sessionMatch) {
         const id = decodeURIComponent(sessionMatch[1] as string);
         const action = sessionMatch[2];
@@ -666,6 +666,19 @@ const server = Bun.serve({
           if (!sessions.get(id)) return json({ error: "unknown session" }, 404);
           log("api.session.model", { id, model });
           sessions.setModel(id, model);
+          return json({ ok: true });
+        }
+        if (action === "/title" && request.method === "POST") {
+          // v5-A: rename a session at any time (the sidebar's pencil, double-click).
+          const body = await readJson(request);
+          const title = String(body.title ?? "").trim();
+          if (!title) return json({ error: "a title is required" }, 400);
+          try {
+            sessions.rename(id, title);
+          } catch (error) {
+            return json({ error: (error as Error).message }, /unknown session/.test((error as Error).message) ? 404 : 400);
+          }
+          log("api.session.title", { id, title: title.slice(0, 80) });
           return json({ ok: true });
         }
         if (action === "/compact" && request.method === "POST") {

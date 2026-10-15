@@ -226,3 +226,33 @@ export async function createBoundGroupFor(options: GroupBridgeOptions, request: 
   });
   return { groupJid, session };
 }
+
+/** v5-A: rename a group's subject (the title the members see). The fork's
+ * group-update routes mirror the create route's shape (`/group/<action>/
+ * <instance>`); the identifiers ride the query string AND the JSON body,
+ * because generations disagree on where they read them — exactly the
+ * tolerance `setGroupPicture` needed. A refusal is returned honestly: the
+ * session's title is already renamed, only the group lags. */
+export async function setGroupSubject(
+  baseUrl: string,
+  instance: string,
+  token: string,
+  groupJid: string,
+  subject: string,
+  options?: { timeoutMs?: number },
+): Promise<{ ok: boolean; status: number; error: string }> {
+  const url = `${baseUrl.replace(/\/+$/, "")}/group/updateGroupSubject/${encodeURIComponent(instance)}?groupJid=${encodeURIComponent(groupJid)}&subject=${encodeURIComponent(subject)}`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: token },
+      body: JSON.stringify({ groupJid, subject }),
+      signal: AbortSignal.timeout(options?.timeoutMs ?? 20_000),
+    });
+    if (response.status === 200 || response.status === 201) return { ok: true, status: response.status, error: "" };
+    const text = await response.text().catch(() => "");
+    return { ok: false, status: response.status, error: text.slice(0, 160) || `status ${response.status}` };
+  } catch (error) {
+    return { ok: false, status: 0, error: error instanceof Error ? error.message : String(error) };
+  }
+}

@@ -31,13 +31,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { runHeadless, type HeadlessResult } from "../cli/headless";
-import { DEFAULT_DB_PATH, createSession, findSession, getSession, openDb } from "../sessions";
+import { DEFAULT_DB_PATH, createSession, fallbackTitle, findSession, getSession, openDb, updateSession } from "../sessions";
 import { mentionsAccount } from "./accounts";
 import type { ChannelInbox, Inbound, Attachment } from "./inbox";
 import type { EvoSender, SendLedger } from "./evoSend";
 import type { QueueBridge } from "./queueBridge";
 import type { GroupPlan } from "./groupBridge";
 import type { SessionCommandPlan } from "./sessionCommand";
+import type { RenameCommandPlan } from "./renameCommand";
 import { readFileSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { ensureMediaFrames, lateTranscriptNote, transcribePendingAudio, type LateTranscriptLog, type MediaHandling } from "./mediaTurn";
@@ -92,6 +93,15 @@ export interface ConsumerOptions {
   /** Operator chat command (v4-H): recognizes `/newsession <subject>` in an
    * accepted row; a non-null plan is handled with NO model turn. Optional. */
   planSessionCommand?: (row: PendingRow, message: Inbound) => SessionCommandPlan | null;
+  /** Operator chat command (v5-A): recognizes `/rename <title>` in an accepted
+   * row; a non-null plan renames the session (and the group subject) with NO
+   * model turn. Optional. */
+  planRenameCommand?: (row: PendingRow, message: Inbound) => RenameCommandPlan | null;
+  /** v5-A: best-effort AI title for a fresh session's first message (the same
+   * helper the web server uses). Absent = the fallback title stays. */
+  generateSessionTitle?: (task: string, model: string, onTitle: (title: string) => void) => void;
+  /** v5-A: rename the bound group's subject to match the session title. */
+  renameGroupSubject?: (account: string, groupJid: string, subject: string) => Promise<void>;
   /** v4-F: strips [[mini-image: <path>]] markers from the reply and returns
    * the validated screenshot paths to deliver as media. Optional. */
   planImages?: (row: PendingRow, message: Inbound, replyText: string) => { text: string; images: string[] };
@@ -275,6 +285,22 @@ async function processOne(
     return;
   }
 
+  // Operator chat command (v5-A): `/rename <title>` renames the session (and
+  // the group subject) with no model turn, exactly the same authority shape:
+  // allowlist only, acknowledged before the deferred work runs.
+  const renamePlan = options.planRenameCommand?.(row, message);
+  if (renamePlan) {
+    ack();
+    void (async () => {
+      try {
+        await renamePlan.after();
+      } catch (error) {
+        log("channel.rename_command.error", { seq, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return;
+  }
+
   // Group mention gate (WA-5): a bound group thread answers only when the
   // account's own jid is explicitly mentioned, unless the operator set policy
   // "all". Ignored messages are acknowledged unread-by-any-model — the cursor
@@ -439,6 +465,43 @@ async function findDeliveredReply(sender: EvoSender, thread: string, quotedId: s
   return null;
 }
 
+/** v5-A: a fresh WhatsApp session's AI title, fired once on its first message.
+ * The fallback title (first words, already stored) is replaced best-effort; a
+ * rename that lands meanwhile (web or `/rename`) is detected by the title no
+ * longer being the fallback and wins. A bound group's subject follows. */
+function scheduleFirstTurnTitle(
+  options: ConsumerOptions,
+  log: (event: string, fields?: Record<string, unknown>) => void,
+  row: PendingRow,
+  model: string,
+  firstText: string,
+  dbPath: string,
+): void {
+  const baseTitle = fallbackTitle(firstText);
+  options.generateSessionTitle?.(firstText, model, (ai) => {
+    if (!ai || ai === baseTitle) return;
+    try {
+      const db = openDb(dbPath);
+      try {
+        const record = getSession(db, row.session);
+        // Renamed meanwhile (web sidebar or /rename): the operator's name stays.
+        if (record && record.title !== baseTitle) return;
+        updateSession(db, row.session, { title: ai });
+      } finally {
+        db.close();
+      }
+      log("channel.session.title", { session: row.session, title: ai, ai: true });
+    } catch {
+      // best-effort: the fallback title stays
+    }
+    if (row.thread.endsWith("@g.us")) {
+      options.renameGroupSubject?.(row.account, row.thread, ai)?.catch((error) => {
+        log("channel.session.group_title_failed", { session: row.session, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+  });
+}
+
 /** One agent turn in the binding's session; resolves with the reply text.
  * Throws while the turn keeps failing (bounded retries, then an honest note). */
 async function runTurn(
@@ -463,8 +526,15 @@ async function runTurn(
       const db = openDb(dbPath);
       // The binding's session is the stable conversation: create the row on the
       // first message, reuse it (and its saved history) on every later one.
-      if (!getSession(db, row.session)) createSession(db, { id: row.session, cwd, model, task: `WhatsApp thread ${row.thread}` });
+      const fresh = !getSession(db, row.session);
+      const firstText = fresh ? message.text.replace(/\s+/g, " ").trim() : "";
+      if (fresh) {
+        // v5-A: the first message names the session right away (the truncated
+        // fallback title); the AI title replaces it best-effort below.
+        createSession(db, { id: row.session, cwd, model, task: `WhatsApp thread ${row.thread}`, title: firstText ? fallbackTitle(firstText) : undefined });
+      }
       db.close();
+      if (fresh && firstText) scheduleFirstTurnTitle(options, log, row, model, firstText, dbPath);
       // resumeId is always the binding's session: the first turn runs on the
       // (empty) row we just ensured, later turns continue its saved
       // conversation — one thread is one stable session, never a fork.

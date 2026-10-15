@@ -47,6 +47,7 @@ import { probeHost, startRemoteRun, type RemoteRun, type SshTarget } from "./ssh
 import { attachmentAgentBlock, attachmentLinksLine, getAttachment, inlineWorkspaceImages, registerFile, type Attachment } from "./attachments";
 import { extractUiComponents } from "./uiComponents";
 import { readPlan, type SessionPlan } from "../mini/plans";
+import { aiTitle } from "../title";
 import { SubagentSync, readSubagentIndex, subagentIndexFresh, type SubagentView } from "../mini/subagents";
 
 /** One saved session in the history list: metadata only, no transcript. */
@@ -644,6 +645,9 @@ export class SessionManager {
     } catch {
       // the /resume history is best-effort
     }
+    // v5-A: the fallback title is already stored; a better one is generated
+    // with the model, best-effort, and replaces it while the session runs.
+    this.#scheduleAiTitle(id, title, prompt, effective);
     this.#announce(entry, run);
 
     entry.watch = watchTrajectory(run.session.trajPath, (traj) => this.#ingest(entry, traj));
@@ -720,6 +724,8 @@ export class SessionManager {
     } catch {
       // persistence is best-effort
     }
+    // v5-A: the same AI title a local session gets (generation runs here, not on the host).
+    this.#scheduleAiTitle(id, title, prompt, model);
 
     // Echo the prompt immediately, exactly like the TUI does on submit. Attached
     // files show as download links under the prompt, as in every later turn.
@@ -1192,6 +1198,52 @@ export class SessionManager {
     entry.session.status = "error";
     entry.session.events.push({ type: "error", text: message });
     this.#emit(entry);
+  }
+
+  /** v5-A: a session's AI title, best-effort. The fallback title is already
+   * stored, so a generation failure (or a missing binary/model) changes
+   * nothing. The generated title never lands over a rename: if the live title
+   * stopped being the fallback we planted, someone renamed it meanwhile and
+   * their name wins. */
+  #scheduleAiTitle(id: string, fallback: string, prompt: string, model: string): void {
+    const task = prompt.trim();
+    if (!task) return;
+    void aiTitle(task, model).then((title) => {
+      if (!title || title === fallback) return;
+      const entry = this.#live.get(id);
+      if (entry && entry.session.title !== fallback) return; // renamed meanwhile
+      if (entry) {
+        entry.session.title = title;
+        this.#emit(entry);
+      }
+      try {
+        updateSession(this.db(), id, { title });
+      } catch {
+        // best-effort: the live row already carries it
+      }
+      log("session.title", { id, title, ai: true });
+    });
+  }
+
+  /** v5-A: the operator renames a session at any time (web sidebar, WhatsApp
+   * `/rename`). Works on live and saved sessions alike; the web clients see a
+   * live change immediately through the shared stream. */
+  rename(id: string, title: string): void {
+    const clean = title.replace(/\s+/g, " ").trim();
+    if (!clean) throw new Error("a title is required");
+    if (Buffer.byteLength(clean, "utf8") > 200) throw new Error("the title is too long (max 200 bytes)");
+    if (!this.#live.get(id) && !getSession(this.db(), id)) throw new Error("unknown session");
+    const entry = this.#live.get(id);
+    if (entry) {
+      entry.session.title = clean;
+      this.#emit(entry);
+    }
+    try {
+      updateSession(this.db(), id, { title: clean });
+    } catch {
+      // best-effort: the live row already carries it
+    }
+    log("session.title", { id, title: clean, ai: false });
   }
 
   /**

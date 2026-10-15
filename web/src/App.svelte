@@ -333,6 +333,20 @@ import { windows } from "./lib/stores/windows.svelte";
     panes.forgetMissing((sid) => sid !== id);
   }
 
+  /** v5-A: rename a session from the sidebar (double-click or the row's pencil).
+   * Optimistic — the row shows the new name at once; a refusal reverts and says so. */
+  async function renameBot(id: string, title: string) {
+    const before = store.sessions[id];
+    if (!before) return;
+    store.sessions[id] = { ...before, title };
+    try {
+      await api.setTitle(id, title);
+    } catch (error) {
+      store.sessions[id] = before;
+      toasts.push("Could not rename it", { detail: (error as Error).message, tone: "err" });
+    }
+  }
+
   function app(action: "settings" | "providers" | "skills" | "resume" | "help" | "hosts") {
     if (action === "resume") resumeOpen = true;
     else if (action === "help") helpOpen = true;
@@ -527,6 +541,7 @@ import { windows } from "./lib/stores/windows.svelte";
         onnewwindow={() => newWindow()}
         grid={narrow}
         onrename={(id, name) => windows.rename(id, name)}
+        onrenamebot={(id, title) => renameBot(id, title)}
         onclosewindow={(id) => {
           panes.dropWindow(id);
           windows.remove(id);
