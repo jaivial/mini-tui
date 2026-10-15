@@ -75,6 +75,7 @@ def main() -> int:
         f"{api}/message/sendWhatsAppAudio/{inst}",
         {"number": thread, "audio": base64.b64encode(raw).decode(), "mimetype": "audio/ogg; codecs=opus", "ptt": True},
         token)
+    status = status.decode()  # curl's -w emits bytes; compare as text below
     print(f"[out] sendWhatsAppAudio -> HTTP {status}")
     if status != "201":
         print(body[:400])
@@ -133,18 +134,30 @@ def main() -> int:
         print(f"[in ] media store moved to {os.path.basename(moved)} (seq {seq})")
 
     # --- 3. Watch the real pipeline: whisper → transcript → reply. ---------
+    # The transcript TEXT lives on the original message (mediaTurn writes it via
+    # inbox.transcript, which updates the payload); channel_updates only records
+    # the durable "an update happened" marker for the late sweep.
+    def read_transcript() -> tuple[str, str] | None:
+        with db() as c:
+            row = c.execute("select payload from channel_inbox where seq=?", (seq,)).fetchone()
+            if not row:
+                return None
+            msg = json.loads(row["payload"])
+            for a in msg.get("attachments", []):
+                if a.get("kind") == "audio" and a.get("transcriptionState") not in (None, "pending"):
+                    return (a.get("transcriptionState") or "", a.get("transcript") or "")
+        return None
+
     transcript = None
     while time.time() < deadline + 300:
+        transcript = read_transcript()
+        if transcript:
+            break
         with db() as c:
-            upd = c.execute(
-                "select text, state from channel_updates where seq=?1 order by rowid desc limit 1", (seq,)).fetchone()
-            if upd:
-                transcript = (upd["state"], upd["text"])
-                break
             sent_row = c.execute(
                 "select s.state, s.reply_text from channel_sends s where s.inbox_seq=?", (seq,)).fetchone()
             if sent_row and sent_row["state"] == "sent":
-                print("NOTE: reply was sent but no transcript row was written")
+                print("NOTE: reply was sent but the attachment is still pending")
                 break
         time.sleep(2)
 
