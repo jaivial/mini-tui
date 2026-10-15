@@ -472,10 +472,14 @@
 <div class="relative flex h-full w-full overflow-hidden bg-canvas text-ink">
   {#if sidebarOpen && narrow}
     <!-- On a phone the rail IS the screen (v6): nothing of the chat shows behind it, so the
-         backdrop is only there for the swipe-down gesture that closes it, not as a dimmed layer. -->
-    <button
+         backdrop is only there for the swipe-down gesture that closes it, not as a dimmed layer.
+         It is NOT a button: a full-screen invisible button sat in the tab order with the same
+         accessible name as the header's real close control, so a keyboard or screen-reader user
+         met two identical "Close the bots list" controls, the first one invisible. The visible X
+         in the rail's header is the named control; this is a pointer-only surface. -->
+    <div
       class="absolute inset-0 z-40 cursor-default bg-transparent"
-      aria-label="Close the bots list"
+      aria-hidden="true"
       onclick={() => (sidebarOpen = false)}
       onpointerdown={(e) => (swipeFrom = { x: e.clientX, y: e.clientY })}
       onpointerup={(e) => {
@@ -484,7 +488,7 @@
         // A swipe down or right from anywhere over the scroller closes it, like a sheet.
         if (from && (e.clientY - from.y > 64 || e.clientX - from.x > 64)) sidebarOpen = false;
       }}
-    ></button>
+    ></div>
   {/if}
   {#if sidebarOpen}
     <div class="enter-1 {narrow ? 'absolute inset-0 z-50' : 'relative w-[288px]'}">
