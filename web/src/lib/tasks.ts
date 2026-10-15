@@ -6,10 +6,11 @@
  */
 import type { SessionTask } from "./types";
 
-/** Where a session is shown right now: which pane (its number) and the window that pane is in. */
+/** Where a session is shown right now: which pane (its number). */
 export interface TaskWhere {
   pane: number;
-  window: string;
+  /** The window that pane lives in, when the board still names one (the UI dropped windows in v6). */
+  window?: string;
 }
 
 export interface TaskRow {
@@ -43,7 +44,8 @@ export function boardRows(
 
 /** "Pane 2 · Work" for a session on screen, "Not open in a pane" for one that is not. */
 export function whereLabel(where: TaskWhere | null): string {
-  return where ? `Pane ${where.pane} · ${where.window}` : "Not open in a pane";
+  if (!where) return "Not open in a pane";
+  return where.window ? `Pane ${where.pane} · ${where.window}` : `Pane ${where.pane}`;
 }
 
 /**

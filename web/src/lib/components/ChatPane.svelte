@@ -1,8 +1,9 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { GripVertical, PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Network, Settings as SettingsIcon, ArrowDown } from "@lucide/svelte";
+  import { GripVertical, PanelLeft, WifiOff, SquarePen, SquareSlash, Sparkles, RotateCcw, NotebookPen, SquareTerminal, Network, Columns2, Rows2, LayoutGrid, SquareSplitHorizontal, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, X, Plus, Trash2, CalendarClock, Settings, Server, Keyboard, MoonStar } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import SessionHeader from "./SessionHeader.svelte";
+  import HeaderMenu, { type MenuRow } from "./HeaderMenu.svelte";
   import SubagentStrip from "./SubagentStrip.svelte";
   import Transcript from "./Transcript.svelte";
   import Composer from "./Composer.svelte";
@@ -15,13 +16,9 @@
   import AgentsPanel from "./AgentsPanel.svelte";
   // The terminal (xterm.js, ~290 KB) is loaded the first time a terminal is opened, not with the app.
   const TerminalPanel = () => import("./TerminalPanel.svelte");
-  import PaneMenu from "./PaneMenu.svelte";
-  import FolderPicker from "./FolderPicker.svelte";
-  import { rememberRecent } from "../folderPath";
   import { catalog } from "../stores/catalog.svelte";
   import { store } from "../stores/sessions.svelte";
   import { panes, type Pane, type SideTab } from "../stores/panes.svelte";
-import { windows as windowStore } from "../stores/windows.svelte";
   import { toasts } from "../stores/toast.svelte";
   import { api } from "../api";
   import { parseCommand } from "../completion";
@@ -34,6 +31,11 @@ import { windows as windowStore } from "../stores/windows.svelte";
    * prompt bar and notes. Everything it holds lives in the pane store, so a split that remounts it loses
    * nothing. Commands and the model picker act on this pane; app-wide things (settings, resume, help)
    * go up through `onapp`.
+   *
+   * From v6 the pane's own controls are no longer a row of icon buttons beside the title: they are the
+   * rows of ONE popover, hung off a three-dots button in the header (`menuRows`). Nothing was dropped —
+   * split, notes, agents, terminal, layout, close pane, close session, palette, settings, help, resume
+   * and the team map are all still here, just collected in one place.
    */
   let {
     pane,
@@ -48,8 +50,6 @@ import { windows as windowStore } from "../stores/windows.svelte";
     onapp,
     onsplit,
     onclosepane,
-    windows = [],
-    onmove,
     moves,
     onmovepane,
     layouts,
@@ -59,6 +59,8 @@ import { windows as windowStore } from "../stores/windows.svelte";
     ondragmove,
     ondragend,
     dragging = false,
+    /** v6: the app-level actions the header menu carries (Routines, Team map, hosts, settings…). */
+    appActions = [],
   }: {
     pane: Pane;
     number: number;
@@ -74,9 +76,6 @@ import { windows as windowStore } from "../stores/windows.svelte";
     onapp: (action: "settings" | "providers" | "skills" | "resume" | "help" | "hosts") => void;
     onsplit: (dir: "row" | "col") => void;
     onclosepane: () => void;
-    /** The other windows, for "Move to window…". */
-    windows?: { id: string; label: string }[];
-    onmove?: (to: string | "new", name?: string) => void;
     /** Which directions have a neighbour to trade places with. */
     moves?: { left: boolean; right: boolean; up: boolean; down: boolean };
     onmovepane?: (dir: "left" | "right" | "up" | "down") => void;
@@ -88,11 +87,11 @@ import { windows as windowStore } from "../stores/windows.svelte";
     ondragmove?: (event: PointerEvent) => void;
     ondragend?: (event: PointerEvent) => void;
     dragging?: boolean;
+    /** App-wide rows the header shows under this pane's own (built by App.svelte). */
+    appActions?: MenuRow[];
   } = $props();
 
   const session = $derived(pane.sessionId ? (store.sessions[pane.sessionId] ?? null) : null);
-  /** The pane menu's move items: the other windows, then a new one. */
-  const windowsList = $derived((windows ?? []).map((w) => ({ ...w })));
   const focused = $derived(panes.focusedId === pane.id);
   const link = $derived(session ? (store.links[session.id] ?? "idle") : "idle");
 
@@ -254,19 +253,19 @@ import { windows as windowStore } from "../stores/windows.svelte";
       if (await runCommand(sent)) return;
       if (!current) {
         // The first message creates the session, on the target and model chosen in this pane's draft.
+        // v6: there is no folder to choose any more — every chat starts in the operator's home, so
+        // `cwd` travels empty and the server fills in ~.
         const host = store.hosts.find((h) => h.id === pane.draft.targetId);
         // Read the draft now: showing the new session resets the pane's draft.
-        const draft = { ...pane.draft, cwd: pane.draft.cwd.trim() };
+        const draft = { ...pane.draft };
         try {
           const created = await api.create({
             prompt: sent,
             target: host ? "remote" : "local",
             hostId: host?.id,
             model: draft.model || undefined,
-            cwd: draft.cwd || undefined,
             attachments: atts,
           });
-          if (draft.cwd) rememberRecent(draft.targetId, created.cwd || draft.cwd);
           store.adopt(created);
           panes.show(pane.id, created.id);
           if (draft.model) void catalog.loadSettings();
@@ -337,23 +336,65 @@ import { windows as windowStore } from "../stores/windows.svelte";
   }
   const sideOpen = (tab: SideTab) => pane.notesOpen && pane.sideTab === tab;
   let agentsPanel = $state<{ focus: () => void } | null>(null);
-  /** Agents this session started (the strip's roster): the toolbar button shows how many work. */
+  /** Agents this session started (the strip's roster): the menu row shows how many work. */
   const agentCount = $derived(session?.subagents?.length ?? 0);
+  const MOVES = { left: false, right: false, up: false, down: false };
+  const LAYOUTS = { row: false, col: false, grid: false };
+
+  /**
+   * Everything this pane can do, as the rows of the header's one popover. This is the old
+   * `PaneMenu`'s item list (plus notes/agents/terminal, which were separate buttons beside the
+   * title) moved here: same actions, same disabled reasons, one menu instead of two.
+   *
+   * The app-wide rows (Routines, Team map, hosts, settings, resume, help) are appended from
+   * `appActions`, which App.svelte builds — the sidebar used to own those and no longer does.
+   */
+  const paneRows = $derived.by((): MenuRow[] => [
+    { id: "new", label: "New chat here", note: "Ctrl/⌘ K", icon: Plus, group: "This bot", run: newChat },
+    ...(agentCount
+      ? [{ id: "agents", label: `Agents (${agentCount})`, note: sideOpen("agents") ? "Hide the panel" : "Show the panel", icon: Network, run: () => toggleSide("agents") }]
+      : []),
+    { id: "notes", label: sideOpen("notes") ? "Hide notes" : "Notes", note: "Ctrl/⌘ ⇧ .", icon: NotebookPen, run: toggleNotes },
+    { id: "terminal", label: sideOpen("terminal") ? "Hide terminal" : "Terminal", note: "Ctrl `", icon: SquareTerminal, run: () => toggleSide("terminal") },
+    ...(tabs
+      ? [{ id: "split", label: "New pane", note: !panes.canSplit ? "At most 12 panes" : "Ctrl \\", icon: SquareSplitHorizontal, disabled: !panes.canSplit, run: () => onsplit("row") }]
+      : [
+          { id: "split-r", label: "Split right", note: !panes.canSplit ? "At most 12 panes" : canRight ? "Ctrl \\" : "Too narrow to split", icon: Columns2, disabled: !panes.canSplit || !canRight, run: () => onsplit("row") },
+          { id: "split-d", label: "Split down", note: !panes.canSplit ? "At most 12 panes" : canDown ? "Ctrl ⇧ \\" : "Too short to split", icon: Rows2, disabled: !panes.canSplit || !canDown, run: () => onsplit("col") },
+        ]),
+    ...(onmovepane
+      ? ([
+          ["left", "Move pane left", "pane left of this one", ArrowLeft],
+          ["right", "Move pane right", "pane right of this one", ArrowRight],
+          ["up", "Move pane up", "pane above this one", ArrowUp],
+          ["down", "Move pane down", "pane below this one", ArrowDown],
+        ] as const).map(([dir, label, why, icon]) => ({
+          id: `pane-${dir}`,
+          label,
+          note: (moves ?? MOVES)[dir] ? "" : `No ${why}`,
+          icon,
+          disabled: !(moves ?? MOVES)[dir],
+          group: "Move pane",
+          run: () => onmovepane(dir),
+        }))
+      : []),
+    ...(onarrange
+      ? [
+          { id: "lay-row", label: "Lay out in a row", icon: Columns2, disabled: !(layouts ?? LAYOUTS).row, note: (layouts ?? LAYOUTS).row ? "" : "Needs 2 panes", group: "Layout", run: () => onarrange("row") },
+          { id: "lay-col", label: "Lay out in a column", icon: Rows2, disabled: !(layouts ?? LAYOUTS).col, note: (layouts ?? LAYOUTS).col ? "" : "Needs 2 panes", group: "Layout", run: () => onarrange("col") },
+          { id: "lay-grid", label: "Lay out in a grid", icon: LayoutGrid, disabled: !(layouts ?? LAYOUTS).grid, note: (layouts ?? LAYOUTS).grid ? "" : "Needs 4 panes", group: "Layout", run: () => onarrange("grid") },
+        ]
+      : []),
+    { id: "close-pane", label: "Close pane", note: total > 1 ? "Alt X" : "The last pane stays", icon: X, disabled: total <= 1, group: "This bot", run: onclosepane },
+    ...(session ? [{ id: "close-session", label: "Close session", note: "Stops it and drops it from the list", icon: Trash2, danger: true, run: closeSession }] : []),
+    ...appActions,
+  ]);
 </script>
 
-{#snippet folder()}
-  {@const host = store.hosts.find((h) => h.id === pane.draft.targetId)}
-  <FolderPicker
-    value={pane.draft.cwd}
-    target={pane.draft.targetId}
-    targetLabel={host ? host.label : "this machine"}
-    defaultLabel={host ? (host.workdir ? `Host folder (${host.workdir})` : "Host home folder") : "Server folder"}
-    onpick={(path) => (pane.draft.cwd = path)}
-  />
-{/snippet}
-
-{#snippet tools()}
+{#snippet grip()}
   {#if ondragpane}
+    <!-- The drag handle stays IN the header: it is a pointer target, not a command, and a popover
+         row cannot be dragged out of the card. Everything that is a command moved into the menu. -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <span
       role="button"
@@ -377,57 +418,6 @@ import { windows as windowStore } from "../stores/windows.svelte";
       <GripVertical size={14} strokeWidth={1.75} aria-hidden="true" />
     </span>
   {/if}
-  <Button
-    variant="ghost"
-    size="icon-sm"
-    icon={NotebookPen}
-    title={sideOpen("notes") ? "Hide notes" : "Notes"}
-    aria-label={sideOpen("notes") ? "Hide notes" : "Show notes"}
-    aria-pressed={sideOpen("notes")}
-    active={sideOpen("notes")}
-    onclick={toggleNotes}
-  />
-  <span class="relative inline-flex">
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      icon={Network}
-      title={sideOpen("agents") ? "Hide agents" : "Agents"}
-      aria-label={sideOpen("agents") ? "Hide agents" : `Show agents${agentCount ? ` (${agentCount})` : ""}`}
-      aria-pressed={sideOpen("agents")}
-      active={sideOpen("agents")}
-      onclick={() => toggleSide("agents")}
-    />
-    {#if agentCount}
-      <span class="pointer-events-none absolute -top-0.5 -right-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-brand px-0.5 text-[9px] font-bold text-brand-ink tnum">{agentCount}</span>
-    {/if}
-  </span>
-  <Button
-    variant="ghost"
-    size="icon-sm"
-    icon={SquareTerminal}
-    title={sideOpen("terminal") ? "Hide terminal" : "Terminal"}
-    aria-label={sideOpen("terminal") ? "Hide terminal" : "Show terminal"}
-    aria-pressed={sideOpen("terminal")}
-    active={sideOpen("terminal")}
-    onclick={() => toggleSide("terminal")}
-  />
-  <PaneMenu
-    {tabs}
-    {canRight}
-    {canDown}
-    limitReached={!panes.canSplit}
-    canClose={total > 1}
-    {onsplit}
-    onclose={onclosepane}
-    moves={moves ?? { left: false, right: false, up: false, down: false }}
-    {onmovepane}
-    layouts={layouts ?? { row: false, col: false, grid: false }}
-    {onarrange}
-    oncloseSession={session ? closeSession : undefined}
-    windows={windowsList}
-    onmove={onmove}
-  />
 {/snippet}
 
 <!--
@@ -450,15 +440,18 @@ import { windows as windowStore } from "../stores/windows.svelte";
 >
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
     {#if session}
+      <!--
+          The header is the identity plus ONE three-dots button. The grip stays beside it (it is a
+          drag target, not a command) and everything else — notes, agents, terminal, split, layout,
+          close pane/session, and the app-wide modals — is a row in that one popover.
+        -->
       <div class="relative z-30">
         <SessionHeader
           {session}
-          onnew={newChat}
           ontoggleSidebar={ontogglesidebar}
-          onopenhosts={() => onapp("hosts")}
-          onclosesession={closeSession}
+          rows={paneRows}
           showSidebarToggle={first}
-          paneTools={tools}
+          paneTools={grip}
         />
         <SubagentStrip {session} onopen={openSubagent} />
       </div>
@@ -537,8 +530,32 @@ import { windows as windowStore } from "../stores/windows.svelte";
           <Button variant="ghost" size="icon-sm" icon={PanelLeft} title="Toggle sidebar" aria-label="Toggle sidebar" onclick={ontogglesidebar} />
         {/if}
         <h1 class="min-w-0 flex-1 truncate px-1 text-[13.5px] font-semibold">New chat</h1>
-        <Button variant="ghost" size="icon-sm" icon={SettingsIcon} title="Settings" aria-label="Settings" onclick={() => onapp("settings")} />
-        {@render tools()}
+        {#if ondragpane}
+          <!-- The grip is a drag target, not a command: it stays in the header, not in the menu. -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span
+            role="button"
+            tabindex="0"
+            aria-label="Drag pane {number} to swap it with another"
+            aria-keyshortcuts="Enter"
+            title="Drag to another pane to swap them"
+            class="grid size-8 shrink-0 cursor-grab place-items-center rounded-sm text-ink-muted hover:bg-raised hover:text-ink active:cursor-grabbing pointer-coarse:size-11"
+            class:is-dragging={dragging}
+            data-dragging={dragging ? "true" : undefined}
+            onpointerdown={ondragpane}
+            onpointermove={ondragmove}
+            onpointerup={ondragend}
+            onpointercancel={ondragend}
+            onkeydown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              onmovepane?.("right");
+            }}
+          >
+            <GripVertical size={14} strokeWidth={1.75} aria-hidden="true" />
+          </span>
+        {/if}
+        <HeaderMenu label="Bot menu" rows={paneRows} />
       </header>
 
       <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -548,7 +565,8 @@ import { windows as windowStore } from "../stores/windows.svelte";
             <div>
               <h2 class="text-[20px] font-semibold tracking-tight pane-xs:text-[17px]">What should we work on?</h2>
               <p class="mt-1.5 text-[13.5px] text-ink-muted">
-                {pane.draft.targetId === "local" ? "Runs on this machine" : `Runs headless on ${store.hosts.find((h) => h.id === pane.draft.targetId)?.label ?? "the remote host"}`}{#if pane.draft.cwd}{" "}in <span class="font-mono text-ink">{pane.draft.cwd}</span>{/if}.
+                {pane.draft.targetId === "local" ? "Runs on this machine" : `Runs headless on ${store.hosts.find((h) => h.id === pane.draft.targetId)?.label ?? "the remote host"}`},
+                starting in your home folder.
                 The chat starts when you send your first message.
               </p>
             </div>
@@ -582,7 +600,6 @@ import { windows as windowStore } from "../stores/windows.svelte";
             if (id !== pane.draft.targetId) pane.draft.cwd = "";
             pane.draft.targetId = id;
           }}
-          place={folder}
           model={currentModel}
           {modelNote}
           floating

@@ -27,14 +27,3 @@ export function relativeTime(ts: number): string {
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
-
-/** Innermost segment of a path, for a compact sidebar label. */
-export function baseName(path: string): string {
-  const parts = path.replace(/\/+$/, "").split("/");
-  return parts[parts.length - 1] || path;
-}
-
-export function shortCwd(path: string): string {
-  const home = /^\/home\/[^/]+/;
-  return path.replace(home, "~");
-}

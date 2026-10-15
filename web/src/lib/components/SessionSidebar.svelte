@@ -1,116 +1,65 @@
 <script lang="ts">
-  import { untrack } from "svelte";
-  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers, Search, Bot, CalendarClock, Zap, Network, Puzzle } from "@lucide/svelte";
-  import Spinner from "./Spinner.svelte";
-  import { sidebarHistory } from "../stores/history.svelte";
-  import { folderStore } from "../stores/folders.svelte";
-  import { byStart, folderTitle, groupByFolder, isExpanded, loadPrefs, normalizeCwd, PREFS_KEY, toggleIn, type FolderGroup } from "../sessionFolders";
-  import { savePart, startingDoc, workspace } from "../workspace";
-  import { legacy } from "../legacy";
-  import { ChevronDown, Pin, PinOff, Folder, FolderPlus, Clock3, FolderTree, Pencil, X } from "@lucide/svelte";
-  import { groupByRecency, unresumableReason } from "../resume";
-  import { partitionBots } from "../botGroups";
-  import type { HistoryItem } from "../types";
+  import { Search, Server, Square, ChevronRight, PanelLeftClose, X, Pencil, Plus } from "@lucide/svelte";
   import Button from "./Button.svelte";
-  import TasksButton from "./TasksButton.svelte";
-  import Badge from "./Badge.svelte";
   import Skeleton from "./Skeleton.svelte";
-  import { store } from "../stores/sessions.svelte";
-  import { baseName, relativeTime, cost } from "../format";
-  import { statusLine } from "../mascot";
-  import Avatar from "./Avatar.svelte";
   import Mascot from "./Mascot.svelte";
-  import type { SessionState, SessionTask } from "../types";
-  import type { WindowTasks } from "../tasks";
+  import Avatar from "./Avatar.svelte";
+  import { store } from "../stores/sessions.svelte";
+  import { cost, relativeTime } from "../format";
+  import { statusLine } from "../mascot";
+  import { partitionBots } from "../botGroups";
+  import { botProgress, progressLabel, runningLabel } from "../botRows";
   import { agentTree, type BotRow } from "../stores/agentTree.svelte";
+  import type { SessionState, SessionTask } from "../types";
 
+  /**
+   * The bots list (Jaime's v6 spec): a search box and one card per bot. Nothing else — the
+   * header's actions, the "Windows" concept, the folder view and the History section are gone
+   * from here; what is left is a room of pets you pick a chat from.
+   *
+   * Each row reads like the mockup's: the squishmoji on the left, the title in semibold, a quiet
+   * line under it with the state in words, and the trailing counters that say how far the bot has
+   * got (tasks done/total) and how many delegates are working under it right now. Rows are cards
+   * with 18px corners (the Apple/iOS radius this iteration asked for).
+   *
+   * Phone: the rail is the whole screen, its own scroller, dismissed with the header's X (the
+   * backdrop behind it and a swipe right both do the same). `full` is passed by the shell.
+   */
   let {
     onnew,
-    onsettings,
-    onopenhosts,
     onhidesidebar,
     onclosesession,
     onopen,
-    onopenhistory,
-    onresume,
-    onnewin,
-    inOtherWindow,
-    openingId = "",
-    windows = [],
-    onwindow,
-    onnewwindow,
-    onrename,
     onrenamebot,
-    onclosewindow,
-    ontasks,
-    onteammap,
-    windowTasks = {},
+    openingId = "",
     taskCards = [],
     paneOf = () => 0,
     focusedSession = null,
-    grid = false,
     loading = false,
+    full = false,
     class: klass = "",
   }: {
     onnew: () => void;
-    onsettings: () => void;
-    onopenhosts: () => void;
-    /** Collapse the sidebar itself. */
+    /** Collapse the sidebar itself (or slide it away on a phone). */
     onhidesidebar: () => void;
     /** Close one session by id (stop it and drop it from the list). */
     onclosesession: (id: string) => void;
     /** Open a session in the focused pane (or focus the pane already showing it). */
     onopen: (id: string) => void;
-    /** Open a saved session (from the database) in the focused pane. */
-    onopenhistory: (item: HistoryItem) => void;
-    /** Start a new chat in this folder (on this host, when the folder is a remote one). */
-    onnewin?: (cwd: string, hostId?: string) => void;
-    /** The full Resume panel (search everything, delete). */
-    onresume: () => void;
+    /** v5-A: rename a bot's session (an empty title keeps the old one). */
+    onrenamebot?: (id: string, title: string) => void;
     /** A saved session being opened right now. */
     openingId?: string;
-    /** Every window, in order, with its pane count and which is on screen. */
-    windows?: {
-      id: string;
-      label: string;
-      name: string | null;
-      panes: number;
-      active: boolean;
-      /** One per pane, in reading order. */
-      dots?: { id: string; status: "live" | "done" | "idle"; label: string; error?: boolean }[];
-      /** The bots (sessions) this window holds, in reading order — the nested rows. */
-      bots?: { id: string; title: string; status: SessionState["status"]; error?: boolean }[];
-    }[];
-    /** Show a window. */
-    onwindow?: (id: string) => void;
-    /** Start a new, empty window. */
-    onnewwindow?: () => void;
-    /** Rename a window (an empty name goes back to "Window 3"). */
-    onrename?: (id: string, name: string) => void;
-    /** v5-A: rename a bot's session (an empty title keeps the old one). The name is the session's, everywhere. */
-    onrenamebot?: (id: string, title: string) => void;
-    /** Close a window. Only one with no panes can go; the button says so otherwise. */
-    onclosewindow?: (id: string) => void;
-
-    /** Open the window's task board (the panel listing every session's task card). */
-    ontasks?: () => void;
-    /** Open the team map (the graph of every open session's delegated agents). */
-    onteammap?: () => void;
-    /** Each window's panes and their tasks, one for the icon on that window's row. */
-    windowTasks?: Record<string, WindowTasks>;
-    /** The whole task board, as the hub pushes it: the bots' cards for the accordion rows. */
+    /** The whole task board, as the hub pushes it: the bots' cards for the row counters. */
     taskCards?: SessionTask[];
-
-    /** The window holding a session that no pane on screen shows, or "" when one does. */
-    inOtherWindow?: (id: string) => string;
-    /** Number of the pane showing a session, 0 when none: shown on the row when there are panes. */
+    /** Number of the pane showing a session, 0 when none. */
     paneOf?: (id: string) => number;
     /** The session in the focused pane: that row is the highlighted one. */
     focusedSession?: string | null;
-    /** Phone layout: a grid of bots on top, the chats below (the mockup's). */
-    grid?: boolean;
     /** The first session list is still on its way. */
     loading?: boolean;
+    /** Phone: take the whole screen (the shell passes it, not a media query). */
+    full?: boolean;
     class?: string;
   } = $props();
 
@@ -124,154 +73,31 @@
     session.cwd.toLowerCase().includes(query) ||
     session.model.toLowerCase().includes(query);
 
+  const byStart = (a: { createdAt: number; id: string }, b: { createdAt: number; id: string }) =>
+    b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
   const visible = $derived(store.list.filter(matches));
   // Stable while live: a running session's `updatedAt` changes on every step, which would reshuffle
-  // these rows constantly. Live rows keep the order they were started in; the others stay newest first.
-  //
-  // One partition, not three independent filters: `idle` used to accept `error` and `interrupted`
-  // as well, so those sessions landed in two groups, rendered twice and threw each_key_duplicate.
+  // these rows constantly. Live rows keep the order they were started in; the others stay newest
+  // first. One partition, not three independent filters — see botGroups.ts for why that matters.
   const buckets = $derived(partitionBots(visible, byStart));
-  const live = $derived(buckets.live);
-  const idle = $derived(buckets.idle);
-  const done = $derived(buckets.done);
+  /** Bots in reading order: working first, then the quiet open ones, then the finished. */
+  const bots = $derived([...buckets.live, ...buckets.idle, ...buckets.done]);
 
-  // ---- History: every saved session in the database, not only the ones this server has open.
-  // The filter box searches it on the server (title, first message, folder), a moment after typing stops.
-  //
-  // This effect must depend on `query` and nothing else. It used to read `sidebarHistory.status` to pick
-  // the delay; every load changes that status, so the effect re-ran after each answer and asked again:
-  // one request every 200 ms, forever. Everything else it touches is read with `untrack`.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let searched = false;
+  // ---- What each row shows under the title. The card gives the task numbers, the agent tree
+  // gives the delegates working under this bot right now.
+  const cardOf = (id: string) => taskCards.find((t) => t.id === id) ?? null;
+  const treeOf = (id: string): { rows: BotRow[]; live: number; total: number } => agentTree.trees[id] ?? { rows: [], live: 0, total: 0 };
+  const progressOf = (id: string) => botProgress(cardOf(id), treeOf(id).live);
+  /** Delegates working anywhere in the team, for the header's Team map badge. */
+  const liveTeam = $derived(bots.reduce((n, s) => n + treeOf(s.id).live, 0));
+
+  // One shared poller, fed exactly the sessions this list shows: a bot that goes away stops
+  // being polled too. The Team map reads the same store.
   $effect(() => {
-    const q = query;
-    const delay = searched ? 200 : 0;
-    searched = true;
-    clearTimeout(timer);
-    timer = setTimeout(() => untrack(() => void sidebarHistory.load(q)), delay);
-    return () => clearTimeout(timer);
-  });
-  // ---- "By folder": every folder with sessions, open and saved ones together, pinned folders first.
-  // Shared like the windows and panes: the view, pinned folders and open folders are the same on
-  // every device, and a change on one shows on the others at once.
-  const prefs = $state(loadPrefs(startingDoc().sidebar ?? legacy(PREFS_KEY)));
-  // Saving what the server already holds is a no-op (the client compares), so adopting a push never
-  // echoes it back.
-  $effect(() => {
-    const value = $state.snapshot(prefs);
-    untrack(() => savePart("sidebar", value));
-  });
-  $effect(() =>
-    workspace.onRemote((doc) => {
-      if (doc.sidebar === undefined) return;
-      const next = loadPrefs(doc.sidebar);
-      prefs.view = next.view;
-      prefs.pinned = next.pinned;
-      prefs.expanded = next.expanded;
-      prefs.openWindows = next.openWindows;
-      prefs.openBots = next.openBots;
-    }),
-  );
-  const home = $derived(store.list.find((s) => s.target === "local" && /^\/home\/[^/]+/.test(s.cwd))?.cwd.match(/^\/home\/[^/]+/)?.[0] ?? "");
-  // Loaded on demand: the first time the view is shown, and again when the set of sessions changes.
-  $effect(() => {
-    if (prefs.view === "folder" && folderStore.status === "idle") untrack(() => void folderStore.load());
-  });
-  const allSaved = $derived(Object.values(folderStore.items).flat());
-  const groups = $derived(
-    groupByFolder(
-      store.list.filter(matches),
-      query ? sidebarHistory.items : allSaved,
-      query ? [] : folderStore.folders,
-      prefs.pinned,
-    ),
-  );
-  /** While searching every matching folder is open; otherwise what you chose, else open if active or pinned. */
-  const isOpen = (g: FolderGroup) => (query ? true : isExpanded(g, prefs));
-  function toggleFolder(g: FolderGroup) {
-    const next = !isOpen(g);
-    prefs.expanded = { ...prefs.expanded, [g.cwd]: next };
-    if (next && !folderStore.loaded(g.cwd)) void folderStore.open(g.cwd);
-  }
-  // Folders that start open load their saved sessions once.
-  $effect(() => {
-    if (prefs.view !== "folder" || query) return;
-    for (const g of groups) if (isOpen(g) && !folderStore.loaded(g.cwd)) untrack(() => void folderStore.open(g.cwd));
+    agentTree.sync(bots.map((s) => s.id));
   });
 
-  // A session that is open above is not repeated below.
-  const saved = $derived(sidebarHistory.items.filter((h) => !store.sessions[h.id]));
-  const savedGroups = $derived(groupByRecency(saved));
-  // Refresh when the set of open sessions changes (one closed goes back to History, one finished moves).
-  // Only the sessions that changed matter: their folders are the only ones the folder view re-reads.
-  let lastOpen = new Map<string, string>();
-  let started = false;
-  $effect(() => {
-    const now = new Map(Object.values(store.sessions).map((s) => [s.id, `${s.status}\u0000${s.cwd}`] as const));
-    const changed: string[] = [];
-    for (const [id, v] of now) if (lastOpen.get(id) !== v) changed.push(v.split("\u0000")[1] ?? "");
-    for (const [id, v] of lastOpen) if (!now.has(id)) changed.push(v.split("\u0000")[1] ?? "");
-    lastOpen = now;
-    if (!started) {
-      started = true;
-      return;
-    }
-    if (!changed.length) return;
-    // `untrack`: the refreshes read store state that must not become dependencies of this effect.
-    untrack(() => {
-      void sidebarHistory.refresh();
-      if (folderStore.status !== "idle") void folderStore.refresh(changed.map(normalizeCwd));
-    });
-  });
-
-  // Renaming a window: the row's pencil turns the label into a one-line input.
-  let editing = $state("");
-  let draft = $state("");
-  const startRename = (w: { id: string; name: string | null }) => {
-    editing = w.id;
-    draft = w.name ?? "";
-  };
-  const commitRename = () => {
-    if (editing) onrename?.(editing, draft);
-    editing = "";
-  };
-
-  // v5-A: renaming a bot's session works the same way — pencil or double-click
-  // on the row, one-line input, Enter commits and Escape backs out. The title
-  // is the session's own (web, WhatsApp group subject and history all show it).
-  let editingBot = $state("");
-  let botDraft = $state("");
-  const startBotRename = (bot: { id: string; title: string }) => {
-    editingBot = bot.id;
-    botDraft = bot.title;
-  };
-  const commitBotRename = () => {
-    if (editingBot && botDraft.trim()) onrenamebot?.(editingBot, botDraft.trim());
-    editingBot = "";
-  };
-
-  // ---- Nested bots: what each bot has delegated. One shared store polls the agent trees of
-  // exactly the sessions this sidebar lists — nothing else is fetched, and a bot that goes away
-  // stops being polled too.
-  $effect(() => {
-    agentTree.sync([...bots.map((s) => s.id), ...windows.flatMap((w) => (w.bots ?? []).map((b) => b.id))]);
-  });
-  const botsOf = (id: string): { rows: BotRow[]; live: number; total: number } => agentTree.trees[id] ?? { rows: [], live: 0, total: 0 };
-  /** Delegates working anywhere under a window, for the row's pulsing dot. */
-  const liveIn = (id: string) => (windows.find((w) => w.id === id)?.bots ?? []).reduce((n, b) => n + botsOf(b.id).live, 0);
-  /** Delegates working anywhere in the team, for the Team map button's pulsing dot. */
-  const liveTeam = $derived(windows.reduce((n, w) => n + (w.bots ?? []).reduce((m, b) => m + botsOf(b.id).live, 0), 0));
-  /** A window shows its bots unless you closed it; before the first click the active one is open. */
-  const winOpen = (w: { id: string; active: boolean }) => prefs.openWindows[w.id] ?? w.active;
-  const botOpen = (id: string) => prefs.openBots[id] ?? false;
-  function toggleWin(id: string) {
-    const w = windows.find((x) => x.id === id);
-    prefs.openWindows = { ...prefs.openWindows, [id]: !winOpen({ id, active: w?.active ?? false }) };
-  }
-  function toggleBot(id: string) {
-    prefs.openBots = { ...prefs.openBots, [id]: !botOpen(id) };
-  }
-  /** Colour + shape for a bot's state dot: live pulses, the others are quiet. */
   const BOT_DOT: Record<BotRow["tone"], string> = {
     live: "bg-live pulse-live",
     ok: "bg-ok",
@@ -281,22 +107,28 @@
     idle: "bg-line-strong",
   };
 
-  // ---- The bots (mockup: Lindy's clean list). Every open session is a bot row: face, bold name, a
-  // one-line preview of what it is doing, and a dot when it needs eyes. Folded open, a bot shows the
-  // work: its task card (mono, like a command line), the delegates it is running, and all its threads.
-  const cardOf = (id: string) => taskCards.find((t) => t.id === id) ?? null;
-  const previewOf = (s: SessionState) => s.task || `${statusLine(s.status)} · ${baseName(s.cwd)}`;
-  /** Bots in reading order: working first, then the quiet open ones, then the finished. */
-  const bots = $derived([...live, ...idle, ...done]);
-  let toolsOpen = $state(false);
-  let teamOpen = $state(false);
-  /** The red dot on Routines: work is queued somewhere. */
-  const queuedWork = $derived(taskCards.some((t) => t.todos.left.length > 0));
+  // ---- Renaming a bot: the pencil (or a double-click) turns the title into a one-line input.
+  let editing = $state("");
+  let draft = $state("");
+  const startRename = (bot: { id: string; title: string }) => {
+    editing = bot.id;
+    draft = bot.title;
+  };
+  const commitRename = () => {
+    if (editing && draft.trim()) onrenamebot?.(editing, draft.trim());
+    editing = "";
+  };
 
-  // ---- Keyboard: ↑/↓ walks every row in view (windows, bots, delegates, sessions, history) and
-  // Enter opens the one under the caret — no mouse needed to move around the rail. On the window,
-  // so the non-interactive `<aside>` itself never takes an event listener; anything typed outside
-  // the rail (the chat, the composer) is ignored.
+  // ---- The work folded under a bot: its task card, then the delegates it is running.
+  let open = $state<Record<string, boolean>>({});
+  const isOpen = (id: string) => open[id] ?? false;
+  function toggle(id: string) {
+    open = { ...open, [id]: !isOpen(id) };
+  }
+
+  // ---- Keyboard: ↑/↓ walks the visible rows and Enter opens the one under the caret. On the
+  // window, so the non-interactive `<aside>` itself never takes an event listener; anything
+  // typed outside the rail (the chat, the composer) is ignored.
   function roving(e: KeyboardEvent) {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     const rail = railEl;
@@ -311,804 +143,232 @@
   }
 </script>
 
-{#snippet sessionRow(session: SessionState)}
-  <!-- One bot: its blob face, its name, when it last spoke, its state in words.
-       Finished and not on any screen = the unread blue dot (the mockup's). -->
-          <div
-            role="listitem"
-            class="group/sess interactive relative cursor-pointer rounded-xl py-2 pr-2 pl-2.5 pointer-coarse:py-2.5 pointer-coarse:pr-12
-              hover:bg-raised/70"
-            class:bg-raised={focusedSession === session.id}
-          >
-            <button
-              data-nav
-              class="block w-full cursor-pointer text-left pointer-coarse:min-h-11"
-              onclick={() => onopen(session.id)}
-              title={session.title}
-              aria-current={focusedSession === session.id ? "true" : undefined}
-            >
-              <div class="flex items-center gap-2.5">
-                <span class="relative">
-                  <Avatar id={session.id} size={40} />
-                  <!--
-                    Presence dot, Slack's rule: sunset + pulse only means "working right now",
-                    the quiet colours are states that need no attention.
-                  -->
-                  <span
-                    class="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-canvas {session.status === 'running'
-                      ? 'pulse-live bg-live'
-                      : session.status === 'done'
-                        ? 'bg-ok'
-                        : session.status === 'error'
-                          ? 'bg-err'
-                          : session.status === 'interrupted'
-                            ? 'bg-warn'
-                            : 'bg-line-strong'}"
-                  ></span>
-                </span>
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-1.5">
-                    {#if session.target === "remote"}
-                      <Server size={12} class="shrink-0 text-accent" strokeWidth={2} />
-                    {/if}
-                    <span class="min-w-0 flex-1 truncate text-[13px] leading-4 font-semibold tracking-[-0.01em] text-ink">
-                      {session.title || "Untitled"}
-                    </span>
-                    {#if paneOf(session.id)}
-                      <!-- Which pane shows it: a number, like tmux's pane index. -->
-                      <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-raised px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(session.id)}">
-                        <span aria-hidden="true">{paneOf(session.id)}</span><span class="sr-only">in pane {paneOf(session.id)}</span>
-                      </span>
-                    {:else if inOtherWindow?.(session.id)}
-                      <!-- Open, but on another window's screen: where to find it. -->
-                      <span class="shrink-0 text-ink-faint" title="On {inOtherWindow(session.id)}"><AppWindow size={12} strokeWidth={1.75} aria-label="On {inOtherWindow(session.id)}" /></span>
-                    {/if}
-                    <span class="tnum shrink-0 text-[10.5px] font-medium text-ink-faint">{relativeTime(session.updatedAt)}</span>
-                  </div>
-                  <div class="mt-0.5 flex items-center gap-1.5 text-[11px] leading-4 text-ink-faint">
-                    <span class="truncate {session.status === 'running' ? 'font-medium text-live' : ''}">{statusLine(session.status)}</span>
-                    <span class="truncate">· {baseName(session.cwd)}</span>
-                    {#if session.cost > 0}
-                      <span class="tnum ml-auto shrink-0">{cost(session.cost)}</span>
-                    {:else if session.status === "done" && !paneOf(session.id) && !inOtherWindow?.(session.id)}
-                      <!-- Unread, the mockup's blue dot: finished since you last had it on screen. -->
-                      <span class="ml-auto size-2 shrink-0 rounded-full bg-brand" title="Finished — new"></span>
-                    {/if}
-                  </div>
-                </div>
-              </div>
-            </button>
-            <!-- Per-row actions appear on hover/focus, never hidden from keyboard. -->
-            <div class="absolute top-1 right-1 hidden items-center gap-0.5 group-hover/sess:flex group-focus-within/sess:flex pointer-coarse:top-1/2 pointer-coarse:right-0.5 pointer-coarse:flex pointer-coarse:-translate-y-1/2">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                class="pointer-fine:h-6 pointer-fine:w-6"
-                icon={Square}
-                title={session.status === "running" ? "Interrupt" : "Close session"}
-                onclick={() => onclosesession(session.id)}
-              />
-            </div>
-          </div>
-{/snippet}
-
-{#snippet savedRow(item: HistoryItem)}
-          {@const reason = unresumableReason(item)}
-          <div role="listitem" class="interactive relative rounded-xl py-1.5 pr-2 pl-2.5 hover:bg-raised/70 pointer-coarse:py-2.5" data-history={item.id}>
-            <button
-              data-nav
-              type="button"
-              class="flex w-full cursor-pointer items-center gap-2.5 text-left pointer-coarse:min-h-11"
-              title={reason ? `${item.title}: read only. ${reason}` : item.title}
-              disabled={openingId === item.id}
-              onclick={() => onopenhistory(item)}
-            >
-              <span class="opacity-90 saturate-[0.85]"><Avatar id={item.id} size={28} /></span>
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-1.5">
-                  <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 font-medium tracking-[-0.01em] text-ink-muted">{item.title || "Untitled"}</span>
-                  {#if openingId === item.id}<Spinner size={11} label="Opening" />{/if}
-                  {#if reason}<span class="shrink-0 text-[10px] text-ink-faint">read only</span>{/if}
-                  <span class="tnum shrink-0 text-[10.5px] text-ink-faint">{relativeTime(item.updatedAt)}</span>
-                </div>
-                <div class="mt-0.5 flex items-center gap-1.5 text-[11px] leading-4 text-ink-faint">
-                  <span class="truncate">Sleeping · {baseName(item.cwd)}</span>
-                </div>
-              </div>
-            </button>
-          </div>
-{/snippet}
-
-{#snippet botRow(bot: { id: string; title: string; status: SessionState["status"]; error?: boolean })}
-  {@const tree = botsOf(bot.id)}
-  <div>
-    <!-- One bot the window holds: its face, its state dot, the delegates it is running folded under it. -->
-    <div class="group/bot flex items-center rounded-md hover:bg-raised/70">
-      {#if tree.total}
-        <button
-          type="button"
-          class="interactive ml-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint hover:text-ink pointer-coarse:size-11"
-          aria-expanded={botOpen(bot.id)}
-          aria-label={botOpen(bot.id) ? `Hide ${bot.title || "Untitled"}'s delegates` : `Show ${bot.title || "Untitled"}'s delegates`}
-          title={botOpen(bot.id) ? "Hide delegates" : "Show delegates"}
-          onclick={() => toggleBot(bot.id)}
-        >
-          <ChevronDown size={10} strokeWidth={2.25} class="transition-[rotate] duration-150 {botOpen(bot.id) ? '' : '-rotate-90'}" aria-hidden="true" />
-        </button>
-      {:else}
-        <span class="ml-0.5 size-5 shrink-0" aria-hidden="true"></span>
-      {/if}
-      {#if editingBot === bot.id}
-        <!-- v5-A: the row becomes a one-line input; Enter renames, Escape backs out. -->
-        <input
-          bind:value={botDraft}
-          aria-label="Session title"
-          class="h-6 min-w-0 flex-1 rounded-sm border border-brand bg-canvas px-1 text-[12px] text-ink focus:outline-none"
-          onkeydown={(e) => {
-            if (e.key === "Enter") commitBotRename();
-            else if (e.key === "Escape") editingBot = "";
-          }}
-          onblur={commitBotRename}
-        />
-      {:else}
-        <button
-          data-nav
-          type="button"
-          class="interactive flex min-h-8 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1.5 pl-0.5 text-left pointer-coarse:min-h-11"
-          onclick={() => onopen(bot.id)}
-          ondblclick={() => startBotRename(bot)}
-          title={bot.title || "Untitled"}
-        >
-          <span class="relative shrink-0">
-            <Avatar id={bot.id} size={20} />
-            <span
-              class="absolute -right-0.5 -bottom-0.5 size-2 rounded-full border-[1.5px] border-canvas {bot.status === 'running'
-                ? 'pulse-live bg-live'
-                : bot.status === 'done'
-                  ? 'bg-ok'
-                  : bot.status === 'error'
-                    ? 'bg-err'
-                    : bot.status === 'interrupted'
-                      ? 'bg-warn'
-                      : 'bg-line-strong'}"
-            ></span>
-          </span>
-          <span class="min-w-0 flex-1 truncate text-[12px] leading-4 text-ink-muted">{bot.title || "Untitled"}</span>
-        {#if paneOf(bot.id)}
-          <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-raised px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(bot.id)}">
-            <span aria-hidden="true">{paneOf(bot.id)}</span><span class="sr-only">in pane {paneOf(bot.id)}</span>
-          </span>
-        {/if}
-        {#if tree.live}
-          <span class="flex shrink-0 items-center gap-1 text-[10px] font-medium text-live" title="{tree.live} delegate{tree.live === 1 ? '' : 's'} working">
-            <Bot size={10} strokeWidth={2} aria-hidden="true" /><span class="tnum">{tree.live}</span>
-          </span>
-        {/if}
-        </button>
-        <!-- v5-A: the row's pencil (a hover extra, like the window's) renames the session. -->
-        <button
-          type="button"
-          class="interactive mr-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint opacity-0 hover:text-ink group-hover/bot:opacity-100 group-focus-within/bot:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
-          aria-label="Rename {bot.title || 'Untitled'}"
-          title="Rename"
-          onclick={() => startBotRename(bot)}
-        ><Pencil size={10} strokeWidth={2} aria-hidden="true" /></button>
-      {/if}
-    </div>
-    {#if botOpen(bot.id) && tree.total}
-      <!-- Its delegates, each indented under its parent: face, name, live state, task in the tooltip. -->
-      <div class="ml-[15px] border-l border-line/70 pb-0.5 pl-0.5" role="group" aria-label="{bot.title || 'Untitled'}'s delegates">
-        {#each tree.rows as r (r.path)}
-          <button
-            data-nav
-            type="button"
-            class="flex min-h-6 w-full cursor-pointer items-center gap-1.5 rounded-sm py-0.5 pr-1.5 text-left hover:bg-raised/70 pointer-coarse:min-h-9"
-            style="padding-left: {r.depth * 10 + 5}px"
-            title={r.task ? `${r.path}: ${r.task}` : r.path}
-          >
-            <Avatar id={r.id} size={16} />
-            <span class="min-w-0 shrink-0 truncate text-[11px] leading-4 font-medium text-ink-muted">{r.name}</span>
-            {#if r.agent}<span class="min-w-0 truncate text-[10px] leading-4 text-ink-faint">{r.agent}</span>{/if}
-            <span class="ml-auto flex shrink-0 items-center gap-1 text-[10px] leading-4 {r.tone === 'live' ? 'font-medium text-live' : 'text-ink-faint'}">
-              <span class="size-1.5 shrink-0 rounded-full {BOT_DOT[r.tone]}" aria-hidden="true"></span>
-              {r.label}
-            </span>
-          </button>
-        {/each}
-      </div>
-    {/if}
-  </div>
-{/snippet}
-
 <svelte:window onkeydown={roving} />
-
-{#snippet botAccordion(session: SessionState)}
-  {@const card = cardOf(session.id)}
-  {@const tree = botsOf(session.id)}
-  {@const open = botOpen(session.id)}
-  <div role="listitem">
-    <!-- One bot, the mockup's accordion: chevron, face, bold name, a quiet preview line, and a dot
-         only when the bot needs eyes. -->
-    <div class="group/botrow relative flex items-center rounded-xl {focusedSession === session.id ? 'bg-raised' : 'hover:bg-raised/60'}">
-      <button
-        type="button"
-        class="interactive ml-0.5 grid size-7 shrink-0 cursor-pointer place-items-center rounded-full text-ink-faint hover:bg-raised hover:text-ink pointer-coarse:size-9"
-        aria-expanded={open}
-        aria-label={open ? `Hide ${session.title || "Untitled"}'s work` : `Show ${session.title || "Untitled"}'s work`}
-        title={open ? "Hide its work" : "Show its work"}
-        onclick={() => toggleBot(session.id)}
-      >
-        <ChevronRight size={13} strokeWidth={2.25} class="transition-[rotate] duration-150 {open ? 'rotate-90' : ''}" aria-hidden="true" />
-      </button>
-      <button
-        data-nav
-        class="block min-h-11 min-w-0 flex-1 cursor-pointer rounded-xl py-1.5 pr-2 text-left"
-        onclick={() => onopen(session.id)}
-        title={session.title}
-        aria-current={focusedSession === session.id ? "true" : undefined}
-      >
-        <span class="flex items-center gap-2.5">
-          <span class="relative shrink-0">
-            <Avatar id={session.id} size={30} />
-            <span
-              class="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-canvas {session.status === 'running'
-                ? 'pulse-live bg-live'
-                : session.status === 'done'
-                  ? 'bg-ok'
-                  : session.status === 'error'
-                    ? 'bg-err'
-                    : session.status === 'interrupted'
-                      ? 'bg-warn'
-                      : 'bg-line-strong'}"
-            ></span>
-          </span>
-          <span class="min-w-0 flex-1">
-            <span class="flex items-center gap-1.5">
-              {#if session.target === "remote"}
-                <Server size={12} class="shrink-0 text-accent" strokeWidth={2} />
-              {/if}
-              <span class="min-w-0 flex-1 truncate text-[13px] leading-4.5 font-semibold tracking-[-0.01em] text-ink">{session.title || "Untitled"}</span>
-              {#if paneOf(session.id)}
-                <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-raised px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(session.id)}">
-                  <span aria-hidden="true">{paneOf(session.id)}</span><span class="sr-only">in pane {paneOf(session.id)}</span>
-                </span>
-              {:else if inOtherWindow?.(session.id)}
-                <span class="shrink-0 text-ink-faint" title="On {inOtherWindow(session.id)}"><AppWindow size={12} strokeWidth={1.75} aria-label="On {inOtherWindow(session.id)}" /></span>
-              {/if}
-              {#if session.status === "error"}
-                <span class="size-2 shrink-0 rounded-full bg-err" title="Error"></span>
-              {:else if session.status === "running"}
-                <span class="pulse-live size-2 shrink-0 rounded-full bg-live" title="Working"></span>
-              {:else if session.status === "done" && !paneOf(session.id) && !inOtherWindow?.(session.id)}
-                <span class="size-2 shrink-0 rounded-full bg-brand" title="Finished — new"></span>
-              {/if}
-            </span>
-            <span class="mt-0.5 block truncate text-[11.5px] leading-4 text-ink-faint">{previewOf(session)}</span>
-          </span>
-        </span>
-      </button>
-      <div class="absolute top-1 right-1 hidden items-center group-hover/botrow:flex group-focus-within/botrow:flex pointer-coarse:top-1/2 pointer-coarse:right-0.5 pointer-coarse:flex pointer-coarse:-translate-y-1/2">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          class="pointer-fine:h-6 pointer-fine:w-6"
-          icon={Square}
-          title={session.status === "running" ? "Interrupt" : "Close session"}
-          onclick={() => onclosesession(session.id)}
-        />
-      </div>
-    </div>
-    {#if open}
-      <!-- Its work, indented under the name: the task card (mono, like a command), the delegates it
-           is running (face, name, live state), and everything it has ever said. -->
-      <div class="mb-1 ml-[34px] flex flex-col items-stretch gap-px" role="group" aria-label="{session.title || 'Untitled'}'s work">
-        {#if card}
-          <div class="flex min-h-7 items-center gap-1.5 rounded-lg px-1.5 py-1" title={card.description || card.title}>
-            <span class="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-ink-muted">{card.title}</span>
-            <span class="tnum shrink-0 text-[10px] text-ink-faint">{relativeTime(card.updatedAt || session.updatedAt)}</span>
-            <span class="size-1.5 shrink-0 rounded-full {session.status === 'running' ? 'pulse-live bg-live' : session.status === 'error' ? 'bg-err' : 'bg-line-strong'}" aria-hidden="true"></span>
-          </div>
-        {:else if session.task}
-          <div class="flex min-h-7 items-center gap-1.5 rounded-lg px-1.5 py-1" title={session.task}>
-            <span class="min-w-0 flex-1 truncate font-mono text-[11px] leading-4 text-ink-muted">{session.task}</span>
-            <span class="tnum shrink-0 text-[10px] text-ink-faint">{relativeTime(session.updatedAt)}</span>
-          </div>
-        {/if}
-        {#each tree.rows as r (r.path)}
-          <button
-            data-nav
-            type="button"
-            class="flex min-h-7 w-full cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-left hover:bg-raised/70 pointer-coarse:min-h-11"
-            style="padding-left: {r.depth * 10 + 6}px"
-            title={r.task ? `${r.path}: ${r.task}` : r.path}
-            onclick={() => onopen(session.id)}
-          >
-            <Avatar id={r.id} size={16} />
-            <span class="min-w-0 shrink-0 truncate text-[11px] leading-4 font-medium text-ink-muted">{r.name}</span>
-            {#if r.agent}<span class="min-w-0 truncate text-[10px] leading-4 text-ink-faint">{r.agent}</span>{/if}
-            <span class="ml-auto flex shrink-0 items-center gap-1 text-[10px] leading-4 {r.tone === 'live' ? 'font-medium text-live' : 'text-ink-faint'}">
-              <span class="size-1.5 shrink-0 rounded-full {BOT_DOT[r.tone]}" aria-hidden="true"></span>
-              {r.label}
-            </span>
-          </button>
-        {/each}
-        <button
-          data-nav
-          type="button"
-          class="flex min-h-7 cursor-pointer items-center px-1.5 py-1 text-left text-[11px] text-ink-faint hover:text-ink pointer-coarse:min-h-11"
-          onclick={onresume}
-        >
-          {tree.total || card ? "All threads" : "Select threads"}
-        </button>
-      </div>
-    {/if}
-  </div>
-{/snippet}
 
 <aside
   bind:this={railEl}
-  class="flex h-full w-[248px] shrink-0 flex-col border-r border-line/70 bg-canvas pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] max-md:w-[min(20rem,calc(86*var(--vw)))] {klass}"
+  class="flex h-full min-h-0 w-full flex-col bg-canvas pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] {klass}"
+  aria-label="Bots"
 >
-  <!-- Brand / workspace -->
-  <div class="flex items-center gap-2 px-3 py-2.5">
-    <Avatar id="mini-tui" size={24} />
-    <span class="min-w-0 flex-1 truncate text-[13.5px] leading-4 font-semibold tracking-[-0.01em]">mini-tui</span>
+  <!-- The rail's own header: what it is, the connection, and the way out. -->
+  <div class="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2">
+    <Avatar id="mini-tui" size={26} />
+    <span class="min-w-0 flex-1 truncate text-[15px] leading-5 font-semibold tracking-[-0.01em]">Bots</span>
     <!--
       The connection state is a dot, not a word: it is ambient information and
-      never needs a full line of the narrow rail.
+      never needs a full line of the rail.
     -->
     <span
-      class="size-1.5 shrink-0 rounded-full {store.connected ? 'bg-ok' : 'pulse-live bg-warn'}"
+      class="size-2 shrink-0 rounded-full {store.connected ? 'bg-ok' : 'pulse-live bg-warn'}"
       title={store.connected ? "Connected" : "Reconnecting…"}
     ></span>
-    <Button variant="ghost" size="icon-sm" icon={PanelLeftClose} title="Hide sidebar" onclick={onhidesidebar} />
+    <Button variant="ghost" size="icon" icon={full ? X : PanelLeftClose} title={full ? "Close" : "Hide sidebar"} aria-label={full ? "Close the bots list" : "Hide sidebar"} onclick={onhidesidebar} />
   </div>
 
-  <div class="flex gap-1 px-2.5 pb-2">
-    <Button variant="subtle" size="sm" icon={Plus} class="min-w-0 flex-1 justify-start" onclick={onnew}>
-      New chat
-    </Button>
-    <Button variant="subtle" size="sm" icon={AppWindowMac} class="pointer-coarse:px-3 shrink-0" title="New window" aria-label="New window" onclick={onnewwindow} />
-  </div>
-
-  {#if windows.length}
-    <!-- The windows, tmux style: one on screen, the others kept with their panes. -->
-    <div class="px-2.5 pb-2" role="group" aria-label="Windows">
-      <div class="mb-0.5 flex items-center gap-1.5 px-1">
-        <span class="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-ink-faint uppercase"><Layers size={10} strokeWidth={2} aria-hidden="true" />Windows</span>
-        <span class="tnum ml-auto text-[10px] text-ink-faint">{windows.length}</span>
-      </div>
-      <div class="flex flex-col gap-0.5" role="radiogroup" aria-label="Window to show">
-        {#each windows as w (w.id)}
-          {#if editing === w.id}
-            <div class="flex min-h-7 items-center gap-1.5 px-1.5 py-1">
-              <AppWindow size={12} strokeWidth={1.75} class="shrink-0 text-brand" aria-hidden="true" />
-              <input
-                bind:value={draft}
-                aria-label="Window name"
-                class="h-6 min-w-0 flex-1 rounded-sm border border-brand bg-canvas px-1 text-[12px] text-ink focus:outline-none"
-                onkeydown={(e) => {
-                  if (e.key === "Enter") commitRename();
-                  else if (e.key === "Escape") editing = "";
-                }}
-                onblur={commitRename}
-              />
-            </div>
-          {:else}
-            <div class="group/win flex items-center rounded-md {w.active ? 'bg-raised' : 'hover:bg-raised/70'}">
-              {#if w.bots?.length}
-                <!-- Fold the window's bots open/closed; the choice sticks (and follows you to other devices). -->
-                <button
-                  type="button"
-                  class="interactive ml-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint hover:text-ink pointer-coarse:size-11"
-                  aria-expanded={winOpen(w)}
-                  aria-label={winOpen(w) ? `Hide ${w.label}'s bots` : `Show ${w.label}'s bots`}
-                  title={winOpen(w) ? "Hide its bots" : "Show its bots"}
-                  onclick={() => toggleWin(w.id)}
-                >
-                  <ChevronDown size={11} strokeWidth={2.25} class="transition-[rotate] duration-150 {winOpen(w) ? '' : '-rotate-90'}" aria-hidden="true" />
-                </button>
-              {:else}
-                <span class="ml-0.5 size-5 shrink-0" aria-hidden="true"></span>
-              {/if}
-              <button
-                data-nav
-                type="button"
-                role="radio"
-                aria-checked={w.active}
-                class="interactive flex min-h-7 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left pointer-coarse:min-h-11
-                  {w.active ? 'text-ink' : 'text-ink-muted hover:text-ink'}"
-                onclick={() => onwindow?.(w.id)}
-              >
-                <AppWindow size={12} strokeWidth={1.75} class="shrink-0 {w.active ? 'text-brand' : 'text-ink-faint'}" aria-hidden="true" />
-                <span class="min-w-0 flex-1 truncate text-[12px] leading-4">{w.label}</span>
-                {#if w.dots?.length}
-                  <!--
-                    One dot per pane, in reading order, six to a row (12 panes make two rows, so the name
-                    keeps its room). Shape carries the state as well as colour: live pulses, done is
-                    solid (green, or red for an error), idle is an empty ring.
-                  -->
-                  <span class="pane-dots grid shrink-0 place-items-center gap-[3px]" style="grid-template-columns: repeat({Math.min(w.dots.length, 6)}, 7px)" role="img" aria-label="Panes: {w.dots.map((d, i) => `${i + 1} ${d.label}`).join(', ')}">
-                    {#each w.dots as d (d.id)}
-                      <span
-                        class="dot size-[7px] shrink-0 rounded-full"
-                        data-status={d.status}
-                        class:pulse-live={d.status === "live"}
-                        class:is-error={d.error}
-                        title={d.label}
-                      ></span>
-                    {/each}
-                  </span>
-                {/if}
-                <span class="tnum shrink-0 rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="{w.panes} {w.panes === 1 ? 'pane' : 'panes'}">{w.panes}</span>
-                {#if liveIn(w.id)}
-                  <!-- Delegates working under this window's bots, at a glance: one pulsing dot. -->
-                  <span class="pulse-live size-1.5 shrink-0 rounded-full bg-live" title="{liveIn(w.id)} delegate{liveIn(w.id) === 1 ? '' : 's'} working"></span>
-                {/if}
-              </button>
-              <!--
-                One tasks icon per window, and it is always visible: it is the window's own state, not
-                a hover extra (the row's rename and close still fade in).
-              -->
-              {#if windowTasks[w.id]}
-                <TasksButton tasks={windowTasks[w.id]} onopen={() => ontasks?.()} />
-              {/if}
-              <button
-                type="button"
-                class="interactive mr-0.5 grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-ink-faint opacity-0 hover:text-ink group-hover/win:opacity-100 group-focus-within/win:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100"
-                aria-label="Rename {w.label}"
-                title="Rename"
-                onclick={() => startRename(w)}
-              ><Pencil size={11} strokeWidth={2} aria-hidden="true" /></button>
-                <button
-                  type="button"
-                  class="interactive grid size-6 cursor-pointer place-items-center rounded-sm text-ink-faint pointer-coarse:size-11
-                    {w.panes ? 'cursor-not-allowed opacity-40 hover:text-ink-faint' : 'hover:text-ink'}"
-                  aria-label="Close {w.label}"
-                  aria-disabled={w.panes ? "true" : undefined}
-                  title={w.panes ? "Move its panes out first" : "Close this empty window"}
-                  onclick={() => !w.panes && onclosewindow?.(w.id)}
-                ><X size={12} strokeWidth={2} aria-hidden="true" /></button>
-            </div>
-            {#if winOpen(w) && w.bots?.length}
-              <!-- The window's bots, nested: each with its face, its state, and its own delegates folded under it. -->
-              <div class="mb-1 ml-[15px] border-l border-line/70 pb-0.5 pl-0.5" role="group" aria-label="Bots in {w.label}">
-                {#each w.bots as bot (bot.id)}
-                  {@render botRow(bot)}
-                {/each}
-              </div>
-            {/if}
-          {/if}
-        {/each}
-      </div>
-    </div>
-  {/if}
-
-  <!-- Filter -->
-  <div class="px-2.5 pb-2">
+  <!-- Search, and nothing else above the list. -->
+  <div class="shrink-0 px-4 pb-3">
     <div class="relative">
-      <Search size={13} strokeWidth={2} class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint" aria-hidden="true" />
+      <Search size={15} strokeWidth={2} class="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-ink-faint" aria-hidden="true" />
       <input
         bind:value={filter}
         placeholder="Search"
-        aria-label="Search sessions"
-        class="h-9 w-full rounded-full border border-transparent bg-raised pr-2.5 pl-8 text-base text-ink placeholder:text-ink-faint pointer-coarse:h-11
+        aria-label="Search bots"
+        class="h-11 w-full rounded-[18px] border border-line bg-raised pr-3.5 pl-10 text-base text-ink placeholder:text-ink-faint
           focus:border-brand focus:bg-canvas focus:outline-none"
       />
     </div>
   </div>
 
-  {#if grid && !query}
-    <!-- Phone: the room of bots first (the mockup's grid), the chats below.
-         Three big pets a row, like the mockup's phone panel. -->
-    <div class="grid grid-cols-3 gap-0.5 px-1.5 pb-2" role="group" aria-label="Bots">
-      {#each visible.slice(0, 9) as session (session.id)}
-        <button
-          type="button"
-          class="interactive flex min-h-24 cursor-pointer flex-col items-center gap-1.5 rounded-xl px-1 py-2.5 hover:-translate-y-0.5 hover:bg-raised/70 active:translate-y-0 active:scale-[0.97] pointer-coarse:min-h-28"
-          onclick={() => onopen(session.id)}
-          aria-label="Open {session.title || 'Untitled'}"
+  <!-- The bots. This is the whole rail. -->
+  <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-[max(1rem,env(safe-area-inset-bottom))]" role="list" aria-label="Bots">
+    {#each bots as session (session.id)}
+      {@const tree = treeOf(session.id)}
+      {@const progress = progressOf(session.id)}
+      {@const card = cardOf(session.id)}
+      {@const openRow = isOpen(session.id)}
+      <div role="listitem" class="mb-1.5">
+        <div
+          class="group/botrow relative flex items-center rounded-[18px] {focusedSession === session.id ? 'bg-raised' : 'hover:bg-raised/70'}"
         >
-          <span class="relative">
-            <Avatar id={session.id} size={64} />
-            <span
-              class="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-canvas {session.status === 'running'
-                ? 'pulse-live bg-live'
-                : session.status === 'done'
-                  ? 'bg-ok'
-                  : session.status === 'error'
-                    ? 'bg-err'
-                    : session.status === 'interrupted'
-                      ? 'bg-warn'
-                      : 'bg-line-strong'}"
-            ></span>
-          </span>
-          <span class="w-full truncate text-center text-[11px] leading-4 text-ink-muted">{session.title || "Untitled"}</span>
-        </button>
-      {/each}
-    </div>
-  {/if}
-
-  <!-- View: recent (open, then history by day) or by folder. -->
-  <div class="px-2.5 pb-1">
-    <div class="grid grid-cols-2 gap-0.5 rounded-md bg-raised/60 p-0.5" role="radiogroup" aria-label="Organize sessions">
-      {#each [{ id: "recent", label: "Recent", icon: Clock3 }, { id: "folder", label: "By folder", icon: FolderTree }] as v (v.id)}
-        {@const Icon = v.icon}
-        <button
-          type="button"
-          role="radio"
-          aria-checked={prefs.view === v.id}
-          class="interactive flex h-7 cursor-pointer items-center justify-center gap-1.5 rounded-sm text-[11.5px] font-medium pointer-coarse:h-11
-            {prefs.view === v.id ? 'bg-canvas text-ink elev-1' : 'text-ink-muted hover:text-ink'}"
-          onclick={() => (prefs.view = v.id as "recent" | "folder")}
-        ><Icon size={12} strokeWidth={2} aria-hidden="true" />{v.label}</button>
-      {/each}
-    </div>
-  </div>
-
-  {#if prefs.view === "folder"}
-    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3" role="tree" aria-label="Sessions by folder">
-      {#if folderStore.status === "loading" && !groups.length}
-        <div class="flex flex-col gap-1.5 px-2 pt-2" role="status" aria-label="Loading folders"><Skeleton class="h-8" /><Skeleton class="h-8" /><Skeleton class="h-8" /></div>
-      {:else if folderStore.status === "error" && !groups.length}
-        <div class="px-2 py-3 text-[11.5px] text-ink-muted" role="alert">
-          Could not load folders. <button type="button" class="cursor-pointer font-medium text-ink underline underline-offset-2 pointer-coarse:min-h-11" onclick={() => folderStore.load()}>Retry</button>
-        </div>
-      {:else if !groups.length}
-        <div class="px-2 py-8 text-center text-[12px] text-ink-muted">{query ? `No sessions match “${filter}”` : "No sessions yet"}</div>
-      {/if}
-      {#each groups as g (g.cwd)}
-        {@const t = folderTitle(g.cwd, home)}
-        {@const expanded = isOpen(g)}
-        <div role="treeitem" aria-expanded={expanded} aria-selected="false" aria-label="{t.name}, {g.total} {g.total === 1 ? 'session' : 'sessions'}" data-folder={g.cwd} class="mt-1">
-          <div class="group/folder flex items-center rounded-md hover:bg-raised/70">
+          {#if tree.total || card}
+            <!-- Fold the bot's work open/closed. -->
             <button
               type="button"
-              class="interactive flex min-h-9 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1 pl-1.5 text-left pointer-coarse:min-h-11"
-              title={g.cwd}
-              onclick={() => toggleFolder(g)}
+              class="interactive ml-1 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full text-ink-faint hover:text-ink"
+              aria-expanded={openRow}
+              aria-label={openRow ? `Hide ${session.title || "Untitled"}'s work` : `Show ${session.title || "Untitled"}'s work`}
+              title={openRow ? "Hide its work" : "Show its work"}
+              onclick={() => toggle(session.id)}
             >
-              <ChevronDown size={12} strokeWidth={2.25} class="shrink-0 text-ink-faint transition-[rotate] duration-150 {expanded ? '' : '-rotate-90'}" aria-hidden="true" />
-              <Folder size={13} strokeWidth={1.75} class="shrink-0 {g.running ? 'text-brand' : 'text-ink-faint'}" aria-hidden="true" />
-              <span class="min-w-0 flex-1">
-                <span class="block truncate text-[12.5px] leading-4 font-medium text-ink">{t.name}</span>
-                {#if t.parent}<span class="block truncate font-mono text-[10px] leading-3.5 text-ink-faint">{t.parent}</span>{/if}
-              </span>
-              {#if g.running}<span class="pulse-live size-1.5 shrink-0 rounded-full bg-brand" aria-label="{g.running} running"></span>{/if}
-              <span class="tnum shrink-0 px-1 text-[10.5px] text-ink-faint">{g.total}</span>
+              <ChevronRight size={15} strokeWidth={2.25} class="transition-[rotate] duration-150 {openRow ? 'rotate-90' : ''}" aria-hidden="true" />
             </button>
-            <div class="flex shrink-0 items-center opacity-0 group-hover/folder:opacity-100 group-focus-within/folder:opacity-100 pointer-coarse:opacity-100">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                class="pointer-fine:h-6 pointer-fine:w-6"
-                icon={FolderPlus}
-                title="New chat in {t.name}"
-                aria-label="New chat in {g.cwd}"
-                onclick={() => onnewin?.(g.cwd, g.open[0]?.target === "remote" ? g.open[0]?.hostId : undefined)}
-              />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                class="pointer-fine:h-6 pointer-fine:w-6"
-                icon={g.pinned ? PinOff : Pin}
-                title={g.pinned ? "Unpin" : "Pin to the top"}
-                aria-label={g.pinned ? `Unpin ${g.cwd}` : `Pin ${g.cwd} to the top`}
-                aria-pressed={g.pinned}
-                onclick={() => (prefs.pinned = toggleIn(prefs.pinned, g.cwd))}
-              />
-            </div>
+          {:else}
+            <span class="w-1 shrink-0" aria-hidden="true"></span>
+          {/if}
+
+          {#if editing === session.id}
+            <!-- v5-A: the title becomes a one-line input; Enter renames, Escape backs out. -->
+            <input
+              bind:value={draft}
+              aria-label="Bot title"
+              class="h-8 min-w-0 flex-1 rounded-lg border border-brand bg-canvas px-2 text-[14px] text-ink focus:outline-none"
+              onkeydown={(e) => {
+                if (e.key === "Enter") commitRename();
+                else if (e.key === "Escape") editing = "";
+              }}
+              onblur={commitRename}
+            />
+          {:else}
+            <button
+              data-nav
+              type="button"
+              class="interactive flex min-h-14 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[18px] px-2 text-left"
+              onclick={() => onopen(session.id)}
+              ondblclick={() => startRename(session)}
+              title={session.title}
+              aria-current={focusedSession === session.id ? "true" : undefined}
+            >
+              <span class="relative shrink-0">
+                <Avatar id={session.id} size={38} />
+                <!--
+                  Presence dot, Slack's rule: sunset + pulse only means "working right now",
+                  the quiet colours are states that need no attention.
+                -->
+                <span
+                  class="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-canvas {session.status === 'running'
+                    ? 'pulse-live bg-live'
+                    : session.status === 'done'
+                      ? 'bg-ok'
+                      : session.status === 'error'
+                        ? 'bg-err'
+                        : session.status === 'interrupted'
+                          ? 'bg-warn'
+                          : 'bg-line-strong'}"
+                ></span>
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="flex items-center gap-1.5">
+                  {#if session.target === "remote"}
+                    <Server size={13} class="shrink-0 text-accent" strokeWidth={2} />
+                  {/if}
+                  <span class="min-w-0 flex-1 truncate text-[14.5px] leading-5 font-semibold tracking-[-0.01em] text-ink">{session.title || "Untitled"}</span>
+                  {#if paneOf(session.id)}
+                    <!-- Which pane shows it: a number, like tmux's pane index. -->
+                    <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(session.id)}">
+                      <span aria-hidden="true">{paneOf(session.id)}</span><span class="sr-only">in pane {paneOf(session.id)}</span>
+                    </span>
+                  {/if}
+                </span>
+                <span class="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-muted">
+                  <span class="truncate {session.status === 'running' ? 'font-medium text-live' : ''}">{statusLine(session.status)}</span>
+                  {#if session.cost > 0}
+                    <span class="tnum ml-auto shrink-0 text-ink-faint">{cost(session.cost)}</span>
+                  {/if}
+                </span>
+              </span>
+              <!-- The counters the mockup's row carries: tasks done/total, and what is running. -->
+              <span class="flex shrink-0 flex-col items-end gap-0.5">
+                {#if progressLabel(progress)}
+                  <span
+                    class="tnum rounded-full bg-overlay px-2 py-0.5 text-[11.5px] leading-4 font-semibold text-ink-muted"
+                    title="{progress.done} of {progress.total} tasks done"
+                  >{progressLabel(progress)}</span>
+                {:else}
+                  <span class="tnum text-[11.5px] leading-4 text-ink-faint">{relativeTime(session.updatedAt)}</span>
+                {/if}
+                {#if runningLabel(progress)}
+                  <span class="flex items-center gap-1 text-[11px] leading-4 font-medium text-live" title="{progress.running} delegate{progress.running === 1 ? '' : 's'} working">
+                    <span class="pulse-live size-1.5 shrink-0 rounded-full bg-live" aria-hidden="true"></span>
+                    <span class="tnum">{progress.running}</span>
+                  </span>
+                {/if}
+              </span>
+            </button>
+          {/if}
+
+          <!-- Per-row actions fade in on hover/focus, and are always there under a finger. -->
+          <div class="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 group-hover/botrow:opacity-100 group-focus-within/botrow:opacity-100 max-md:top-1 max-md:right-1.5 max-md:translate-y-0 max-md:opacity-100">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              class="max-md:hidden"
+              icon={Square}
+              title={session.status === "running" ? "Interrupt" : "Close bot"}
+              onclick={() => onclosesession(session.id)}
+            />
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              icon={Pencil}
+              title="Rename"
+              aria-label="Rename {session.title || 'Untitled'}"
+              onclick={() => startRename(session)}
+            />
           </div>
-          {#if expanded}
-            <div role="group" class="ml-3 border-l border-line/70 pl-1">
-              {#each g.open as session (session.id)}
-                {@render sessionRow(session)}
-              {/each}
-              {#each g.saved as item (item.id)}
-                {@render savedRow(item)}
-              {/each}
-              {#if folderStore.loading[g.cwd] && !g.saved.length && g.total > g.open.length}
-                <div class="flex flex-col gap-1 py-1 pl-2" role="status" aria-label="Loading {t.name}"><Skeleton class="h-7" /><Skeleton class="h-7" /></div>
-              {:else if !query && folderStore.hasMore(g.cwd, g.total)}
-                <button
-                  type="button"
-                  class="interactive my-0.5 flex w-full cursor-pointer items-center gap-1.5 rounded-md py-1 pl-3 text-left text-[11.5px] text-ink-muted hover:bg-raised/70 hover:text-ink pointer-coarse:min-h-11"
-                  disabled={folderStore.loading[g.cwd]}
-                  onclick={() => folderStore.open(g.cwd, true)}
-                >
-                  {#if folderStore.loading[g.cwd]}<Spinner size={11} label="" />{/if}Show more ({g.total - g.open.length - g.saved.length} older)
-                </button>
-              {/if}
-            </div>
+        </div>
+
+        {#if openRow}
+          <!-- Its work, indented under the name: the task card, then the delegates it is running. -->
+          <div class="mb-1 ml-6 flex flex-col items-stretch gap-px" role="group" aria-label="{session.title || 'Untitled'}'s work">
+            {#if card}
+              <div class="flex min-h-8 items-center gap-1.5 rounded-xl px-2 py-1.5" title={card.description || card.title}>
+                <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-4 text-ink-muted">{card.title}</span>
+                <span class="tnum shrink-0 text-[10.5px] text-ink-faint">{relativeTime(card.updatedAt || session.updatedAt)}</span>
+                <span class="size-1.5 shrink-0 rounded-full {session.status === 'running' ? 'pulse-live bg-live' : session.status === 'error' ? 'bg-err' : 'bg-line-strong'}" aria-hidden="true"></span>
+              </div>
+            {:else if session.task}
+              <div class="flex min-h-8 items-center gap-1.5 rounded-xl px-2 py-1.5" title={session.task}>
+                <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-4 text-ink-muted">{session.task}</span>
+                <span class="tnum shrink-0 text-[10.5px] text-ink-faint">{relativeTime(session.updatedAt)}</span>
+              </div>
+            {/if}
+            {#each tree.rows as r (r.path)}
+              <button
+                data-nav
+                type="button"
+                class="flex min-h-8 w-full cursor-pointer items-center gap-1.5 rounded-xl px-2 py-1 text-left hover:bg-raised/70 max-md:min-h-11"
+                style="padding-left: {r.depth * 10 + 8}px"
+                title={r.task ? `${r.path}: ${r.task}` : r.path}
+                onclick={() => onopen(session.id)}
+              >
+                <Avatar id={r.id} size={16} />
+                <span class="min-w-0 shrink-0 truncate text-[11.5px] leading-4 font-medium text-ink-muted">{r.name}</span>
+                {#if r.agent}<span class="min-w-0 truncate text-[10.5px] leading-4 text-ink-faint">{r.agent}</span>{/if}
+                <span class="ml-auto flex shrink-0 items-center gap-1 text-[10.5px] leading-4 {r.tone === 'live' ? 'font-medium text-live' : 'text-ink-faint'}">
+                  <span class="size-1.5 shrink-0 rounded-full {BOT_DOT[r.tone]}" aria-hidden="true"></span>
+                  {r.label}
+                </span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {:else}
+      {#if loading}
+        <div class="flex flex-col gap-2 px-1 pt-1" role="status" aria-label="Loading bots">
+          <Skeleton class="h-14 rounded-[18px]" />
+          <Skeleton class="h-14 rounded-[18px]" />
+          <Skeleton class="h-14 rounded-[18px]" />
+        </div>
+      {:else}
+        <!-- The empty room: the pet keeps you company while the first bot boots. -->
+        <div class="flex flex-col items-center gap-3 px-4 py-10 text-center">
+          <Mascot mood="idle" size={56} />
+          <div class="text-[13px] text-ink-muted">{query ? `No bots match “${filter}”` : "No bots yet — say hello to your first one"}</div>
+          {#if !query}
+            <Button variant="subtle" size="sm" icon={Plus} onclick={onnew}>New bot</Button>
           {/if}
         </div>
-      {/each}
-    </div>
-  {:else}
-  <!-- Session list -->
-  <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3" role="list">
-    <!-- The bots, the mockup's clean accordion: working first, then the quiet, then the finished.
-         No headers — the state lives on each row. -->
-    {#each bots as session (session.id)}
-      {@render botAccordion(session)}
+      {/if}
     {/each}
-
-    <!-- History: saved sessions from the database, newest first, grouped by day. -->
-    {#if saved.length || sidebarHistory.status === "loading" || sidebarHistory.status === "error"}
-      <div class="mt-4 mb-1 flex items-center gap-1.5 px-2">
-        <span class="text-[10px] font-semibold tracking-wider text-ink-faint uppercase" id="sidebar-history">History</span>
-        {#if sidebarHistory.status === "loading" && saved.length}<Spinner size={10} label="Updating history" />{/if}
-        <button
-          type="button"
-          class="interactive ml-auto flex cursor-pointer items-center gap-1 rounded-sm px-1 text-[10.5px] text-ink-faint hover:text-ink pointer-coarse:min-h-11 pointer-coarse:px-2"
-          title="Search every saved session, or delete one"
-          onclick={onresume}
-        ><RotateCcw size={10} strokeWidth={2} aria-hidden="true" />All</button>
-      </div>
-    {/if}
-    {#if sidebarHistory.status === "loading" && !saved.length}
-      <div class="flex flex-col gap-1.5 px-2 pt-1" role="status" aria-label="Loading history">
-        <Skeleton class="h-8" /><Skeleton class="h-8" /><Skeleton class="h-8" />
-      </div>
-    {:else if sidebarHistory.status === "error" && !saved.length}
-      <div class="px-2 py-2 text-[11.5px] text-ink-muted" role="alert">
-        Could not load history. <button type="button" class="cursor-pointer font-medium text-ink underline underline-offset-2 pointer-coarse:min-h-11" onclick={() => sidebarHistory.load(query)}>Retry</button>
-      </div>
-    {/if}
-    {#each savedGroups as group (group.bucket)}
-      <div role="group" aria-label="History, {group.bucket}">
-        <div class="mt-2 mb-0.5 px-2 text-[10px] text-ink-faint">{group.bucket}</div>
-        {#each group.items as item (item.id)}
-          {@render savedRow(item)}
-        {/each}
-      </div>
-    {/each}
-    {#if sidebarHistory.capped && saved.length}
-      <button
-        type="button"
-        class="interactive mx-2 mt-2 flex w-[calc(100%-1rem)] cursor-pointer items-center justify-center gap-1.5 rounded-md py-1.5 text-[11.5px] text-ink-muted hover:bg-raised/70 hover:text-ink pointer-coarse:min-h-11"
-        disabled={sidebarHistory.status === "loading"}
-        onclick={() => sidebarHistory.more()}
-      >
-        {#if sidebarHistory.status === "loading"}<Spinner size={11} label="" />{/if}Show more
-      </button>
-    {/if}
-
-    {#if loading && !visible.length}
-      <div class="flex flex-col gap-2 px-2 pt-3" role="status" aria-label="Loading sessions">
-        <Skeleton class="h-9" />
-        <Skeleton class="h-9" />
-        <Skeleton class="h-9" />
-      </div>
-    {:else if !visible.length && !saved.length && sidebarHistory.status === "ready"}
-      <!-- The empty room: the pet keeps you company while the first bot boots. -->
-      <div class="flex flex-col items-center gap-2 px-2 py-8 text-center">
-        <Mascot mood="idle" size={56} />
-        <div class="text-[12px] text-ink-muted">{query ? `No sessions match “${filter}”` : "No sessions yet — say hello to your first bot"}</div>
-      </div>
-    {/if}
   </div>
 
+  <!-- A phone has no room for a rail plus a chat: this is the whole screen, so say how to leave. -->
+  {#if full}
+    <div class="shrink-0 border-t border-line/80 px-4 py-3">
+      <Button variant="secondary" size="md" icon={Plus} class="w-full justify-center" onclick={onnew}>
+        New bot
+      </Button>
+    </div>
   {/if}
-
-  <!-- Tools, workspace, you — the mockup's quiet footer: no hard borders, just air. -->
-  <div class="flex flex-col gap-0.5 px-2 pt-1 pb-[max(0.375rem,env(safe-area-inset-bottom))]">
-    <!-- Tools: Routines (the tasks drawer, dotted when work is queued), Triggers and Team map on the way. -->
-    <div>
-      <button
-        type="button"
-        class="interactive flex min-h-9 w-full cursor-pointer items-center gap-1.5 rounded-xl px-1 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
-        aria-expanded={toolsOpen}
-        onclick={() => (toolsOpen = !toolsOpen)}
-      >
-        <span class="text-[12px] leading-4 font-semibold tracking-[-0.01em] text-ink-muted">Tools</span>
-        <ChevronDown size={11} strokeWidth={2.25} class="shrink-0 text-ink-faint transition-[rotate] duration-150 {toolsOpen ? '' : '-rotate-90'}" aria-hidden="true" />
-      </button>
-      {#if toolsOpen}
-        <div class="ml-1 flex flex-col" role="group" aria-label="Tools">
-          <button
-            data-nav
-            type="button"
-            class="interactive flex min-h-9 cursor-pointer items-center gap-2.5 rounded-xl px-2 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
-            onclick={ontasks}
-          >
-            <CalendarClock size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
-            <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Routines</span>
-            {#if queuedWork}<span class="size-2 shrink-0 rounded-full bg-err" title="Work queued"></span>{/if}
-          </button>
-          <button
-            type="button"
-            class="flex min-h-9 items-center gap-2.5 rounded-xl px-2 text-left opacity-50 pointer-coarse:min-h-11"
-            aria-disabled="true"
-            title="Coming soon"
-          >
-            <Zap size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
-            <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Triggers</span>
-          </button>
-          <button
-            data-nav
-            type="button"
-            class="interactive flex min-h-9 cursor-pointer items-center gap-2.5 rounded-xl px-2 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
-            onclick={() => onteammap?.()}
-          >
-            <Network size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
-            <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Team map</span>
-            {#if liveTeam}<span class="pulse-live size-2 shrink-0 rounded-full bg-live" title="{liveTeam} working"></span>{/if}
-          </button>
-        </div>
-      {/if}
-    </div>
-
-    <!-- The workspace: its hosts and its settings, one fold away. -->
-    <div>
-      <button
-        type="button"
-        class="interactive flex min-h-9 w-full cursor-pointer items-center gap-1.5 rounded-xl px-1 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
-        aria-expanded={teamOpen}
-        onclick={() => (teamOpen = !teamOpen)}
-      >
-        <span class="text-[12px] leading-4 font-semibold tracking-[-0.01em] text-ink-muted">mini-tui</span>
-        <span class="tnum text-[10px] text-ink-faint">{store.hosts.filter((h) => h.online).length}/{store.hosts.length} hosts</span>
-        <ChevronDown size={11} strokeWidth={2.25} class="ml-auto shrink-0 text-ink-faint transition-[rotate] duration-150 {teamOpen ? '' : '-rotate-90'}" aria-hidden="true" />
-      </button>
-      {#if teamOpen}
-        <div class="ml-1 flex flex-col" role="group" aria-label="Workspace">
-          <button
-            data-nav
-            type="button"
-            class="interactive flex min-h-9 cursor-pointer items-center gap-2.5 rounded-xl px-2 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
-            onclick={onopenhosts}
-          >
-            <Server size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
-            <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 text-ink">Remote hosts</span>
-            <span class="tnum shrink-0 text-[10.5px] text-ink-faint">{store.hosts.filter((h) => h.online).length} online</span>
-          </button>
-          <button
-            data-nav
-            type="button"
-            class="interactive flex min-h-9 cursor-pointer items-center gap-2.5 rounded-xl px-2 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
-            onclick={onsettings}
-          >
-            <Settings size={14} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
-            <span class="text-[12.5px] leading-4 text-ink">Settings</span>
-          </button>
-        </div>
-      {/if}
-    </div>
-
-    <!-- You: the pet stands in for the face; the puzzle is where plugins will live (settings for now). -->
-    <button
-      data-nav
-      type="button"
-      class="interactive flex min-h-10 cursor-pointer items-center gap-2.5 rounded-xl px-1 text-left hover:bg-raised/60 pointer-coarse:min-h-11"
-      onclick={onsettings}
-      title="Plugins & settings"
-    >
-      <Mascot mood="idle" size={24} />
-      <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 font-medium text-ink">Jaime</span>
-      <Puzzle size={14} class="shrink-0 text-ink-faint" strokeWidth={1.75} aria-hidden="true" />
-    </button>
-  </div>
 </aside>
-
-<style>
-  /* Pane status dots on the window rows. Shape carries the state as well as colour. */
-  .dot {
-    transition-property: background-color, box-shadow;
-    transition-duration: 150ms;
-    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-  }
-  .dot[data-status="live"] {
-    background: var(--color-brand);
-  }
-  .dot[data-status="done"] {
-    background: var(--color-ok);
-  }
-  .dot[data-status="done"].is-error {
-    background: var(--color-err);
-  }
-  .dot[data-status="idle"] {
-    background: transparent;
-    box-shadow: inset 0 0 0 1.25px var(--color-ink-faint);
-  }
-</style>

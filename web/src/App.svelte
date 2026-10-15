@@ -1,18 +1,19 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { Plus, X } from "@lucide/svelte";
+  import { Plus, X, CalendarClock, Network, Server, Settings, RotateCcw, Keyboard } from "@lucide/svelte";
   import SessionSidebar from "./lib/components/SessionSidebar.svelte";
   import ChatPane from "./lib/components/ChatPane.svelte";
   import PaneTree from "./lib/components/PaneTree.svelte";
   import TasksPanel from "./lib/components/TasksPanel.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
+  import type { MenuRow } from "./lib/components/HeaderMenu.svelte";
   import { history, sidebarHistory } from "./lib/stores/history.svelte";
   import { folderStore } from "./lib/stores/folders.svelte";
   import { catalog } from "./lib/stores/catalog.svelte";
   import { store } from "./lib/stores/sessions.svelte";
   import { panes } from "./lib/stores/panes.svelte";
-import { windows } from "./lib/stores/windows.svelte";
-  import { paneStatus, statusLabel } from "./lib/paneStatus";
+  import { agentTree } from "./lib/stores/agentTree.svelte";
+  import { paneStatus } from "./lib/paneStatus";
   import { ui } from "./lib/stores/ui.svelte";
   import { tasks } from "./lib/stores/tasks.svelte";
   import { plans } from "./lib/stores/plans.svelte";
@@ -23,7 +24,7 @@ import { windows } from "./lib/stores/windows.svelte";
   import { paneAt, type MoveDir, type Shape } from "./lib/paneLayout";
   import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "./lib/scale";
   import type { HistoryItem } from "./lib/types";
-  import { boardRows, windowTasks, type TaskWhere } from "./lib/tasks";
+  import { boardRows, type TaskWhere } from "./lib/tasks";
   import type { SessionPlan, SessionTask } from "./lib/types";
   import { FinishWatcher, finishMessage } from "./lib/finish";
 
@@ -117,12 +118,11 @@ import { windows } from "./lib/stores/windows.svelte";
     return () => document.removeEventListener("visibilitychange", onVisible);
   });
 
-  // Once per page: connect and load. Reading `windows.activeId` here makes this effect re-run on a
-  // window switch — it would drop every session socket and reload the list. Only the `createdId`
-  // hand-off below wants to be reactive, and it is read under `untrack` with the rest.
+  // Once per page: connect and load. Only the load itself is reactive; everything below it is read
+// under `untrack`, so a state change elsewhere never drops the session sockets and reloads the list.
   $effect(() => {
-    // The task board is watched for as long as the app is open: the window's button glances at it
-    // on hover and the panel opens it, and both must show what the agents last wrote, at once.
+    // The task board is watched for as long as the app is open: the header menu glances at it and
+    // the panel opens it, and both must show what the agents last wrote, at once.
     const unwatch = tasks.watch((list) => (taskCards = list));
     const unplan = plans.watch((list) => (planList = list));
     const unhub = hub.onState((s) => (tasksLive = s === "live"));
@@ -134,11 +134,7 @@ import { windows } from "./lib/stores/windows.svelte";
       .then(() => {
         panes.forgetMissing((id) => !!store.sessions[id]);
         // First visit (no saved layout): open the latest session, as the app always has.
-        if (windows.createdId) {
-          // A window that has just been asked for: it starts empty, with one new chat.
-          windows.takeCreated();
-          panes.openBlank();
-        } else if (!panes.restored && !panes.focused.sessionId && store.list[0]) panes.show(panes.focusedId, store.list[0].id);
+        if (!panes.restored && !panes.focused.sessionId && store.list[0]) panes.show(panes.focusedId, store.list[0].id);
       })
       .catch((error) => toasts.push("Could not reach the mini-tui server", { detail: (error as Error).message, tone: "err" }))
       .finally(() => (loading = false));
@@ -228,6 +224,8 @@ import { windows } from "./lib/stores/windows.svelte";
    */
   let dragFrom = $state("");
   let dragTarget = $state("");
+  /** Where a phone swipe that should dismiss the full-screen bots list started. */
+  let swipeFrom: { x: number; y: number } | null = null;
 
   function dragStart(paneId: string, event: PointerEvent) {
     if (event.button !== 0 || tabbed || panes.count < 2) return;
@@ -250,14 +248,6 @@ import { windows } from "./lib/stores/windows.svelte";
     if (!onto || onto === from || !panes.drop(from, onto)) return;
     void tick().then(() => refs[panes.focusedId]?.focusComposer());
   }
-  /** A window is born with one pane, so a move into a fresh one is never at the pane limit. */
-  const movePane = (paneId: string, to: string | "new", name?: string) => {
-    const went = panes.sendTo(paneId, to, name);
-    if (!went) toasts.push("That window is full", { detail: `At most ${MAX_PANES} panes in a window.`, tone: "info" });
-    else void tick().then(() => refs[panes.focusedId]?.focusComposer());
-    return went;
-  };
-
   function split(paneId: string, dir: Dir) {
     if (!panes.canSplit) {
       toasts.push(`At most ${MAX_PANES} panes`, { detail: "Close one to open another.", tone: "info" });
@@ -290,16 +280,6 @@ import { windows } from "./lib/stores/windows.svelte";
     panes.show(panes.focusedId, null);
     if (narrow) sidebarOpen = false;
     queueMicrotask(() => refs[panes.focusedId]?.focusComposer());
-  }
-
-  /** A new chat already set to run in `cwd` (on `hostId`, for a remote folder), in the focused pane. */
-  function newChatIn(cwd: string, hostId?: string) {
-    const pane = panes.focused;
-    panes.show(pane.id, null);
-    const host = hostId && store.hosts.some((h) => h.id === hostId) ? hostId : "local";
-    pane.draft = { ...pane.draft, targetId: host, cwd };
-    if (narrow) sidebarOpen = false;
-    void tick().then(() => refs[pane.id]?.focusComposer());
   }
 
   async function resume(item: HistoryItem) {
@@ -374,81 +354,38 @@ import { windows } from "./lib/stores/windows.svelte";
     const s = panes.panes[id]?.sessionId;
     return `pane ${panes.numberOf(id)}${s && store.sessions[s] ? ` (${store.sessions[s]!.title || "Untitled"})` : ""}`;
   };
-  /** Where a pane can go: the other windows, and a new one. */
-  const moveTargets = $derived(windows.list.filter((w) => w.id !== windows.activeId).map((w) => ({ id: w.id, label: windows.label(w.id, (wid) => panes.paneCount(wid)) })));
   /**
    * Where a session is on screen, for the task board: the pane showing it (its number in the
-   * reading order) and the window that pane lives in. Null when no pane shows the session.
+   * reading order). Null when no pane shows the session. The window is gone from the UI as of v6,
+   * so a row no longer names one — the pane is what you actually see.
    */
   const whereOf = (id: string): TaskWhere | null => {
     const pane = panes.paneOf(id);
     if (!pane) return null;
-    const w = panes.windowOf(id);
-    return { pane: panes.numberOf(pane.id), window: w ? windows.label(w, (wid) => panes.paneCount(wid)) : windows.label(windows.activeId, (wid) => panes.paneCount(wid)) };
+    return { pane: panes.numberOf(pane.id) };
   };
   /** The task board's rows: every session with a task card, with where it lives on screen. */
   const taskRows = $derived(boardRows(taskCards, (id) => store.sessions[id]?.title ?? "", whereOf));
-  /** The card of a session, by id: what each pane's row in the sidebar's popover reads. */
-  const taskOf = $derived.by(() => new Map(taskCards.map((t) => [t.id, t])));
-  /**
-   * Each window's own tasks, one for the icon on its sidebar row: its panes in reading order, each
-   * with the session it shows and that session's card (a pane with no session, or a session with no
-   * card yet, is a row that says so). The popover's title is the window's general task.
-   */
-  const tasksByWindow = $derived(
-    Object.fromEntries(
-      windows.list.map((w) => [
-        w.id,
-        windowTasks(
-          windows.label(w.id, (wid) => panes.paneCount(wid)),
-          panes.panesIn(w.id).map((p) => {
-            const s = p.sessionId ? store.sessions[p.sessionId] : null;
-            return { sessionId: p.sessionId, sessionTitle: s?.title || "New chat", task: (p.sessionId ? taskOf.get(p.sessionId) : undefined) ?? null };
-          }),
-        ),
-      ]),
-    ),
-  );
 
-  /** The sidebar's window list: name or number, pane count, and which is on screen. */
-  const windowRows = $derived(
-    windows.list.map((w) => ({
-      id: w.id,
-      label: windows.label(w.id, (wid) => panes.paneCount(wid)),
-      name: w.name,
-      panes: panes.paneCount(w.id),
-      active: w.id === windows.activeId,
-      // One dot per pane, in reading order: live, done (until clicked) or idle.
-      dots: panes.panesIn(w.id).map((p) => {
-        const s = p.sessionId ? store.sessions[p.sessionId] : null;
-        const status = paneStatus(s, p);
-        return { id: p.id, status, label: `${s?.title || "New chat"}: ${statusLabel(status, s?.status === "error")}`, error: status === "done" && s?.status === "error" };
-      }),
-      // The bots this window holds: its panes' sessions, deduped, for the sidebar's nested rows.
-      // A pane can still point at a session the server no longer has (a stale saved workspace):
-      // those drop out here instead of taking the row down.
-      bots: [...new Map(
-        panes
-          .panesIn(w.id)
-          .map((p) => (p.sessionId ? store.sessions[p.sessionId] : undefined))
-          .filter((s) => s !== undefined)
-          .map((s) => [s.id, { id: s.id, title: s.title, status: s.status, error: s.status === "error" }] as const),
-      ).values()],
-    })),
-  );
-  /** Another window on screen: these panes are shelved with their prompts, that window's come back. */
-  function switchWindow(id: string) {
-    if (id === windows.activeId) return;
-    panes.switchTo(id);
-    queueMicrotask(() => refs[panes.focusedId]?.focusComposer());
-  }
-  /** A new window: it opens empty (one new chat) and takes the focus. */
-  function newWindow() {
-    windows.create();
-    if (narrow) sidebarOpen = false;
-    panes.openBlank();
-    queueMicrotask(() => refs[panes.focusedId]?.focusComposer());
-  }
+  /**
+   * The app-wide rows of the header's three-dots popover — what the sidebar's footer used to own
+   * (Routines, Team map, hosts, settings) plus Resume and Help. One list, one menu: the pane's own
+   * rows are built in ChatPane and these are appended to them.
+   */
+  const appRows = $derived.by((): MenuRow[] => [
+    { id: "routines", label: "Routines", note: taskCards.length ? `${taskCards.length} task ${taskCards.length === 1 ? "card" : "cards"}` : "No task cards yet", icon: CalendarClock, group: "Workspace", run: () => (tasksOpen = true) },
+    { id: "team", label: "Team map", note: liveTeam ? `${liveTeam} working` : "The delegation graph", icon: Network, group: "Workspace", run: () => (teamMapOpen = true) },
+    { id: "hosts", label: "Remote hosts", note: hostsNote(), icon: Server, group: "Workspace", run: () => (hostsOpen = true) },
+    { id: "resume", label: "Resume a session", note: "Every saved session, searchable", icon: RotateCcw, group: "Workspace", run: () => (resumeOpen = true) },
+    { id: "settings", label: "Settings", note: "Ctrl/⌘ ,", icon: Settings, group: "Workspace", run: () => app("settings") },
+    { id: "help", label: "Keyboard & help", note: "Shortcuts and commands", icon: Keyboard, group: "Workspace", run: () => (helpOpen = true) },
+  ]);
+  const hostsNote = () => {
+    const on = store.hosts.filter((h) => h.online).length;
+    return store.hosts.length ? `${on} of ${store.hosts.length} online` : "None connected";
+  };
+  /** Delegates working anywhere in the team: the Team map row's pulse. */
+  const liveTeam = $derived(Object.values(agentTree.trees).reduce((n, t) => n + t.live, 0));
 
   function scaleBy(dir: 1 | -1, text: boolean) {
     if (text) ui.setTextScale(stepScale(ui.textScale, dir, TEXT_SCALES));
@@ -534,39 +471,32 @@ import { windows } from "./lib/stores/windows.svelte";
 
 <div class="relative flex h-full w-full overflow-hidden bg-canvas text-ink">
   {#if sidebarOpen && narrow}
-    <button class="absolute inset-0 z-40 cursor-default bg-black/40" aria-label="Close sidebar" onclick={() => (sidebarOpen = false)}></button>
+    <!-- On a phone the rail IS the screen (v6): nothing of the chat shows behind it, so the
+         backdrop is only there for the swipe-down gesture that closes it, not as a dimmed layer. -->
+    <button
+      class="absolute inset-0 z-40 cursor-default bg-transparent"
+      aria-label="Close the bots list"
+      onclick={() => (sidebarOpen = false)}
+      onpointerdown={(e) => (swipeFrom = { x: e.clientX, y: e.clientY })}
+      onpointerup={(e) => {
+        const from = swipeFrom;
+        swipeFrom = null;
+        // A swipe down or right from anywhere over the scroller closes it, like a sheet.
+        if (from && (e.clientY - from.y > 64 || e.clientX - from.x > 64)) sidebarOpen = false;
+      }}
+    ></button>
   {/if}
   {#if sidebarOpen}
-    <div class="enter-1 {narrow ? 'absolute inset-y-0 left-0 z-50' : 'relative'}">
+    <div class="enter-1 {narrow ? 'absolute inset-0 z-50' : 'relative w-[288px]'}">
       <SessionSidebar
+        full={narrow}
         onnew={newChat}
-        onsettings={() => app("settings")}
-        onopenhosts={() => (hostsOpen = true)}
         onclosesession={closeSession}
         onhidesidebar={() => (sidebarOpen = false)}
         onopen={openInFocused}
-        onopenhistory={resume}
-        onresume={() => (resumeOpen = true)}
-        onnewin={newChatIn}
-        openingId={openingId}
-        windows={windowRows}
-        onwindow={(id) => switchWindow(id)}
-        onnewwindow={() => newWindow()}
-        grid={narrow}
-        onrename={(id, name) => windows.rename(id, name)}
         onrenamebot={(id, title) => renameBot(id, title)}
-        onclosewindow={(id) => {
-          panes.dropWindow(id);
-          windows.remove(id);
-        }}
-        ontasks={() => (tasksOpen = true)}
-        onteammap={() => (teamMapOpen = true)}
-        windowTasks={tasksByWindow}
+        {openingId}
         taskCards={taskCards}
-        inOtherWindow={(id) => {
-          const w = panes.windowOf(id);
-          return w && w !== windows.activeId ? windows.label(w, (wid) => panes.paneCount(wid)) : "";
-        }}
         paneOf={(id) => {
           const p = panes.paneOf(id);
           return p ? panes.numberOf(p.id) : 0;
@@ -645,8 +575,6 @@ import { windows } from "./lib/stores/windows.svelte";
               onapp={app}
               onsplit={(dir) => split(id, dir)}
               onclosepane={() => closePane(id)}
-              windows={moveTargets}
-              onmove={(to, name) => movePane(id, to, name)}
               moves={paneMoves(id)}
               onmovepane={(dir) => movePaneDir(id, dir)}
               ondragpane={!tabbed && panes.count > 1 ? (event) => dragStart(id, event) : undefined}
@@ -655,6 +583,7 @@ import { windows } from "./lib/stores/windows.svelte";
               dragging={dragFrom === id}
               layouts={paneLayouts}
               onarrange={arrange}
+              appActions={appRows}
             />
           </div>
         {/if}
