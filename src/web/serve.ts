@@ -31,6 +31,7 @@ import { createEvoSender, type EvoSender } from "../channels/evoSend";
 import { channelsView, evoPairingCode, evoQr, evoStatus } from "./channels";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
+import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
 import { syncAllSkills } from "../skills";
 import {
@@ -86,6 +87,26 @@ type Listener = (event: { type: string; [key: string]: unknown }) => void;
 
 /** Providers with a connection test in flight (a test is a real model call: one at a time). */
 const connecting = new Set<string>();
+
+/**
+ * Budgets for the expensive routes (per client IP, see rateLimit.ts). A spawn,
+ * a model turn, a provider key test, an ssh probe, an ssh folder walk and an
+ * attachment upload each get their own bucket; everything else is cheap JSON.
+ */
+const LIMITS = {
+  sessionCreate: new RateLimiter(6, 60_000), // spawns an agent process
+  prompt: new RateLimiter(30, 60_000), // a model turn
+  attachment: new RateLimiter(20, 60_000), // 15 MB a piece: disk and memory
+  providerConnect: new RateLimiter(5, 60_000), // real API calls upstream
+  hostProbe: new RateLimiter(6, 60_000), // an ssh dial
+  folders: new RateLimiter(60, 60_000), // a directory walk (ssh when remote)
+};
+function rateLimited(which: keyof typeof LIMITS, request: Request, srv: unknown): Response | null {
+  const ip = (srv as { requestIP?: (r: Request) => { address: string } | null }).requestIP?.(request)?.address ?? "local";
+  const taken = LIMITS[which].take(ip);
+  if (taken.ok) return null;
+  return json({ error: "too many requests" }, 429, { "retry-after": String(taken.retryAfter) });
+}
 
 /** A per-session transcript socket, or the one hub socket of a tab. */
 type SocketData =
@@ -373,10 +394,10 @@ function dropSession(id: string): void {
   broadcast({ type: "session-gone", id });
 }
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
   });
 }
 
@@ -699,6 +720,8 @@ const server = Bun.serve({
       // what the client sends on with its next prompt (ids only).
       if (path === "/attachments" && request.method === "POST") {
         if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        const limited = rateLimited("attachment", request, srv);
+        if (limited) return limited;
         // Refuse the upload before reading it: formData() would buffer the whole
         // body in memory before the size rule could answer 413. A declared
         // content-length already past the cap never gets parsed. (A missing
@@ -785,6 +808,8 @@ const server = Bun.serve({
 
       if (path === "/sessions" && request.method === "GET") return json(sessions.list().map(summarize));
       if (path === "/sessions" && request.method === "POST") {
+        const spawnLimit = rateLimited("sessionCreate", request, srv);
+        if (spawnLimit) return spawnLimit;
         const body = await readJson(request);
         log("api.session.create", { cwd: body.cwd ?? "", model: body.model ?? "", target: body.target ?? "local" });
         let session;
@@ -869,6 +894,8 @@ const server = Bun.serve({
         const id = decodeURIComponent(sessionMatch[1] as string);
         const action = sessionMatch[2];
         if (action === "/prompt" && request.method === "POST") {
+          const turnLimit = rateLimited("prompt", request, srv);
+          if (turnLimit) return turnLimit;
           const body = await readJson(request);
           log("api.session.prompt", { id, len: String(body.prompt ?? "").length });
           try {
@@ -970,6 +997,8 @@ const server = Bun.serve({
       // `GET /folders?path=` (this machine) or `?hostId=&path=` (a saved remote host, over ssh): the
       // subfolders of a folder, for the "where should this chat run" picker. Names only, never contents.
       if (path === "/folders" && request.method === "GET") {
+        const folderLimit = rateLimited("folders", request, srv);
+        if (folderLimit) return folderLimit;
         const hostId = url.searchParams.get("hostId") ?? "";
         const asked = url.searchParams.get("path") ?? "";
         if (asked.length > 4096 || asked.includes("\0")) return json({ error: "invalid path" }, 400);
@@ -987,6 +1016,8 @@ const server = Bun.serve({
       // ----------------------------------------------------------- hosts
       if (path === "/hosts" && request.method === "GET") return json(loadHosts().map(hostToApi));
       if (path === "/hosts/probe" && request.method === "POST") {
+        const probeLimit = rateLimited("hostProbe", request, srv);
+        if (probeLimit) return probeLimit;
         const body = await readJson(request);
         const result = await probeHost({
           host: String(body.host ?? ""),
@@ -1039,6 +1070,8 @@ const server = Bun.serve({
       // Keys go in through /providers/connect and never come back out: reads are masked.
       if (path === "/providers" && request.method === "GET") return json({ connected: connectedProviders(), catalog: providerCatalog() });
       if (path === "/providers/connect" && request.method === "POST") {
+        const connectLimit = rateLimited("providerConnect", request, srv);
+        if (connectLimit) return connectLimit;
         const body = await readJson(request);
         const providerId = String(body.providerId ?? "");
         if (connecting.has(providerId)) return json({ error: "already connecting this provider" }, 409);
