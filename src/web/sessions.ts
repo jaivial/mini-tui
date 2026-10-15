@@ -45,6 +45,7 @@ import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 import { probeHost, startRemoteRun, type RemoteRun, type SshTarget } from "./ssh";
 import { attachmentAgentBlock, attachmentLinksLine, getAttachment, inlineWorkspaceImages, registerFile, type Attachment } from "./attachments";
+import { extractUiComponents } from "./uiComponents";
 import { readPlan, type SessionPlan } from "../mini/plans";
 import { SubagentSync, readSubagentIndex, subagentIndexFresh, type SubagentView } from "../mini/subagents";
 
@@ -500,17 +501,32 @@ export class SessionManager {
       entry.pendingTasks = pending;
     }
     if (fresh.length) {
-      // Agent-produced images referenced by path become inline served images
-      // (local sessions only: a remote workspace is not this machine's disk).
-      if (entry.session.target === "local") {
-        const cwd = entry.session.cwd;
-        fresh = fresh.map((event) => {
-          if (event.type === "assistant" && event.text) return { ...event, text: inlineWorkspaceImages(event.text, cwd) };
-          if (event.type === "exit" && event.submission) return { ...event, submission: inlineWorkspaceImages(event.submission, cwd) };
-          return event;
-        });
+      // Presentation rewrites before the events land: agent-produced images become
+      // inline served images (local sessions only), and ```ui-component fences in
+      // assistant text become first-class components (web/src/lib/uiComponents.ts).
+      const withUi: RunEvent[] = [];
+      for (const event of fresh) {
+        if (event.type === "assistant" && event.text) {
+          let text = event.text;
+          if (entry.session.target === "local" && entry.session.cwd) text = inlineWorkspaceImages(text, entry.session.cwd);
+          if (text.includes("```")) {
+            const { text: clean, specs } = extractUiComponents(text);
+            if (specs.length) {
+              if (clean.trim()) withUi.push({ ...event, text: clean });
+              for (const spec of specs) withUi.push({ type: "ui-component", template: spec.template, props: spec.props });
+              continue;
+            }
+          }
+          withUi.push(text === event.text ? event : { ...event, text });
+          continue;
+        }
+        if (event.type === "exit" && event.submission && entry.session.target === "local" && entry.session.cwd) {
+          withUi.push({ ...event, submission: inlineWorkspaceImages(event.submission, entry.session.cwd) });
+          continue;
+        }
+        withUi.push(event);
       }
-      entry.session.events.push(...fresh.map(boundEvent));
+      entry.session.events.push(...withUi.map(boundEvent));
     }
 
     const info = parseInfo(traj);

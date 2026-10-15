@@ -154,6 +154,10 @@ export function formatEventText(event: RunEvent, color = false): string {
       return paint(event.exitStatus === "Submitted" ? ANSI.green : ANSI.red, `■ ${event.exitStatus || "exit"}\n`);
     case "error":
       return paint(ANSI.red, `${event.text}\n`);
+    case "ui-component":
+      // The TUI has no rich rendering for generated components (web-only): show
+      // what it is so the headless stream stays honest about the turn's shape.
+      return paint(ANSI.dim, `· ui-component: ${event.template}\n`);
   }
 }
 

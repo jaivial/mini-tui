@@ -5,12 +5,14 @@
   import StepCard from "./StepCard.svelte";
   import Spinner from "./Spinner.svelte";
   import { arrivalOf, callDuration } from "../toolTimings";
+  import UiComponent from "./ui/UiComponent.svelte";
 
   let {
     events,
     partial,
+    onsubmit,
     class: klass = "",
-  }: { events: RunEvent[]; partial?: { thinking: string; text: string }; class?: string } = $props();
+  }: { events: RunEvent[]; partial?: { thinking: string; text: string }; onsubmit?: (message: string) => void; class?: string } = $props();
 
   // Pair each tool_call with its observation (by toolCallId) so a command and
   // its result render as one row, the way the TUI does.
@@ -22,6 +24,7 @@
     | { kind: "exit"; event: Extract<RunEvent, { type: "exit" }> }
     | { kind: "error"; event: Extract<RunEvent, { type: "error" }> }
     | { kind: "thinking"; event: Extract<RunEvent, { type: "thinking" }> }
+    | { kind: "ui-component"; event: Extract<RunEvent, { type: "ui-component" }> }
     | { kind: "step"; event: RunEvent };
 
   /** The most recent tool_call, used to pair a result that carries no id. */
@@ -169,6 +172,11 @@
       </div>
     {:else if row.kind === "step"}
       <div class={gap}><StepCard event={row.event} /></div>
+    {:else if row.kind === "ui-component"}
+      <!-- Generative UI: a component of the closed set, validated before render. -->
+      <div class="{gap} pl-1">
+        <UiComponent template={row.event.template} props={row.event.props} {onsubmit} />
+      </div>
     {:else if row.kind === "thinking"}
       <!--
         A finished thought is a one-line receipt, not a panel: the run's
