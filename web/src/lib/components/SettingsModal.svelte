@@ -7,6 +7,7 @@
   import Button from "./Button.svelte";
   import Badge from "./Badge.svelte";
   import Skeleton from "./Skeleton.svelte";
+  import WhatsAppConnect from "./WhatsAppConnect.svelte";
   import { catalog } from "../stores/catalog.svelte";
   import { ui, PALETTES } from "../stores/ui.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -23,6 +24,7 @@
   const uid = $props.id();
   const TABS = [
     { id: "general", label: "General" },
+    { id: "channels", label: "Canales" },
     { id: "providers", label: "Providers" },
     { id: "skills", label: "Skills" },
   ];
@@ -220,6 +222,15 @@
             <div class="flex flex-col gap-1.5" role="status" aria-label="Loading settings"><Skeleton class="h-14" /><Skeleton class="h-14" /><Skeleton class="h-14" /></div>
           {/if}
         </fieldset>
+      </div>
+    {:else if tab === "channels"}
+      <div role="tabpanel" id="{uid}-panel-channels" aria-labelledby="{uid}-tab-channels" class="flex flex-col gap-3">
+        <p class="-mt-1 text-[12.5px] text-ink-muted">
+          Estado de la instancia de WhatsApp del asistente y sus dos formas de
+          emparejar un teléfono: QR o código de un solo uso. El emparejamiento
+          lo resuelve el servidor por loopback; aquí nunca hay claves.
+        </p>
+        <WhatsAppConnect {open} />
       </div>
     {:else if tab === "providers"}
       <div role="tabpanel" id="{uid}-panel-providers" aria-labelledby="{uid}-tab-providers" class="flex flex-col gap-5">
