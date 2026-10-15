@@ -696,6 +696,24 @@ export class SessionManager {
       try {
         const current = parseInfo(traj).model || entry.session.model || "";
 
+        // ---- healing: a call that WORKED closes its circuit ----
+        // Without this a tripped model can only come back by an operator
+        // pressing "clear the circuit": a provider whose quota window reset
+        // itself would stay out of the pool for the rest of the process's
+        // life, and each trip would escalate the cooldown instead of clearing
+        // it. A successful assistant message on the run's current model is the
+        // evidence that the circuit should close.
+        if (!failed && current) {
+          const worked = fresh.some(
+            (message) =>
+              message.role === "assistant" &&
+              !((message.extra ?? {}) as Record<string, unknown>).error &&
+              typeof message.content === "string" &&
+              message.content.trim().length > 0,
+          );
+          if (worked) routerSucceed(current);
+        }
+
         // ---- fallback: a call that failed takes its model out of circulation ----
         if (failed) {
           const extra = (failed.extra ?? {}) as Record<string, unknown>;
