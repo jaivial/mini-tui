@@ -513,6 +513,7 @@ import { windows } from "./lib/stores/windows.svelte";
         windows={windowRows}
         onwindow={(id) => switchWindow(id)}
         onnewwindow={() => newWindow()}
+        grid={narrow}
         onrename={(id, name) => windows.rename(id, name)}
         onclosewindow={(id) => {
           panes.dropWindow(id);

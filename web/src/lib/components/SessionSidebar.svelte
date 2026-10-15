@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers } from "@lucide/svelte";
+  import { Plus, Server, ChevronRight, Square, PanelLeftClose, Settings, RotateCcw, AppWindow, AppWindowMac, Layers, Search } from "@lucide/svelte";
   import Spinner from "./Spinner.svelte";
   import { sidebarHistory } from "../stores/history.svelte";
   import { folderStore } from "../stores/folders.svelte";
@@ -16,8 +16,8 @@
   import Skeleton from "./Skeleton.svelte";
   import { store } from "../stores/sessions.svelte";
   import { baseName, relativeTime, cost } from "../format";
-  import { statusLine, statusMood } from "../mascot";
-  import Mascot from "./Mascot.svelte";
+  import { statusLine } from "../mascot";
+  import Avatar from "./Avatar.svelte";
   import type { SessionState } from "../types";
   import type { WindowTasks } from "../tasks";
 
@@ -42,6 +42,7 @@
     windowTasks = {},
     paneOf = () => 0,
     focusedSession = null,
+    grid = false,
     loading = false,
     class: klass = "",
   }: {
@@ -92,6 +93,8 @@
     paneOf?: (id: string) => number;
     /** The session in the focused pane: that row is the highlighted one. */
     focusedSession?: string | null;
+    /** Phone layout: a grid of bots on top, the chats below (the mockup's). */
+    grid?: boolean;
     /** The first session list is still on its way. */
     loading?: boolean;
     class?: string;
@@ -217,7 +220,8 @@
 </script>
 
 {#snippet sessionRow(session: SessionState)}
-  <!-- One assistant: its pet in the pose the status calls for, its name, its state in words. -->
+  <!-- One bot: its blob face, its name, when it last spoke, its state in words.
+       Finished and not on any screen = the unread blue dot (the mockup's). -->
           <div
             role="listitem"
             class="group/sess interactive relative cursor-pointer rounded-xl py-2 pr-2 pl-2.5 pointer-coarse:py-2.5 pointer-coarse:pr-12
@@ -232,11 +236,7 @@
             >
               <div class="flex items-center gap-2.5">
                 <span class="relative">
-                  <Mascot
-                    mood={statusMood(session.status)}
-                    size={34}
-                    class="rounded-xl bg-surface/80 p-px elev-1"
-                  />
+                  <Avatar id={session.id} size={40} />
                   <!--
                     Presence dot, Slack's rule: sunset + pulse only means "working right now",
                     the quiet colours are states that need no attention.
@@ -258,26 +258,28 @@
                     {#if session.target === "remote"}
                       <Server size={12} class="shrink-0 text-accent" strokeWidth={2} />
                     {/if}
-                    <span class="min-w-0 flex-1 truncate font-display text-[13px] leading-4 font-medium tracking-[-0.01em] text-ink">
+                    <span class="min-w-0 flex-1 truncate text-[13px] leading-4 font-semibold tracking-[-0.01em] text-ink">
                       {session.title || "Untitled"}
                     </span>
                     {#if paneOf(session.id)}
                       <!-- Which pane shows it: a number, like tmux's pane index. -->
-                      <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-overlay px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(session.id)}">
+                      <span class="tnum grid h-4 min-w-4 shrink-0 place-items-center rounded-sm bg-raised px-1 text-[10px] font-semibold text-ink-muted" title="Shown in pane {paneOf(session.id)}">
                         <span aria-hidden="true">{paneOf(session.id)}</span><span class="sr-only">in pane {paneOf(session.id)}</span>
                       </span>
                     {:else if inOtherWindow?.(session.id)}
                       <!-- Open, but on another window's screen: where to find it. -->
                       <span class="shrink-0 text-ink-faint" title="On {inOtherWindow(session.id)}"><AppWindow size={12} strokeWidth={1.75} aria-label="On {inOtherWindow(session.id)}" /></span>
                     {/if}
+                    <span class="tnum shrink-0 text-[10.5px] font-medium text-ink-faint">{relativeTime(session.updatedAt)}</span>
                   </div>
-                  <div class="mt-0.5 flex items-center gap-1.5 pl-0 text-[10.5px] leading-4 text-ink-faint">
+                  <div class="mt-0.5 flex items-center gap-1.5 text-[11px] leading-4 text-ink-faint">
                     <span class="truncate {session.status === 'running' ? 'font-medium text-live' : ''}">{statusLine(session.status)}</span>
-                    <span aria-hidden="true">·</span>
-                    <span class="truncate">{baseName(session.cwd)}</span>
-                    <span class="tnum shrink-0">{relativeTime(session.updatedAt)}</span>
+                    <span class="truncate">· {baseName(session.cwd)}</span>
                     {#if session.cost > 0}
-                      <span class="tnum shrink-0">{cost(session.cost)}</span>
+                      <span class="tnum ml-auto shrink-0">{cost(session.cost)}</span>
+                    {:else if session.status === "done" && !paneOf(session.id) && !inOtherWindow?.(session.id)}
+                      <!-- Unread, the mockup's blue dot: finished since you last had it on screen. -->
+                      <span class="ml-auto size-2 shrink-0 rounded-full bg-brand" title="Finished — new"></span>
                     {/if}
                   </div>
                 </div>
@@ -307,16 +309,16 @@
               disabled={openingId === item.id}
               onclick={() => onopenhistory(item)}
             >
-              <Mascot mood="offline" size={26} class="rounded-lg bg-surface/60 p-px elev-1" />
+              <span class="opacity-70 saturate-[0.6]"><Avatar id={item.id} size={28} /></span>
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-1.5">
-                  <span class="min-w-0 flex-1 truncate font-display text-[12.5px] leading-4 tracking-[-0.01em] text-ink-muted">{item.title || "Untitled"}</span>
+                  <span class="min-w-0 flex-1 truncate text-[12.5px] leading-4 font-medium tracking-[-0.01em] text-ink-muted">{item.title || "Untitled"}</span>
                   {#if openingId === item.id}<Spinner size={11} label="Opening" />{/if}
                   {#if reason}<span class="shrink-0 text-[10px] text-ink-faint">read only</span>{/if}
+                  <span class="tnum shrink-0 text-[10.5px] text-ink-faint">{relativeTime(item.updatedAt)}</span>
                 </div>
-                <div class="mt-0.5 flex items-center gap-1.5 text-[10.5px] leading-4 text-ink-faint">
+                <div class="mt-0.5 flex items-center gap-1.5 text-[11px] leading-4 text-ink-faint">
                   <span class="truncate">Sleeping · {baseName(item.cwd)}</span>
-                  <span class="tnum shrink-0">{relativeTime(item.updatedAt)}</span>
                 </div>
               </div>
             </button>
@@ -328,9 +330,8 @@
 >
   <!-- Brand / workspace -->
   <div class="flex items-center gap-2 px-3 py-2.5">
-    <!-- The house pet greets you every time the rail opens. -->
-    <Mascot mood="wave" greet size={22} class="rounded-lg bg-brand-soft p-px" />
-    <span class="min-w-0 flex-1 truncate font-display text-[13.5px] leading-4 font-semibold tracking-[-0.01em]">mini-tui</span>
+    <Avatar id="mini-tui" size={24} />
+    <span class="min-w-0 flex-1 truncate text-[13.5px] leading-4 font-semibold tracking-[-0.01em]">mini-tui</span>
     <!--
       The connection state is a dot, not a word: it is ambient information and
       never needs a full line of the narrow rail.
@@ -437,15 +438,46 @@
   <!-- Filter -->
   <div class="px-2.5 pb-2">
     <div class="relative">
+      <Search size={13} strokeWidth={2} class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint" aria-hidden="true" />
       <input
         bind:value={filter}
-        placeholder="Search sessions…"
+        placeholder="Search"
         aria-label="Search sessions"
-        class="h-9 w-full rounded-md border border-line bg-canvas pr-2 pl-2.5 text-base text-ink placeholder:text-ink-faint pointer-coarse:h-11
-          focus:border-brand focus:outline-none"
+        class="h-9 w-full rounded-full border border-transparent bg-raised pr-2.5 pl-8 text-base text-ink placeholder:text-ink-faint pointer-coarse:h-11
+          focus:border-brand focus:bg-canvas focus:outline-none"
       />
     </div>
   </div>
+
+  {#if grid && !query}
+    <!-- Phone: the room of bots first (the mockup's grid), the chats below. -->
+    <div class="grid grid-cols-4 gap-1 px-2.5 pb-2" role="group" aria-label="Bots">
+      {#each visible.slice(0, 8) as session (session.id)}
+        <button
+          type="button"
+          class="interactive flex min-h-20 cursor-pointer flex-col items-center gap-1 rounded-xl px-1 py-2 hover:bg-raised/70 pointer-coarse:min-h-24"
+          onclick={() => onopen(session.id)}
+          aria-label="Open {session.title || 'Untitled'}"
+        >
+          <span class="relative">
+            <Avatar id={session.id} size={48} />
+            <span
+              class="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-canvas {session.status === 'running'
+                ? 'pulse-live bg-live'
+                : session.status === 'done'
+                  ? 'bg-ok'
+                  : session.status === 'error'
+                    ? 'bg-err'
+                    : session.status === 'interrupted'
+                      ? 'bg-warn'
+                      : 'bg-line-strong'}"
+            ></span>
+          </span>
+          <span class="w-full truncate text-center text-[10.5px] leading-3.5 text-ink-muted">{session.title || "Untitled"}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
 
   <!-- View: recent (open, then history by day) or by folder. -->
   <div class="px-2.5 pb-1">

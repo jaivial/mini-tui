@@ -59,20 +59,19 @@
   });
 </script>
 
-<div class="flex flex-col gap-2 {klass}">
+<div class="flex flex-col gap-2.5 {klass}">
   {#each rows as row, i (i)}
     {#if row.kind === "task"}
-      <div class="flex items-start gap-2.5">
-        <CornerDownLeft size={14} class="mt-1 shrink-0 text-ink-faint" strokeWidth={1.75} />
-        <div class="min-w-0 flex-1">
-          <div class="mb-0.5 text-[10px] font-semibold tracking-wider text-ink-faint uppercase">You</div>
-          <Markdown text={row.event.text} class="read-[13.5px] text-ink" />
+      <!-- The user speaks in the near-black bubble, at the right (the mockup's). -->
+      <div class="flex justify-end">
+        <div class="msg-user max-w-[85%] rounded-2xl rounded-br-md bg-bubble-user px-3.5 py-2 pointer-coarse:px-4">
+          <Markdown text={row.event.text} class="read-[13.5px] text-bubble-user-ink" />
         </div>
       </div>
     {:else if row.kind === "assistant"}
-      <div class="flex items-start gap-2.5">
-        <Sparkles size={14} class="mt-1 shrink-0 text-brand" strokeWidth={1.75} />
-        <div class="min-w-0 flex-1">
+      <!-- The bot answers in the soft grey bubble, at the left. -->
+      <div class="flex justify-start">
+        <div class="max-w-[85%] rounded-2xl rounded-bl-md bg-bubble-bot px-3.5 py-2 pointer-coarse:px-4">
           <Markdown text={row.event.text} class="read-[13.5px] text-ink" />
         </div>
       </div>
@@ -136,13 +135,34 @@
       </div>
     {/if}
     {#if partial.text}
-      <div class="flex items-start gap-2.5">
-        <Sparkles size={14} class="mt-1 shrink-0 text-brand" strokeWidth={1.75} />
-        <div class="min-w-0 flex-1">
-          <Markdown text={partial.text} class="read-[13px] text-ink" />
+      <div class="flex justify-start">
+        <div class="max-w-[85%] rounded-2xl rounded-bl-md bg-bubble-bot px-3.5 py-2 pointer-coarse:px-4">
+          <Markdown text={partial.text} class="read-[13.5px] text-ink" />
           <span class="caret" aria-hidden="true"></span>
         </div>
       </div>
     {/if}
   {/if}
 </div>
+
+<style>
+  /* Inside the near-black bubble the palette flips: links go light blue,
+     strong text to the bubble's own ink, code to a translucent chip — the
+     prose-mini defaults assume a page-coloured surface and would vanish. */
+  .msg-user :global(.prose-mini a) {
+    color: #9dc0ff;
+  }
+  .msg-user :global(.prose-mini strong) {
+    color: var(--color-bubble-user-ink);
+  }
+  .msg-user :global(.prose-mini code) {
+    background: rgb(255 255 255 / 0.14);
+  }
+  .msg-user :global(.prose-mini pre) {
+    background: rgb(255 255 255 / 0.08);
+    border-color: rgb(255 255 255 / 0.16);
+  }
+  .msg-user :global(.prose-mini blockquote) {
+    color: rgb(245 245 248 / 0.75);
+  }
+</style>

@@ -18,6 +18,9 @@
  *   model --account A --thread T --model provider/model   (empty string clears)
  *   models — the model ids mini currently has configured (the validation set)
  *   groups --account A — the groups the account's instance is in
+ *   refresh-icons --account A — re-upload the emoji avatar of every bound
+ *        WhatsApp group (one face per session, the web panel's), so existing
+ *        groups pick up the redesign without being recreated
  *   new-group --account A --subject S --participants N1,N2 [--project P]
  *        [--model provider/model] [--policy default|mentions|all]
  *        [--picture JPG] [--sticker WEBP] [--welcome TEXT]
@@ -36,17 +39,20 @@ import { readFileSync } from "node:fs";
 import { ChannelInbox, checkModel, type Binding, type Channel } from "./inbox";
 import { parseConsumerAccounts } from "./accounts";
 import { connectionModelOptions, loadConnections } from "../providers";
+import { avatarFileFor } from "./groupAvatar";
+import { setGroupPicture } from "./groupPicture";
 
 const CHANNELS: Channel[] = ["whatsapp", "gmail", "apple-messages"];
 
 function usage(code: number): never {
-  console.error(`usage: bindingsCli <list|bind|unbind|allow|model> [options]
+  console.error(`usage: bindingsCli <list|bind|unbind|allow|model|groups|refresh-icons|new-group> [options]
   list    [--account A] [--json]
   bind    --account A --thread T --allow jid[,jid…] [--session S] [--project P]
           [--policy default|mentions|all] [--model provider/model] [--channel C]
   unbind  --account A --thread T [--channel C]
   allow   --account A --thread T (--add jid | --remove jid) [--channel C]
   model   --account A --thread T --model provider/model
+  refresh-icons --account A   re-upload every bound group's emoji avatar
 env: EVO_INBOX_DB (default ~/.local/share/mini-tui/channels.sqlite)`);
   process.exit(code);
 }
@@ -97,7 +103,7 @@ function requireConfiguredModel(model: string): string {
 /** Minimal evo-weai client for the group commands: loopback URL + the
  * account's own instance token, read from the same env the consumer uses.
  * Tokens are sent, never printed. */
-function apiFor(account: string): { instance: string; call: (method: string, path: string, body?: unknown) => Promise<any> } {
+function apiFor(account: string): { instance: string; token: string; call: (method: string, path: string, body?: unknown) => Promise<any> } {
   const base = (process.env.EVO_API_URL ?? "").replace(/\/+$/, "");
   if (!base) die("EVO_API_URL is required for group commands");
   const entry = parseConsumerAccounts().find((a) => a.account === account);
@@ -115,7 +121,7 @@ function apiFor(account: string): { instance: string; call: (method: string, pat
     if (response.status >= 300) throw new Error(`${method} ${path} → ${response.status}: ${JSON.stringify(json).slice(0, 300)}`);
     return json;
   };
-  return { instance: entry.instance, call };
+  return { instance: entry.instance, token: entry.token, call };
 }
 
 try {
@@ -185,6 +191,33 @@ try {
     const { instance, call } = apiFor(f.account);
     const groups = await call("GET", `/group/fetchAllGroups/${encodeURIComponent(instance)}?getParticipants=false`);
     for (const group of Array.isArray(groups) ? groups : []) console.log(`${group.id ?? group.jid ?? "?"}\t${group.subject ?? ""}`);
+  } else if (command === "refresh-icons") {
+    // The redesign carried to the groups that already exist: every bound
+    // WhatsApp group re-dresses in its session's emoji avatar (the same face
+    // the web sidebar shows). One account per run: the instance is per-account.
+    const f = flags(["account"]);
+    if (!f.account) usage(2);
+    const { instance, token } = apiFor(f.account);
+    const base = (process.env.EVO_API_URL ?? "").replace(/\/+$/, "");
+    const groups = inbox.listBindings(f.account).filter((b) => b.channel === "whatsapp" && b.thread.endsWith("@g.us"));
+    if (!groups.length) console.log(`no WhatsApp group bindings for ${f.account}`);
+    let done = 0;
+    for (const binding of groups) {
+      const avatar = avatarFileFor(binding.session);
+      if (!avatar) {
+        console.log(`skip ${binding.thread} (${binding.session}): no avatar asset`);
+        continue;
+      }
+      try {
+        const photo = await setGroupPicture(base, instance, token, binding.thread, avatar);
+        if (!photo.ok) throw new Error(`status ${photo.status}: ${photo.error.slice(0, 120)}`);
+        console.log(`updated ${binding.thread} (${binding.session})`);
+        done++;
+      } catch (error) {
+        console.error(`failed ${binding.thread} (${binding.session}): ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    console.log(`${done}/${groups.length} group icons updated`);
   } else if (command === "new-group") {
     const f = flags(["account", "subject", "participants", "project", "model", "policy", "picture", "sticker", "welcome", "description"]);
     if (!f.account || !f.subject || !f.participants) usage(2);
@@ -193,7 +226,7 @@ try {
     const model = requireConfiguredModel(f.model ?? "");
     const policy = f.policy === undefined || f.policy === "default" ? "" : f.policy;
     if (!["", "mentions", "all"].includes(policy)) die(`invalid policy ${f.policy}`);
-    const { instance, call } = apiFor(f.account);
+    const { instance, call, token } = apiFor(f.account);
     const created = await call("POST", `/group/create/${encodeURIComponent(instance)}`, {
       subject: f.subject,
       participants,
@@ -207,13 +240,15 @@ try {
     }
     if (!jid || !String(jid).endsWith("@g.us")) die(`group created but its jid was not found: ${JSON.stringify(created).slice(0, 300)}`);
     const groupJid = jid as string; // die() above exits when absent
-    // The cover: WhatsApp group photos are a static JPG — the repo's bizbots
-    // pet mascot frame (web/public/mascots, animated poses live elsewhere).
-    const picture = f.picture ?? join(import.meta.dir, "assets", "group-mascot.jpg");
-    const image = readFileSync(picture).toString("base64");
-    await call("POST", `/group/updateGroupPicture/${encodeURIComponent(instance)}?groupJid=${encodeURIComponent(groupJid)}`, { image });
     const session = `wa-${f.account}-${randomHex8()}`;
     const project = f.project ?? "wa-assistant";
+    // The cover: the session's blob-emoji avatar — the same face the web
+    // panel shows (WhatsApp group photos are a static square image). The
+    // bizbots mascot frame is the fallback; --picture overrides both.
+    const picture = f.picture ?? avatarFileFor(session) ?? join(import.meta.dir, "assets", "group-mascot.jpg");
+    const photo = await setGroupPicture(process.env.EVO_API_URL ?? "", instance, token, groupJid, picture)
+      .catch((error: unknown) => ({ ok: false, status: 0, error: error instanceof Error ? error.message : String(error) }));
+    if (!photo.ok) console.error(`(group photo failed — the group is still ready: ${photo.error})`);
     // The group's first participant is Jaime (the operator) — the allowlist
     // starts with exactly him; more via the allow command, never from traffic.
     inbox.bind({ channel: "whatsapp", account: f.account as string, thread: groupJid, session, project, allowedSenders: [participants[0]!], policy: policy as Binding["policy"], model });
