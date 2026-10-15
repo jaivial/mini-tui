@@ -15,6 +15,7 @@
   import FitView from "./FitView.svelte";
   import Button from "./Button.svelte";
   import { agentTree } from "../stores/agentTree.svelte";
+  import { mapLabel, mapTone } from "../botGroups";
   import { store } from "../stores/sessions.svelte";
   import type { BotRow } from "../stores/agentTree.svelte";
 
@@ -176,8 +177,11 @@
         position: { x: cursor + treeW / 2 - NODE_W / 2, y: 0 },
         data: {
           name: s.title || "session",
-          label: s.status === "running" ? "working" : s.status === "idle" ? "idle" : (s.status ?? ""),
-          tone: s.status === "running" ? "live" : "idle",
+          // The same words the delegate rows use, from one rule: a session node used to show the
+          // RAW status ("interrupted", "error") next to delegates saying "working"/"done", so the
+          // same map spoke two languages.
+          label: mapLabel(s.status),
+          tone: mapTone(s.status),
           task: "",
           avatarId: s.id,
           root: true,

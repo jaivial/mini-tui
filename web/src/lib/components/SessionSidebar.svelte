@@ -9,6 +9,7 @@
   import { legacy } from "../legacy";
   import { ChevronDown, Pin, PinOff, Folder, FolderPlus, Clock3, FolderTree, Pencil, X } from "@lucide/svelte";
   import { groupByRecency, unresumableReason } from "../resume";
+  import { partitionBots } from "../botGroups";
   import type { HistoryItem } from "../types";
   import Button from "./Button.svelte";
   import TasksButton from "./TasksButton.svelte";
@@ -126,9 +127,13 @@
   const visible = $derived(store.list.filter(matches));
   // Stable while live: a running session's `updatedAt` changes on every step, which would reshuffle
   // these rows constantly. Live rows keep the order they were started in; the others stay newest first.
-  const live = $derived(visible.filter((s) => s.status === "running").sort(byStart));
-  const idle = $derived(visible.filter((s) => s.status !== "running" && s.status !== "done"));
-  const done = $derived(visible.filter((s) => s.status === "done" || s.status === "error" || s.status === "interrupted"));
+  //
+  // One partition, not three independent filters: `idle` used to accept `error` and `interrupted`
+  // as well, so those sessions landed in two groups, rendered twice and threw each_key_duplicate.
+  const buckets = $derived(partitionBots(visible, byStart));
+  const live = $derived(buckets.live);
+  const idle = $derived(buckets.idle);
+  const done = $derived(buckets.done);
 
   // ---- History: every saved session in the database, not only the ones this server has open.
   // The filter box searches it on the server (title, first message, folder), a moment after typing stops.
