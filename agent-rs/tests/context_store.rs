@@ -35,6 +35,9 @@ fn script(name: &str, steps: &[(&str, &str)]) -> String {
         if *kind == "run" {
             out.push_str(&format!("    - {{role: assistant, content: step, extra: {{actions: [{{command: {text}}}]}}}}\n"));
         } else {
+            // Submission is confirmed on a second plain-text reply (fast path and closure oracle
+            // are off in `run_parent`): emit the submit twice to keep the script aligned.
+            out.push_str(&format!("    - {{role: assistant, content: {text}, extra: {{submission: {text}}}}}\n"));
             out.push_str(&format!("    - {{role: assistant, content: {text}, extra: {{submission: {text}}}}}\n"));
         }
     }
@@ -82,6 +85,14 @@ fn run_parent(dir: &Path, parent_yaml: &str, child_yaml: &str, until: &str) -> V
     cmd.arg("-y").arg("--exit-immediately").arg("-o").arg(dir.join("traj.json")).arg("-c").arg(dir.join("parent.yaml")).arg("-t").arg("orchestrate");
     cmd.env("MSWEA_SILENT_STARTUP", "1")
         .env("MSWEA_CONTROL_FILE", "")
+        // The fast path would spend the first scripted output probing a task text it classifies as
+        // chat, and the closure oracle would spend one output per submission judging it: both off,
+        // so a script's outputs reach the loop one for one. The OOM gate reads the live box; a
+        // loaded machine must not refuse the spawns these tests orchestrate.
+        .env("MINI_AGENT_FASTPATH", "0")
+        .env("MINI_AGENT_GOAL_ORACLE", "off")
+        .env("MINI_AGENT_RESERVE_MEM_MB", "64")
+        .env("MINI_AGENT_CHILD_MEM_MB", "64")
         .env("MINI_AGENT_CHILD_CONFIG", dir.join("child.yaml"))
         .env("MINI_AGENT_MONITOR_MS", "50")
         .env_remove("MINI_AGENT_SOCKET")

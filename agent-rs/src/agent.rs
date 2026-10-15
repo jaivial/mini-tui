@@ -444,6 +444,18 @@ impl Agent {
         }
     }
 
+    /// A hub child whose hub process died hard (SIGKILL, crash, OOM) would hold for ever: nobody
+    /// is left to send it a message or SIGINT it on shutdown. It cannot use PDEATHSIG (the spawn
+    /// happens on a short-lived hub thread, so the kernel signal would land on the thread's
+    /// death, not the process's), so the hold loops watch the parent pid instead: once the
+    /// process is reparented, the hub is gone and the run ends at once.
+    fn hub_parent_gone() -> bool {
+        match std::env::var("MINI_AGENT_HUB_PARENT_PID").ok().and_then(|v| v.parse::<i32>().ok()) {
+            Some(pid) if pid > 0 => unsafe { libc::getppid() != pid },
+            _ => false,
+        }
+    }
+
     /// Hold at exit for a follow-up: true when a `MESSAGE` arrived.
     fn wait_for_followup(&mut self) -> Result<bool, ModelError> {
         // `--exit-immediately`: this run ends with its turn. Children still at work are killed
@@ -456,7 +468,7 @@ impl Agent {
             // No one can send a follow-up (a headless run), but subagents still at work will
             // report: hold for them, so ending a turn never kills the children it started.
             while crate::subagents::live_children() > 0 {
-                if STOP.load(Ordering::SeqCst) {
+                if STOP.load(Ordering::SeqCst) || Self::hub_parent_gone() {
                     return Err(interrupted_idle());
                 }
                 if crate::subagents::has_notes() && self.add_subagent_notes() {
@@ -469,7 +481,7 @@ impl Agent {
             return Ok(self.add_subagent_notes());
         }
         loop {
-            if STOP.load(Ordering::SeqCst) {
+            if STOP.load(Ordering::SeqCst) || Self::hub_parent_gone() {
                 return Err(interrupted_idle());
             }
             let (model, messages) = self.drain_control();
