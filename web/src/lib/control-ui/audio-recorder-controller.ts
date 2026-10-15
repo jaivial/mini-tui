@@ -649,7 +649,12 @@ function createControllerForEnvironment<TStream extends AudioRecorderStreamLike>
   function setOptions(nextOptions: UseAudioRecorderOptions) {
     const nextBarCount = nextOptions.barCount ?? DEFAULT_LEVEL_COUNT;
     const currentBarCount = options.barCount ?? DEFAULT_LEVEL_COUNT;
-    options = { ...nextOptions };
+    // Keep the caller's object by reference instead of spreading it. Spreading
+    // evaluates every getter once and stores the value, so a caller that
+    // passes reactive props as getters would be frozen at the values read
+    // during that call — and, worse, reading them inside the caller's
+    // `$effect` makes that effect depend on them and re-run forever.
+    options = nextOptions;
 
     if (nextBarCount !== currentBarCount && snapshot.state === "idle") {
       setSnapshot({ levels: resetWaveform() });
