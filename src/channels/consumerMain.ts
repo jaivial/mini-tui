@@ -160,6 +160,22 @@ const groupBridgeOptions = {
   photoPath: process.env.EVO_GROUP_PHOTO || undefined,
   newSessionId: (account: string) => `wa-${account}-${[...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).padStart(2, "0")).join("")}`,
   senderFor: (account: string) => senders.get(account),
+  // WhatsApp group-create refuses @lid participants (400 bad-request); the
+  // account's own trusted jid forms (EVO_ACCOUNTS `jid`) carry the LID↔phone
+  // pair, so the operator's LID resolves to their phone jid for the API call.
+  // Unresolvable jids pass through unchanged and fail the creation honestly.
+  resolveParticipant: (jid: string) => {
+    if (!jid.endsWith("@lid")) return jid;
+    const bare = jid.replace(/:.*/, "").toLowerCase();
+    for (const account of accounts) {
+      const forms = (account.jid ?? "").split(",").map((f) => f.trim()).filter(Boolean);
+      if (forms.some((f) => f.replace(/:.*/, "").toLowerCase() === bare)) {
+        const phone = forms.find((f) => f.endsWith("@s.whatsapp.net"));
+        if (phone) return phone;
+      }
+    }
+    return jid;
+  },
   log,
 };
 const { done, stop } = startChannelConsumer({

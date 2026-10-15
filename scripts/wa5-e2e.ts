@@ -68,6 +68,7 @@ inbox.bind({ channel: "whatsapp", account: "bot-a", thread: GROUP, session: "wa-
 const sent: Array<{ account: string; number: string; text: string }> = [];
 let createdGroups = 0;
 let picturesSet = 0;
+const createdParticipants: string[][] = [];
 const fakeServer = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -81,6 +82,8 @@ const fakeServer = Bun.serve({
     }
     if (url.pathname.startsWith("/group/create/")) {
       createdGroups++;
+      const body = (await request.json()) as { participants?: string[] };
+      createdParticipants.push(body.participants ?? []);
       return Response.json({ data: { groupJid: `1203637777777${createdGroups}@g.us` } }, { status: 200 });
     }
     if (url.pathname.startsWith("/group/updateGroupPicture/")) {
@@ -283,6 +286,16 @@ const evoMessage = (overrides: Record<string, unknown> = {}) => {
 // ---- v4-H: the operator's /newsession chat command --------------------------
 {
   let freshSessions = 0;
+  const lidForms = new Map([["bot-a", "34000000001@s.whatsapp.net,242554100576489@lid"]]);
+  // The trusted account jid forms (EVO_ACCOUNTS shape): the LID↔phone pair
+  // the participant resolver maps through.
+  const lidResolver = (jid: string): string => {
+    if (!jid.endsWith("@lid")) return jid;
+    const bare = jid.replace(/:.*/, "").toLowerCase();
+    const forms = (lidForms.get("bot-a") ?? "").split(",").map((f) => f.trim()).filter(Boolean);
+    if (forms.some((f) => f.replace(/:.*/, "").toLowerCase() === bare)) return forms.find((f) => f.endsWith("@s.whatsapp.net")) ?? jid;
+    return jid;
+  };
   const options: GroupBridgeOptions = {
     inbox,
     accountFor: (account) => (account === "bot-a" ? { instance: "bot-a-instance", token: "t" } : undefined),
@@ -290,6 +303,7 @@ const evoMessage = (overrides: Record<string, unknown> = {}) => {
     photoPath: join(import.meta.dir, "../src/channels/assets/group-mascot.jpg"),
     newSessionId: () => `wa-a-cmd-${++freshSessions}`,
     senderFor: (account) => (account === "bot-a" ? senderOf("bot-a", "bot-a-instance") : undefined),
+    resolveParticipant: lidResolver,
     log: (event, fields) => console.error("[sessioncmd]", event, JSON.stringify(fields ?? {})),
   };
   const consumerCmd = startChannelConsumer({
@@ -308,7 +322,13 @@ const evoMessage = (overrides: Record<string, unknown> = {}) => {
   });
   await new Promise((r) => setTimeout(r, 300));
   // The operator (allowlisted) types the command in the group — no mention.
-  await post(SECRET_A, evoMessage({ key: { id: "cmd-1", remoteJid: GROUP, participant: JAIME }, message: { conversation: "/newsession Proyecto Nueva Era" } }));
+  // Live, his group messages arrive with the @lid participant form: accept
+  // must pass (allowlist holds both forms) and the group-create call must
+  // carry the PHONE jid (WhatsApp refuses @lid participants), while the new
+  // binding's allowlist keeps the original LID.
+  const JAIME_LID = "242554100576489@lid";
+  inbox.allow("whatsapp", "bot-a", GROUP, JAIME_LID, true);
+  await post(SECRET_A, evoMessage({ key: { id: "cmd-1", remoteJid: GROUP, participant: JAIME_LID }, message: { conversation: "/newsession Proyecto Nueva Era" } }));
   await new Promise((r) => setTimeout(r, 1_500));
   // A non-allowlisted sender never even reaches the consumer: the accept
   // boundary (same allowlist) refuses the delivery outright (422).
@@ -318,7 +338,8 @@ const evoMessage = (overrides: Record<string, unknown> = {}) => {
   await consumerCmd.done.catch(() => {});
   const bound = inbox.bindingFor("whatsapp", "bot-a", "12036377777772@g.us");
   ok("command created the group + avatar with NO model turn", createdGroups === 2 && picturesSet === 2, `created=${createdGroups} pictures=${picturesSet}`);
-  ok("command bound a FRESH session (mention policy, requester-only allowlist)", bound?.session === "wa-a-cmd-1" && bound?.policy === "mentions" && JSON.stringify(bound?.allowedSenders) === JSON.stringify([JAIME]), JSON.stringify(bound));
+  ok("LID requester resolved to the PHONE jid for group-create only", JSON.stringify(createdParticipants[1]) === JSON.stringify([OWN_A]), JSON.stringify(createdParticipants));
+  ok("command bound a FRESH session (mention policy, allowlist keeps the LID form)", bound?.session === "wa-a-cmd-1" && bound?.policy === "mentions" && JSON.stringify(bound?.allowedSenders) === JSON.stringify([JAIME_LID]), JSON.stringify(bound));
   ok("command confirmed in the requesting thread, origin binding untouched", sent.some((s) => s.number === GROUP && s.text.startsWith(`Grupo "Proyecto Nueva Era"`)) && inbox.bindingFor("whatsapp", "bot-a", GROUP)?.session === "wa-a-group");
 }
 

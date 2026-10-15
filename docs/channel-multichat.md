@@ -95,6 +95,10 @@ that thread can run the command — anyone else's `/newsession …` is refused a
 the accept boundary (422) like any other message from an unapproved sender.
 The command deliberately bypasses the group mention gate (an explicit
 operator command is more specific than a mention policy), never the allowlist.
+The group-create API refuses `@lid` participants (400 bad-request), so the
+requester's LID is resolved to its phone jid through the account's own trusted
+jid forms (EVO_ACCOUNTS `jid`) for that call only — the new binding's
+allowlist keeps the original LID form deliveries actually arrive with.
 
 ### One number, two authors (`fromMe` in groups)
 
