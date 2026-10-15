@@ -47,6 +47,8 @@ export interface HeadlessArgs extends CommonArgs {
   dbPath?: string;
   /** Extra environment for the spawned run (provider keys, channel framing hints). */
   env?: Record<string, string>;
+  /** Queue task / channel turn this run belongs to (usage attribution, v6-B). */
+  taskId?: string;
 }
 
 export type SessionsAction = "list" | "show" | "rm";

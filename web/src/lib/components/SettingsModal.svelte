@@ -8,6 +8,7 @@
   import Badge from "./Badge.svelte";
   import Skeleton from "./Skeleton.svelte";
   import WhatsAppConnect from "./WhatsAppConnect.svelte";
+  import UsageSection from "./UsageSection.svelte";
   import { catalog } from "../stores/catalog.svelte";
   import { ui, PALETTES } from "../stores/ui.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -231,6 +232,7 @@
           lo resuelve el servidor por loopback; aquí nunca hay claves.
         </p>
         <WhatsAppConnect {open} />
+        <UsageSection {open} />
       </div>
     {:else if tab === "providers"}
       <div role="tabpanel" id="{uid}-panel-providers" aria-labelledby="{uid}-tab-providers" class="flex flex-col gap-5">
