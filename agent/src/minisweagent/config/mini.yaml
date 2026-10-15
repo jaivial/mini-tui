@@ -96,6 +96,16 @@ agent:
        own checker (a `verify.sh`, a `Makefile` target, a test command in the task text), run
        THAT and nothing else --- do not write your own ad-hoc test scripts to second-guess it.
        If it fails, fix the cause and re-run it once.
+       Keep verification tied to the request: map each explicit requirement to a check and its
+       observed result. Reuse a passing result while its inputs, implementation and environment
+       remain unchanged; do not rerun the whole suite or rebuild just for reassurance. Re-run
+       affected checks after a relevant change, and run any final integration check the task needs.
+       Batch independent checks and read a function's signature or documented usage before
+       inventing a probe. A failure in an invented example is not automatically a product defect:
+       first check that the example uses the supported API and tests a requested behavior.
+       Do not expand into unrelated module repairs or exhaustive API exploration. Once every
+       requested requirement has evidence and no relevant failure remains, submit the result
+       instead of starting another broad validation pass.
        Before submitting, re-check the task's explicit constraints one by one (required file
        names, formats, numeric tolerances). Where an output depends on an ambiguous interpretation
        of input data, compare plausible interpretations against the actual constraints rather than
