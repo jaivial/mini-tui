@@ -146,10 +146,15 @@ function probabilitiesFromLaya(result: LayaResult, candidates: ScoredCandidate[]
   if (!answer || answer.type !== "choice") return null;
   const { criteria, keys } = layaQuestion(candidates);
   const out = new Map<string, number>();
-  for (const [key, model] of keys.entries()) {
-    const option = criteria[`m${key}`];
-    if (!option) continue;
-    const p = answer.probabilities[option];
+  // Laya keys its distribution by the *option key* it was given (`m0`, `m1`,
+  // ... — the short labels), not by the option's description text: the service's
+  // own reply comes back as `probabilities: {a: .., b: ..}` against a criteria
+  // map whose keys are those labels. Reading by description would silently miss
+  // every option and drop the answer to the deterministic policy.
+  for (const [index, model] of keys.entries()) {
+    const key = `m${index}`;
+    if (!criteria[key]) continue;
+    const p = answer.probabilities[key];
     if (typeof p === "number" && Number.isFinite(p)) out.set(model, p);
   }
   return out.size ? out : null;
@@ -289,9 +294,16 @@ export async function route(request: RouteRequest, deps: RouterDeps = {}): Promi
   }
 
   // ---- 1. Laya's calibrated view of the pool ----
+  // `offline` on the *request* always wins. On the *deps* it only suppresses the
+  // default client: an explicitly injected `ask` is a caller that has already
+  // provided its own Laya (a test double, or an embedder with its own model
+  // server), and silently ignoring it would make the flag a lie about what was
+  // consulted. That distinction is why `layaReason` can say "laya timed out"
+  // instead of "not consulted".
   let layaResult: LayaResult | null = null;
   let layaProbabilities: Map<string, number> | null = null;
-  if (!request.offline && !deps.offline) {
+  const consultLaya = deps.ask ? !request.offline : !request.offline && !deps.offline;
+  if (consultLaya) {
     const preliminary = rank(scoreCandidates({ candidates: connected, complexity: profile.complexity, usage, breakers, now }));
     const { criteria } = layaQuestion(preliminary);
     layaResult = await (deps.ask ?? askLaya)({
@@ -321,7 +333,11 @@ export async function route(request: RouteRequest, deps: RouterDeps = {}): Promi
     now,
   });
   const ranked = layaProbabilities ? rank(scored) : deterministicOrder(scored);
-  const best = ranked[0];
+  // The winner must be a model that can actually run. `rank` sinks excluded
+  // candidates to the bottom so the audit can still show them, which means
+  // `ranked[0]` is only the winner when it survived the filters — taking it
+  // blindly would hand back a model whose circuit is open.
+  const best = ranked.find((row) => row.excluded === null);
   if (!best) {
     return finish({
       decision: {

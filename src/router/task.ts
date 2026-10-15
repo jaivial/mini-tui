@@ -23,7 +23,12 @@ export type Complexity = "trivial" | "standard" | "hard";
 
 export interface TaskProfile {
   complexity: Complexity;
-  /** 0..1, how much reasoning the text implies. The router's task-complexity variable. */
+  /** 0..1 absolute hardness, 0.5 = "no evidence either way". The router's
+   * task-complexity variable. Deliberately *absolute*, not a share of the
+   * evidence: a task with no signal at all must read as the middle of the
+   * ladder, because "I could not classify this" is not evidence that it is
+   * easy, and routing it to the cheapest model on silence is the one wrong
+   * answer this file can give. */
   score: number;
   /** Rough prompt-size estimate in tokens, for the context filter. */
   estimatedTokens: number;
@@ -89,13 +94,19 @@ export function profileTask(task: string): TaskProfile {
   }
   const complexity: Complexity =
     scores.hard > scores.standard && scores.hard > scores.trivial ? "hard" : scores.trivial > scores.standard && scores.trivial > scores.hard ? "trivial" : "standard";
-  const spread = scores.trivial + scores.standard + scores.hard;
-  // How much of the evidence points at the winning class, in 0..1. This is the
-  // signal a reader can act on: a task whose words all say "hard" scores near 1,
-  // a task that says hard and standard equally scores near 0.33, and a task with
-  // no signal at all scores 0 — ambiguous, which the routing then treats as the
-  // middle of the ladder rather than as "easy".
-  const score = spread > 0 ? Number((scores[complexity] / spread).toFixed(3)) : 0;
+  // Absolute hardness on 0..1 with 0.5 as the neutral point, driven by the
+  // *margin* between hard evidence and trivial evidence:
+  //
+  // - no evidence at all → 0.5, i.e. an unclear task is treated as an ordinary
+  //   one, never as a chore;
+  // - evidence that says hard → towards 1, evidence that says chore → towards 0;
+  // - evidence that says both ("rename this variable" inside a refactor
+  //   paragraph) lands near 0.5, which is the honest reading.
+  //
+  // `tanh` over the saturating counts keeps a tenth "race condition" from
+  // out-shouting a first one, and keeps the value inside 0..1 without clamping.
+  const directional = scores.hard + scores.trivial;
+  const score = 0.5 + 0.5 * Math.tanh((scores.hard - scores.trivial) / (directional + 1));
   return {
     complexity,
     score: Math.min(1, Math.max(0, Number(score.toFixed(3)))),

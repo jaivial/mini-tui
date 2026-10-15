@@ -278,7 +278,9 @@ describe("circuit breaker", () => {
   beforeEach(() => {
     breaker = new CircuitBreaker(join(dir, "breakers.sqlite"));
   });
-  afterEach(() => breaker.close());
+  // `dispose()`, not `close()`: the circuit-closing call now takes a model id,
+  // and a store whose handle is already released cannot close a circuit either.
+  afterEach(() => breaker.dispose());
 
   test("a 429 opens the circuit and blocks the model", () => {
     expect(breaker.status("zai/glm-5.3").blocked).toBe(false);
