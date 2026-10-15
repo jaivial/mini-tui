@@ -426,6 +426,30 @@ describe("usageFromMessage", () => {
     expect(row.inputTokens).toBe(0);
   });
 
+  test("the agent's seconds-with-fraction timestamp is read as a real date", () => {
+    // The Rust agent journals `SystemTime::now()` as seconds + fraction. Read as
+    // milliseconds it lands in January 1970, which is what the panel showed
+    // ("último uso 1/21/1970") before this was pinned.
+    const seconds = 1_792_010_161.2273793;
+    const row = usageFromMessage(assistant({ response: { usage: { prompt_tokens: 1 } }, timestamp: seconds }), 0, { session: "s", catalog: priced })!;
+    expect(row.at).toBe(1_792_010_161_227);
+    expect(new Date(row.at).getUTCFullYear()).toBe(2026);
+  });
+
+  test("a millisecond timestamp is left alone", () => {
+    const row = usageFromMessage(assistant({ response: { usage: { prompt_tokens: 1 } }, timestamp: 1_792_010_161_227 }), 0, { session: "s", catalog: priced })!;
+    expect(row.at).toBe(1_792_010_161_227);
+    expect(new Date(row.at).getUTCFullYear()).toBe(2026);
+  });
+
+  test("a junk or missing timestamp falls back to now", () => {
+    const now = 1_792_000_000_000;
+    for (const bad of [undefined, 0, -1, Number.NaN, "soon"]) {
+      const row = usageFromMessage(assistant({ response: { usage: { prompt_tokens: 1 } }, timestamp: bad }), 0, { session: "s", catalog: priced, now })!;
+      expect(row.at).toBe(now);
+    }
+  });
+
   test("thinking_seconds stands in for latency when timings are off", () => {
     const row = usageFromMessage(assistant({ response: { usage: { prompt_tokens: 1 } }, thinking_seconds: 2.5 }), 0, { session: "s", catalog: priced })!;
     expect(row.latencyMs).toBe(2500);
