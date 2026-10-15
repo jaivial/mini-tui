@@ -580,6 +580,12 @@ async function runTurn(
           noSession: false,
           compact: false,
           cwd,
+          // The turn prompt is a transport frame (thread header, reply-format rules, queue
+          // directives) around what the sender actually wrote. The agent classifies that frame
+          // as work and would put a greeting through the goal-closure judge, so the raw text
+          // travels beside it: `intent::channel_subject` classifies the sender's words, and a
+          // chat turn answers in one turn instead of arguing with a closure verdict.
+          env: { MINI_CHANNEL_SUBJECT: message.text },
           ...(options.sessionsDbPath ? { dbPath: options.sessionsDbPath } : {}),
           ...(model ? { model } : {}),
           ...(options.turnTimeoutS ? { timeout: options.turnTimeoutS } : {}),

@@ -34,6 +34,33 @@ pub fn enabled() -> bool {
     }
 }
 
+/// The sender's own words inside a channel turn's transport envelope.
+///
+/// A channel turn's task text is a frame wrapped around the message: the `[WhatsApp
+/// message received in bound thread …]` header, the reply-format rules and the queue
+/// directives. That frame is ~180 words long and carries no chat marker of its own, so
+/// classifying the task as it arrives decides `Task` for a bare "Hola": the short-question
+/// and short-imperative rules can never fire against 180 words, and the one greeting the
+/// classifier would have caught is diluted by the instructions around it. The consumer,
+/// which is the only component that knows what the sender actually wrote, records it in
+/// `MINI_CHANNEL_SUBJECT` and this reads it back.
+///
+/// Every other surface (CLI, web, a bare `mini-agent-rs -t …`) has no such variable and
+/// classifies the task exactly as before. A subagent clears it: a child works on its own
+/// goal, never on the chat text of the turn that spawned it.
+pub fn channel_subject(task: &str) -> String {
+    channel_subject_from(task, std::env::var("MINI_CHANNEL_SUBJECT").ok())
+}
+
+/// The same rule with the variable already read, so the contract is testable without
+/// mutating one process-wide environment behind every other `classify` call.
+fn channel_subject_from(task: &str, subject: Option<String>) -> String {
+    match subject {
+        Some(text) if !text.trim().is_empty() => text,
+        _ => task.to_owned(),
+    }
+}
+
 /// Words that mean "there is a machine involved". Any of them anywhere in the task forces the
 /// full loop, whatever else the text looks like. They are matched on word boundaries against the
 /// normalized text (lowercase, punctuation collapsed to single spaces).
@@ -243,5 +270,26 @@ mod tests {
     fn answers_must_carry_text() {
         assert!(usable_answer("hello there"));
         assert!(!usable_answer("   "));
+    }
+
+    #[test]
+    fn the_channel_subject_is_the_senders_words_not_the_transport_frame() {
+        // A body with no greeting word in it, which is what the QA group actually sends:
+        // "hola" happens to survive the frame (the classifier knows it as a chat marker), but
+        // "qué tal", "ok" or a bare imperative do not — those read as work.
+        let frame = "[WhatsApp message received in bound thread 120363411180584976@g.us — sender 242554100576489@lid]\nqué tal\n\nReply with your answer as your final plain-text answer; it is sent back to this chat\nas a quoted reply. Answer in the sender's language, concise enough for a chat message.\n\nTo hand work to the background queue you may end your reply with exactly ONE directive\non its own last line — never inside the visible answer:\n[[mini-queue: <concise, self-contained goal>]] when the sender asks for work to be done in the background;\nWhen the message is purely conversational, emit no directive.";
+        // ~176 words of transport: the short-question and short-imperative rules cannot fire
+        // against that, so a chat opener reads as work and gets put through the closure judge.
+        assert!(classify(frame) == Intent::Task, "the frame alone reads as work");
+        // The sender's words win: that is the whole point of the variable.
+        let subject = Some("qué tal".to_string());
+        assert_eq!(channel_subject_from(frame, subject.clone()), "qué tal");
+        assert_eq!(classify(&channel_subject_from(frame, subject)), Intent::Conversational);
+        // A task in the same frame stays a task: only the SENDER'S words decide.
+        let work = Some("mira los logs del servidor".to_string());
+        assert_eq!(classify(&channel_subject_from(frame, work)), Intent::Task);
+        // Blank or absent is no information: the task is classified, never an empty subject.
+        assert_eq!(channel_subject_from("do the thing", Some("   ".into())), "do the thing");
+        assert_eq!(channel_subject_from("do the thing", None), "do the thing");
     }
 }

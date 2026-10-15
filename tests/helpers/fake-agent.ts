@@ -17,6 +17,8 @@ export interface AgentCall {
   /** The messages the agent was resumed with (empty for a fresh run). */
   resumedMessages: unknown[];
   cwd: string;
+  /** The run's environment, so a test can assert what the caller told the agent. */
+  env: Record<string, string>;
 }
 
 export function makeFakeAgent(dir: string, options: { holdMs?: number } = {}) {
@@ -32,7 +34,7 @@ const at = (flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1]
 const out = at("-o"), resume = at("--resume"), task = at("-t") ?? "", model = at("-m");
 let resumed = [];
 try { if (resume) resumed = JSON.parse(readFileSync(resume, "utf8")).messages ?? []; } catch {}
-appendFileSync(${JSON.stringify(log)}, JSON.stringify({ argv, task, resume, model, resumedMessages: resumed, cwd: process.cwd() }) + "\\n");
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ argv, task, resume, model, resumedMessages: resumed, cwd: process.cwd(), env: process.env }) + "\\n");
 const line = (o) => JSON.stringify(o) + "\\n";
 const journal = out.replace(/\\.json$/, ".jsonl");
 const messages = resume

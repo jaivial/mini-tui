@@ -1871,6 +1871,9 @@ impl Launcher {
             .env_remove("MINI_AGENT_SOCKET")
             .env_remove("MINI_AGENT_LANE")
             .env_remove("MINI_AGENT_LANE_ROOT")
+            // A child works on its own goal, never on the sender's chat text: a delegated
+            // task wrapped in a conversational subject would skip the closure judge entirely.
+            .env_remove("MINI_CHANNEL_SUBJECT")
             .current_dir(&c.cwd)
             .stdin(Stdio::null())
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
