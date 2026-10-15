@@ -16,7 +16,7 @@ describe("group avatars", () => {
 
   test("server and web mappings agree (same id → same face)", () => {
     for (const id of ["wa-a-aaaaaaaa", "wa-b-bbbbbbbb", "sess-3", "sess-4", "sess-5"]) {
-      const web = basename(avatarSrc(id)).replace(/\.png$/, "");
+      const web = basename(avatarSrc(id)).replace(/\.svg$/, "");
       expect(avatarFileFor(id)).toContain(`${web}.jpg`);
     }
   });
