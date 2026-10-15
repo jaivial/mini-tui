@@ -100,6 +100,28 @@ requester's LID is resolved to its phone jid through the account's own trusted
 jid forms (EVO_ACCOUNTS `jid`) for that call only — the new binding's
 allowlist keeps the original LID form deliveries actually arrive with.
 
+### Titles: AI-generated, editable forever (v5-A)
+
+Every session gets a title of AT MOST 4 words in the user's own language,
+generated with the model from its first message/task (src/title.ts, the same
+`mini-agent-rs title` helper the CLI uses; the first words of the message are
+the fallback when generation fails or no model is reachable):
+
+- **Web**: the fallback title is replaced as soon as the AI title lands; the
+  sidebar row can be renamed at any time (double-click or the row's pencil) —
+  `POST /sessions/<id>/title` renames live and saved sessions alike, and the
+  shared stream pushes the new name to every open panel.
+- **WhatsApp**: a fresh bound session is titled from its first message; a
+  rename also renames the GROUP's subject
+  (`POST /group/updateGroupSubject/<instance>` — the session's name is what
+  the members see). The operator command is
+
+      /rename <new title>
+
+  same authority shape as `/newsession`: allowlist only, no model turn,
+  acknowledged before the work runs. An AI title never lands over a rename:
+  whoever renamed it (web or `/rename`) wins.
+
 ### One number, two authors (`fromMe` in groups)
 
 On this deployment the bot and the operator share ONE WhatsApp number, so in

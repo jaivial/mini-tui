@@ -347,7 +347,7 @@ fn reply_text(m: &Value, submission_first: bool) -> String {
 fn cmd_title(args: &[String]) -> i32 {
     let task = args.first().cloned().unwrap_or_default();
     let model = args.get(1).cloned().unwrap_or_default();
-    let prompt = format!("Write a short title (max 8 words, no quotes, no trailing punctuation) for this coding task. Reply with ONLY the title.\n\nTASK:\n{task}");
+    let prompt = format!("Write a short title (max 4 words, in the same language as the task, no quotes, no trailing punctuation) for this task. Reply with ONLY the title.\n\nTASK:\n{task}");
     let title = models::get_model(Some(&model), &serde_json::Map::new())
         .ok()
         .and_then(|mut m| m.query(&[serde_json::json!({"role": "user", "content": prompt})], None).ok())

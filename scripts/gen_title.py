@@ -21,8 +21,8 @@ def main() -> None:
                 {
                     "role": "user",
                     "content": (
-                        "Write a short title (max 8 words, no quotes, no trailing punctuation) "
-                        "for this coding task. Reply with ONLY the title.\n\nTASK:\n" + task
+                        "Write a short title (max 4 words, in the same language as the task, "
+                        "no quotes, no trailing punctuation) for this task. Reply with ONLY the title.\n\nTASK:\n" + task
                     ),
                 }
             ]

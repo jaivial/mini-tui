@@ -38,3 +38,38 @@ export function generateTitle(task: string, model: string, onTitle: (title: stri
 }
 
 export { fallbackTitle };
+
+/** A session title is AT MOST this many words (Jaime's v5-A spec). */
+export const TITLE_MAX_WORDS = 4;
+
+/** Clamp a generated title to the spec: one line, MAX 4 words, and never
+ * longer than the fallback cap — a model that ignores the prompt (or an old
+ * binary still asking for 8) cannot produce an oversized title. */
+export function clampTitle(title: string): string {
+  const firstLine = title.split(/\r?\n/)[0] ?? "";
+  const four = firstLine.replace(/\s+/g, " ").trim().split(" ").filter(Boolean).slice(0, TITLE_MAX_WORDS).join(" ");
+  return fallbackTitle(four);
+}
+
+/** `generateTitle` as a promise: the clamped title, or `null` on any failure
+ * (the caller keeps its fallback — that is what the fallback is for). */
+export function aiTitle(task: string, model: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (title: string | null) => {
+      if (!settled) {
+        settled = true;
+        resolve(title);
+      }
+    };
+    generateTitle(
+      task,
+      model,
+      (title) => {
+        const clamped = clampTitle(title);
+        if (clamped) finish(clamped);
+      },
+      () => finish(null),
+    );
+  });
+}

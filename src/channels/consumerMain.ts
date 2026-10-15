@@ -54,8 +54,10 @@ import { LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 import { startChannelConsumer } from "./consumer";
 import { planImageMarkers } from "./consumer";
 import { QueueBridge } from "./queueBridge";
-import { planGroupCreation as planGroupCreationFlow } from "./groupBridge";
+import { planGroupCreation as planGroupCreationFlow, setGroupSubject } from "./groupBridge";
 import { planSessionCommand } from "./sessionCommand";
+import { planRenameCommand } from "./renameCommand";
+import { generateTitle } from "../title";
 import { startControlGroupWatcher } from "./controlGroup";
 import { openDb } from "../sessions";
 
@@ -187,6 +189,17 @@ const { done, stop } = startChannelConsumer({
   accountJids,
   planGroupCreation: (row, message, replyText) => planGroupCreationFlow(groupBridgeOptions, row, message, replyText),
   planSessionCommand: (row, message) => planSessionCommand(groupBridgeOptions, row, message),
+  planRenameCommand: (row, message) => planRenameCommand({ ...groupBridgeOptions, sessionsDbPath: process.env.MINITUI_DB_PATH }, row, message),
+  // v5-A: a fresh session's first message names it — AI title best-effort, and
+  // a bound group wears it as its subject. Same generation helper as the web.
+  generateSessionTitle: (task, model, onTitle) => generateTitle(task, model, onTitle),
+  renameGroupSubject: (account, groupJid, subject) => {
+    const entry = groupBridgeOptions.accountFor(account);
+    if (!entry) return Promise.resolve();
+    return setGroupSubject(groupBridgeOptions.baseUrl, entry.instance, entry.token, groupJid, subject).then((result) => {
+      if (!result.ok) throw new Error(result.error || `status ${result.status}`);
+    });
+  },
   // v4-F: [[mini-image: <path>]] markers become WhatsApp media. Only paths the
   // computer_use pool itself wrote are deliverable (validation inside).
   planImages: (row, message, replyText) => planImageMarkers(replyText, process.env.MINITUI_CU_POOL_DIR || join(homedir(), ".local/share/mini-tui/cu-pool")),
