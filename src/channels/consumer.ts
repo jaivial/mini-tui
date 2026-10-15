@@ -703,6 +703,30 @@ function startAck(
     ledger.markReaction(seq, "", "skipped");
   }
 
+  // 1b. The durable no-repeat guard (v6-F). A consumer that dies with a turn in
+  // flight leaves its row unacknowledged (the cursor only advances on
+  // acknowledge), so the NEXT process replays the same seq — and it used to
+  // re-send the acknowledgement, because nothing durable recorded that the line
+  // had already reached the thread. Measured on 2026-10-15: five restarts during
+  // one slow turn sent FIVE "recibido" lines for a single message (seq 41, five
+  // reply ids in the journal) while the old process was SIGKILLed by
+  // TimeoutStopSec. The ledger row is the only witness that survives the
+  // process, and `disposition === "sent"` is the only value that proves
+  // delivery: an uncertain attempt stores its text too (`failed`) and must stay
+  // free to retry. The reaction above and the presence below are idempotent —
+  // WhatsApp keeps one reaction per message and a presence is not a message —
+  // so only the TEXT is skipped.
+  const priorAck = ledger.get(seq);
+  if (priorAck?.disposition === "sent" && priorAck.sent) {
+    log("channel.ack.skipped_already_sent", { seq, text: priorAck.sent.slice(0, 80), sentAt: priorAck.updatedAt });
+    return {
+      race: (turn) => turn(),
+      cancel: () => {
+        void typing?.clear();
+      },
+    };
+  }
+
   // 2. The line: written in parallel with the turn, from the sender's own words.
   void (async () => {
     try {
