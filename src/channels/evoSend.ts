@@ -84,7 +84,20 @@ export interface EvoSender {
   sendImage(args: { number: string; mediaBase64: string; mimetype?: string; caption?: string }): Promise<SendResult>;
   /** One document (any non-image file) as a media message. Same contract. */
   sendDocument(args: { number: string; mediaBase64: string; mimetype?: string; filename?: string; caption?: string }): Promise<SendResult>;
+  /** One voice note (`/message/sendWhatsAppAudio`, `ptt:true` → the push-to-talk
+   * bubble, not a music file). Same best-effort contract as the media sends. */
+  sendVoice(args: { number: string; audioBase64: string; mimetype?: string; ptt?: boolean; timeoutMs?: number }): Promise<SendResult>;
+  /** Chat presence ("composing" = typing, "paused" = stopped). Probed against
+   * the deployed fork: `/chat/sendPresence/{instance}` with `{number, presence}`
+   * returns 201, and the fork accepts ANY jid — so a 201 proves the call was
+   * accepted, never that a client rendered it. Best-effort by contract. */
+  sendPresence(args: { number: string; presence: Presence; delayMs?: number; timeoutMs?: number }): Promise<ReactionResult>;
 };
+
+/** WhatsApp chat presence values the fork's `SendPresence` accepts. "composing"
+ * is the typing indicator; "paused" is the only honest way to clear it (there
+ * is no explicit "stopped" state). */
+export type Presence = "composing" | "paused";
 
 /** A reaction has no ledger and no uncertainty window worth chasing: the
  * message it decorates is already in the thread's history, so a lost reaction
@@ -186,6 +199,35 @@ export function createEvoSender(config: { baseUrl: string; instance: string; tok
     },
     async sendDocument({ number, mediaBase64, mimetype, filename, caption }) {
       return sendMedia(call, config.instance, { number, mediaBase64, mimetype: mimetype || "application/octet-stream", mediatype: "document", caption, filename });
+    },
+    async sendVoice({ number, audioBase64, mimetype, ptt, timeoutMs }) {
+      // `ptt:true` is what makes WhatsApp render the push-to-talk bubble instead
+      // of an audio attachment; the opus mime is what the client expects for it.
+      const r = await call(`/message/sendWhatsAppAudio/${encodeURIComponent(config.instance)}`, {
+        number,
+        audio: audioBase64,
+        mimetype: mimetype || "audio/ogg; codecs=opus",
+        ptt: ptt !== false,
+      }, timeoutMs);
+      if (r.status === 201 && r.json?.key?.id) return { kind: "sent", replyId: String(r.json.key.id) };
+      const definitive = r.status >= 400 && r.status < 500;
+      return { kind: "uncertain", definitive, status: r.status || undefined, error: r.error || (r.json ? JSON.stringify(r.json).slice(0, 300) : `status ${r.status}`) };
+    },
+    async sendPresence({ number, presence, delayMs, timeoutMs }) {
+      // Probed against the deployed fork (127.0.0.1:8952): the route is
+      // /chat/sendPresence/{instance}, the body is {number, presence} and 201 is
+      // the only success. `delay` is passed through when set — WhatsApp uses it
+      // to expire the presence server-side, which is the belt to our own
+      // clear-on-finish braces. The fork validates nothing about the jid (a
+      // bogus one still returns 201), so this is best-effort exactly like the
+      // reaction: a 201 is acceptance, not proof anyone saw "typing…".
+      const r = await call(`/chat/sendPresence/${encodeURIComponent(config.instance)}`, {
+        number,
+        presence,
+        ...(delayMs && delayMs > 0 ? { delay: Math.min(300_000, Math.round(delayMs)) } : {}),
+      }, timeoutMs);
+      if (r.status === 201) return { kind: "sent" as const };
+      return { kind: "failed" as const, status: r.status || undefined, error: r.error || (r.json ? JSON.stringify(r.json).slice(0, 200) : `status ${r.status}`) };
     },
   };
 }

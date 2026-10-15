@@ -82,6 +82,11 @@ export function createWhisperTranscriber(config: {
   bin: string;
   /** Path to the ggml model file. */
   model: string;
+  /** Pin the decode language (`-l es`). Undefined/empty = whisper's own
+   * auto-detection. Pinning is what makes Spanish notes reliable: measured on
+   * this host, auto-detection reported `en` on an all-Spanish clip and mangled
+   * the numbers; `-l es` returned them correctly. */
+  language?: string;
   /** systemd user scope CPU quota for each whisper run (e.g. "25%"). Empty string disables the wrapper. */
   cpuQuota?: string;
   /** systemd user scope memory cap (e.g. "2G"). */
@@ -105,7 +110,13 @@ export function createWhisperTranscriber(config: {
         if (convert.code !== 0) return { state: "failed", text: "", error: `ffmpeg failed: ${convert.stderr.slice(0, 200)}` };
         // 3. whisper-cli under the cgroup lane, JSON out for honest confidence.
         const jsonOut = join(work, "transcript");
-        const whisperArgs = ["-m", config.model, "-f", wav, "-ojf", "-of", jsonOut];
+        // `-l` pins the language instead of letting whisper auto-detect it.
+        // Measured on this host with a real Spanish note (11.9 s, TTS): with
+        // auto-detection whisper reports `en` on a clip whose text is entirely
+        // Spanish and mangles the numbers ("las ocho" → "a las 8"); forced `-l
+        // es` returns them correctly. An empty language keeps auto-detection,
+        // which is the right choice for a genuinely multilingual thread.
+        const whisperArgs = ["-m", config.model, "-f", wav, ...(config.language ? ["-l", config.language] : []), "-ojf", "-of", jsonOut];
         const wrapped = !!config.cpuQuota;
         const args = wrapped
           ? ["--user", "--scope", "--quiet", "-p", `CPUQuota=${config.cpuQuota}`, "-p", `MemoryMax=${config.memMax ?? "2G"}`, "--", config.bin, ...whisperArgs]

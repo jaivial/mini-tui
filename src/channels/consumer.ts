@@ -37,6 +37,8 @@ import type { ChannelInbox, Inbound, Attachment, AckBinding } from "./inbox";
 import type { EvoSender, SendLedger } from "./evoSend";
 import { generateAckLine, type AckConfig, type AckLedger } from "./ack";
 import { DEFAULT_ACK } from "./ack";
+import { pickAckReaction } from "./semanticReaction";
+import { startTyping, type TypingConfig } from "./typing";
 import type { QueueBridge } from "./queueBridge";
 import type { GroupPlan } from "./groupBridge";
 import type { SessionCommandPlan } from "./sessionCommand";
@@ -112,6 +114,9 @@ export interface ConsumerOptions {
   /** v4-F: strips [[mini-image: <path>]] markers from the reply and returns
    * the validated screenshot paths to deliver as media. Optional. */
   planImages?: (row: PendingRow, message: Inbound, replyText: string) => { text: string; images: string[] };
+  /** v6-E: strips [[mini-voice: <path>]] markers and returns the validated
+   * audio paths to deliver as WhatsApp voice notes. Optional. */
+  planVoices?: (row: PendingRow, message: Inbound, replyText: string) => { text: string; voices: string[] };
   /** v5-E: the durable ack audit ledger (channel_acks). Absent = no acks. */
   ackLedger?: AckLedger;
   /** v5-E: per-binding ack settings (reaction emoji, delay, model budget).
@@ -121,6 +126,12 @@ export interface ConsumerOptions {
   /** v5-E: the model that writes the acknowledgement line. Defaults to the
    * consumer's model — same provider the turn itself runs on. */
   ackModel?: string;
+  /** v6-E: "escribiendo…" presence for the turn. Absent = no typing indicator.
+   * The consumer fills in `thread`; the caller owns every other knob. */
+  typing?: Omit<TypingConfig, "thread">;
+  /** v6-E: semantic reactions — the acceptance emoji is chosen from the
+   * sender's words with the configured one as fallback. Off = the old fixed 👀. */
+  semanticReactions?: boolean;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
@@ -131,6 +142,53 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const IMAGE_MARKER = /\[\[mini-image:\s*([^\]]+)\]\]/g;
 const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 const IMAGE_MAX_PER_REPLY = 4;
+
+/** v6-E: `[[mini-voice: <path>]]` — reply with a real voice note.
+ *
+ * The path is validated the same way an image is (only a regular file the model
+ * legitimately produced), and the bytes are size-capped before base64. The
+ * directive line is stripped from the text so the sender never sees markup; the
+ * note itself rides along after the text reply, best-effort, exactly like a
+ * screenshot. */
+const VOICE_MARKER = /\[\[mini-voice:\s*([^\]]+)\]\]/g;
+/** Opus at 16 kbps mono is a ~2 KB/s voice note; 5 MB is already minutes of
+ * audio and well past anything WhatsApp renders as a push-to-talk bubble. */
+const VOICE_MAX_BYTES = 5 * 1024 * 1024;
+const VOICE_MAX_PER_REPLY = 2;
+
+/**
+ * Strip voice markers and validate their paths. Allowed roots are explicit:
+ * the TTS scratch dir plus the model's own media store. An empty allowlist means
+ * NOTHING is deliverable — a model can never attach an arbitrary host file.
+ */
+export function planVoiceMarkers(replyText: string, allowedRoots: string[]): { text: string; voices: string[] } {
+  const voices: string[] = [];
+  if (!allowedRoots.length) return { text: replyText.replace(VOICE_MARKER, "").replace(/\n{3,}/g, "\n\n").trim(), voices };
+  let last = 0;
+  const chunks: string[] = [];
+  const roots = allowedRoots.map((r) => resolve(r));
+  for (const match of replyText.matchAll(VOICE_MARKER)) {
+    chunks.push(replyText.slice(last, match.index));
+    last = match.index + match[0].length;
+    const raw = (match[1] ?? "").trim();
+    if (voices.length >= VOICE_MAX_PER_REPLY) continue;
+    const abs = resolve(raw);
+    if (!roots.some((root) => abs.startsWith(root + sep))) continue;
+    try {
+      const meta = statSync(abs);
+      // Audio-only extensions: this directive must not become a file drop.
+      if (!meta.isFile() || meta.size === 0 || meta.size > VOICE_MAX_BYTES) continue;
+      if (!AUDIO_EXTS.some((ext) => abs.toLowerCase().endsWith(ext))) continue;
+      voices.push(abs);
+    } catch {
+      continue;
+    }
+  }
+  chunks.push(replyText.slice(last));
+  return { text: chunks.join("").replace(/\n{3,}/g, "\n\n").trim(), voices };
+}
+
+const AUDIO_EXTS = [".ogg", ".opus", ".mp3", ".m4a", ".wav", ".webm", ".aac", ".mp4"];
 
 export const cuPoolDir = (): string => process.env.MINITUI_CU_POOL_DIR || join(homedir(), ".local/share/mini-tui/cu-pool");
 
@@ -215,6 +273,12 @@ export function turnPrompt(message: Inbound, mediaFrames: string[] = []): string
     "a new isolated WhatsApp group bound to a fresh session is created for them.",
     "The bridge removes the directive line before sending and confirms the queueing itself.",
     "When the message is purely conversational, emit no directive.",
+    "",
+    "To answer with a real WhatsApp VOICE NOTE (only when you have synthesized an",
+    "audio file), end the reply with [[mini-voice: <absolute path to the .ogg/.opus/.mp3>]]",
+    "on its own last line. The file is attached as a push-to-talk message and the marker",
+    "line is removed before sending, so the sender never sees it. It must be a real audio",
+    "file you produced — never a path you merely guessed.",
   ].join("\n");
 }
 
@@ -382,6 +446,7 @@ async function processOne(
   const quotedId = entry?.quotedId ?? message.replyTo ?? message.messageId;
   let replyText = entry?.replyText ?? "";
   let imagePlan: { text: string; images: string[] } = { text: "", images: [] };
+  let voicePlan: { text: string; voices: string[] } = { text: "", voices: [] };
   let mediaFrames: string[] = [];
   if (!replyText) {
     // v5-E: the ack runs ALONGSIDE the turn, never in front of it. The
@@ -409,7 +474,11 @@ async function processOne(
     // screenshots ride along as media, sent best-effort after the reply.
     const imagePlanParsed = options.planImages?.(row, message, groupPlanned.text) ?? { text: groupPlanned.text, images: [] };
     imagePlan = imagePlanParsed;
-    replyText = imagePlanParsed.text;
+    // v6-E: [[mini-voice: <path>]] leaves the text the same way a screenshot
+    // does; the validated audio rides along as a real voice note after the text.
+    const voicePlanParsed = options.planVoices?.(row, message, imagePlanParsed.text) ?? { text: imagePlanParsed.text, voices: [] };
+    voicePlan = voicePlanParsed;
+    replyText = voicePlanParsed.text;
     // The reply carries the transcript frames (or their honest per-attachment
     // failure notes): mark delivered so the late sweep never re-sends them as
     // a follow-up. A turn that ended in the generic failure note carried
@@ -467,6 +536,28 @@ async function processOne(
         log("channel.consumer.image_failed", { seq, image, error: error instanceof Error ? error.message : String(error) });
       }
     }
+    // v6-E: voice notes ride the same path as screenshots — the text reply is
+    // already durable and the cursor advanced, so a failed note is logged, never
+    // a redelivery loop. `ptt:true` is what renders the push-to-talk bubble.
+    for (const voice of voicePlan.voices) {
+      try {
+        const sent = await sender.sendVoice({
+          number: row.thread,
+          audioBase64: readFileSync(voice).toString("base64"),
+          mimetype: "audio/ogg; codecs=opus",
+          ptt: true,
+        });
+        log("channel.consumer.voice_" + sent.kind, {
+          seq,
+          voice,
+          bytes: statSync(voice).size,
+          replyId: sent.kind === "sent" ? sent.replyId : undefined,
+          ...(sent.kind === "uncertain" ? { error: sent.error.slice(0, 160) } : {}),
+        });
+      } catch (error) {
+        log("channel.consumer.voice_failed", { seq, voice, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     return;
   }
   // Unknown whether the reply landed: the cursor stays put and the next pass
@@ -494,6 +585,8 @@ interface TurnAck {
  * Order matters and is the whole point:
  *   - the reaction is sent IMMEDIATELY (sub-second, best-effort, never awaited
  *     into the turn's critical path);
+ *   - the "escribiendo…" presence goes out with it (v6-E) and is cleared by
+ *     `cancel()` or by the reply path, whichever lands first;
  *   - the model's line is generated in PARALLEL with the turn, from the
  *     sender's real words;
  *   - the timer only decides WHETHER the generated line is sent.
@@ -528,9 +621,31 @@ function startAck(
     ...(bindingAck?.delayMs !== undefined ? { delayMs: bindingAck.delayMs } : {}),
   };
   const seq = row.seq;
+  // v6-E: "escribiendo…" is armed here and cleared in `cancel()` (turn end)
+  // and again by the reply path, so it can never outlive the turn. Absent
+  // `options.typing` means the feature is off entirely.
+  const typing = options.typing
+    ? startTyping(sender, log, { ...options.typing, thread: row.thread })
+    : null;
+
+  // v6-E: the semantic emoji REPLACES the acceptance one when the sender's
+  // words carry a signal (WhatsApp keeps one reaction per message, so both
+  // would not coexist). No match = the configured fallback, exactly as before.
+  const reactionEmoji = options.semanticReactions
+    ? pickAckReaction({ text: message.text, hasAudio: message.attachments.some((a) => a.kind === "audio") }, cfg.reaction)
+    : cfg.reaction;
   // No ledger = no ack at all: the audit row and the anti-loop registration are
   // the same write, and an ack nobody can prove was ours is worse than none.
-  if (!ledger) return { race: (turn) => turn(), cancel: () => {} };
+  // Typing is NOT gated on the ledger: presence has no anti-loop surface (it
+  // never produces a message) and a stuck-clearable indicator is worth having.
+  if (!ledger) {
+    return {
+      race: (turn) => turn(),
+      cancel: () => {
+        void typing?.clear();
+      },
+    };
+  }
 
   const startedAt = Date.now();
   let cancelled = false;
@@ -541,24 +656,24 @@ function startAck(
   let modelName = options.ackModel || options.model || "";
 
   // 1. The reaction: fire-and-forget so a slow weai cannot delay the turn.
-  if (cfg.reaction) {
+  if (reactionEmoji) {
     void (async () => {
       const at = Date.now();
       try {
         const reaction = await sender.sendReaction({
           number: row.thread,
           key: { id: message.messageId, remoteJid: row.thread, ...(message.sender ? { participant: message.sender } : {}) },
-          reaction: cfg.reaction,
+          reaction: reactionEmoji,
           // Short: the point of a reaction is that it is instant. A slow API
           // gives up rather than holding the liveness signal hostage.
           timeoutMs: 2_500,
         });
-        ledger.markReaction(seq, cfg.reaction, reaction.kind === "sent" ? "sent" : "failed", reaction.kind === "failed" ? reaction.error.slice(0, 160) : undefined);
-        log(`channel.ack.reaction_${reaction.kind}`, { seq, reaction: cfg.reaction, ms: Date.now() - at, ...(reaction.kind === "failed" ? { status: reaction.status, error: reaction.error.slice(0, 160) } : {}) });
+        ledger.markReaction(seq, reactionEmoji, reaction.kind === "sent" ? "sent" : "failed", reaction.kind === "failed" ? reaction.error.slice(0, 160) : undefined);
+        log(`channel.ack.reaction_${reaction.kind}`, { seq, reaction: reactionEmoji, semantic: options.semanticReactions ? undefined : false, ms: Date.now() - at, ...(reaction.kind === "failed" ? { status: reaction.status, error: reaction.error.slice(0, 160) } : {}) });
       } catch (error) {
         const message_ = error instanceof Error ? error.message : String(error);
-        ledger.markReaction(seq, cfg.reaction, "failed", message_.slice(0, 160));
-        log("channel.ack.reaction_failed", { seq, reaction: cfg.reaction, error: message_.slice(0, 160) });
+        ledger.markReaction(seq, reactionEmoji, "failed", message_.slice(0, 160));
+        log("channel.ack.reaction_failed", { seq, reaction: reactionEmoji, error: message_.slice(0, 160) });
       }
     })();
   } else {
@@ -651,6 +766,10 @@ function startAck(
       return work;
     },
     cancel(): void {
+      // The typing indicator ends with the turn, always — this runs in the
+      // consumer's `finally`, so even a thrown turn clears it. Idempotent, so
+      // the reply path can call clear() again without harm.
+      void typing?.clear();
       if (cancelled) return;
       cancelled = true;
       if (timer) {
