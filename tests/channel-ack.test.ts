@@ -209,6 +209,74 @@ describe("generateAckLine", () => {
     expect(result.line).toBe("Busco los trenes");
   });
 
+  test("an empty model answer escalates the budget instead of giving up", async () => {
+    stubProvider();
+    const budgets: number[] = [];
+    // Bimodal upstream: two empty answers (the whole budget spent reasoning),
+    // then a real line.
+    globalThis.fetch = (async (_input: any, init: any) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { max_tokens: number };
+      budgets.push(body.max_tokens);
+      const empty = budgets.length < 3;
+      return new Response(JSON.stringify({ choices: [{ message: { content: empty ? null : "Busco los trenes", reasoning_content: empty ? "…" : null } }] }), { status: 200 });
+    }) as typeof fetch;
+    const result = await generateAckLine({ subject: "Buscame trenes", model: "t/tiny", config: { maxTokens: 60, escalations: 2 } });
+    expect(budgets).toEqual([60, 240, 960]);
+    expect(result.line).toBe("Busco los trenes");
+  });
+
+  test("escalations are bounded: a model that never answers yields no line, not a canned one", async () => {
+    stubProvider();
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ choices: [{ message: { content: null, reasoning_content: "…" } }] }), { status: 200 });
+    }) as typeof fetch;
+    const result = await generateAckLine({ subject: "Buscame trenes", model: "t/tiny", config: { maxTokens: 60, escalations: 2 } });
+    expect(calls).toBe(3); // 1 fast + 2 escalations, then stop
+    expect(result.line).toBeNull();
+  });
+
+  test("a boilerplate line is treated as a MISS, not an ack", async () => {
+    stubProvider();
+    const seen: string[] = [];
+    globalThis.fetch = (async (_input: any, init: any) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ content: string }> };
+      seen.push(body.messages[1]!.content);
+      // First answer is boilerplate (what the live gateway produced once:
+      // "Got it — checking"), second one actually names the task.
+      const content = seen.length === 1 ? "Got it" : "Busco los trenes de Valencia a Madrid";
+      return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+    }) as typeof fetch;
+    const result = await generateAckLine({ subject: "Buscame trenes de Valencia a Madrid", model: "t/tiny", config: { maxTokens: 60, escalations: 2 } });
+    expect(seen).toHaveLength(2);
+    expect(result.line).toBe("Busco los trenes de Valencia a Madrid");
+  });
+
+  test("a model that ONLY ever says boilerplate yields no line at all", async () => {
+    stubProvider();
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "Entendido" } }] }), { status: 200 })) as typeof fetch;
+    const result = await generateAckLine({ subject: "Buscame trenes de Valencia a Madrid", model: "t/tiny", config: { maxTokens: 60, escalations: 2 } });
+    // The whole point: a canned "vale" is worse than silence.
+    expect(result.line).toBeNull();
+    expect(result.reason).toBe("generic_content");
+  });
+
+  test("the ack budget is a hard deadline shared by every attempt", async () => {
+    stubProvider();
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      await Bun.sleep(400);
+      return new Response(JSON.stringify({ choices: [{ message: { content: null } }] }), { status: 200 });
+    }) as typeof fetch;
+    const result = await generateAckLine({ subject: "Buscame trenes", model: "t/tiny", config: { maxTokens: 60, escalations: 5, modelTimeoutMs: 1_000 } });
+    // 5 escalations at 400ms each would be 2.4s without the shared deadline.
+    expect(calls).toBeLessThanOrEqual(3);
+    expect(result.ms).toBeLessThanOrEqual(1_500);
+  });
+
   test("an unresolvable model yields no line rather than a canned one", async () => {
     stubProvider();
     const result = await generateAckLine({ subject: "hola", model: "nope/none", config: { maxTokens: 60 } });

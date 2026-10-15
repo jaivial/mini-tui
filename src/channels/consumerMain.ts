@@ -265,6 +265,9 @@ const { done, stop } = startChannelConsumer({
     delayMs: num(process.env.EVO_ACK_DELAY_MS, DEFAULT_ACK.delayMs),
     modelTimeoutMs: num(process.env.EVO_ACK_MODEL_TIMEOUT_MS, DEFAULT_ACK.modelTimeoutMs),
     maxTokens: num(process.env.EVO_ACK_MAX_TOKENS, DEFAULT_ACK.maxTokens),
+    escalations: Number.isFinite(Number(process.env.EVO_ACK_ESCALATIONS)) && Number(process.env.EVO_ACK_ESCALATIONS) >= 0
+      ? Math.min(3, Math.floor(Number(process.env.EVO_ACK_ESCALATIONS)))
+      : DEFAULT_ACK.escalations,
   },
   ackModel: process.env.EVO_ACK_MODEL || process.env.MINITUI_MODEL || "",
   consumer: required("EVO_CONSUMER_NAME"),
