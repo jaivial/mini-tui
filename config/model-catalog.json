@@ -1,0 +1,3064 @@
+{
+  "$schema": "https://mini-tui.local/schemas/model-catalog-v1.json",
+  "catalogVersion": 1,
+  "generatedAt": "2026-10-15T21:59:00Z",
+  "consultedAt": "2026-10-15",
+  "generator": "scripts/gen_model_catalog.py",
+  "documentation": "docs/providers-catalog.md",
+  "unknownValue": "desconocido",
+  "priceUnit": "USD per 1M tokens (priceIn/priceOut/priceCacheRead/priceCacheWrite)",
+  "notes": [
+    "Todo valor lleva sourceUrls + consultedAt. Un dato no encontrado es la cadena 'desconocido', nunca una cifra plausible.",
+    "intelligenceIndex usa Artificial Analysis Intelligence Index v4.3.2 leido de la pagina de cada modelo. Fuentes secundarias (blogs, Reddit, X) citan puntuaciones de versiones anteriores del indice (p.ej. 57 o 60 para GLM-5.3 / Kimi K3); esas cifras NO son las de v4.3.2 y no se usan aqui.",
+    "Los limites de rpm/tpm no los publica ninguno de estos cinco proveedores en su documentacion publica: se marcan 'desconocido'.",
+    "Este servidor no tiene GPU: para Ollama lo relevante es el limite de concurrencia (OLLAMA_NUM_PARALLEL) y el contexto por defecto (4096), no el precio.",
+    "kimi-coding exige el prefijo en el id de modelo que acepta la API cruda: 'kimi-coding/k3', no 'k3'.",
+    "opencode-go exige la cabecera x-opencode-session por conversacion; sin ella la API responde 400 MissingSessionID."
+  ],
+  "errorFallbackRules": [
+    {
+      "httpStatus": 401,
+      "label": "auth-or-permission",
+      "meaning": "API key invalida/revocada, o el plan no incluye ese modelo/contexto",
+      "retry": false,
+      "action": "No reintentar. Marcar la conexion como rota y avisar al usuario; en kimi-coding 401 tambien cubre 'sin acceso a k3' / 'solo 256K'.",
+      "providers": [
+        "kimi-coding"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": 400,
+      "label": "bad-request",
+      "meaning": "formato incorrecto; en opencode-go tambien falta x-opencode-session",
+      "retry": false,
+      "action": "No reintentar a ciegas. Si es opencode-go, anade la cabecera de sesion antes de marcar la conexion como rota.",
+      "providers": [
+        "opencode-go",
+        "kimi-coding"
+      ],
+      "sourceUrl": "https://opencode.ai/docs/go/"
+    },
+    {
+      "httpStatus": 402,
+      "label": "membership-unavailable",
+      "meaning": "el servidor no pudo verificar la suscripcion (kimi-coding)",
+      "retry": "backoff corto, 1-2 intentos",
+      "action": "Transitorio segun el proveedor. Reintentar una vez y luego degradar.",
+      "providers": [
+        "kimi-coding"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": 403,
+      "label": "quota-exhausted",
+      "meaning": "ventana de 5h, semanal o mensual agotada; o limite de concurrencia",
+      "retry": false,
+      "action": "Fallback inmediato a otro proveedor. No es un error transitorio: esperar a que la ventana se reinicie.",
+      "providers": [
+        "kimi-coding",
+        "zai"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": 429,
+      "label": "rate-limited",
+      "meaning": "demasiadas peticiones o motor sobrecargado",
+      "retry": "backoff exponencial respetando Retry-After",
+      "action": "Fallback tras agotar el backoff. Es el unico estado reintentable de forma segura entre estos proveedores.",
+      "providers": [
+        "kimi-coding",
+        "minimax",
+        "opencode-go",
+        "zai"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": 500,
+      "label": "server-or-overload",
+      "meaning": "error interno, BD o downstream no disponible",
+      "retry": "backoff exponencial, max 2-3 intentos",
+      "action": "Fallback si persiste. En kimi-coding 500 tambien cubre i/o timeout.",
+      "providers": [
+        "kimi-coding"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": 502,
+      "label": "bad-gateway",
+      "retry": "backoff, max 2 intentos",
+      "action": "Fallback",
+      "providers": [
+        "kimi-coding"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": 503,
+      "label": "service-unavailable",
+      "retry": "backoff, max 2 intentos",
+      "action": "Fallback",
+      "providers": [
+        "kimi-coding"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": 504,
+      "label": "gateway-timeout",
+      "retry": "backoff, max 2 intentos",
+      "action": "Fallback y registrar el timeout como coste perdido del router.",
+      "providers": [
+        "kimi-coding"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": 404,
+      "label": "model-not-found",
+      "meaning": "id de modelo no existe o no esta permitido en el plan",
+      "retry": false,
+      "action": "Quitar el id del catalogo activo; no es un fallo transitorio.",
+      "providers": [
+        "kimi-coding"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": 1113,
+      "label": "insufficient-balance-zai",
+      "meaning": "error propietario de Z.AI por saldo insuficiente",
+      "retry": false,
+      "action": "Sin creditos no hay reintento util: fallback. Se cita el FAQ de z.ai/subscribe, que menciona el codigo 1113.",
+      "providers": [
+        "zai"
+      ],
+      "sourceUrl": "https://z.ai/subscribe"
+    },
+    {
+      "httpStatus": 499,
+      "label": "client-cancelled",
+      "meaning": "el cliente corto la peticion; no es un error de servidor",
+      "retry": false,
+      "action": "Ignorar en contabilidad de proveedor.",
+      "providers": [
+        "kimi-coding"
+      ],
+      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+    },
+    {
+      "httpStatus": "connection-refused",
+      "label": "ollama-not-running",
+      "meaning": "127.0.0.1:11434 no escucha: el servicio local esta apagado",
+      "retry": "reintentar al iniciar la peticion",
+      "action": "Fallback inmediato: ollama no debe bloquear nunca una ruta del router.",
+      "providers": [
+        "ollama"
+      ],
+      "sourceUrl": "https://docs.ollama.com/faq"
+    }
+  ],
+  "providers": [
+    {
+      "provider": "opencode-go",
+      "displayName": "OpenCode Go",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "prefix": "opencode-go",
+      "apiStyle": "openai-compatible",
+      "requiredHeaders": {
+        "x-opencode-session": "obligatorio: estable por conversacion. Sin el, la API responde 400 MissingSessionID.",
+        "user-agent": "debe identificar al cliente (p.ej. mini-tui/1.0), no un SDK generico."
+      },
+      "auth": "OPENCODE_GO_API_KEY (Bearer)",
+      "billing": "subscription-quota",
+      "plans": [
+        {
+          "id": "go",
+          "name": "Go",
+          "pricePerMonthUsd": 10
+        },
+        {
+          "id": "go-plus",
+          "name": "Go Plus",
+          "pricePerMonthUsd": 40
+        }
+      ],
+      "limits": {
+        "fiveHourPctOfMonthly": 20,
+        "weeklyPctOfMonthly": 50,
+        "monthlyPctOfMonthly": 100,
+        "perModelMonthlyLimitUsd": "varia por modelo (ver models[].limits)",
+        "rpm": "desconocido",
+        "tpm": "desconocido",
+        "overflow": "opcion 'Use balance' en la consola: al agotar la cuota pasa al saldo pay-as-you-go en vez de bloquear."
+      },
+      "modelListEndpoint": "https://opencode.ai/inference/go/v1/models",
+      "models": [
+        {
+          "modelId": "opencode-go/grok-4.7",
+          "apiModelId": "grok-4.7",
+          "provider": "opencode-go",
+          "priceIn": 2.0,
+          "priceOut": 6.0,
+          "priceCacheRead": 0.5,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "≤200K tokens",
+          "intelligenceIndex": {
+            "value": 46,
+            "variant": "xhigh",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/grok-4-7",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 169,
+            "goWeek": 423,
+            "goMonth": 845,
+            "goPlus5h": 676,
+            "goPlusWeek": 1692,
+            "goPlusMonth": 3380,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/grok-4.7",
+          "apiModelId": "grok-4.7",
+          "provider": "opencode-go",
+          "priceIn": 4.0,
+          "priceOut": 12.0,
+          "priceCacheRead": 1.0,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": ">200K tokens",
+          "intelligenceIndex": {
+            "value": 46,
+            "variant": "xhigh",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/grok-4-7",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 169,
+            "goWeek": 423,
+            "goMonth": 845,
+            "goPlus5h": 676,
+            "goPlusWeek": 1692,
+            "goPlusMonth": 3380,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/grok-4.6",
+          "apiModelId": "grok-4.6",
+          "provider": "opencode-go",
+          "priceIn": 2.0,
+          "priceOut": 6.0,
+          "priceCacheRead": 0.5,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "≤200K tokens",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 169,
+            "goWeek": 423,
+            "goMonth": 845,
+            "goPlus5h": 676,
+            "goPlusWeek": 1692,
+            "goPlusMonth": 3380,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/grok-4.6",
+          "apiModelId": "grok-4.6",
+          "provider": "opencode-go",
+          "priceIn": 4.0,
+          "priceOut": 12.0,
+          "priceCacheRead": 1.0,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": ">200K tokens",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 169,
+            "goWeek": 423,
+            "goMonth": 845,
+            "goPlus5h": 676,
+            "goPlusWeek": 1692,
+            "goPlusMonth": 3380,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/gpt-6-luna",
+          "apiModelId": "gpt-6-luna",
+          "provider": "opencode-go",
+          "priceIn": 0.1,
+          "priceOut": 0.5,
+          "priceCacheRead": 0.01,
+          "priceCacheWrite": 0.125,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "≤272K tokens",
+          "intelligenceIndex": {
+            "value": 38,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/gpt-6-luna",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 4230,
+            "goWeek": 10560,
+            "goMonth": 21130,
+            "goPlus5h": 16920,
+            "goPlusWeek": 42240,
+            "goPlusMonth": 84520,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/gpt-6-luna",
+          "apiModelId": "gpt-6-luna",
+          "provider": "opencode-go",
+          "priceIn": 0.2,
+          "priceOut": 0.75,
+          "priceCacheRead": 0.02,
+          "priceCacheWrite": 0.25,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": ">272K tokens",
+          "intelligenceIndex": {
+            "value": 38,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/gpt-6-luna",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 4230,
+            "goWeek": 10560,
+            "goMonth": 21130,
+            "goPlus5h": 16920,
+            "goPlusWeek": 42240,
+            "goPlusMonth": 84520,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/gpt-5.6-luna",
+          "apiModelId": "gpt-5.6-luna",
+          "provider": "opencode-go",
+          "priceIn": 0.2,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.02,
+          "priceCacheWrite": 0.25,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "≤272K tokens",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 2050,
+            "goWeek": 5100,
+            "goMonth": 10250,
+            "goPlus5h": 8200,
+            "goPlusWeek": 20400,
+            "goPlusMonth": 41000,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/gpt-5.6-luna",
+          "apiModelId": "gpt-5.6-luna",
+          "provider": "opencode-go",
+          "priceIn": 0.4,
+          "priceOut": 1.8,
+          "priceCacheRead": 0.04,
+          "priceCacheWrite": 0.5,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": ">272K tokens",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 2050,
+            "goWeek": 5100,
+            "goMonth": 10250,
+            "goPlus5h": 8200,
+            "goPlusWeek": 20400,
+            "goPlusMonth": 41000,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/claude-haiku-5-5",
+          "apiModelId": "claude-haiku-5-5",
+          "provider": "opencode-go",
+          "priceIn": 0.1,
+          "priceOut": 0.5,
+          "priceCacheRead": 0.01,
+          "priceCacheWrite": 0.125,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "≤100K tokens",
+          "intelligenceIndex": {
+            "value": 43,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 3850,
+            "goWeek": 9620,
+            "goMonth": 19230,
+            "goPlus5h": 15380,
+            "goPlusWeek": 38460,
+            "goPlusMonth": 76920,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/anthropic/v1/messages"
+        },
+        {
+          "modelId": "opencode-go/claude-haiku-5-5",
+          "apiModelId": "claude-haiku-5-5",
+          "provider": "opencode-go",
+          "priceIn": 0.5,
+          "priceOut": 2.5,
+          "priceCacheRead": 0.05,
+          "priceCacheWrite": 0.625,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": ">100K tokens",
+          "intelligenceIndex": {
+            "value": 43,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 3850,
+            "goWeek": 9620,
+            "goMonth": 19230,
+            "goPlus5h": 15380,
+            "goPlusWeek": 38460,
+            "goPlusMonth": 76920,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/anthropic/v1/messages"
+        },
+        {
+          "modelId": "opencode-go/gemini-4-argon-contributor",
+          "apiModelId": "gemini-4-argon-contributor",
+          "provider": "opencode-go",
+          "priceIn": 4.0,
+          "priceOut": 20.0,
+          "priceCacheRead": 0.2,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "2x usage, limited time",
+          "intelligenceIndex": {
+            "value": 53,
+            "variant": "high",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/gemini-4-argon",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 440,
+            "goWeek": 1080,
+            "goMonth": 2120,
+            "goPlus5h": 1760,
+            "goPlusWeek": 4320,
+            "goPlusMonth": 8480,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 240,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "opencode-go/glm-5.3-flash",
+          "apiModelId": "glm-5.3-flash",
+          "provider": "opencode-go",
+          "priceIn": 0.15,
+          "priceOut": 0.5,
+          "priceCacheRead": 0.03,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 42,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/glm-5-3-flash",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 6320,
+            "goWeek": 15790,
+            "goMonth": 31580,
+            "goPlus5h": 18960,
+            "goPlusWeek": 47370,
+            "goPlusMonth": 94740,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 180,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/glm-5.3",
+          "apiModelId": "glm-5.3",
+          "provider": "opencode-go",
+          "priceIn": 1.4,
+          "priceOut": 4.4,
+          "priceCacheRead": 0.26,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 45,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/glm-5-3",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 220,
+            "goWeek": 540,
+            "goMonth": 1080,
+            "goPlus5h": 1760,
+            "goPlusWeek": 4320,
+            "goPlusMonth": 8640,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 120,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/glm-5.2",
+          "apiModelId": "glm-5.2",
+          "provider": "opencode-go",
+          "priceIn": 1.4,
+          "priceOut": 4.4,
+          "priceCacheRead": 0.26,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 34,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/glm-5-2",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 880,
+            "goWeek": 2150,
+            "goMonth": 4300,
+            "goPlus5h": 2640,
+            "goPlusWeek": 6450,
+            "goPlusMonth": 12900,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 180,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/kimi-k3",
+          "apiModelId": "kimi-k3",
+          "provider": "opencode-go",
+          "priceIn": 3.0,
+          "priceOut": 15.0,
+          "priceCacheRead": 0.3,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 44,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/kimi-k3",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 110,
+            "goWeek": 250,
+            "goMonth": 490,
+            "goPlus5h": 440,
+            "goPlusWeek": 1000,
+            "goPlusMonth": 1960,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/kimi-k2.7-code",
+          "apiModelId": "kimi-k2.7-code",
+          "provider": "opencode-go",
+          "priceIn": 0.95,
+          "priceOut": 4.0,
+          "priceCacheRead": 0.19,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 26,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/kimi-k2-7-code",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 1350,
+            "goWeek": 3380,
+            "goMonth": 6750,
+            "goPlus5h": 4050,
+            "goPlusWeek": 10140,
+            "goPlusMonth": 20250,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 180,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/kimi-k2.6",
+          "apiModelId": "kimi-k2.6",
+          "provider": "opencode-go",
+          "priceIn": 0.95,
+          "priceOut": 4.0,
+          "priceCacheRead": 0.16,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 1150,
+            "goWeek": 2880,
+            "goMonth": 5750,
+            "goPlus5h": 4600,
+            "goPlusWeek": 11520,
+            "goPlusMonth": 23000,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 240,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/longcat-2.0",
+          "apiModelId": "longcat-2.0",
+          "provider": "opencode-go",
+          "priceIn": 0.3,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.006,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 19,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/longcat-2-0",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 11400,
+            "goWeek": 28600,
+            "goMonth": 57200,
+            "goPlus5h": 45600,
+            "goPlusWeek": 114400,
+            "goPlusMonth": 228800,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 240,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/longcat-2.5-preview-free",
+          "apiModelId": "longcat-2.5-preview-free",
+          "provider": "opencode-go",
+          "priceIn": 0.0,
+          "priceOut": 0.0,
+          "priceCacheRead": 0.0,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "free, limited time",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": "desconocido",
+            "goWeek": "desconocido",
+            "goMonth": "desconocido",
+            "goPlus5h": "desconocido",
+            "goPlusWeek": "desconocido",
+            "goPlusMonth": "desconocido",
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": "desconocido",
+            "monthlyLimitUsdGoPlus": "desconocido",
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/step-5-preview-free",
+          "apiModelId": "step-5-preview-free",
+          "provider": "opencode-go",
+          "priceIn": 0.0,
+          "priceOut": 0.0,
+          "priceCacheRead": 0.0,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "free, limited time",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": "desconocido",
+            "goWeek": "desconocido",
+            "goMonth": "desconocido",
+            "goPlus5h": "desconocido",
+            "goPlusWeek": "desconocido",
+            "goPlusMonth": "desconocido",
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": "desconocido",
+            "monthlyLimitUsdGoPlus": "desconocido",
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/cat-jam-free",
+          "apiModelId": "cat-jam-free",
+          "provider": "opencode-go",
+          "priceIn": 0.0,
+          "priceOut": 0.0,
+          "priceCacheRead": 0.0,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "free, limited time; excluded regions",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": "desconocido",
+            "goWeek": "desconocido",
+            "goMonth": "desconocido",
+            "goPlus5h": "desconocido",
+            "goPlusWeek": "desconocido",
+            "goPlusMonth": "desconocido",
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": "desconocido",
+            "monthlyLimitUsdGoPlus": "desconocido",
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/mimo-v2.6-flash",
+          "apiModelId": "mimo-v2.6-flash",
+          "provider": "opencode-go",
+          "priceIn": 0.14,
+          "priceOut": 0.28,
+          "priceCacheRead": 0.0028,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 38,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/mimo-v2-6-flash",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 30100,
+            "goWeek": 75200,
+            "goMonth": 150400,
+            "goPlus5h": 60200,
+            "goPlusWeek": 150400,
+            "goPlusMonth": 300800,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 120,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/mimo-v2.6-pro",
+          "apiModelId": "mimo-v2.6-pro",
+          "provider": "opencode-go",
+          "priceIn": 0.435,
+          "priceOut": 0.87,
+          "priceCacheRead": 0.003625,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 46,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/mimo-v2-6-pro",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 3250,
+            "goWeek": 8150,
+            "goMonth": 16300,
+            "goPlus5h": 13000,
+            "goPlusWeek": 32600,
+            "goPlusMonth": 65200,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/mimo-v2.5",
+          "apiModelId": "mimo-v2.5",
+          "provider": "opencode-go",
+          "priceIn": 0.14,
+          "priceOut": 0.28,
+          "priceCacheRead": 0.0028,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 30100,
+            "goWeek": 75200,
+            "goMonth": 150400,
+            "goPlus5h": 60200,
+            "goPlusWeek": 150400,
+            "goPlusMonth": 300800,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 120,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/mimo-v2.5-pro",
+          "apiModelId": "mimo-v2.5-pro",
+          "provider": "opencode-go",
+          "priceIn": 0.435,
+          "priceOut": 0.87,
+          "priceCacheRead": 0.003625,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 3250,
+            "goWeek": 8150,
+            "goMonth": 16300,
+            "goPlus5h": 13000,
+            "goPlusWeek": 32600,
+            "goPlusMonth": 65200,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/minimax-m3",
+          "apiModelId": "minimax-m3",
+          "provider": "opencode-go",
+          "priceIn": 0.3,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.06,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 29,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/minimax-m3",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 3200,
+            "goWeek": 8000,
+            "goMonth": 16000,
+            "goPlus5h": 9600,
+            "goPlusWeek": 24000,
+            "goPlusMonth": 48000,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 180,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/anthropic/v1/messages"
+        },
+        {
+          "modelId": "opencode-go/minimax-m2.7",
+          "apiModelId": "minimax-m2.7",
+          "provider": "opencode-go",
+          "priceIn": 0.3,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.06,
+          "priceCacheWrite": 0.375,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 23,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/minimax-m2-7",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 3400,
+            "goWeek": 8500,
+            "goMonth": 17000,
+            "goPlus5h": 13600,
+            "goPlusWeek": 34000,
+            "goPlusMonth": 68000,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 240,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/anthropic/v1/messages"
+        },
+        {
+          "modelId": "opencode-go/muse-spark-1.3-contributor",
+          "apiModelId": "muse-spark-1.3-contributor",
+          "provider": "opencode-go",
+          "priceIn": 0.1,
+          "priceOut": 0.2,
+          "priceCacheRead": 0.002,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "limited regions (Meta policy)",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 45300,
+            "goWeek": 113300,
+            "goMonth": 226600,
+            "goPlus5h": 90600,
+            "goPlusWeek": 226600,
+            "goPlusMonth": 453200,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 120,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/muse-spark-1.2-contributor",
+          "apiModelId": "muse-spark-1.2-contributor",
+          "provider": "opencode-go",
+          "priceIn": 0.1,
+          "priceOut": 0.2,
+          "priceCacheRead": 0.002,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "limited regions (Meta policy)",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 45300,
+            "goWeek": 113300,
+            "goMonth": 226600,
+            "goPlus5h": 90600,
+            "goPlusWeek": 226600,
+            "goPlusMonth": 453200,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 120,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/responses"
+        },
+        {
+          "modelId": "opencode-go/qwen3.8-max",
+          "apiModelId": "qwen3.8-max",
+          "provider": "opencode-go",
+          "priceIn": 2.0,
+          "priceOut": 6.0,
+          "priceCacheRead": 0.25,
+          "priceCacheWrite": 2.5,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 45,
+            "variant": "0902",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/qwen3-8-max",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 160,
+            "goWeek": 400,
+            "goMonth": 810,
+            "goPlus5h": 640,
+            "goPlusWeek": 1600,
+            "goPlusMonth": 3240,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/anthropic/v1/messages"
+        },
+        {
+          "modelId": "opencode-go/qwen3.8-flash",
+          "apiModelId": "qwen3.8-flash",
+          "provider": "opencode-go",
+          "priceIn": 0.15,
+          "priceOut": 0.47,
+          "priceCacheRead": 0.016,
+          "priceCacheWrite": 0.2,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 5400,
+            "goWeek": 13500,
+            "goMonth": 27000,
+            "goPlus5h": 16200,
+            "goPlusWeek": 40500,
+            "goPlusMonth": 81000,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 30,
+            "monthlyLimitUsdGoPlus": 90,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/anthropic/v1/messages"
+        },
+        {
+          "modelId": "opencode-go/qwen3.7-plus",
+          "apiModelId": "qwen3.7-plus",
+          "provider": "opencode-go",
+          "priceIn": 0.4,
+          "priceOut": 1.6,
+          "priceCacheRead": 0.04,
+          "priceCacheWrite": 0.5,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "≤256K tokens",
+          "intelligenceIndex": {
+            "value": 25,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/qwen3-7-plus",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 4300,
+            "goWeek": 10800,
+            "goMonth": 21600,
+            "goPlus5h": 12900,
+            "goPlusWeek": 32400,
+            "goPlusMonth": 64800,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 180,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/anthropic/v1/messages"
+        },
+        {
+          "modelId": "opencode-go/qwen3.7-plus",
+          "apiModelId": "qwen3.7-plus",
+          "provider": "opencode-go",
+          "priceIn": 1.2,
+          "priceOut": 4.8,
+          "priceCacheRead": 0.12,
+          "priceCacheWrite": 1.5,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": ">256K tokens",
+          "intelligenceIndex": {
+            "value": 25,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/qwen3-7-plus",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 4300,
+            "goWeek": 10800,
+            "goMonth": 21600,
+            "goPlus5h": 12900,
+            "goPlusWeek": 32400,
+            "goPlusMonth": 64800,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 180,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/anthropic/v1/messages"
+        },
+        {
+          "modelId": "opencode-go/deepseek-v4.1-flash",
+          "apiModelId": "deepseek-v4.1-flash",
+          "provider": "opencode-go",
+          "priceIn": 0.15,
+          "priceOut": 0.6,
+          "priceCacheRead": 0.003,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "off-peak",
+          "intelligenceIndex": {
+            "value": 39,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/deepseek-v4-1-flash",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 34670,
+            "goWeek": 86670,
+            "goMonth": 173330,
+            "goPlus5h": 69330,
+            "goPlusWeek": 173330,
+            "goPlusMonth": 346670,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 80,
+            "monthlyLimitUsdGoPlus": 160,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/deepseek-v4.1-flash",
+          "apiModelId": "deepseek-v4.1-flash",
+          "provider": "opencode-go",
+          "priceIn": 0.3,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.006,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "peak (01-04 & 06-10 UTC, Mon-Fri)",
+          "intelligenceIndex": {
+            "value": 39,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/deepseek-v4-1-flash",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 34670,
+            "goWeek": 86670,
+            "goMonth": 173330,
+            "goPlus5h": 69330,
+            "goPlusWeek": 173330,
+            "goPlusMonth": 346670,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 80,
+            "monthlyLimitUsdGoPlus": 160,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/deepseek-v4-pro",
+          "apiModelId": "deepseek-v4-pro",
+          "provider": "opencode-go",
+          "priceIn": 0.66,
+          "priceOut": 1.98,
+          "priceCacheRead": 0.022,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "off-peak",
+          "intelligenceIndex": {
+            "value": 36,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/deepseek-v4-pro",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 1050,
+            "goWeek": 2600,
+            "goMonth": 5200,
+            "goPlus5h": 4200,
+            "goPlusWeek": 10400,
+            "goPlusMonth": 20800,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/deepseek-v4-pro",
+          "apiModelId": "deepseek-v4-pro",
+          "provider": "opencode-go",
+          "priceIn": 1.32,
+          "priceOut": 3.96,
+          "priceCacheRead": 0.044,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "peak (01-04 & 06-10 UTC, Mon-Fri)",
+          "intelligenceIndex": {
+            "value": 36,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/deepseek-v4-pro",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 1050,
+            "goWeek": 2600,
+            "goMonth": 5200,
+            "goPlus5h": 4200,
+            "goPlusWeek": 10400,
+            "goPlusMonth": 20800,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 15,
+            "monthlyLimitUsdGoPlus": 60,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/hy4-preview",
+          "apiModelId": "hy4-preview",
+          "provider": "opencode-go",
+          "priceIn": 0.834,
+          "priceOut": 2.501,
+          "priceCacheRead": 0.042,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "preview",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 1350,
+            "goWeek": 3380,
+            "goMonth": 6770,
+            "goPlus5h": 5400,
+            "goPlusWeek": 13520,
+            "goPlusMonth": 27080,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 30,
+            "monthlyLimitUsdGoPlus": 120,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/hy3",
+          "apiModelId": "hy3",
+          "provider": "opencode-go",
+          "priceIn": 0.14,
+          "priceOut": 0.58,
+          "priceCacheRead": 0.035,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 25,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/hy3",
+            "consultedAt": "2026-10-15"
+          },
+          "estimatedRequests": {
+            "go5h": 4300,
+            "goWeek": 10750,
+            "goMonth": 21500,
+            "goPlus5h": 17200,
+            "goPlusWeek": 43000,
+            "goPlusMonth": 86000,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 60,
+            "monthlyLimitUsdGoPlus": 240,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        },
+        {
+          "modelId": "opencode-go/space-bunny",
+          "apiModelId": "space-bunny",
+          "provider": "opencode-go",
+          "priceIn": 0.15,
+          "priceOut": 0.6,
+          "priceCacheRead": 0.03,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "go",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "estimatedRequests": {
+            "go5h": 3130,
+            "goWeek": 7810,
+            "goMonth": 15630,
+            "goPlus5h": 12500,
+            "goPlusWeek": 31250,
+            "goPlusMonth": 62500,
+            "note": "Estimaciones del proveedor sobre su patron de uso tipico; el uso real varia."
+          },
+          "limits": {
+            "monthlyLimitUsd": 30,
+            "monthlyLimitUsdGoPlus": 120,
+            "fiveHourPctOfMonthly": 20,
+            "weeklyPctOfMonthly": 50,
+            "monthlyPctOfMonthly": 100,
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://opencode.ai/docs/go/"
+          ],
+          "consultedAt": "2026-10-15",
+          "upstreamEndpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        }
+      ],
+      "sourceUrls": [
+        "https://opencode.ai/docs/go/"
+      ],
+      "consultedAt": "2026-10-15"
+    },
+    {
+      "provider": "minimax",
+      "displayName": "MiniMax",
+      "baseUrl": "https://api.minimax.io/v1",
+      "prefix": "minimax",
+      "apiStyle": "openai-compatible",
+      "requiredHeaders": {},
+      "auth": "MINIMAX_API_KEY (Bearer). La Subscription Key de M Plan y la API Key pay-as-you-go no son intercambiables.",
+      "billing": "payg-or-subscription",
+      "plans": [
+        {
+          "id": "m-plan-go",
+          "name": "M Plan Go",
+          "pricePerMonthUsd": 22,
+          "pricePerYearUsd": 220,
+          "usageVsGo": "1x"
+        },
+        {
+          "id": "m-plan-explore",
+          "name": "M Plan Explore",
+          "pricePerMonthUsd": 55,
+          "pricePerYearUsd": 550,
+          "usageVsGo": "3x"
+        },
+        {
+          "id": "m-plan-build",
+          "name": "M Plan Build",
+          "pricePerMonthUsd": 132,
+          "pricePerYearUsd": 1320,
+          "usageVsGo": "7.5x"
+        }
+      ],
+      "limits": {
+        "windows": [
+          "5 horas (rodante)",
+          "semanal"
+        ],
+        "videoWindow": "solo semanal, sin ventana de 5 horas",
+        "quotaCarryOver": false,
+        "rpm": "desconocido",
+        "tpm": "desconocido",
+        "throttleRecovery": "aprox. 1 minuto; los limites pueden endurecerse en horas pico",
+        "creditPack": "1,000 Credits = $1, validos 1 ano; se consumen tras la cuota de plan"
+      },
+      "quotaEndpoint": "https://www.minimax.io/v1/token_plan/remains",
+      "models": [
+        {
+          "modelId": "minimax/MiniMax-M3",
+          "apiModelId": "MiniMax-M3",
+          "provider": "minimax",
+          "priceIn": 0.3,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.06,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "payg",
+          "billing": "payg-or-subscription",
+          "serviceTier": "standard",
+          "contextTier": "≤512k input tokens; 50% off permanente",
+          "intelligenceIndex": {
+            "value": 29,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/minimax-m3",
+            "consultedAt": "2026-10-15"
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M3",
+          "apiModelId": "MiniMax-M3",
+          "provider": "minimax",
+          "priceIn": 0.6,
+          "priceOut": 2.4,
+          "priceCacheRead": 0.12,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "payg",
+          "billing": "payg-or-subscription",
+          "serviceTier": "standard",
+          "contextTier": ">512k input tokens; 50% off permanente",
+          "intelligenceIndex": {
+            "value": 29,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/minimax-m3",
+            "consultedAt": "2026-10-15"
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M2.7",
+          "apiModelId": "MiniMax-M2.7",
+          "provider": "minimax",
+          "priceIn": 0.3,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.06,
+          "priceCacheWrite": 0.375,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "payg",
+          "billing": "payg-or-subscription",
+          "serviceTier": "standard",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 23,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/minimax-m2-7",
+            "consultedAt": "2026-10-15"
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M2.7-highspeed",
+          "apiModelId": "MiniMax-M2.7-highspeed",
+          "provider": "minimax",
+          "priceIn": 0.6,
+          "priceOut": 2.4,
+          "priceCacheRead": 0.06,
+          "priceCacheWrite": 0.375,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "payg",
+          "billing": "payg-or-subscription",
+          "serviceTier": "standard",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M2.5",
+          "apiModelId": "MiniMax-M2.5",
+          "provider": "minimax",
+          "priceIn": 0.3,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.03,
+          "priceCacheWrite": 0.375,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "payg",
+          "billing": "payg-or-subscription",
+          "serviceTier": "standard",
+          "contextTier": "legacy",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M2.5-highspeed",
+          "apiModelId": "MiniMax-M2.5-highspeed",
+          "provider": "minimax",
+          "priceIn": 0.6,
+          "priceOut": 2.4,
+          "priceCacheRead": 0.03,
+          "priceCacheWrite": 0.375,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "payg",
+          "billing": "payg-or-subscription",
+          "serviceTier": "standard",
+          "contextTier": "legacy",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M2.1",
+          "apiModelId": "MiniMax-M2.1",
+          "provider": "minimax",
+          "priceIn": 0.3,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.03,
+          "priceCacheWrite": 0.375,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "payg",
+          "billing": "payg-or-subscription",
+          "serviceTier": "standard",
+          "contextTier": "legacy",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M2.1-highspeed",
+          "apiModelId": "MiniMax-M2.1-highspeed",
+          "provider": "minimax",
+          "priceIn": 0.6,
+          "priceOut": 2.4,
+          "priceCacheRead": 0.03,
+          "priceCacheWrite": 0.375,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "payg",
+          "billing": "payg-or-subscription",
+          "serviceTier": "standard",
+          "contextTier": "legacy",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M2",
+          "apiModelId": "MiniMax-M2",
+          "provider": "minimax",
+          "priceIn": 0.3,
+          "priceOut": 1.2,
+          "priceCacheRead": 0.03,
+          "priceCacheWrite": 0.375,
+          "priceUnit": "USD per 1M tokens",
+          "plan": "payg",
+          "billing": "payg-or-subscription",
+          "serviceTier": "standard",
+          "contextTier": "legacy",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M3.1-Flash-Preview",
+          "apiModelId": "MiniMax-M3.1-Flash-Preview",
+          "provider": "minimax",
+          "priceIn": "desconocido",
+          "priceOut": "desconocido",
+          "priceCacheRead": "desconocido",
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "m-plan",
+          "billing": "subscription-quota",
+          "serviceTier": "standard",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "note": "MiniMax no publica precio pay-as-you-go para este id; solo esta disponible dentro de M Plan / MiniMax Code.",
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo",
+            "https://platform.minimax.io/docs/m-plan/intro",
+            "https://platform.minimax.io/docs/m-plan/faq",
+            "https://platform.minimax.io/docs/m-plan/monthly-offer",
+            "https://www.minimax.io/m-plan"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "minimax/MiniMax-M3.1",
+          "apiModelId": "MiniMax-M3.1",
+          "provider": "minimax",
+          "priceIn": "desconocido",
+          "priceOut": "desconocido",
+          "priceCacheRead": "desconocido",
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "plan": "m-plan",
+          "billing": "subscription-quota",
+          "serviceTier": "standard",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "note": "MiniMax no publica precio pay-as-you-go para este id; solo esta disponible dentro de M Plan / MiniMax Code.",
+          "sourceUrls": [
+            "https://platform.minimax.io/docs/guides/pricing-paygo",
+            "https://platform.minimax.io/docs/m-plan/intro",
+            "https://platform.minimax.io/docs/m-plan/faq",
+            "https://platform.minimax.io/docs/m-plan/monthly-offer",
+            "https://www.minimax.io/m-plan"
+          ],
+          "consultedAt": "2026-10-15"
+        }
+      ],
+      "sourceUrls": [
+        "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "https://platform.minimax.io/docs/m-plan/intro",
+        "https://platform.minimax.io/docs/m-plan/faq",
+        "https://platform.minimax.io/docs/m-plan/monthly-offer",
+        "https://www.minimax.io/m-plan"
+      ],
+      "consultedAt": "2026-10-15"
+    },
+    {
+      "provider": "zai",
+      "displayName": "Z.AI (GLM Coding Plan)",
+      "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+      "prefix": "zai",
+      "apiStyle": "openai-compatible",
+      "alternateBaseUrls": {
+        "anthropic": "https://api.z.ai/api/anthropic",
+        "openai-responses": "https://api.z.ai/api/v1"
+      },
+      "requiredHeaders": {},
+      "auth": "ZAI_API_KEY (Bearer)",
+      "billing": "subscription-quota",
+      "plans": [
+        {
+          "id": "lite",
+          "name": "Lite",
+          "pricePerMonthUsd": 18,
+          "pricePerMonthUsdAnnualBilling": 12.6,
+          "credits5h": 2000,
+          "creditsWeek": 10000,
+          "concurrency": "Daily use, repo pequeno"
+        },
+        {
+          "id": "pro",
+          "name": "Pro",
+          "pricePerMonthUsd": 80,
+          "pricePerMonthUsdAnnualBilling": 56,
+          "credits5h": 12000,
+          "creditsWeek": 60000,
+          "concurrency": "6x Lite; un proyecto cada vez"
+        },
+        {
+          "id": "max",
+          "name": "Max",
+          "pricePerMonthUsd": 168,
+          "pricePerMonthUsdAnnualBilling": 117.6,
+          "credits5h": 28000,
+          "creditsWeek": 140000,
+          "concurrency": "14x Lite; 2+ proyectos"
+        }
+      ],
+      "limits": {
+        "creditFormula": "(input*multIn + cachedInput*multCached + output*multOut) / 10000",
+        "mcpCreditFormula": "calls * outputMultiplier (Web Search / Web Reader / Zread = 1.2)",
+        "peakWindow": "lunes a viernes 14:00-18:00 SGT (UTC+8)",
+        "offPeakDiscount": "el consumo off-peak se cobra al 50% del ritmo de creditos",
+        "rpm": "desconocido",
+        "tpm": "desconocido",
+        "supportedModels": [
+          "glm-5.3",
+          "glm-5.3-flash"
+        ],
+        "routing": "glm-5.2 y glm-5.1 -> glm-5.3; glm-4.7 -> glm-5.3-flash",
+        "toolRestriction": "solo dentro de las herramientas oficialmente soportadas; el incumplimiento puede reducir los beneficios del plan"
+      },
+      "teamPlans": [
+        {
+          "id": "standard-seat",
+          "pricePerSeatMonthUsd": 88,
+          "creditsWeek": 66000,
+          "pricePerSeatMonthUsdAnnualBilling": 79.2
+        },
+        {
+          "id": "premium-seat",
+          "pricePerSeatMonthUsd": 188,
+          "creditsWeek": 155000,
+          "pricePerSeatMonthUsdAnnualBilling": 169.2
+        }
+      ],
+      "models": [
+        {
+          "modelId": "zai/glm-5.3",
+          "apiModelId": "glm-5.3",
+          "provider": "zai",
+          "priceIn": 1.4,
+          "priceOut": 4.4,
+          "priceCacheRead": 0.26,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "pay-as-you-go del endpoint api.z.ai/api/paas/v4 (no el plan de codigo)",
+          "plan": "coding-plan",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 45,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/glm-5-3",
+            "consultedAt": "2026-10-15"
+          },
+          "creditMultipliers": {
+            "input": 6.9,
+            "cachedInput": 1.7,
+            "output": 24
+          },
+          "limits": {
+            "credits5h": {
+              "lite": 2000,
+              "pro": 12000,
+              "max": 28000
+            },
+            "creditsWeek": {
+              "lite": 10000,
+              "pro": 60000,
+              "max": 140000
+            },
+            "rpm": "desconocido",
+            "tpm": "desconocido",
+            "concurrency": "Limitado por plan (Lite un proyecto, Pro 1-2, Max 2+); el limite numerico exacto no se publica."
+          },
+          "sourceUrls": [
+            "https://docs.z.ai/guides/overview/pricing",
+            "https://docs.z.ai/devpack/overview",
+            "https://docs.z.ai/devpack/usage-policy",
+            "https://docs.z.ai/devpack/quick-start",
+            "https://z.ai/subscribe"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "zai/glm-5.3-flash",
+          "apiModelId": "glm-5.3-flash",
+          "provider": "zai",
+          "priceIn": 0.15,
+          "priceOut": 0.5,
+          "priceCacheRead": 0.03,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "pay-as-you-go del endpoint api.z.ai/api/paas/v4 (no el plan de codigo)",
+          "plan": "coding-plan",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 42,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/glm-5-3-flash",
+            "consultedAt": "2026-10-15"
+          },
+          "creditMultipliers": {
+            "input": 2.3,
+            "cachedInput": 0.56,
+            "output": 8
+          },
+          "limits": {
+            "credits5h": {
+              "lite": 2000,
+              "pro": 12000,
+              "max": 28000
+            },
+            "creditsWeek": {
+              "lite": 10000,
+              "pro": 60000,
+              "max": 140000
+            },
+            "rpm": "desconocido",
+            "tpm": "desconocido",
+            "concurrency": "Limitado por plan (Lite un proyecto, Pro 1-2, Max 2+); el limite numerico exacto no se publica."
+          },
+          "sourceUrls": [
+            "https://docs.z.ai/guides/overview/pricing",
+            "https://docs.z.ai/devpack/overview",
+            "https://docs.z.ai/devpack/usage-policy",
+            "https://docs.z.ai/devpack/quick-start",
+            "https://z.ai/subscribe"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "zai/glm-5.2",
+          "apiModelId": "glm-5.2",
+          "provider": "zai",
+          "priceIn": 1.4,
+          "priceOut": 4.4,
+          "priceCacheRead": 0.26,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "pay-as-you-go del endpoint api.z.ai/api/paas/v4 (no el plan de codigo)",
+          "plan": "coding-plan",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 34,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/glm-5-2",
+            "consultedAt": "2026-10-15"
+          },
+          "creditMultipliers": "desconocido",
+          "limits": {
+            "credits5h": {
+              "lite": 2000,
+              "pro": 12000,
+              "max": 28000
+            },
+            "creditsWeek": {
+              "lite": 10000,
+              "pro": 60000,
+              "max": 140000
+            },
+            "rpm": "desconocido",
+            "tpm": "desconocido",
+            "concurrency": "Limitado por plan (Lite un proyecto, Pro 1-2, Max 2+); el limite numerico exacto no se publica."
+          },
+          "sourceUrls": [
+            "https://docs.z.ai/guides/overview/pricing",
+            "https://docs.z.ai/devpack/overview",
+            "https://docs.z.ai/devpack/usage-policy",
+            "https://docs.z.ai/devpack/quick-start",
+            "https://z.ai/subscribe"
+          ],
+          "consultedAt": "2026-10-15",
+          "routedToModelId": "zai/glm-5.3",
+          "note": "Bajo GLM Coding Plan este id se redirige automaticamente a glm-5.3; el precio de la tabla es pay-as-you-go, no el del plan."
+        },
+        {
+          "modelId": "zai/glm-5.1",
+          "apiModelId": "glm-5.1",
+          "provider": "zai",
+          "priceIn": 1.4,
+          "priceOut": 4.4,
+          "priceCacheRead": 0.26,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "pay-as-you-go del endpoint api.z.ai/api/paas/v4 (no el plan de codigo)",
+          "plan": "coding-plan",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "creditMultipliers": "desconocido",
+          "limits": {
+            "credits5h": {
+              "lite": 2000,
+              "pro": 12000,
+              "max": 28000
+            },
+            "creditsWeek": {
+              "lite": 10000,
+              "pro": 60000,
+              "max": 140000
+            },
+            "rpm": "desconocido",
+            "tpm": "desconocido",
+            "concurrency": "Limitado por plan (Lite un proyecto, Pro 1-2, Max 2+); el limite numerico exacto no se publica."
+          },
+          "sourceUrls": [
+            "https://docs.z.ai/guides/overview/pricing",
+            "https://docs.z.ai/devpack/overview",
+            "https://docs.z.ai/devpack/usage-policy",
+            "https://docs.z.ai/devpack/quick-start",
+            "https://z.ai/subscribe"
+          ],
+          "consultedAt": "2026-10-15",
+          "routedToModelId": "zai/glm-5.3",
+          "note": "Bajo GLM Coding Plan este id se redirige automaticamente a glm-5.3; el precio de la tabla es pay-as-you-go, no el del plan."
+        },
+        {
+          "modelId": "zai/glm-4.7",
+          "apiModelId": "glm-4.7",
+          "provider": "zai",
+          "priceIn": 0.6,
+          "priceOut": 2.2,
+          "priceCacheRead": 0.11,
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "pay-as-you-go del endpoint api.z.ai/api/paas/v4 (no el plan de codigo)",
+          "plan": "coding-plan",
+          "billing": "subscription-quota",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "creditMultipliers": "desconocido",
+          "limits": {
+            "credits5h": {
+              "lite": 2000,
+              "pro": 12000,
+              "max": 28000
+            },
+            "creditsWeek": {
+              "lite": 10000,
+              "pro": 60000,
+              "max": 140000
+            },
+            "rpm": "desconocido",
+            "tpm": "desconocido",
+            "concurrency": "Limitado por plan (Lite un proyecto, Pro 1-2, Max 2+); el limite numerico exacto no se publica."
+          },
+          "sourceUrls": [
+            "https://docs.z.ai/guides/overview/pricing",
+            "https://docs.z.ai/devpack/overview",
+            "https://docs.z.ai/devpack/usage-policy",
+            "https://docs.z.ai/devpack/quick-start",
+            "https://z.ai/subscribe"
+          ],
+          "consultedAt": "2026-10-15",
+          "routedToModelId": "zai/glm-5.3-flash",
+          "note": "Bajo GLM Coding Plan este id se redirige automaticamente a glm-5.3-flash; el precio de la tabla es pay-as-you-go, no el del plan."
+        }
+      ],
+      "sourceUrls": [
+        "https://docs.z.ai/devpack/overview",
+        "https://docs.z.ai/devpack/usage-policy",
+        "https://docs.z.ai/devpack/quick-start",
+        "https://z.ai/subscribe",
+        "https://docs.z.ai/guides/overview/pricing"
+      ],
+      "consultedAt": "2026-10-15"
+    },
+    {
+      "provider": "kimi-coding",
+      "displayName": "Kimi for Coding",
+      "baseUrl": "https://api.kimi.com/coding/v1",
+      "prefix": "kimi-coding",
+      "apiStyle": "openai-and-anthropic-compatible",
+      "alternateBaseUrls": {
+        "overseas-openai": "https://api.kimi.ai/coding/v1",
+        "anthropic": "https://api.kimi.com/coding/",
+        "anthropic-overseas": "https://api.kimi.ai/coding/"
+      },
+      "requiredHeaders": {
+        "user-agent": "debe conservar la identidad real del cliente; suplantarla puede suspender los beneficios de la membresia"
+      },
+      "auth": "KIMI_API_KEY (Bearer, hasta 5 claves en la consola de Kimi Code)",
+      "billing": "subscription-quota",
+      "plans": [
+        {
+          "id": "plus",
+          "name": "Plus",
+          "pricePerMonthUsd": 19,
+          "pricePerYearUsd": 180,
+          "monthlyEquivalentAnnualUsd": 15,
+          "region": "international"
+        },
+        {
+          "id": "pro",
+          "name": "Pro",
+          "pricePerMonthUsd": 39,
+          "pricePerYearUsd": 372,
+          "monthlyEquivalentAnnualUsd": 31,
+          "region": "international"
+        },
+        {
+          "id": "max",
+          "name": "Max",
+          "pricePerMonthUsd": 99,
+          "pricePerYearUsd": 948,
+          "monthlyEquivalentAnnualUsd": 79,
+          "region": "international"
+        },
+        {
+          "id": "ultra",
+          "name": "Ultra",
+          "pricePerMonthUsd": 199,
+          "pricePerYearUsd": 1908,
+          "monthlyEquivalentAnnualUsd": 159,
+          "region": "international"
+        },
+        {
+          "id": "plus",
+          "name": "Plus",
+          "pricePerMonthCny": "¥99",
+          "pricePerYearCny": "¥948",
+          "monthlyEquivalentAnnualCny": "¥79",
+          "region": "china"
+        },
+        {
+          "id": "pro",
+          "name": "Pro",
+          "pricePerMonthCny": "¥199",
+          "pricePerYearCny": "¥1,908",
+          "monthlyEquivalentAnnualCny": "¥159",
+          "region": "china"
+        },
+        {
+          "id": "max",
+          "name": "Max",
+          "pricePerMonthCny": "¥699",
+          "pricePerYearCny": "¥6,708",
+          "monthlyEquivalentAnnualCny": "¥559",
+          "region": "china"
+        },
+        {
+          "id": "go",
+          "name": "Go",
+          "pricePerMonthCny": "¥49",
+          "pricePerYearCny": "¥468",
+          "monthlyEquivalentAnnualCny": "¥39",
+          "region": "china"
+        }
+      ],
+      "limits": {
+        "requestsPer5h": "desconocido",
+        "requestsPerWeek": "desconocido",
+        "requestsPerMonth": "desconocido",
+        "monthlyCreditPool": "compartido con el resto de la membresia; sin rollover",
+        "concurrentRequests": "desconocido",
+        "fiveHourWindow": true,
+        "weeklyWindow": "solo planes legacy",
+        "rpm": "desconocido",
+        "tpm": "desconocido",
+        "quotaScope": "todos los dispositivos y API Keys comparten la misma cuota",
+        "extraUsage": "opcional, se descuenta solo cuando la cuota de suscripcion se agota; minimo ¥25 por recarga, maximo ¥3,000/dia, saldo maximo ¥10,000"
+      },
+      "models": [
+        {
+          "modelId": "kimi-coding/k3",
+          "apiModelId": "k3",
+          "provider": "kimi-coding",
+          "priceIn": "desconocido",
+          "priceOut": "desconocido",
+          "priceCacheRead": "desconocido",
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "El endpoint de codigo no publica precio por token; se factura contra la cuota de la membresia.",
+          "plan": "membership",
+          "billing": "subscription-quota",
+          "description": "Kimi K3 (contexto hasta 1M)",
+          "minPlanInternational": "Plus",
+          "minPlanChina": "Plus",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 44,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/kimi-k3",
+            "consultedAt": "2026-10-15"
+          },
+          "openPlatformReferencePrice": {
+            "in": 3.0,
+            "cacheRead": 0.3,
+            "out": 15.0
+          },
+          "openPlatformReferenceNote": "Precio de la Kimi Open Platform (api.moonshot.ai), un producto distinto. Sirve solo como referencia de lo que cuesta el Extra Usage, que se factura cerca de ese precio. No es el precio de api.kimi.com/coding/v1.",
+          "limits": {
+            "requestsPer5h": "desconocido",
+            "requestsPerWeek": "desconocido",
+            "requestsPerMonth": "desconocido",
+            "monthlyCreditPool": "compartido con el resto de membresia (Kimi web/app)",
+            "concurrentRequests": "desconocido",
+            "weeklyWindow": "solo planes legacy; los planes nuevos solo tienen ventana rodante de 5 horas",
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://www.kimi.com/code/docs/en/",
+            "https://www.kimi.com/code/docs/en/kimi-code/membership.html",
+            "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html",
+            "https://www.kimi.ai/help/membership/membership-pricing"
+          ],
+          "consultedAt": "2026-10-15",
+          "note": "k3 (1M) consume ~2x la cuota de k3-256k."
+        },
+        {
+          "modelId": "kimi-coding/k3-256k",
+          "apiModelId": "k3-256k",
+          "provider": "kimi-coding",
+          "priceIn": "desconocido",
+          "priceOut": "desconocido",
+          "priceCacheRead": "desconocido",
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "El endpoint de codigo no publica precio por token; se factura contra la cuota de la membresia.",
+          "plan": "membership",
+          "billing": "subscription-quota",
+          "description": "Kimi K3 limitado a 256K de contexto",
+          "minPlanInternational": "Plus",
+          "minPlanChina": "Plus",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 44,
+            "variant": "max",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/kimi-k3",
+            "consultedAt": "2026-10-15"
+          },
+          "openPlatformReferencePrice": {
+            "in": 3.0,
+            "cacheRead": 0.3,
+            "out": 15.0
+          },
+          "openPlatformReferenceNote": "Precio de la Kimi Open Platform (api.moonshot.ai), un producto distinto. Sirve solo como referencia de lo que cuesta el Extra Usage, que se factura cerca de ese precio. No es el precio de api.kimi.com/coding/v1.",
+          "limits": {
+            "requestsPer5h": "desconocido",
+            "requestsPerWeek": "desconocido",
+            "requestsPerMonth": "desconocido",
+            "monthlyCreditPool": "compartido con el resto de membresia (Kimi web/app)",
+            "concurrentRequests": "desconocido",
+            "weeklyWindow": "solo planes legacy; los planes nuevos solo tienen ventana rodante de 5 horas",
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://www.kimi.com/code/docs/en/",
+            "https://www.kimi.com/code/docs/en/kimi-code/membership.html",
+            "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html",
+            "https://www.kimi.ai/help/membership/membership-pricing"
+          ],
+          "consultedAt": "2026-10-15",
+          "note": "Mismos resultados que k3 dentro de 256k; no admite entrada de video."
+        },
+        {
+          "modelId": "kimi-coding/kimi-for-coding",
+          "apiModelId": "kimi-for-coding",
+          "provider": "kimi-coding",
+          "priceIn": "desconocido",
+          "priceOut": "desconocido",
+          "priceCacheRead": "desconocido",
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "El endpoint de codigo no publica precio por token; se factura contra la cuota de la membresia.",
+          "plan": "membership",
+          "billing": "subscription-quota",
+          "description": "K2.8 Preview",
+          "minPlanInternational": "Plus",
+          "minPlanChina": "Plus",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "openPlatformReferencePrice": "desconocido",
+          "openPlatformReferenceNote": "Precio de la Kimi Open Platform (api.moonshot.ai), un producto distinto. Sirve solo como referencia de lo que cuesta el Extra Usage, que se factura cerca de ese precio. No es el precio de api.kimi.com/coding/v1.",
+          "limits": {
+            "requestsPer5h": "desconocido",
+            "requestsPerWeek": "desconocido",
+            "requestsPerMonth": "desconocido",
+            "monthlyCreditPool": "compartido con el resto de membresia (Kimi web/app)",
+            "concurrentRequests": "desconocido",
+            "weeklyWindow": "solo planes legacy; los planes nuevos solo tienen ventana rodante de 5 horas",
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://www.kimi.com/code/docs/en/",
+            "https://www.kimi.com/code/docs/en/kimi-code/membership.html",
+            "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html",
+            "https://www.kimi.ai/help/membership/membership-pricing"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "kimi-coding/kimi-for-coding-highspeed",
+          "apiModelId": "kimi-for-coding-highspeed",
+          "provider": "kimi-coding",
+          "priceIn": "desconocido",
+          "priceOut": "desconocido",
+          "priceCacheRead": "desconocido",
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "El endpoint de codigo no publica precio por token; se factura contra la cuota de la membresia.",
+          "plan": "membership",
+          "billing": "subscription-quota",
+          "description": "K2.7 Code HighSpeed",
+          "minPlanInternational": "Pro",
+          "minPlanChina": "Pro",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": 26,
+            "variant": "default",
+            "source": "Artificial Analysis Intelligence Index v4.3.2",
+            "sourceUrl": "https://artificialanalysis.ai/models/kimi-k2-7-code",
+            "consultedAt": "2026-10-15"
+          },
+          "openPlatformReferencePrice": "desconocido",
+          "openPlatformReferenceNote": "Precio de la Kimi Open Platform (api.moonshot.ai), un producto distinto. Sirve solo como referencia de lo que cuesta el Extra Usage, que se factura cerca de ese precio. No es el precio de api.kimi.com/coding/v1.",
+          "limits": {
+            "requestsPer5h": "desconocido",
+            "requestsPerWeek": "desconocido",
+            "requestsPerMonth": "desconocido",
+            "monthlyCreditPool": "compartido con el resto de membresia (Kimi web/app)",
+            "concurrentRequests": "desconocido",
+            "weeklyWindow": "solo planes legacy; los planes nuevos solo tienen ventana rodante de 5 horas",
+            "rpm": "desconocido",
+            "tpm": "desconocido"
+          },
+          "sourceUrls": [
+            "https://www.kimi.com/code/docs/en/",
+            "https://www.kimi.com/code/docs/en/kimi-code/membership.html",
+            "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html",
+            "https://www.kimi.ai/help/membership/membership-pricing"
+          ],
+          "consultedAt": "2026-10-15",
+          "note": "Mismo modelo base que kimi-for-coding con salida ~5-6x mas rapida."
+        }
+      ],
+      "sourceUrls": [
+        "https://www.kimi.com/code/docs/en/",
+        "https://www.kimi.com/code/docs/en/kimi-code/membership.html",
+        "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html",
+        "https://www.kimi.ai/help/membership/membership-pricing"
+      ],
+      "consultedAt": "2026-10-15"
+    },
+    {
+      "provider": "ollama",
+      "displayName": "Ollama (local)",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "prefix": "ollama",
+      "apiStyle": "openai-compatible",
+      "requiredHeaders": {},
+      "auth": "ninguna en local",
+      "billing": "local-hardware",
+      "plans": [
+        {
+          "id": "local",
+          "name": "Local",
+          "pricePerMonthUsd": 0
+        }
+      ],
+      "limits": {
+        "rpm": "desconocido",
+        "tpm": "desconocido",
+        "numParallel": 1,
+        "maxLoadedModels": "3 x GPUs, o 3 en CPU",
+        "defaultContextLength": 4096,
+        "gpu": "esta maquina no tiene GPU; inferencia por CPU"
+      },
+      "runtimeObservation": {
+        "checkedAt": "2026-10-15",
+        "ollamaClientVersion": "0.20.7",
+        "serverRunning": false,
+        "installedModels": [
+          "qwen2.5:0.5b",
+          "qwen2.5:1.5b"
+        ],
+        "note": "ollama.service esta instalado pero inactivo y /v1/models no responde; el catalogo local se ha leido de ~/.ollama/models/manifests. Arranca el servicio para verificarlo en vivo."
+      },
+      "models": [
+        {
+          "modelId": "ollama/qwen2.5:0.5b",
+          "apiModelId": "qwen2.5:0.5b",
+          "provider": "ollama",
+          "priceIn": 0,
+          "priceOut": 0,
+          "priceCacheRead": "desconocido",
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "inferencia local: no hay coste por token",
+          "plan": "local",
+          "billing": "local-hardware",
+          "description": "0.5B, solo texto",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido",
+            "numParallel": 1,
+            "numParallelSource": "OLLAMA_NUM_PARALLEL por defecto = 1 (docs.ollama.com/faq)",
+            "maxLoadedModels": "3 x GPUs, o 3 en inferencia CPU (OLLAMA_MAX_LOADED_MODELS)",
+            "defaultContextLength": 4096,
+            "contextLengthOverride": "OLLAMA_CONTEXT_LENGTH",
+            "note": "Sin GPU en esta maquina: toda la inferencia va por CPU. Los limites dependen de la RAM y no de una cuota del proveedor."
+          },
+          "sourceUrls": [
+            "https://docs.ollama.com/faq",
+            "https://docs.ollama.com/api"
+          ],
+          "consultedAt": "2026-10-15"
+        },
+        {
+          "modelId": "ollama/qwen2.5:1.5b",
+          "apiModelId": "qwen2.5:1.5b",
+          "provider": "ollama",
+          "priceIn": 0,
+          "priceOut": 0,
+          "priceCacheRead": "desconocido",
+          "priceCacheWrite": "desconocido",
+          "priceUnit": "USD per 1M tokens",
+          "priceBasis": "inferencia local: no hay coste por token",
+          "plan": "local",
+          "billing": "local-hardware",
+          "description": "1.5B, solo texto",
+          "contextTier": "desconocido",
+          "intelligenceIndex": {
+            "value": "desconocido",
+            "variant": "desconocido",
+            "source": "Artificial Analysis",
+            "sourceUrl": "desconocido",
+            "consultedAt": "2026-10-15",
+            "note": "No pagina publica de Artificial Analysis para este modelo el 2026-10-15 (404). No se sustituye por otra cifra."
+          },
+          "limits": {
+            "rpm": "desconocido",
+            "tpm": "desconocido",
+            "numParallel": 1,
+            "numParallelSource": "OLLAMA_NUM_PARALLEL por defecto = 1 (docs.ollama.com/faq)",
+            "maxLoadedModels": "3 x GPUs, o 3 en inferencia CPU (OLLAMA_MAX_LOADED_MODELS)",
+            "defaultContextLength": 4096,
+            "contextLengthOverride": "OLLAMA_CONTEXT_LENGTH",
+            "note": "Sin GPU en esta maquina: toda la inferencia va por CPU. Los limites dependen de la RAM y no de una cuota del proveedor."
+          },
+          "sourceUrls": [
+            "https://docs.ollama.com/faq",
+            "https://docs.ollama.com/api"
+          ],
+          "consultedAt": "2026-10-15"
+        }
+      ],
+      "sourceUrls": [
+        "https://docs.ollama.com/faq",
+        "https://docs.ollama.com/api"
+      ],
+      "consultedAt": "2026-10-15"
+    }
+  ]
+}
