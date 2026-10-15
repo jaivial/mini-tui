@@ -5,7 +5,7 @@
   import Mascot from "./Mascot.svelte";
   import Avatar from "./Avatar.svelte";
   import { store } from "../stores/sessions.svelte";
-  import { baseName, cost, relativeTime } from "../format";
+  import { cost, relativeTime } from "../format";
   import { statusLine } from "../mascot";
   import { partitionBots } from "../botGroups";
   import { botProgress, progressLabel, runningLabel } from "../botRows";
@@ -261,8 +261,6 @@
                 </span>
                 <span class="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-muted">
                   <span class="truncate {session.status === 'running' ? 'font-medium text-live' : ''}">{statusLine(session.status)}</span>
-                  <span class="shrink-0 text-ink-faint" aria-hidden="true">·</span>
-                  <span class="truncate text-ink-faint">{baseName(session.cwd)}</span>
                   {#if session.cost > 0}
                     <span class="tnum ml-auto shrink-0 text-ink-faint">{cost(session.cost)}</span>
                   {/if}
