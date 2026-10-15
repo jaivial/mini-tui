@@ -38,6 +38,8 @@ import type { EvoSender, SendLedger } from "./evoSend";
 import type { QueueBridge } from "./queueBridge";
 import type { GroupPlan } from "./groupBridge";
 import type { SessionCommandPlan } from "./sessionCommand";
+import { readFileSync, statSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { ensureMediaFrames, lateTranscriptNote, transcribePendingAudio, type LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 
 export interface PendingRow {
@@ -90,10 +92,50 @@ export interface ConsumerOptions {
   /** Operator chat command (v4-H): recognizes `/newsession <subject>` in an
    * accepted row; a non-null plan is handled with NO model turn. Optional. */
   planSessionCommand?: (row: PendingRow, message: Inbound) => SessionCommandPlan | null;
+  /** v4-F: strips [[mini-image: <path>]] markers from the reply and returns
+   * the validated screenshot paths to deliver as media. Optional. */
+  planImages?: (row: PendingRow, message: Inbound, replyText: string) => { text: string; images: string[] };
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// ---- [[mini-image: <path>]] markers (v4-F) -------------------------------------
+
+const IMAGE_MARKER = /\[\[mini-image:\s*([^\]]+)\]\]/g;
+const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const IMAGE_MAX_PER_REPLY = 4;
+
+export const cuPoolDir = (): string => process.env.MINITUI_CU_POOL_DIR || join(homedir(), ".local/share/mini-tui/cu-pool");
+
+/** Strip the markers and validate each path: only regular PNGs inside the
+ * cu pool dir (the computer_use tool's own shots) are deliverable — a model
+ * can never attach an arbitrary file from the host. */
+export function planImageMarkers(replyText: string, poolDir: string): { text: string; images: string[] } {
+  const images: string[] = [];
+  let last = 0;
+  const chunks: string[] = [];
+  const root = resolve(poolDir);
+  for (const match of replyText.matchAll(IMAGE_MARKER)) {
+    chunks.push(replyText.slice(last, match.index));
+    last = match.index + match[0].length;
+    const raw = (match[1] ?? "").trim();
+    if (images.length >= IMAGE_MAX_PER_REPLY) continue;
+    const abs = resolve(raw);
+    if (!abs.startsWith(root + sep)) continue;
+    if (!abs.endsWith(".png")) continue;
+    try {
+      const meta = statSync(abs);
+      if (!meta.isFile() || meta.size > IMAGE_MAX_BYTES) continue;
+      if (images.includes(abs)) continue;
+      images.push(abs);
+    } catch {
+      continue;
+    }
+  }
+  chunks.push(replyText.slice(last));
+  return { text: chunks.join("").replace(/\n{3,}/g, "\n\n").trim(), images };
+}
 
 /** The sender that speaks AS this row's account. Identity hygiene: a message
  * accepted for account A is never answered with account B's instance token.
@@ -273,6 +315,7 @@ async function processOne(
 
   const quotedId = entry?.quotedId ?? message.replyTo ?? message.messageId;
   let replyText = entry?.replyText ?? "";
+  let imagePlan: { text: string; images: string[] } = { text: "", images: [] };
   let mediaFrames: string[] = [];
   if (!replyText) {
     // Attachments resolve BEFORE the turn: the transcript is durable by then,
@@ -288,7 +331,11 @@ async function processOne(
     // Group-session directive (WA-5) is parsed from what survives the queue
     // bridge; both bridges' deferred work runs behind the cursor.
     const groupPlanned = options.planGroupCreation?.(row, message, planned.text) ?? { text: planned.text };
-    replyText = groupPlanned.text;
+    // [[mini-image: <path>]] markers (v4-F) leave the text; the validated
+    // screenshots ride along as media, sent best-effort after the reply.
+    const imagePlanParsed = options.planImages?.(row, message, groupPlanned.text) ?? { text: groupPlanned.text, images: [] };
+    imagePlan = imagePlanParsed;
+    replyText = imagePlanParsed.text;
     // The reply carries the transcript frames (or their honest per-attachment
     // failure notes): mark delivered so the late sweep never re-sends them as
     // a follow-up. A turn that ended in the generic failure note carried
@@ -329,6 +376,17 @@ async function processOne(
     options.ledger.markSent(seq, outcome.replyId);
     log("channel.consumer.sent", { seq, replyId: outcome.replyId, session: row.session });
     ack();
+    // Best-effort image delivery (v4-F): the text reply is already durable and
+    // the cursor advanced, so a failed screenshot send is logged, never a
+    // redelivery loop — the model can re-take the shot on the next request.
+    for (const image of imagePlan.images) {
+      try {
+        const sent = await sender.sendImage({ number: row.thread, mediaBase64: readFileSync(image).toString("base64") });
+        log("channel.consumer.image_" + sent.kind, { seq, image: image, replyId: sent.kind === "sent" ? sent.replyId : undefined, error: sent.kind === "uncertain" ? sent.error.slice(0, 160) : undefined });
+      } catch (error) {
+        log("channel.consumer.image_failed", { seq, image, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     return;
   }
   // Unknown whether the reply landed: the cursor stays put and the next pass

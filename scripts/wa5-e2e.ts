@@ -39,7 +39,7 @@ import { join } from "node:path";
 
 import { ChannelInbox } from "../src/channels/inbox";
 import { evoReceiver } from "../src/channels/evoReceiver";
-import { startChannelConsumer } from "../src/channels/consumer";
+import { startChannelConsumer, planImageMarkers, cuPoolDir } from "../src/channels/consumer";
 import { SendLedger, type EvoSender } from "../src/channels/evoSend";
 import { planGroupCreation, type GroupBridgeOptions } from "../src/channels/groupBridge";
 import { planSessionCommand } from "../src/channels/sessionCommand";
@@ -108,7 +108,12 @@ const senderOf = (account: string, instance: string): EvoSender => ({
     return { kind: "sent", replyId: `ledger-${sent.length}` };
   },
   async recentOutgoing() { return []; },
+  async sendImage(args) {
+    imagesSent.push({ account, number: args.number, bytes: Buffer.byteLength(args.mediaBase64, "base64") });
+    return { kind: "sent", replyId: `img-${imagesSent.length}` };
+  },
 });
+const imagesSent: Array<{ account: string; number: string; bytes: number }> = [];
 
 // ---- real receiver with two accounts ---------------------------------------
 // The mention gate lives in the consumer (WA-5): the receiver accepts any
@@ -180,7 +185,7 @@ const evoMessage = (overrides: Record<string, unknown> = {}) => {
   await post(SECRET_A, evoMessage({ key: { id: "cons-dm" } }));
   await post(SECRET_A, evoMessage({ key: { id: "cons-grp1", remoteJid: GROUP, participant: JAIME }, message: { conversation: "buenos días a todos (sin mencionar)" } }));
   await post(SECRET_A, evoMessage({ key: { id: "cons-grp2", remoteJid: GROUP, participant: JAIME }, message: { extendedTextMessage: { text: `@34000000001 hola bot`, contextInfo: { mentionedJid: [OWN_A], mentionedJidArray: [OWN_A] } } } }));
-  await new Promise((r) => setTimeout(r, 5_000));
+  await new Promise((r) => setTimeout(r, 9_000));
   consumerA.stop();
   await consumerA.done.catch(() => {});
   const dmReply = sent.find((s) => s.account === "bot-a" && s.number === JAIME);
@@ -263,7 +268,7 @@ const evoMessage = (overrides: Record<string, unknown> = {}) => {
 {
   // A bridge confirmation is sent outside the ledger; its echo is refused by
   // correlation with the thread's recent OUTGOING history instead.
-  const senderWithHistory: EvoSender = {
+const senderWithHistory: EvoSender = {
     ...senderOf("bot-a", "bot-a-instance"),
     async recentOutgoing(thread) {
       return thread === GROUP ? [{ id: "own-unledgered-1", text: 'Grupo "X" creado…', quotedStanzaId: null, ts: Math.floor(Date.now() / 1000) }] : [];
@@ -348,6 +353,21 @@ const evoMessage = (overrides: Record<string, unknown> = {}) => {
   ok("LID requester resolved to the PHONE jid for group-create only", JSON.stringify(createdParticipants[1]) === JSON.stringify([OWN_A]), JSON.stringify(createdParticipants));
   ok("command bound a FRESH session (mention policy, allowlist keeps the LID form)", bound?.session === "wa-a-cmd-1" && bound?.policy === "mentions" && JSON.stringify(bound?.allowedSenders) === JSON.stringify([JAIME_LID]), JSON.stringify(bound));
   ok("command confirmed in the requesting thread, origin binding untouched", sent.some((s) => s.number === GROUP && s.text.startsWith(`Grupo "Proyecto Nueva Era"`)) && inbox.bindingFor("whatsapp", "bot-a", GROUP)?.session === "wa-a-group");
+}
+
+// ---- v4-F: [[mini-image: <path>]] markers → validated pool screenshots ------
+{
+  const { mkdirSync, writeFileSync, rmSync: rm } = await import("node:fs");
+  const pool = join(work, "cu-pool");
+  mkdirSync(pool, { recursive: true });
+  const shot = join(pool, "shot-e2e.png");
+  writeFileSync(shot, Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"));
+  const good = planImageMarkers(`Aquí tienes:\n[[mini-image: ${shot}]]`, pool);
+  ok("a pool screenshot marker is stripped and its path validated", good.text === "Aquí tienes:" && good.images.length === 1 && good.images[0] === shot, JSON.stringify(good));
+  const evil = planImageMarkers("[[mini-image: /etc/passwd.png]] [[mini-image: " + join(work, "cwd-a", "secret.png") + "]] [[mini-image: " + shot + "]] [[mini-image: " + shot + "]]", pool);
+  ok("markers outside the pool (and duplicates) are refused", evil.images.length === 1, JSON.stringify(evil));
+  rm(shot);
+  ok("no media went out in the harness flows (markers only validated)", imagesSent.length === 0);
 }
 
 inbox.close();

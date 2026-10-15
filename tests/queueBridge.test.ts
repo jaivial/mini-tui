@@ -40,6 +40,11 @@ function fakeSender(): EvoSender & { sent: Array<{ number: string; text: string;
     async recentOutgoing(thread, limit = 50) {
       return sent.filter((s) => s.number === thread).slice(-limit).map((s, i) => ({ id: `w-${i + 1}`, text: s.text, quotedStanzaId: s.quotedId, ts: Date.now() / 1000 }));
     },
+    async sendImage(args) {
+      const id = `w-img-${sent.length + 1}`;
+      sent.push({ number: args.number, text: "[[image]]", quotedId: null });
+      return { kind: "sent", replyId: id };
+    },
   };
 }
 

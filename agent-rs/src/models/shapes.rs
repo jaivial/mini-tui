@@ -117,6 +117,7 @@ fn action_value(command: &Value, tool_call_id: Value) -> Value {
 /// `bash` + `cu`, and a call to any of these without the gate is the usual unknown-tool error.
 pub fn is_native_tool(name: &str) -> bool {
     (name == "codejs" && crate::codejs::enabled()) || matches!(name, "read") || (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled())
+        || (name == "computer_use" && crate::computer_use::enabled())
 }
 
 fn command_for(name: &str, args: &Value) -> Result<Value, String> {
@@ -143,6 +144,14 @@ fn command_for(name: &str, args: &Value) -> Result<Value, String> {
         }
         if matches!(name, "code" | "codejs") && args.get("code").and_then(Value::as_str).map(|c| c.trim().is_empty()).unwrap_or(true) {
             return Err("Missing 'code' argument in code tool call.".into());
+        }
+        return Ok(json!({"tool": name, "args": args}));
+    }
+    if name == "computer_use" && crate::computer_use::enabled() {
+        // Structured browser actions against the managed cu daemon pool; the
+        // loop executes them natively (screenshots come back as images).
+        if args.get("action").and_then(Value::as_str).map(|a| a.trim().is_empty()).unwrap_or(true) {
+            return Err("Missing 'action' argument in computer_use tool call.".into());
         }
         return Ok(json!({"tool": name, "args": args}));
     }

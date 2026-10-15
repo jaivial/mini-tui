@@ -52,6 +52,7 @@ import { createEvoMediaClient, MediaStore } from "./evoMedia";
 import { createWhisperTranscriber } from "./transcribe";
 import { LateTranscriptLog, type MediaHandling } from "./mediaTurn";
 import { startChannelConsumer } from "./consumer";
+import { planImageMarkers } from "./consumer";
 import { QueueBridge } from "./queueBridge";
 import { planGroupCreation as planGroupCreationFlow } from "./groupBridge";
 import { planSessionCommand } from "./sessionCommand";
@@ -185,6 +186,9 @@ const { done, stop } = startChannelConsumer({
   accountJids,
   planGroupCreation: (row, message, replyText) => planGroupCreationFlow(groupBridgeOptions, row, message, replyText),
   planSessionCommand: (row, message) => planSessionCommand(groupBridgeOptions, row, message),
+  // v4-F: [[mini-image: <path>]] markers become WhatsApp media. Only paths the
+  // computer_use pool itself wrote are deliverable (validation inside).
+  planImages: (row, message, replyText) => planImageMarkers(replyText, process.env.MINITUI_CU_POOL_DIR || join(homedir(), ".local/share/mini-tui/cu-pool")),
   ledger: new SendLedger(inbox.db),
   consumer: required("EVO_CONSUMER_NAME"),
   sessionsDbPath: process.env.MINITUI_DB_PATH,
