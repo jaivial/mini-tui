@@ -5,6 +5,7 @@
   import ChatPane from "./lib/components/ChatPane.svelte";
   import PaneTree from "./lib/components/PaneTree.svelte";
   import HelpModal from "./lib/components/HelpModal.svelte";
+  import TeamMapModal from "./lib/components/TeamMapModal.svelte";
   import ResumeModal from "./lib/components/ResumeModal.svelte";
   import RemoteHostsModal from "./lib/components/RemoteHostsModal.svelte";
   import SettingsModal from "./lib/components/SettingsModal.svelte";
@@ -80,6 +81,7 @@ import { windows } from "./lib/stores/windows.svelte";
   let hostsOpen = $state(false);
   /** The window's task board (every session's task card), in its drawer on the right. */
   let tasksOpen = $state(false);
+  let teamMapOpen = $state(false);
   /** The board as the hub last pushed it. The watch below keeps this reactive copy fresh. */
   let taskCards = $state<SessionTask[]>([]);
   let planList = $state<SessionPlan[]>([]);
@@ -530,6 +532,7 @@ import { windows } from "./lib/stores/windows.svelte";
           windows.remove(id);
         }}
         ontasks={() => (tasksOpen = true)}
+        onteammap={() => (teamMapOpen = true)}
         windowTasks={tasksByWindow}
         taskCards={taskCards}
         inOtherWindow={(id) => {
@@ -641,6 +644,7 @@ import { windows } from "./lib/stores/windows.svelte";
 </div>
 
 <TasksPanel open={tasksOpen} rows={taskRows} live={tasksLive} plans={planList} onclose={() => (tasksOpen = false)} />
+<TeamMapModal bind:open={teamMapOpen} onopensession={openInFocused} />
 <RemoteHostsModal bind:open={hostsOpen} />
 <SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />
 <HelpModal bind:open={helpOpen} />
