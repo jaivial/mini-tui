@@ -34,10 +34,24 @@
     peakDb: VOICE_SCALE.minDb,
   });
 
+  /** The latest snapshot the shared store handed us, applied one tick later. */
+  let pending = $state<VoiceNoteStatus | null>(null);
+
+  /**
+   * Subscribe in an effect that writes NO state, and let the assignment below
+   * live in its own effect. `subscribeVoiceNote` calls the subscriber
+   * synchronously on subscribe; assigning inside the subscribing effect would
+   * invalidate that very effect on every tick and Svelte would tear the
+   * component down (`effect_update_depth_exceeded`).
+   */
   $effect(() => subscribeVoiceNote((next) => {
     // The store is shared by every note on screen; only follow my own URL.
-    if (next.url === url) status = next;
+    if (next.url === url) pending = next;
   }));
+
+  $effect(() => {
+    if (pending && pending.url === url) status = pending;
+  });
 
   const playing = $derived(status.state === "playing");
   const busy = $derived(status.state === "loading");
