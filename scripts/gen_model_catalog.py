@@ -24,6 +24,14 @@ UNK = "desconocido"
 # https://artificialanalysis.ai/models/<slug>
 # --------------------------------------------------------------------------
 AA_BASE = "https://artificialanalysis.ai/models/"
+# Contexto declarado SOLO donde el operador lo midio de verdad.
+# 2026-10-15: deepseek-v4.1-flash acepto 198758 tokens de prompt en 5,2 s
+# contra opencode-go, de ahi los 200000. El resto de modelos queda como
+# 'desconocido': no se rellena con la cifra del folleto de nadie.
+CONTEXT_VERIFIED = {
+    "deepseek-v4.1-flash": 200000,
+}
+
 AA = {
     "glm-5-3": (45, "max"),
     "glm-5-3-low": (34, "low"),
@@ -153,10 +161,15 @@ GO_MODELS = [
      (4300, 10800, 21600, 12900, 32400, 64800), "≤256K tokens"),
     ("qwen3.7-plus", "messages", 1.20, 4.80, 0.12, 1.50, 60, 180, "qwen3-7-plus",
      (4300, 10800, 21600, 12900, 32400, 64800), ">256K tokens"),
-    ("deepseek-v4.1-flash", "chat", 0.15, 0.60, 0.003, None, 80, 160, "deepseek-v4-1-flash",
-     (34670, 86670, 173330, 69330, 173330, 346670), "off-peak"),
-    ("deepseek-v4.1-flash", "chat", 0.30, 1.20, 0.006, None, 80, 160, "deepseek-v4-1-flash",
-     (34670, 86670, 173330, 69330, 173330, 346670), "peak (01-04 & 06-10 UTC, Mon-Fri)"),
+    # 2026-10-15: OpenCode anuncio que DeepSeek V4.1 Flash pasa a ser GRATIS
+    # ("DeepSeek V4.1 Flash is now free in OpenCode", x.com/opencode/status/2110635747648909472).
+    # No es un modelo nuevo con sufijo -free: el id que ya existia paso a coste cero.
+    # Verificado por el operador: 'deepseek-v4.1-flash' responde 200 y
+    # 'deepseek-v4.1-flash-free' devuelve "Model is unavailable" (HTTP 400) y no
+    # aparece en /v1/models. Contexto medido empiricamente: 198758 tokens de prompt
+    # aceptados en 5,2 s, de ahi los 200000 declarados abajo.
+    ("deepseek-v4.1-flash", "chat", 0.0, 0.0, 0.0, None, 80, 160, "deepseek-v4-1-flash",
+     (34670, 86670, 173330, 69330, 173330, 346670), "gratis (200K contexto)"),
     ("deepseek-v4-pro", "chat", 0.66, 1.98, 0.022, None, 15, 60, "deepseek-v4-pro",
      (1050, 2600, 5200, 4200, 10400, 20800), "off-peak"),
     ("deepseek-v4-pro", "chat", 1.32, 3.96, 0.044, None, 15, 60, "deepseek-v4-pro",
@@ -196,6 +209,7 @@ def go_models():
             "plan": "go",
             "billing": "subscription-quota",
             "contextTier": note or UNK,
+            "contextLength": CONTEXT_VERIFIED.get(mid, UNK),
             "intelligenceIndex": aa(aa_slug),
             "estimatedRequests": {
                 "go5h": reqs[0] if reqs[0] is not None else UNK,
