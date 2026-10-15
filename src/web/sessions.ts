@@ -40,6 +40,7 @@ import {
   writeResumeFile,
 } from "../sessions";
 import { createParseState, messagesToEvents, parseInfo, parseTrajectory } from "../traj/parse";
+import { recordUsage } from "../usage";
 import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
@@ -185,6 +186,12 @@ interface Internal {
   /** Mirror events already shown for this session (espejo): re-appended whenever the
    * transcript is rebuilt from the journal, so a rebuild never drops them. */
   mirrorEvents?: RunEvent[];
+  /** How many journalled messages have already been handed to the usage recorder (v6-B).
+   * Separate from `consumed`, which a rebuild rewinds: replaying usage is harmless
+   * (rows dedupe on call key) but skipping it would lose the tail of a run. */
+  usageConsumed?: number;
+  /** Queue task this session's calls belong to, when one drove the run (v6-B). */
+  usageTask?: string;
 }
 
 /** How often held sessions are checked for agents and saves made by other UIs (a terminal). */
@@ -478,6 +485,28 @@ export class SessionManager {
     return this.#live.get(id)?.session;
   }
 
+  /**
+   * v6-B: hand the run's new model calls to the usage ledger.
+   *
+   * `usageConsumed` advances only over messages already seen, so a live watcher
+   * records each call once. A rebuild rewinds `consumed` to replay the transcript
+   * but leaves `usageConsumed` alone: the recorder's call key dedupes anyway, and
+   * rewinding would re-scan a whole run's messages on every poll.
+   */
+  #measure(entry: Internal, messages: TrajectoryMessage[], traj: Trajectory): void {
+    const from = entry.usageConsumed ?? 0;
+    if (messages.length <= from) return;
+    const written = recordUsage(messages, {
+      session: entry.session.id,
+      // The web path has no queue task behind it; a channel turn's task id arrives
+      // through the headless runner instead. Empty here means "no task", not lost.
+      task: entry.usageTask ?? "",
+      fallbackModel: parseInfo(traj).model,
+    }, from);
+    entry.usageConsumed = messages.length;
+    if (written) log("usage.recorded", { session: entry.session.id, calls: written });
+  }
+
   #emit(entry: Internal): void {
     entry.session.updatedAt = Date.now();
     this.#onChange(entry.session);
@@ -503,6 +532,11 @@ export class SessionManager {
       entry.pendingTasks = [];
       this.#withMirror(entry);
     }
+    // v6-B: the usage ledger. Fed from the same journal every run writes, before the
+    // events are derived, so a call is measured even if the UI never renders it.
+    // Never throws into the run (see recordUsage).
+    this.#measure(entry, messages, traj);
+
     // The in-flight message: streamed fragments arrive here long before the message that
     // carries them, so they are the only thing the UI can show while the model is writing.
     const partial = traj.partial;

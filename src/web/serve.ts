@@ -29,6 +29,7 @@ import { parseReceiverAccounts, parseConsumerAccounts } from "../channels/accoun
 import { MirrorStore, mirrorEvent } from "../channels/mirror";
 import { createEvoSender, type EvoSender } from "../channels/evoSend";
 import { channelsView, evoPairingCode, evoQr, evoStatus } from "./channels";
+import { usageView } from "./usage";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { RateLimiter } from "./rateLimit";
@@ -576,6 +577,14 @@ const server = Bun.serve({
         if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
         try { return json(await channelsView()); }
         catch { return json({ error: "channel_inbox_read_failed" }, 503); }
+      }
+      // Model usage per provider and model over a window (v6-B): tokens, cost,
+      // latency and failures. Read-only, same-origin, bounded — the router reads
+      // the same store to decide what a provider has cost it.
+      if (path === "/usage" && request.method === "GET") {
+        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        try { return json(usageView(url.searchParams.get("window"))); }
+        catch { return json({ error: "usage_read_failed" }, 503); }
       }
       // Assistant connection visibility. Both read the weai-mini API strictly
       // over loopback with a server-held apikey; only the mapped state, the QR

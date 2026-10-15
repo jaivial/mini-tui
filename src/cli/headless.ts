@@ -35,6 +35,7 @@ import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/s
 import { boundEvent, boundText, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory } from "../traj/watch";
 import { headlessSpecs, UsageError, type HeadlessArgs } from "./args";
+import { recordUsage } from "../usage";
 
 /** Exit codes: scripts can tell "the agent failed" from "you called me wrong". */
 export const EXIT_OK = 0;
@@ -316,10 +317,19 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
   consumed = emitFrom ?? 0;
   const turnEvents: RunEvent[] = [];
   let lastTraj: Trajectory | null = null;
+  // v6-B: messages already billed to the usage ledger (see onSnapshot).
+  let usageSeen = 0;
   const onSnapshot = (traj: Trajectory) => {
     lastTraj = { ...traj, messages: [...(traj.messages ?? [])] };
     const messages = traj.messages ?? [];
     if (messages.length < consumed) return; // a rewrite mid-flight: the final read settles it
+    // v6-B: bill the model calls this run made, from the same journal the events
+    // come from. Best-effort (never throws) and deduped per call, so the final
+    // re-read below can hand the whole turn over again without double-counting.
+    if (messages.length > usageSeen) {
+      recordUsage(messages, { session: sessionId ?? "cli", task: args.taskId ?? "", fallbackModel: model }, usageSeen);
+      usageSeen = messages.length;
+    }
     if (emitFrom === null) {
       // A resumed trajectory replays the saved history first: stream from the new task on.
       const at = turnStartIndex(messages, historyLength);
