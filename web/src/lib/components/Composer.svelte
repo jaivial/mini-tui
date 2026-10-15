@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowUp, Square, Terminal as TerminalIcon, Globe, SquareSlash, Sparkles, Paperclip, FileText, X, CircleAlert } from "@lucide/svelte";
+  import { ArrowUp, Square, Terminal as TerminalIcon, Globe, SquareSlash, Sparkles, Paperclip, FileText, X, CircleAlert, Mic } from "@lucide/svelte";
   import { untrack } from "svelte";
   import Chip from "./Chip.svelte";
   import Button from "./Button.svelte";
@@ -13,6 +13,8 @@
   import { fitHeight } from "../grow";
   import type { PromptMemory } from "../promptMemory";
   import { humanSize, uploadAttachment, ATTACH_ACCEPT, ATTACH_MAX, type AttachmentRef } from "../attachments";
+  import AudioRecorder from "./control-ui/AudioRecorder.svelte";
+  import { preferredAudioMimeType, type AudioRecording } from "../control-ui/recorder.svelte";
   import { toasts } from "../stores/toast.svelte";
 
   /**
@@ -145,6 +147,39 @@
   function removeAttachment(index: number) {
     attachments = attachments.filter((_, i) => i !== index);
     area?.focus();
+  }
+
+  // ---- voice notes: recorded in the pill, uploaded like any other file
+  /** The recorder row only exists once there is something to show or cancel. */
+  let recordingOpen = $state(false);
+
+  /**
+   * The blob becomes a real `.webm`/`.m4a` file and goes through
+   * `uploadAttachment`, i.e. the exact same POST a picked file makes. From
+   * there it is an ordinary attachment: it rides the prompt to the agent and
+   * comes back out on the normal output path to WhatsApp, with no audio-only
+   * side channel anywhere.
+   */
+  async function attachRecording(recording: AudioRecording) {
+    // MediaRecorder hands back a container type ("audio/webm;codecs=opus");
+    // the extension the server allowlists is what decides the stored mime, so
+    // it is derived from the codec rather than from the raw type string.
+    const type = recording.mimeType || recording.blob.type || "";
+    const ext = type.includes("mp4") || type.includes("aac") ? "m4a" : "webm";
+    const stamp = new Date().toISOString().slice(11, 19).replaceAll(":", "-");
+    const file = new File([recording.blob], `nota-de-voz-${stamp}.${ext}`, { type: ext === "m4a" ? "audio/mp4" : "audio/webm" });
+    const key = `voice:${file.name}`;
+    uploading = [...uploading, { key, name: file.name, size: file.size }];
+    try {
+      const ref = await uploadAttachment(file);
+      attachments = [...attachments, ref];
+      recordingOpen = false;
+      area?.focus();
+    } catch (error) {
+      toasts.push("No se pudo adjuntar la nota de voz", { detail: (error as Error).message, tone: "err" });
+    } finally {
+      uploading = uploading.filter((u) => u.key !== key);
+    }
   }
 
   function onDrop(event: DragEvent) {
@@ -405,6 +440,17 @@
         {/each}
       </ul>
     {/if}
+    {#if recordingOpen}
+      <!-- Inside the pill, above the field. Control UI's AudioRecorder, ported
+           to Svelte 5; the take is uploaded exactly like a picked file. -->
+      <div class="mx-2.5 mt-2 flex min-w-0 items-center rounded-xl border border-line bg-canvas/70 px-1.5 py-1">
+        <AudioRecorder
+          disabled={disabled || sending}
+          onRecordingComplete={attachRecording}
+          onCancel={() => (recordingOpen = false)}
+        />
+      </div>
+    {/if}
     <!-- Measuring copy of the text: same box as the field, invisible, inert, clipped to the bar. -->
     <div aria-hidden="true" class="pointer-events-none invisible absolute inset-0 overflow-hidden">
       <div bind:this={mirror} class="{FIELD} whitespace-pre-wrap [overflow-wrap:anywhere]">{value}&#8203;</div>
@@ -469,6 +515,19 @@
       <ModelPicker value={model} bind:open={modelOpen} busy={switchingModel} {disabled} note={modelNote} onpick={onmodel} />
 
       <div class="ml-auto flex shrink-0 items-center gap-0.5">
+        <!-- The mic lives inside the floating pill, next to the paperclip: one
+             rail, two "add something to this prompt" verbs. -->
+        <button
+          type="button"
+          class="interactive grid size-8 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11 pointer-coarse:min-w-11"
+          aria-label="Grabar nota de voz"
+          title="Grabar nota de voz"
+          aria-expanded={recordingOpen}
+          {disabled}
+          onclick={() => (recordingOpen = !recordingOpen)}
+        >
+          <Mic size={16} strokeWidth={1.75} aria-hidden="true" />
+        </button>
         <button
           type="button"
           class="interactive grid size-8 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11 pointer-coarse:min-w-11"

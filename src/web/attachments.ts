@@ -253,6 +253,22 @@ export function attachmentAgentBlock(atts: Attachment[]): string {
     .join("\n")}\n</attachments>`;
 }
 
+/**
+ * The transcript's structured view of one prompt's files. Audio carries a
+ * `kind` so the web can play it back instead of offering a download link.
+ *
+ * `.webm` is a shared container for audio and video and the allowlist has to
+ * serve one stored mime for it. A take recorded in the browser is audio-only
+ * and is named `nota-de-voz-*.webm`, so the name is what tells the two apart —
+ * without this a recorded voice note would be classified as video and never
+ * get a player.
+ */
+export function transcriptAttachment(a: Attachment): { id: string; kind: string; mime: string | null; url: string | null; name: string } {
+  const recordedVoice = /^nota-de-voz-.*\.webm$/i.test(a.name);
+  const kind = a.mime.startsWith("audio/") || recordedVoice ? "audio" : a.mime.startsWith("image/") ? "image" : "file";
+  return { id: a.id, kind, mime: a.mime, url: a.url, name: a.name };
+}
+
 /** The transcript view: images inline (lightbox does the rest), other files as download links. */
 export function attachmentLinksLine(atts: Attachment[]): string {
   return atts.map((a) => (a.mime.startsWith("image/") ? `![${a.name}](${a.url})` : `[${a.name}](${a.url})`)).join(" · ");

@@ -2,6 +2,9 @@
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/jetbrains-mono";
 @import "@fontsource-variable/space-grotesk";
+/* Control UI's audio recipes (visualizer + recorder knobs), re-pointed at this
+   app's tokens. Last, so its @property registrations and @layer rules win. */
+@import "./lib/components/control-ui/audio-recipes.css";
 
 /* ------------------------------------------------------------------ *
  * Design tokens: assistant-persona voice (v2 redesign). Cool deep

@@ -44,7 +44,14 @@ export interface Trajectory {
 
 /** One UI-level event derived from trajectory messages (the parser output contract). */
 export type RunEvent =
-  | { type: "task"; text: string }
+  | {
+      type: "task";
+      text: string;
+      /** Files sent with this prompt, structured so the web can render a real
+       * player for audio (the text still carries the markdown links the TUI
+       * and a text-only client read). */
+      attachments?: Array<{ id: string; kind: string; mime: string | null; url: string | null; name: string }>;
+    }
   | { type: "assistant"; text: string; cost?: number }
   /** Chain-of-thought of one model call (reasoning content / thinking blocks). */
   | { type: "thinking"; text: string; seconds: number }

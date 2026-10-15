@@ -46,7 +46,7 @@ import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
 import type { RunEvent, RunInfo, Trajectory, TrajectoryMessage } from "../traj/schema";
 import { probeHost, startRemoteRun, type RemoteRun, type SshTarget } from "./ssh";
-import { attachmentAgentBlock, attachmentLinksLine, getAttachment, inlineWorkspaceImages, registerFile, type Attachment } from "./attachments";
+import { attachmentAgentBlock, attachmentLinksLine, transcriptAttachment, getAttachment, inlineWorkspaceImages, registerFile, type Attachment } from "./attachments";
 import { extractUiComponents } from "./uiComponents";
 import { readPlan, type SessionPlan } from "../mini/plans";
 import { aiTitle } from "../title";
@@ -996,7 +996,7 @@ export class SessionManager {
     // echo of it (collapsed to the prompt as typed) is dropped via pendingTasks.
     if (atts.length) {
       entry.pendingTasks = [prompt];
-      session.events.push({ type: "task", text: `${prompt}\n\n${attachmentLinksLine(atts)}` });
+      session.events.push({ type: "task", text: `${prompt}\n\n${attachmentLinksLine(atts)}`, attachments: atts.map(transcriptAttachment) });
     }
     log("session.created", { id, pid: run.pid, model: effective, cwd, target: "local", task: prompt.slice(0, 120) });
 
@@ -1089,7 +1089,7 @@ export class SessionManager {
 
     // Echo the prompt immediately, exactly like the TUI does on submit. Attached
     // files show as download links under the prompt, as in every later turn.
-    session.events.push({ type: "task", text: atts.length ? `${prompt}\n\n${attachmentLinksLine(atts)}` : prompt });
+    session.events.push({ type: "task", text: atts.length ? `${prompt}\n\n${attachmentLinksLine(atts)}` : prompt, attachments: atts.length ? atts.map(transcriptAttachment) : undefined });
     if (atts.length) entry.pendingTasks = [prompt];
     this.#emit(entry);
 
@@ -1405,7 +1405,7 @@ export class SessionManager {
     // files as download links (the parser collapses both blocks again on replay).
     const expanded = expandSkills(text);
     const task = atts.length ? `${expanded.task}\n\n${attachmentAgentBlock(atts)}` : expanded.task;
-    entry.session.events.push({ type: "task", text: atts.length ? `${text}\n\n${attachmentLinksLine(atts)}` : text });
+    entry.session.events.push({ type: "task", text: atts.length ? `${text}\n\n${attachmentLinksLine(atts)}` : text, attachments: atts.length ? atts.map(transcriptAttachment) : undefined });
     (entry.pendingTasks ??= []).push(text);
     if (expanded.missing.length) {
       entry.session.events.push({
