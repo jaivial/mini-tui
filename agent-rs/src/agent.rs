@@ -1346,6 +1346,7 @@ impl Agent {
         let cwd = self.env.working_dir();
         match tool {
             "read" => Some(crate::tools::read_outcome(&args, &cwd)),
+            "computer_use" => Some(crate::computer_use::outcome(&args)),
             "write" => Some(crate::writing::write_outcome(&args, &cwd)),
             "edit" => Some(crate::writing::edit_outcome(&args, &cwd)),
             "code" | "codejs" => {

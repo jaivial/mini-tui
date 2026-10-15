@@ -71,7 +71,10 @@ export interface EvoSender {
   >;
   /** Newest outgoing messages of `thread`, newest first (bounded page). */
   recentOutgoing(thread: string, limit?: number): Promise<Array<{ id: string; text: string; quotedStanzaId: string | null; ts: number | null }>>;
-}
+  /** One image (PNG bytes) as a media message. Best-effort by contract: the
+   * caller logs the outcome and never blocks the text reply on it. */
+  sendImage(args: { number: string; mediaBase64: string; caption?: string }): Promise<{ kind: "sent"; replyId: string } | { kind: "uncertain"; status?: number; error: string; definitive: boolean }>;
+};
 
 /** The fork accepts 1..65536 bytes of text; keep a margin under the cap. */
 export const MAX_SEND_TEXT_BYTES = 60_000;
@@ -149,6 +152,18 @@ export function createEvoSender(config: { baseUrl: string; instance: string; tok
         quotedStanzaId: m?.message?.extendedTextMessage?.contextInfo?.stanzaId ? String(m.message.extendedTextMessage.contextInfo.stanzaId) : null,
         ts: typeof m?.messageTimestamp === "number" ? m.messageTimestamp : null,
       }));
+    },
+    async sendImage({ number, mediaBase64, caption }) {
+      const r = await call(`/message/sendMedia/${encodeURIComponent(config.instance)}`, {
+        number,
+        mediatype: "image",
+        media: mediaBase64,
+        mimetype: "image/png",
+        ...(caption ? { caption: truncateForSend(caption) } : {}),
+      });
+      if (r.status === 201 && r.json?.key?.id) return { kind: "sent", replyId: String(r.json.key.id) };
+      const definitive = r.status >= 400 && r.status < 500;
+      return { kind: "uncertain", definitive, status: r.status || undefined, error: r.error || (r.json ? JSON.stringify(r.json).slice(0, 300) : `status ${r.status}`) };
     },
   };
 }
