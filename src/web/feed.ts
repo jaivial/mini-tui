@@ -143,6 +143,29 @@ export class SessionFeed {
 }
 
 /**
+ * CORS is loopback-only. The old `access-control-allow-origin: *` made every
+ * private GET — the SSE stream of live sessions, an attachment, a mirrored
+ * media file — readable by ANY web page the browser has open (PoC: curl
+ * -H "Origin: https://evil.example" /api/stream came back with `*` and the
+ * session feed). No production consumer needs cross-origin reads: the app is
+ * served from this same process, and the Vite dev server (4318) reaches the
+ * API through its own proxy. A local dev origin is still echoed, so a direct
+ * `vite` against `:4317` keeps working; every other origin gets no ACAO header
+ * and the browser blocks the read.
+ */
+export function allowedCorsOrigin(headers: Headers): string | null {
+  const origin = headers.get("origin");
+  if (!origin) return null;
+  let host: string;
+  try {
+    host = new URL(origin).host;
+  } catch {
+    return null;
+  }
+  return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host) ? origin : null;
+}
+
+/**
  * Cross-site WebSocket hijacking guard. A browser always sends `Origin` on a
  * WebSocket handshake, and a page on another site cannot forge it, so it must
  * name this same host. Loopback pairs are allowed for the Vite dev proxy,
