@@ -32,6 +32,10 @@ fn script(name: &str, steps: &[(&str, &str)]) -> String {
         if *kind == "run" {
             out.push_str(&format!("    - {{role: assistant, content: step, extra: {{actions: [{{command: {text}}}]}}}}\n"));
         } else {
+            // The protocol (fast path and closure oracle off, see `run_parent`) confirms a
+            // submission on a second plain-text reply: emit the submit twice so the script
+            // stays aligned for whichever tests keep reading past it.
+            out.push_str(&format!("    - {{role: assistant, content: {text}, extra: {{submission: {text}}}}}\n"));
             out.push_str(&format!("    - {{role: assistant, content: {text}, extra: {{submission: {text}}}}}\n"));
         }
     }
@@ -60,8 +64,19 @@ fn text(m: &Value) -> String {
 fn run_parent(dir: &Path, parent_yaml: &str, child_yaml: Option<&str>, until: &str, control: bool) -> (Vec<Value>, std::process::ExitStatus) {
     write(&dir.join("parent.yaml"), parent_yaml);
     let mut cmd = Command::new(exe());
-    cmd.arg("-y").arg("--exit-immediately").arg("-o").arg(dir.join("traj.json")).arg("-c").arg(dir.join("parent.yaml")).arg("-t").arg("orchestrate");
+    // No `--exit-immediately`: it would force `agent.confirm_exit=false` (the CLI overrides every
+    // `-c`), and a parent that never holds at its turn end kills its children instead of waking on
+    // their reports. `run_parent` stops the run itself once `until` shows up.
+    cmd.arg("-y").arg("-o").arg(dir.join("traj.json")).arg("-c").arg(dir.join("parent.yaml")).arg("-t").arg("orchestrate");
     cmd.env("MSWEA_SILENT_STARTUP", "1").env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_BIN").env_remove("MINI_AGENT_CONFIG_DIR").env_remove("MINI_AGENT_CONTEXT");
+    // The fast path would spend the first scripted output probing a task text ("orchestrate") it
+    // classifies as chat, and the closure oracle would spend one output per submission judging it:
+    // both off, so a script's outputs reach the loop one for one.
+    cmd.env("MINI_AGENT_FASTPATH", "0").env("MINI_AGENT_GOAL_ORACLE", "off");
+    // The OOM gate reads the live box: on a loaded machine the 10 GiB default reserve leaves room
+    // for 0 subagents and every spawn is refused. The gate has its own unit tests; here it must
+    // not depend on what else is running.
+    cmd.env("MINI_AGENT_RESERVE_MEM_MB", "64").env("MINI_AGENT_CHILD_MEM_MB", "64");
     cmd.env("MINI_AGENT_MONITOR_MS", "50").current_dir(dir);
     if control {
         write(&dir.join("control"), "");
@@ -135,8 +150,9 @@ fn a_finished_subagent_wakes_its_parent_and_keeps_its_context() {
     let p2 = std::fs::read_to_string(dir.join("pid_2")).unwrap();
     assert_eq!(p1, p2, "the follow-up must reach the same process");
     assert!(all.contains("sent: worker continues with its full context"), "{all}");
-    // the follow-up was waited for, so it is not reported a second time
-    assert_eq!(msgs.iter().filter(|m| m["extra"]["interrupt_type"] == "Subagent").count(), 1, "{all}");
+    // the follow-up was waited for, so its turn is not reported a second time (the contract-check
+    // note about the same child is a separate interrupt and may or may not fire)
+    assert_eq!(msgs.iter().filter(|m| m["extra"]["interrupt_type"] == "Subagent" && text(m).contains("finished its turn")).count(), 1, "{all}");
     // the child's conversation is one session: both turns, one system prompt
     let child_msgs = messages(&dir.join("subagents/worker/traj.jsonl"));
     assert_eq!(child_msgs.iter().filter(|m| m["role"] == "system").count(), 1);
@@ -248,4 +264,134 @@ fn the_client_explains_where_it_works() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("MINI_AGENT_SOCKET is not set"));
     let help = Command::new(exe()).arg("agent").arg("--help").output().unwrap();
     assert!(String::from_utf8_lossy(&help.stdout).contains("agent spawn"));
+}
+
+/// Three levels deep: the parent spawns `mid`, `mid` spawns `leaf`. The delegation tree records
+/// who is a child of whom (`queue tree`), depth grows one level per hop, and when the root is
+/// stopped the whole chain is gone from the process table -- no orphaned sub-subagent.
+/// `queue` (and so the tree endpoint) is behind the `task-graph` feature: run with
+/// `cargo test --features task-graph --test subagents`.
+#[test]
+#[cfg(feature = "task-graph")]
+fn three_levels_of_delegation_register_a_tree_and_leave_no_orphans() {
+    let dir = tmp("depth3");
+    let parent = script(
+        "parent",
+        &[
+            ("run", "mini-agent-rs agent spawn mid 'branch work'; mini-agent-rs agent wait mid --timeout 20"),
+            ("submit", "root done"),
+        ],
+    );
+    let mut mid_outputs = String::new();
+    for (kind, t) in [("run", "echo depth=$MINI_AGENT_DEPTH name=$MINI_AGENT_NAME > {MID_DIR}/mid.txt; mini-agent-rs agent spawn leaf 'leaf work'"), ("run", "mini-agent-rs agent wait leaf --timeout 20; mini-agent-rs agent result leaf"), ("submit", "branch answer"), ("submit", "branch answer")] {
+        let t = serde_json::to_string(&t.replace("{MID_DIR}", &dir.display().to_string())).unwrap();
+        if kind == "run" {
+            mid_outputs.push_str(&format!("    - {{role: assistant, content: step, extra: {{actions: [{{command: {t}}}]}}}}\n"));
+        } else {
+            mid_outputs.push_str(&format!("    - {{role: assistant, content: {t}, extra: {{submission: {t}}}}}\n"));
+        }
+    }
+    let mid_yaml = format!(
+        "agent:\n  system_template: s\n  instance_template: \"{{{{task}}}}\"\n  step_limit: 40\nmodel:\n  model_class: deterministic_toolcall\n  model_name: mid\n  cost_per_call: 0.01\n  outputs:\n{mid_outputs}"
+    );
+    let mut leaf_outputs = String::new();
+    for (kind, t) in [
+        ("run", format!("echo depth=$MINI_AGENT_DEPTH name=$MINI_AGENT_NAME > {}/leaf.txt", dir.display())),
+        ("submit", "leaf answer".to_string()),
+        ("submit", "leaf answer".to_string()),
+    ] {
+        let t = serde_json::to_string(&t).unwrap();
+        if kind == "run" {
+            leaf_outputs.push_str(&format!("    - {{role: assistant, content: step, extra: {{actions: [{{command: {t}}}]}}}}\n"));
+        } else {
+            leaf_outputs.push_str(&format!("    - {{role: assistant, content: {t}, extra: {{submission: {t}}}}}\n"));
+        }
+    }
+    let leaf_yaml = format!(
+        "agent:\n  system_template: s\n  instance_template: \"{{{{task}}}}\"\n  step_limit: 40\nmodel:\n  model_class: deterministic_toolcall\n  model_name: leaf\n  cost_per_call: 0.01\n  outputs:\n{leaf_outputs}"
+    );
+    // The per-name child configs: `mid` runs on child-mid.yaml, the grandchild on child-leaf.yaml.
+    write(&dir.join("child-mid.yaml"), &mid_yaml);
+    write(&dir.join("child-leaf.yaml"), &leaf_yaml);
+    let child_spec = format!("{}/child-{{name}}.yaml", dir.display());
+
+    let (msgs, _) = run_parent_with(&dir, &parent, Some(&child_spec), "root done", true);
+    let all = joined(&msgs);
+    assert!(all.contains("started subagent mid"), "{all}");
+    assert!(all.contains("root done"), "{all}");
+    // the leaf's answer reached `mid` (it waited for it and read the result)
+    let mid_msgs = messages(&dir.join("subagents/mid/traj.jsonl"));
+    assert!(joined(&mid_msgs).contains("leaf answer"), "{}", joined(&mid_msgs));
+    // depth grows one level per hop
+    let mid_txt = std::fs::read_to_string(dir.join("mid.txt")).unwrap();
+    let leaf_txt = std::fs::read_to_string(dir.join("leaf.txt")).unwrap();
+    assert!(mid_txt.contains("depth=1") && mid_txt.contains("name=mid"), "{mid_txt}");
+    assert!(leaf_txt.contains("depth=2") && leaf_txt.contains("name=leaf"), "{leaf_txt}");
+
+    // the tree endpoint reads the hierarchy off disk, recursively
+    let out = Command::new(exe()).args(["queue", "tree", "--run-dir"]).arg(&dir).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let tree: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mid_node = &tree["children"][0];
+    assert_eq!(mid_node["name"], "mid", "{tree}");
+    let leaf_node = &mid_node["children"][0];
+    assert_eq!(leaf_node["name"], "leaf", "{tree}");
+    assert_eq!(mid_node["depth"], 0, "{tree}");
+    assert_eq!(leaf_node["depth"], 1, "{tree}");
+
+    // after the root is stopped, nothing of the chain is left alive
+    let pids: Vec<i32> = [mid_node["pid"].as_i64().unwrap(), leaf_node["pid"].as_i64().unwrap()]
+        .iter()
+        .map(|p| *p as i32)
+        .collect();
+    for _ in 0..40 {
+        let alive = pids.iter().filter(|p| unsafe { libc::kill(**p, 0) } == 0).count();
+        if alive == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    for p in &pids {
+        assert!(unsafe { libc::kill(*p, 0) } != 0, "pid {p} outlived the root (orphan)");
+    }
+}
+
+/// Like `run_parent`, but with a `MINI_AGENT_CHILD_CONFIG` spec of our own (the per-name configs).
+#[cfg(feature = "task-graph")]
+fn run_parent_with(dir: &Path, parent_yaml: &str, child_spec: Option<&str>, until: &str, control: bool) -> (Vec<Value>, std::process::ExitStatus) {
+    write(&dir.join("parent.yaml"), parent_yaml);
+    let _ = std::fs::remove_file(dir.join("child.yaml"));
+    let mut cmd = Command::new(exe());
+    cmd.arg("-y").arg("-o").arg(dir.join("traj.json")).arg("-c").arg(dir.join("parent.yaml")).arg("-t").arg("orchestrate");
+    cmd.env("MSWEA_SILENT_STARTUP", "1").env_remove("MINI_AGENT_SOCKET").env_remove("MINI_AGENT_PARENT_SOCKET").env_remove("MINI_AGENT_DEPTH").env_remove("MINI_AGENT_BIN").env_remove("MINI_AGENT_CONFIG_DIR").env_remove("MINI_AGENT_CONTEXT");
+    cmd.env("MINI_AGENT_FASTPATH", "0").env("MINI_AGENT_GOAL_ORACLE", "off");
+    cmd.env("MINI_AGENT_RESERVE_MEM_MB", "64").env("MINI_AGENT_CHILD_MEM_MB", "64");
+    cmd.env("MINI_AGENT_MONITOR_MS", "50").current_dir(dir);
+    if let Some(spec) = child_spec {
+        cmd.env("MINI_AGENT_CHILD_CONFIG", spec);
+    }
+    if control {
+        write(&dir.join("control"), "");
+        cmd.env("MSWEA_CONTROL_FILE", dir.join("control"));
+    } else {
+        cmd.env("MSWEA_CONTROL_FILE", "");
+    }
+    cmd.stdout(std::process::Stdio::null()).stderr(std::fs::File::create(dir.join("parent.log")).unwrap());
+    let mut child = cmd.spawn().unwrap();
+    let journal = dir.join("traj.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = child.try_wait().ok().flatten() {
+            return (messages(&journal), status);
+        }
+        if messages(&journal).iter().any(|m| text(m).contains(until)) || Instant::now() > deadline {
+            std::thread::sleep(Duration::from_millis(300));
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGTERM);
+            }
+            let status = child.wait().unwrap();
+            return (messages(&journal), status);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

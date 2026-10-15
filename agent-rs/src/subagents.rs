@@ -1829,7 +1829,10 @@ impl Launcher {
         std::fs::write(&c.control, "").map_err(|e| e.to_string())?;
         let log = std::fs::OpenOptions::new().create(true).append(true).open(&c.log).map_err(|e| e.to_string())?;
         let mut cmd = Command::new(&self.exe);
-        cmd.arg("-y").arg("--exit-immediately").arg("-o").arg(&c.traj);
+        // The child holds at its turn end (`waiting`): `send` reaches the SAME process with its
+        // context intact, instead of a restart that replays the whole conversation. It is killed
+        // by the hub on shutdown, and PDEATHSIG below kills it even if the parent dies hard.
+        cmd.arg("-y").arg("-o").arg(&c.traj).arg("-c").arg("agent.confirm_exit=true");
         for spec in &self.configs {
             cmd.arg("-c").arg(spec);
         }
@@ -1871,8 +1874,12 @@ impl Launcher {
             .current_dir(&c.cwd)
             .stdin(Stdio::null())
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
-            .stderr(log)
-            .process_group(0);
+            .stderr(log);
+        // Orphan guard: the child watches its parent in its hold loops (see
+        // `hub_parent_gone` in agent.rs) -- PDEATHSIG is no use here because the spawn happens
+        // on a short-lived hub thread, and the kernel would kill the child the moment it ends.
+        cmd.env("MINI_AGENT_HUB_PARENT_PID", std::process::id().to_string());
+        cmd.process_group(0);
         if !c.lane.is_empty() {
             cmd.env("MINI_AGENT_LANE", c.lane.join("\n")).env("MINI_AGENT_LANE_ROOT", &c.cwd);
         }

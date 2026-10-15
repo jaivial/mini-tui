@@ -381,7 +381,7 @@ fn run(args: &[String]) -> Result<Value, String> {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     if matches!(cmd, "help" | "--help" | "-h") {
         return Ok(
-            json!({"usage":"mini-agent-rs queue put|amend|cancel|cancel-reconcile|graph|events|search|run|claim|heartbeat|finish|retry --db PATH [--id ID --project PROJECT --cwd DIR --goal-file FILE --deps ID,ID --priority N --embed-dir DIR --owner OWNER --ttl SECONDS --limit N --fence N --status done|blocked --result-file FILE]"}),
+            json!({"usage":"mini-agent-rs queue put|amend|cancel|cancel-reconcile|graph|tree|events|search|run|claim|heartbeat|finish|retry --db PATH [--run-dir DIR --max-depth N --id ID --project PROJECT --cwd DIR --goal-file FILE --deps ID,ID --priority N --embed-dir DIR --owner OWNER --ttl SECONDS --limit N --fence N --status done|blocked --result-file FILE]  ·  tree reads subagents/index.json under --run-dir (delegation hierarchy, read-only)"}),
         );
     }
     let mut flags = std::collections::BTreeMap::new();
@@ -420,6 +420,10 @@ fn run(args: &[String]) -> Result<Value, String> {
         let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(error)?;
         db.busy_timeout(std::time::Duration::from_secs(2)).map_err(error)?;
         return if cmd == "graph-read" { Store { db }.graph() } else { Store { db }.events(number("--after",0)?,number("--limit",100)?) };
+    }
+    // Same for the delegation tree: it reads the filesystem, and must not touch any database.
+    if cmd == "tree" {
+        return tree(Path::new(get("--run-dir")?), number("--max-depth", 32)?.clamp(1, 64) as u32);
     }
     let mut store = Store::open(&path)?;
     match cmd {
@@ -534,6 +538,69 @@ fn run(args: &[String]) -> Result<Value, String> {
         }
         _ => Err(format!("unknown queue command {cmd}")),
     }
+}
+
+/// The delegation tree of one run, read from disk: every run writes `subagents/index.json`
+/// (its live children: name, state, pid, model, cost), and each child's own run dir holds the
+/// same record for its own children. Walking it gives who is a child of whom at any depth,
+/// without a writer anywhere but the run itself. Read-only; crashes at worst leave a stale
+/// `state` (the `pid` lets the reader tell), never a wrong parent link.
+fn tree(run_dir: &Path, max_depth: u32) -> Result<Value, String> {
+    let index_path = |dir: &Path| dir.join("subagents").join("index.json");
+    if !index_path(run_dir).is_file() {
+        return Err(format!(
+            "no subagents/index.json under {}: this run delegated nothing (or it is not a run dir)",
+            run_dir.display()
+        ));
+    }
+    fn read_index(dir: &Path) -> Result<Value, String> {
+        let text = std::fs::read_to_string(dir.join("subagents").join("index.json")).map_err(error)?;
+        serde_json::from_str(&text).map_err(error)
+    }
+    fn index_exists(dir: &Path) -> bool {
+        dir.join("subagents").join("index.json").is_file()
+    }
+    fn walk(dir: &Path, depth: u32, max_depth: u32) -> Value {
+        let (parent_pid, children) = match read_index(dir) {
+            Ok(v) => (
+                v.get("parent_pid").cloned().unwrap_or(json!(0)),
+                v.get("children").and_then(Value::as_array).cloned().unwrap_or_default(),
+            ),
+            Err(_) => (json!(0), vec![]),
+        };
+        let children = children
+            .iter()
+            .map(|c| {
+                let mut node = json!({
+                    "name": c.get("name").cloned().unwrap_or(json!("")),
+                    "state": c.get("state").cloned().unwrap_or(json!("")),
+                    "exit_status": c.get("exit_status").cloned().unwrap_or(json!("")),
+                    "pid": c.get("pid").cloned().unwrap_or(json!(0)),
+                    "model": c.get("model").cloned().unwrap_or(json!("")),
+                    "cost": c.get("cost").cloned().unwrap_or(json!(0.0)),
+                    "task": c.get("task").cloned().unwrap_or(json!("")),
+                    "depth": depth,
+                });
+                // Recurse into the child's own run dir while there is depth left. Its traj is
+                // `<run>/subagents/<name>/traj.json`, so its run dir is that traj's parent.
+                if depth < max_depth {
+                    if let Some(traj) = c.get("traj_path").and_then(Value::as_str) {
+                        let child_dir = Path::new(traj).parent().unwrap_or(Path::new(".")).to_path_buf();
+                        if index_exists(&child_dir) {
+                            let sub = walk(&child_dir, depth + 1, max_depth);
+                            node["parent_pid"] = sub["parent_pid"].clone();
+                            node["children"] = sub["children"].clone();
+                        }
+                    }
+                }
+                node
+            })
+            .collect::<Vec<_>>();
+        json!({"parent_pid": parent_pid, "children": children})
+    }
+    let mut root = walk(run_dir, 0, max_depth);
+    root["run_dir"] = json!(run_dir.display().to_string());
+    Ok(root)
 }
 
 fn execute_wave(
