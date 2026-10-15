@@ -31,6 +31,11 @@
     modelNote = "",
     modelOpen = $bindable(false),
     disabled = false,
+    /**
+     * Float as a pill over the content (absolute in the pane's overlay layer) instead of a solid
+     * full-width band: the transcript keeps the pane's full height behind it.
+     */
+    floating = false,
     onsend,
     oninterrupt,
     onmodel,
@@ -61,6 +66,8 @@
     /** Bindable so `/model` can open the picker. */
     modelOpen?: boolean;
     disabled?: boolean;
+    /** Render as a floating pill over the content instead of a solid band below the transcript. */
+    floating?: boolean;
     /** `text` is the finished message: chips first, then what was typed. */
     onsend: (text: string) => void;
     oninterrupt: () => void;
@@ -295,9 +302,15 @@
   }
 </script>
 
-<div class="shrink-0 bg-canvas px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pane-sm:px-3">
+<div
+  class={floating
+    ? "pointer-events-none absolute inset-x-4 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-25 pane-sm:inset-x-3"
+    : "shrink-0 bg-canvas px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pane-sm:px-3"}
+>
   <div
-    class="relative mx-auto max-w-3xl rounded-[26px] border border-transparent bg-raised transition-[border-color,box-shadow,background-color] duration-(--duration-fast) ease-(--ease-standard) focus-within:border-brand focus-within:bg-canvas focus-within:shadow-[0_0_0_3px_var(--color-brand-soft)]"
+    class={floating
+      ? "pill-float isolate pointer-events-auto relative mx-auto max-w-3xl rounded-[26px] border border-line/60 shadow-[0_12px_32px_-12px_oklch(0_0_0/0.3)] transition-[border-color,box-shadow] duration-(--duration-fast) ease-(--ease-standard) focus-within:border-brand focus-within:shadow-[0_0_0_3px_var(--color-brand-soft),0_12px_32px_-12px_oklch(0_0_0/0.3)]"
+      : "relative mx-auto max-w-3xl rounded-[26px] border border-transparent bg-raised transition-[border-color,box-shadow,background-color] duration-(--duration-fast) ease-(--ease-standard) focus-within:border-brand focus-within:bg-canvas focus-within:shadow-[0_0_0_3px_var(--color-brand-soft)]"}
   >
     {#if menu}
       <CompletionMenu completion={menu} {active} id={menuId} onpick={pick} onhover={(i) => (active = i)} />
@@ -424,5 +437,28 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /*
+   * Floating pill: translucent raised glass over the transcript. The blur and tint live on a
+   * ::before, not on the pill itself — an element with backdrop-filter becomes the containing
+   * block for fixed descendants, which would trap the model picker's fixed bottom sheet on a
+   * phone (it would lay itself out against the pill instead of the viewport).
+   */
+  .pill-float::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: color-mix(in oklab, var(--color-raised) 78%, transparent);
+    -webkit-backdrop-filter: blur(14px) saturate(1.15);
+    backdrop-filter: blur(14px) saturate(1.15);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .pill-float::before {
+      background: var(--color-raised);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
   }
 </style>

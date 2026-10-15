@@ -21,7 +21,8 @@
   .mascot {
     position: absolute;
     right: 0.75rem;
-    bottom: 0.5rem;
+    /* Above the floating prompt pill, lounging between it and the content — never over the input. */
+    bottom: calc(7rem + env(safe-area-inset-bottom));
     z-index: 20;
     width: 64px;
     height: 64px;
@@ -37,6 +38,12 @@
       right: 0.625rem;
       width: 48px;
       height: 48px;
+    }
+  }
+  /* A very wide pane keeps the pill centered with room to spare: the pet drops back to the corner. */
+  @container pane (width >= 60rem) {
+    .mascot {
+      bottom: calc(1rem + env(safe-area-inset-bottom));
     }
   }
   @keyframes mascot-bob {
