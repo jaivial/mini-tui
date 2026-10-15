@@ -176,6 +176,10 @@ pub struct Agent {
     /// The verifier phase's structured report (`src/jev.rs`), written into `traj.json`'s `info`
     /// when the phase ran. `None` when it was off or never reached.
     jev_report: Option<Value>,
+    /// What this run's first task looks like, judged on the sender's own words rather than
+    /// the transport frame around them (`intent::channel_subject`). False for every run that
+    /// was asked for work.
+    task_is_conversational: bool,
     goal_reports: Vec<Value>,
     oracle_errors: usize,
     /// Original repository baseline, captured before work so committed changes remain evidence.
@@ -220,6 +224,7 @@ impl Agent {
             warmer: crate::cache_warmer::Warmer::new(),
             fastpath_answered: false,
             jev_report: None,
+            task_is_conversational: false,
             goal_reports: Vec::new(),
             oracle_errors: 0,
             goal_baseline: None,
@@ -549,7 +554,13 @@ impl Agent {
     pub fn run(&mut self, task: &str, resume: Option<Vec<Value>>, compact_only: bool) -> Result<Obj, ModelError> {
         self.codejs_store.clear();
         self.goal_baseline = None;
-        if crate::goal_oracle::enabled() && crate::intent::classify(task) != crate::intent::Intent::Conversational {
+        // What the sender actually wrote decides whether this turn is chat or work, not the
+        // transport frame the channel wrapped it in: a WhatsApp "Hola" arrives inside ~180
+        // words of header, reply-format rules and queue directives, and classifying that
+        // envelope answers "Task" for a greeting.
+        self.task_is_conversational =
+            crate::intent::classify(&crate::intent::channel_subject(task)) == crate::intent::Intent::Conversational;
+        if crate::goal_oracle::enabled() && !self.task_is_conversational {
             if let Outcome::Output(v) = self.env.execute("git rev-parse --verify HEAD 2>/dev/null") {
                 if v.get("returncode").and_then(Value::as_i64) == Some(0) {
                     let hash = v.get("output").and_then(Value::as_str).unwrap_or("").trim();
@@ -595,9 +606,12 @@ impl Agent {
         if !self.fastpath_answered { self.save(false); }
         loop {
             if self.fastpath_answered {
-                // Conversational answers also have a goal. A rejection enters the normal loop
-                // with its usual system and task messages restored.
-                if crate::goal_oracle::enabled() {
+                // A conversational answer is its own closure. The oracle judges whether WORK
+                // was proven complete; there is no work in "Hola", so asking it produced the
+                // "[Goal oracle unavailable or invalid…]" turn and then whatever the model
+                // said about that turn — the chatter, not the answer, is what reached the
+                // chat. Work turns keep the judgement untouched.
+                if crate::goal_oracle::enabled() && !self.task_is_conversational {
                     self.check_goal_closure();
                     if self.messages.last().map(role) != Some("exit") {
                         self.fastpath_answered = false;
@@ -649,9 +663,11 @@ impl Agent {
                 }
             }
             // Gate only proposed success. Interrupts, resource limits and cancellation remain
-            // explicit failures, never a reason to claim the user's goal was achieved.
+            // explicit failures, never a reason to claim the user's goal was achieved. A chat
+            // turn has no work to gate: its plain-text reply is the answer the user asked for.
             if self.messages.last().and_then(|m| m.pointer("/extra/exit_status")).and_then(Value::as_str) == Some("Submitted")
                 && crate::goal_oracle::enabled()
+                && !self.task_is_conversational
             {
                 self.check_goal_closure();
             }

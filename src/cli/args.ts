@@ -45,6 +45,8 @@ export interface HeadlessArgs extends CommonArgs {
   timeout?: number;
   /** Sessions db override for embedding processes (default: env chain). */
   dbPath?: string;
+  /** Extra environment for the spawned run (provider keys, channel framing hints). */
+  env?: Record<string, string>;
 }
 
 export type SessionsAction = "list" | "show" | "rm";

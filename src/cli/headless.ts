@@ -280,7 +280,9 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
       cwd,
       resumePath,
       compactOnly: args.compact || undefined,
-      env: modelEnv(model),
+      // Caller-supplied run env (BYOK keys, the channel's `MINI_CHANNEL_SUBJECT`) wins over
+      // the model-derived one: both are per-run facts the embedding process already decided.
+      env: { ...modelEnv(model), ...args.env },
       control: false,
     });
   } catch (error) {
