@@ -48,6 +48,7 @@ import { route as routerRoute, routerEnabled } from "../router";
 import { readFileSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { ensureMediaFrames, lateTranscriptNote, transcribePendingAudio, type LateTranscriptLog, type MediaHandling } from "./mediaTurn";
+import { isTurnFailureNote, replyLanguage, turnFailureCause, turnFailureNote } from "../turnFailure";
 
 export interface PendingRow {
   seq: number;
@@ -504,9 +505,9 @@ async function processOne(
     replyText = voicePlanParsed.text;
     // The reply carries the transcript frames (or their honest per-attachment
     // failure notes): mark delivered so the late sweep never re-sends them as
-    // a follow-up. A turn that ended in the generic failure note carried
-    // nothing — those attachments stay unmarked and the sweep relays them.
-    if (options.media && options.lateTranscripts && !replyText.startsWith("(mini could not complete this turn")) {
+    // a follow-up. A turn that ended in the failure note carried nothing —
+    // those attachments stay unmarked and the sweep relays them.
+    if (options.media && options.lateTranscripts && !isTurnFailureNote(replyText)) {
       const freshRow = options.inbox.read(seq - 1, 1)[0] as PendingRow | undefined;
       if (freshRow?.seq === seq) {
         for (const a of (JSON.parse(freshRow.payload) as Inbound).attachments) {
@@ -854,7 +855,7 @@ async function findDeliveredReply(sender: EvoSender, thread: string, quotedId: s
   // Honest failure notes are intentionally generic: two messages can fail with
   // the byte-identical note, so a note is never text-evidence — only its quoted
   // stanza id (when present) may identify it. Text evidence is for real replies.
-  const textEvidenceAllowed = !replyText.startsWith("(mini could not complete this turn");
+  const textEvidenceAllowed = !isTurnFailureNote(replyText);
   for (const m of recent) {
     if (quotedId) {
       if (m.quotedStanzaId === quotedId) return m.id || null;
@@ -945,6 +946,12 @@ async function runTurn(
   // a model for a thread keeps it.
   const model = bindingModel || options.model || (routerEnabled() ? await routedModel(message.text) : "");
   let lastError = "";
+  // The FIRST real diagnosis wins. A later attempt's text is the one most likely to be noise: the
+  // run that motivated this collapsed copies on resume, printed its own notice about it and then
+  // hit the wall-clock limit, so attempt 1 reported `TimeExceeded` and attempt 2 reported the
+  // collapse notice — and keeping the last error threw the real cause away (seq=59, 2026-10-16).
+  let firstError = "";
+  let firstExitStatus = "";
   for (let attempt = 1; attempt <= maxTurnAttempts; attempt++) {
     try {
       const db = openDb(dbPath);
@@ -997,16 +1004,23 @@ async function runTurn(
         log("channel.consumer.turn", { seq: row.seq, session: row.session, turn: "ok" });
         return parsed.result.trim();
       }
-      lastError = parsed.error ?? parsed.exit_status ?? `exit ${exitCode}`;
-      log("channel.consumer.turn", { seq: row.seq, session: row.session, turn: "failed", attempt, error: lastError.slice(0, 200) });
+      lastError = turnFailureCause(parsed.error ?? "");
+      if (!lastError && parsed.exit_status) lastError = parsed.exit_status;
+      if (!lastError) lastError = `exit ${exitCode}`;
+      if (parsed.exit_status && !firstExitStatus) firstExitStatus = parsed.exit_status;
+      if (!firstError && parsed.error) firstError = turnFailureCause(parsed.error);
+      log("channel.consumer.turn", { seq: row.seq, session: row.session, turn: "failed", attempt, exit_status: parsed.exit_status || undefined, error: lastError.slice(0, 200) });
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
+      if (!firstError) firstError = lastError;
       log("channel.consumer.turn", { seq: row.seq, session: row.session, turn: "error", attempt, error: lastError.slice(0, 200) });
     }
   }
   // The turn kept failing: an honest failure note is still a reply — better
   // than a silent thread or a poison message blocking the cursor forever.
-  return `(mini could not complete this turn: ${lastError.slice(0, 180)})`;
+  // Mapped to the sender's language and to the cause that actually ended the turn, never the
+  // agent's log tail.
+  return turnFailureNote(firstError || lastError, firstExitStatus, replyLanguage(message.text));
 }
 
 const LATE_NOTE_WINDOW = 20;

@@ -43,6 +43,7 @@ import { startChannelConsumer, planImageMarkers, cuPoolDir } from "../src/channe
 import { SendLedger, type EvoSender } from "../src/channels/evoSend";
 import { planGroupCreation, type GroupBridgeOptions } from "../src/channels/groupBridge";
 import { planSessionCommand } from "../src/channels/sessionCommand";
+import { isTurnFailureNote } from "../src/turnFailure";
 
 const fail: string[] = [];
 const ok = (name: string, condition: boolean, detail = "") => {
@@ -189,7 +190,7 @@ const evoMessage = (overrides: Record<string, unknown> = {}) => {
   consumerA.stop();
   await consumerA.done.catch(() => {});
   const dmReply = sent.find((s) => s.account === "bot-a" && s.number === JAIME);
-  ok("DM reply went out through the OWNING account's sender", !!dmReply && dmReply.text.startsWith("(mini could not complete this turn"), JSON.stringify(sent));
+  ok("DM reply went out through the OWNING account's sender", !!dmReply && isTurnFailureNote(dmReply.text), JSON.stringify(sent));
   const groupSends = sent.filter((s) => s.number === GROUP);
   ok("group message WITHOUT mention never sent", groupSends.length === 1, JSON.stringify(sent));
   ok("group message WITH mention answered in-group via its own identity", groupSends.length === 1 && groupSends[0]!.account === "bot-a");

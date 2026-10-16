@@ -36,6 +36,7 @@ import { boundEvent, boundText, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory } from "../traj/watch";
 import { headlessSpecs, UsageError, type HeadlessArgs } from "./args";
 import { recordUsage } from "../usage";
+import { turnFailureCause } from "../turnFailure";
 
 /** Exit codes: scripts can tell "the agent failed" from "you called me wrong". */
 export const EXIT_OK = 0;
@@ -389,7 +390,13 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
   const ok = !interrupted && code === 0 && (args.compact ? compactDone : exitStatus === "Submitted");
   let errorText = "";
   if (!ok && !interrupted) {
-    errorText = tailLog(run.session.logPath);
+    // The log tail is whatever the process left behind, and the agent mixes real failures with
+    // operator diagnostics in it — the resume-collapse notice (`[turn] resumed session held N
+    // unfinished copies...`) is the E4 fix working, but as the last line written it became the
+    // whole error text and reached the user in place of the cause that preceded it. Diagnostics are
+    // dropped here, at the point that mints `error`, so every consumer of the result (the channel
+    // consumer, the queue bridge, the TUI) inherits the fix rather than each re-implementing it.
+    errorText = turnFailureCause(tailLog(run.session.logPath));
     if (!errorText) errorText = exitStatus ? `the run ended with ${exitStatus}` : `the agent exited with code ${code}`;
   }
 
