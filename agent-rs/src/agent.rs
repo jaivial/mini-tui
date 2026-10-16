@@ -325,6 +325,60 @@ impl Agent {
         json!({"role": "user", "content": format!("The user added a new task: {text}"), "extra": {"interrupt_type": "UserNewTask"}})
     }
 
+    /// The plain text a message carries: a string, or the multimodal parts list a model builds
+    /// from it (`format_message` with a `multimodal_regex`).
+    fn content_text(m: &Value) -> String {
+        match get(m, "content") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Array(parts)) => parts.iter().filter_map(|p| get(p, "text").and_then(Value::as_str)).collect::<Vec<_>>().join(""),
+            _ => String::new(),
+        }
+    }
+
+    /// Whether anything after `i` closed the turn: an `exit` marker, or an assistant message that
+    /// carried a final `submission`. Everything between the last answer and the end of the history
+    /// belongs to the turn that was still in flight when the run died.
+    fn answered_after(messages: &[Value], i: usize) -> bool {
+        messages[i + 1..].iter().any(|m| {
+            role(m) == "exit"
+                || (role(m) == "assistant" && !extra(m).get("submission").and_then(Value::as_str).unwrap_or("").trim().is_empty())
+        })
+    }
+
+    /// Collapse the UNFINISHED copies of the incoming task a resumed history may carry into none:
+    /// `run` adds exactly one right after this, so the model reads the task once instead of once
+    /// per attempt. A copy that a later answer closed is real history and stays.
+    ///
+    /// Measured 2026-10-15: a channel turn retried after a provider failure left one copy per
+    /// attempt in the session (36 copies of one message, 1205 steps, ten-plus minutes of agent
+    /// for a one-line answer), because the resumed run appended `The user added a new task: …`
+    /// without looking at what the session it was resuming already held.
+    ///
+    /// Returns how many copies were dropped.
+    fn drop_pending_task_copies(messages: &mut Vec<Value>, candidates: &[String]) -> usize {
+        let wanted: Vec<&str> = candidates.iter().map(|c| c.trim()).filter(|c| !c.is_empty()).collect();
+        if wanted.is_empty() {
+            return 0;
+        }
+        let doomed: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| {
+                role(m) == "user"
+                    && !Self::answered_after(messages, *i)
+                    && wanted.iter().any(|w| *w == Self::content_text(m).trim())
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if doomed.is_empty() {
+            return 0;
+        }
+        for i in doomed.iter().rev() {
+            messages.remove(*i);
+        }
+        doomed.len()
+    }
+
     fn exit_message(status: &str, content: &str, submission: &str) -> Value {
         json!({"role": "exit", "content": content, "extra": {"exit_status": status, "submission": submission}})
     }
@@ -573,7 +627,26 @@ impl Agent {
         self.extra_vars.insert("task".into(), json!(task));
         crate::subagents::set_parent_state(self.cost, self.config.cost_limit, &self.parent_model_name());
         if let Some(resume) = resume.filter(|r| !r.is_empty()) {
-            self.messages = Self::repair_tool_call_history(resume.into_iter().filter(|m| role(m) != "exit").collect());
+            let mut history: Vec<Value> = resume.into_iter().filter(|m| role(m) != "exit").collect();
+            // A resumed turn is usually a RETRY of the turn that died: the caller re-sends the
+            // same task, and every attempt used to append yet another copy of it to the session
+            // it was resuming. The copies the dead turn never answered ARE this same task, so
+            // they collapse into the single one added below (the run that exposed it: 1205 steps
+            // and 36 copies of a one-line message, 2026-10-15).
+            let mut pending = vec![task.trim().to_string(), format!("The user added a new task: {task}")];
+            // The other encoding of the same task: a FRESH run starts from the rendered instance
+            // template, and that is what a first attempt that failed leaves in the session.
+            if let Ok(instance) = render(&self.config.instance_template, &self.template_vars()) {
+                pending.push(instance);
+            }
+            let dropped = Self::drop_pending_task_copies(&mut history, &pending);
+            if dropped > 0 {
+                eprintln!(
+                    "WARNING: the resumed session already held {dropped} unfinished cop{} of this task; collapsing them into one",
+                    if dropped == 1 { "y" } else { "ies" }
+                );
+            }
+            self.messages = Self::repair_tool_call_history(history);
             if compact_only {
                 self.compact_requested = true;
                 self.apply_pending_compaction();
@@ -1792,6 +1865,73 @@ mod tests {
         assert_eq!(out.len(), 4);
         assert_eq!(out[2]["tool_call_id"], "b");
         assert_eq!(out[2]["extra"]["interrupted"], true);
+    }
+
+    /// The shape the production session held: one task injected by a resumed run, then two more
+    /// attempts of the same turn, none of them answered (each attempt died inside the model call).
+    #[test]
+    fn pending_copies_of_the_same_task_collapse_to_none() {
+        let note = "The user added a new task: hola";
+        let mut ms = vec![
+            json!({"role": "system", "content": "s"}),
+            json!({"role": "assistant", "content": "anterior", "extra": {"submission": "anterior"}}),
+            json!({"role": "user", "content": note, "extra": {"interrupt_type": "UserNewTask"}}),
+            json!({"role": "user", "content": note, "extra": {"interrupt_type": "UserNewTask"}}),
+            json!({"role": "user", "content": note, "extra": {"interrupt_type": "UserNewTask"}}),
+        ];
+        let dropped = Agent::drop_pending_task_copies(&mut ms, &["hola".into(), note.into()]);
+        assert_eq!(dropped, 3);
+        assert_eq!(ms.len(), 2);
+        assert_eq!(Agent::content_text(&ms[1]), "anterior");
+    }
+
+    /// A copy a later answer closed is history and stays: the same text sent again is a new
+    /// request, so only the UNFINISHED copy collapses and the caller's add replaces it.
+    #[test]
+    fn an_answered_copy_is_history_and_survives_the_collapse() {
+        let note = "The user added a new task: hola";
+        let mut ms = vec![
+            json!({"role": "user", "content": note}),
+            json!({"role": "assistant", "content": "¡Hola!", "extra": {"submission": "¡Hola!"}}),
+            json!({"role": "user", "content": note, "extra": {"interrupt_type": "UserNewTask"}}),
+        ];
+        assert_eq!(Agent::drop_pending_task_copies(&mut ms, &[note.into()]), 1);
+        assert_eq!(ms.len(), 2);
+        assert_eq!(Agent::content_text(&ms[0]), note);
+    }
+
+    /// Nothing pending to collapse: a task whose every copy was answered is never touched.
+    #[test]
+    fn a_history_with_no_pending_copy_is_left_alone() {
+        let note = "The user added a new task: hola";
+        let mut ms = vec![
+            json!({"role": "user", "content": note}),
+            json!({"role": "assistant", "content": "¡Hola!", "extra": {"submission": "¡Hola!"}}),
+        ];
+        assert_eq!(Agent::drop_pending_task_copies(&mut ms, &[note.into()]), 0);
+        assert_eq!(ms.len(), 2);
+    }
+
+    /// An `exit` marker closes the turn just like a submission: the frontier is the last answer.
+    #[test]
+    fn an_exit_marker_closes_the_turn() {
+        let note = "The user added a new task: hola";
+        let mut ms = vec![
+            json!({"role": "user", "content": note}),
+            json!({"role": "exit", "content": "hola", "extra": {"exit_status": "Submitted"}}),
+            json!({"role": "user", "content": note}),
+        ];
+        assert_eq!(Agent::drop_pending_task_copies(&mut ms, &[note.into()]), 1);
+        assert_eq!(ms.len(), 2);
+    }
+
+    /// The multimodal form: the text parts are what the comparison reads.
+    #[test]
+    fn multimodal_content_is_compared_by_its_text_parts() {
+        let mut ms = vec![json!({"role": "user", "content": [{"type": "text", "text": "hola"}]})];
+        assert_eq!(Agent::content_text(&ms[0]), "hola");
+        assert_eq!(Agent::drop_pending_task_copies(&mut ms, &["hola".into()]), 1);
+        assert!(ms.is_empty());
     }
 
     #[test]
