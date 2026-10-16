@@ -41,7 +41,7 @@
 
 <div
   bind:this={card}
-  class="elev-pop enter-pop fixed z-[70] {width} rounded-lg border border-line bg-canvas p-2 text-left shadow-lg"
+  class="elev-pop enter-pop fixed z-[70] {width} max-w-[calc(100vw-1rem)] rounded-xl border border-line bg-canvas p-1.5 text-left shadow-lg"
   style="top: {at().top}px; left: {at().left}px"
   role={role}
   aria-label={label}

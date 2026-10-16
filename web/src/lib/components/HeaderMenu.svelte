@@ -16,6 +16,12 @@
    * exist for that pane — a brand-new chat offers far fewer than a live one. That keeps one popover
    * and one dismiss handler for the whole header instead of a menu inside a menu. A row whose
    * `group` differs from the one above it starts a new section.
+   *
+   * v6-G polish: the card is one width on every screen and can never outgrow the viewport (the
+   * 1033px-in-an-844px-window regression must not come back); every row keeps a fixed icon slot so
+   * the labels line up whether or not a row has an icon; sections are separated by a rule instead of
+   * whitespace alone; and the focus ring is drawn INSIDE the row (`-outline-offset-2`) because the
+   * card scrolls and an outward ring would be clipped at its edges.
    */
   export interface MenuRow {
     id: string;
@@ -49,9 +55,20 @@
     row.run();
   }
 
-  /** Arrow keys walk the rows, Home/End jump. Escape and outside presses are Popover's job. */
+  /** A row starts a new section when its group differs from the one above it. */
+  const newGroup = (i: number) => !!rows[i]?.group && rows[i - 1]?.group !== rows[i]?.group;
+
+  /**
+   * Arrow keys walk the rows, Home/End jump. Escape and outside presses are Popover's job.
+   *
+   * The card is a portal under `document.body`, so the rows are found through the popover family
+   * name (`data-popover`, set from the `family` handed to `Popover`) rather than by walking up the
+   * DOM from the trigger — the trigger's ancestors do not contain the card.
+   */
   function onkeydown(event: KeyboardEvent) {
-    const all = [...(button?.parentElement?.parentElement?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])') ?? [])];
+    const card = document.querySelector(`[data-popover="${uid}"]`);
+    if (!card) return;
+    const all = [...card.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')];
     if (!all.length) return;
     const i = all.indexOf(document.activeElement as HTMLElement);
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -82,34 +99,49 @@
 </div>
 
 <!--
-  `onkeydown` is bound on the wrapper so it reaches the portal card (a sibling of document.body,
-  not a DOM child of this component): the listener is on the trigger's parent and the card is
-  portalled as a child of that same parent by Popover.
+  `onkeydown` is bound on the wrapper so it reaches the portalled card: the listener wraps the rows,
+  which live in the card, and the card is a child of `document.body`, not of this component.
 -->
-<Popover open={open} anchor={() => button} placement="bottom" role="menu" label={label} width="w-64" onclose={() => (open = false)}>
+<Popover
+  open={open}
+  anchor={() => button}
+  placement="bottom"
+  role="menu"
+  label={label}
+  width="w-64 max-w-[calc(100vw-1rem)]"
+  family={uid}
+  onclose={() => (open = false)}
+>
   <div
     class="flex max-h-[min(58vh,26rem)] flex-col overflow-y-auto overscroll-contain"
     onkeydown={onkeydown}
     role="presentation"
   >
     {#each rows as row, i (row.id)}
-      {#if row.group && rows[i - 1]?.group !== row.group}
-        <div class="mt-1.5 mb-0.5 px-2 text-[10px] font-semibold tracking-wider text-ink-faint uppercase first:mt-0">{row.group}</div>
+      {#if newGroup(i)}
+        <!-- A rule, not just a gap: six groups of three rows is a wall of text without one. -->
+        <div class="mt-1.5 mb-1 flex items-center gap-2 px-2.5 pt-1.5 first:mt-0 first:pt-0">
+          <span class="text-[10px] font-semibold tracking-wider text-ink-faint uppercase">{row.group}</span>
+          <span class="h-px min-w-0 flex-1 bg-line/70" aria-hidden="true"></span>
+        </div>
       {/if}
       <button
         type="button"
         role="menuitem"
         id="{uid}-row-{row.id}"
         aria-disabled={row.disabled ? "true" : undefined}
-        class="interactive flex min-h-10 w-full cursor-pointer items-center gap-2.5 rounded-xl px-2 text-left hover:bg-raised focus-visible:bg-raised max-md:min-h-11
+        class="interactive flex min-h-10 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-left hover:bg-raised focus-visible:bg-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand pointer-coarse:min-h-11
           {row.disabled ? 'cursor-not-allowed text-ink-faint' : row.danger ? 'text-err' : 'text-ink'}"
         onclick={() => pick(row)}
       >
-        {#if row.icon}
-          {@const Icon = row.icon}
-          <Icon size={15} strokeWidth={1.75} class="-ml-0.5 shrink-0 opacity-70" aria-hidden="true" />
-        {/if}
-        <span class="min-w-0 flex-1">
+        <!-- A fixed slot, so labels line up across a section whether or not that row has an icon. -->
+        <span class="grid size-4 shrink-0 place-items-center" aria-hidden="true">
+          {#if row.icon}
+            {@const Icon = row.icon}
+            <Icon size={15} strokeWidth={1.75} class="opacity-70" />
+          {/if}
+        </span>
+        <span class="min-w-0 flex-1 py-1.5">
           <span class="block truncate text-[13px] leading-5">{row.label}</span>
           {#if row.note}<span class="block truncate text-[11px] leading-4 text-ink-faint">{row.note}</span>{/if}
         </span>
@@ -118,13 +150,13 @@
   </div>
 
   <!-- The palette, where it has always lived: six swatches plus the light/dark flip. -->
-  <div class="mt-1.5 border-t border-line/80 px-2 pt-2 pb-0.5">
+  <div class="mt-2 border-t border-line/80 px-2.5 pt-2 pb-0.5">
     <div class="mb-1.5 text-[10px] font-semibold tracking-wider text-ink-faint uppercase">Colour</div>
     <div class="flex flex-wrap items-center gap-1">
       {#each PALETTES as p (p.id)}
         <button
           type="button"
-          class="interactive grid size-8 shrink-0 cursor-pointer place-items-center rounded-full hover:bg-raised max-md:size-9"
+          class="interactive grid size-8 shrink-0 cursor-pointer place-items-center rounded-full hover:bg-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand pointer-coarse:size-11"
           title={p.name}
           aria-label="{p.name} palette"
           aria-pressed={ui.palette === p.id}
@@ -136,7 +168,7 @@
       <span class="mx-0.5 h-5 w-px bg-line" aria-hidden="true"></span>
       <button
         type="button"
-        class="interactive flex h-8 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[11.5px] text-ink-muted hover:bg-raised hover:text-ink max-md:h-9"
+        class="interactive flex h-8 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[11.5px] text-ink-muted hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand max-md:h-9"
         title={ui.theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
         onclick={() => ui.toggleTheme()}
       >

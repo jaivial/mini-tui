@@ -6,7 +6,7 @@
   import Mascot from "./Mascot.svelte";
   import Avatar from "./Avatar.svelte";
   import { store } from "../stores/sessions.svelte";
-  import { cost, relativeTime } from "../format";
+  import { relativeTime } from "../format";
   import { statusLine } from "../mascot";
   import { partitionBots } from "../botGroups";
   import { botProgress, progressLabel, runningLabel } from "../botRows";
@@ -202,7 +202,7 @@
             <!-- Fold the bot's work open/closed. -->
             <button
               type="button"
-              class="interactive ml-1 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full text-ink-faint hover:text-ink"
+              class="interactive grid size-8 shrink-0 cursor-pointer place-items-center rounded-full text-ink-faint hover:text-ink pointer-coarse:-ml-3 pointer-coarse:size-11"
               aria-expanded={openRow}
               aria-label={openRow ? `Hide ${session.title || "Untitled"}'s work` : `Show ${session.title || "Untitled"}'s work`}
               title={openRow ? "Hide its work" : "Show its work"}
@@ -211,7 +211,9 @@
               <ChevronRight size={15} strokeWidth={2.25} class="transition-[rotate] duration-150 {openRow ? 'rotate-90' : ''}" aria-hidden="true" />
             </button>
           {:else}
-            <span class="w-1 shrink-0" aria-hidden="true"></span>
+            <!-- The same slot, empty: every row's avatar (and its presence dot) starts at the SAME x,
+                 so the state indicators line up down the list instead of stepping in and out. -->
+            <span class="size-8 shrink-0" aria-hidden="true"></span>
           {/if}
 
           {#if editing === session.id}
@@ -230,14 +232,14 @@
             <button
               data-nav
               type="button"
-              class="interactive flex min-h-14 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[18px] px-2 text-left"
+              class="interactive flex min-h-14 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[18px] px-2 text-left max-md:pr-14"
               onclick={() => onopen(session.id)}
               ondblclick={() => startRename(session)}
               title={session.title}
               aria-current={focusedSession === session.id ? "true" : undefined}
             >
               <span class="relative shrink-0">
-                <Avatar id={session.id} size={38} />
+                <Avatar id={session.id} size={44} />
                 <!--
                   Presence dot, Slack's rule: sunset + pulse only means "working right now",
                   the quiet colours are states that need no attention.
@@ -267,30 +269,34 @@
                     </span>
                   {/if}
                 </span>
+                <!--
+                  Under the title, left to right: the state, how far its task card has got, and when
+                  it last moved. The time took the slot the cost used to hold (v6-G: the cost is out
+                  of this list, the relative time came down from the trailing column), and the
+                  running delegate count is the one thing that stayed at the right edge, where a
+                  changing figure is read at a glance.
+                -->
                 <span class="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-muted">
                   <span class="truncate {session.status === 'running' ? 'font-medium text-live' : ''}">{statusLine(session.status)}</span>
-                  {#if session.cost > 0}
-                    <span class="tnum ml-auto shrink-0 text-ink-faint">{cost(session.cost)}</span>
+                  {#if progressLabel(progress)}
+                    <span
+                      class="tnum shrink-0 rounded-full bg-overlay px-1.5 text-[11px] leading-4 font-semibold text-ink-muted"
+                      title="{progress.done} of {progress.total} tasks done"
+                    >{progressLabel(progress)}</span>
                   {/if}
+                  <span class="tnum ml-auto shrink-0 text-[11.5px] leading-4 text-ink-faint">{relativeTime(session.updatedAt)}</span>
                 </span>
               </span>
-              <!-- The counters the mockup's row carries: tasks done/total, and what is running. -->
-              <span class="flex shrink-0 flex-col items-end gap-0.5">
-                {#if progressLabel(progress)}
-                  <span
-                    class="tnum rounded-full bg-overlay px-2 py-0.5 text-[11.5px] leading-4 font-semibold text-ink-muted"
-                    title="{progress.done} of {progress.total} tasks done"
-                  >{progressLabel(progress)}</span>
-                {:else}
-                  <span class="tnum text-[11.5px] leading-4 text-ink-faint">{relativeTime(session.updatedAt)}</span>
-                {/if}
-                {#if runningLabel(progress)}
-                  <span class="flex items-center gap-1 text-[11px] leading-4 font-medium text-live" title="{progress.running} delegate{progress.running === 1 ? '' : 's'} working">
-                    <span class="pulse-live size-1.5 shrink-0 rounded-full bg-live" aria-hidden="true"></span>
-                    <span class="tnum">{progress.running}</span>
-                  </span>
-                {/if}
-              </span>
+              {#if runningLabel(progress)}
+                <!-- Delegates working under this bot right now: the only trailing figure left. -->
+                <span
+                  class="flex shrink-0 items-center gap-1 text-[11px] leading-4 font-medium text-live"
+                  title="{progress.running} delegate{progress.running === 1 ? '' : 's'} working"
+                >
+                  <span class="pulse-live size-1.5 shrink-0 rounded-full bg-live" aria-hidden="true"></span>
+                  <span class="tnum">{progress.running}</span>
+                </span>
+              {/if}
             </button>
           {/if}
 
