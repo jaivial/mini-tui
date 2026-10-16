@@ -1,6 +1,7 @@
 /** The per-session transcript feed: isolation, deltas, resync and the origin guard. */
 import { describe, expect, test } from "bun:test";
-import { allowedCorsOrigin, SessionFeed, sameOrigin, summarize, toWire, type Frame } from "../src/web/feed";
+import { allowedCorsOrigin, SessionFeed, summarize, toWire, type Frame } from "../src/web/feed";
+import { hostRules, sameOrigin } from "../src/web/hostGuard";
 import type { LiveSession } from "../src/web/sessions";
 
 function session(id: string, events: LiveSession["events"] = []): LiveSession {
@@ -148,17 +149,30 @@ describe("allowedCorsOrigin", () => {
 });
 
 describe("sameOrigin", () => {
+  // The rules are server state now (bind address + declared names), not the
+  // request's own headers; the rebinding tests live in web-host-guard.test.ts.
   const h = (o: Record<string, string>) => new Headers(o);
+  const rules = hostRules("mini.example.com");
   test("accepts the page's own origin, and non-browser clients", () => {
-    expect(sameOrigin(h({ origin: "https://mini.example.com", host: "mini.example.com" }))).toBe(true);
-    expect(sameOrigin(h({ host: "mini.example.com" }))).toBe(true);
+    expect(sameOrigin(h({ origin: "https://mini.example.com", host: "anything" }), rules)).toBe(true);
+    expect(sameOrigin(h({ host: "anything" }), rules)).toBe(true);
   });
   test("refuses another site", () => {
-    expect(sameOrigin(h({ origin: "https://evil.example", host: "mini.example.com" }))).toBe(false);
-    expect(sameOrigin(h({ origin: "not a url", host: "mini.example.com" }))).toBe(false);
+    expect(sameOrigin(h({ origin: "https://evil.example", host: "mini.example.com" }), rules)).toBe(false);
+    expect(sameOrigin(h({ origin: "not a url", host: "mini.example.com" }), rules)).toBe(false);
   });
-  test("allows the vite dev proxy (loopback to loopback) only", () => {
-    expect(sameOrigin(h({ origin: "http://localhost:4318", host: "127.0.0.1:4317" }))).toBe(true);
-    expect(sameOrigin(h({ origin: "http://localhost:4318", host: "mini.example.com" }))).toBe(false);
+  test("loopback is always served, so the vite dev proxy keeps working", () => {
+    // The dev proxy on :4318 reaches the API on :4317, so a loopback origin has
+    // to be allowed whatever the bind address is. That costs nothing: a browser
+    // derives Host and Origin from the URL the user is actually on, so a page
+    // on the internet cannot produce either one naming loopback (rebinding
+    // gives you YOUR domain, not localhost). Only someone already sitting on
+    // this machine can, and they are past the boundary this guard defends.
+    expect(sameOrigin(h({ origin: "http://localhost:4318", host: "127.0.0.1:4317" }), hostRules("127.0.0.1"))).toBe(true);
+    expect(sameOrigin(h({ origin: "http://localhost:4318" }), hostRules("mini.example.com"))).toBe(true);
+  });
+  test("a public name is served only when the operator declared it", () => {
+    expect(sameOrigin(h({ origin: "https://mini.example.com" }), hostRules("127.0.0.1", ["mini.example.com"]))).toBe(true);
+    expect(sameOrigin(h({ origin: "https://mini.example.com" }), hostRules("127.0.0.1"))).toBe(false);
   });
 });

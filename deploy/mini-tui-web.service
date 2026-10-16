@@ -15,6 +15,12 @@ User=jaime
 WorkingDirectory=/home/jaime/mini-tui
 Environment=MINITUI_WEB_HOST=127.0.0.1
 Environment=MINITUI_WEB_PORT=4317
+# The names this server answers to, besides its bind address and loopback.
+# REQUIRED when a reverse proxy fronts it on a public name (nginx sets
+# `Host: $host`, and a Host we do not serve is answered 421). Comma-separated,
+# ports optional. Without it a proxied deployment serves nothing: that refusal
+# is the intended failure, not a silent one.
+#Environment=MINITUI_WEB_ALLOWED_HOSTS=mini.example.com
 # bun is not on the systemd PATH, so use the absolute path.
 ExecStart=/home/jaime/.bun/bin/bun run src/web/serve.ts
 Restart=always

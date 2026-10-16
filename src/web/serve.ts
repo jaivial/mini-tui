@@ -13,7 +13,8 @@ import { extname, join, normalize, resolve } from "node:path";
 
 import { SessionManager, loadHosts, saveHosts, probeHost, type RemoteHostRecord } from "./sessions";
 import { resolveAttachments } from "./sessions";
-import { allowedCorsOrigin, SessionFeed, sameOrigin, summarize, toWire } from "./feed";
+import { allowedCorsOrigin, SessionFeed, summarize, toWire } from "./feed";
+import { hostAllowed, hostRules, parseAllowedHosts, sameOrigin } from "./hostGuard";
 import { NOTE_MAX, getNote, listTasks, saveNote } from "../sessions";
 import { FolderError, listLocal, listRemote } from "./folders";
 import { Hub, type HubClient } from "./hub";
@@ -62,6 +63,15 @@ function flag(name: string, fallback: string): string {
 }
 const PORT = Number(flag("port", process.env.MINITUI_WEB_PORT ?? "4317"));
 const HOST = flag("host", process.env.MINITUI_WEB_HOST ?? "127.0.0.1");
+
+/**
+ * The hostnames this process answers to, fixed at startup from the bind address
+ * and `MINITUI_WEB_ALLOWED_HOSTS` (the public name, when a proxy fronts it).
+ * NEVER derived from the request: see hostGuard.ts for the measurement behind
+ * that. A deployment behind a proxy must name its public host here or every
+ * request is answered 421 — which is the intended failure, not a silent one.
+ */
+const HOST_RULES = hostRules(HOST, parseAllowedHosts(process.env.MINITUI_WEB_ALLOWED_HOSTS));
 
 // Channel receivers (src/channels) are inbound webhooks from external
 // providers. The Evo receiver exists only when the operator configured it in
@@ -571,11 +581,22 @@ const server = Bun.serve({
   async fetch(request, srv) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/api/, "") || "/";
+    // The Host gate comes FIRST and runs on EVERY request, reads included.
+    // Under DNS rebinding the browser considers the attacker's host same-origin,
+    // so it sends no `Origin` on a GET at all and CORS never applies: an
+    // origin-only check passes a rebound read. Measured before this guard:
+    // `/api/hub` answered 101 (an interactive shell as this user) and
+    // `POST /api/sessions` answered 201 (a live agent), both from a Host this
+    // process had never heard of. Answering 421 is the honest status for a
+    // request aimed at a name we do not serve.
+    if (!hostAllowed(request.headers.get("host"), HOST_RULES)) {
+      return json({ error: "host refused" }, 421);
+    }
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders(request) });
     // A page on another site must not be able to drive this server (start agents, write
     // provider keys) just because it is reachable: state-changing requests have to come from
     // this app's own origin. Non-browser clients send no Origin and are unaffected.
-    if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(request.headers)) {
+    if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(request.headers, HOST_RULES)) {
       return json({ error: "cross-origin request refused" }, 403);
     }
 
@@ -592,7 +613,7 @@ const server = Bun.serve({
       // accepted messages (bounded, truncated) and consumer cursors. No
       // mutation, no raw payloads, no secrets — the store opens read-only.
       if (path === "/channels/inbox" && request.method === "GET") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         try { return json(await channelsView()); }
         catch { return json({ error: "channel_inbox_read_failed" }, 503); }
       }
@@ -600,7 +621,7 @@ const server = Bun.serve({
       // latency and failures. Read-only, same-origin, bounded — the router reads
       // the same store to decide what a provider has cost it.
       if (path === "/usage" && request.method === "GET") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         try { return json(usageView(url.searchParams.get("window"))); }
         catch { return json({ error: "usage_read_failed" }, 503); }
       }
@@ -608,17 +629,17 @@ const server = Bun.serve({
       // over loopback with a server-held apikey; only the mapped state, the QR
       // image and the pairing code are exposed, never the key or the raw API.
       if (path === "/channels/evo/status" && request.method === "GET") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         return json(await evoStatus());
       }
       if (path === "/channels/evo/qr" && request.method === "GET") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         // Rate-limited inside: the upstream connect call regenerates the QR.
         const view = await evoQr();
         return json(view, view.error === "qr_rate_limited" ? 429 : 200);
       }
       if (path === "/channels/evo/code" && request.method === "GET") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         // Pairing by phone number: rate-limited inside like the QR (each
         // upstream call restarts a login); a bad number is a client error.
         const number = url.searchParams.get("number") ?? "";
@@ -628,7 +649,7 @@ const server = Bun.serve({
       // Read-only projection of the local task registry. No worker launch, model
       // call, schema creation or browser-selected filesystem path.
       if (path === "/task-graph" && request.method === "GET") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         console.log("task-graph request", new Date().toISOString());
         const bin = rustAgentBin();
         const db = process.env.MINITUI_TASK_GRAPH_DB ?? join(homedir(), ".local/share/mini-tui/task-graph.sqlite");
@@ -643,7 +664,7 @@ const server = Bun.serve({
         } finally { clearTimeout(timeout); }
       }
       if ((path === "/task-events" || path === "/task-events/stream") && request.method === "GET") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         const raw = url.searchParams.get("after") ?? request.headers.get("last-event-id") ?? "0";
         if (!/^\d{1,16}$/.test(raw) || !Number.isSafeInteger(Number(raw))) return json({ error: "invalid_event_cursor" }, 400);
         let cursor = Number(raw);
@@ -698,7 +719,7 @@ const server = Bun.serve({
       if (path === "/stream" && request.method === "GET") {
         // The live session feed is private: a page on another site must not be able to
         // subscribe to it (EventSource sends Origin, so the check is exact).
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         const encoder = new TextEncoder();
         let cleanup = () => {};
         const stream = new ReadableStream({
@@ -751,7 +772,7 @@ const server = Bun.serve({
       // The bytes land in the local store (see attachments.ts); the reply is
       // what the client sends on with its next prompt (ids only).
       if (path === "/attachments" && request.method === "POST") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         const limited = rateLimited("attachment", request, srv);
         if (limited) return limited;
         // Refuse the upload before reading it: formData() would buffer the whole
@@ -779,7 +800,7 @@ const server = Bun.serve({
       if (attMatch && request.method === "GET") {
         // Private data: a browser page on another site must not read it (fetch would
         // need CORS, which is no longer wildcarded; this closes navigation tricks too).
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         const att = getAttachment(attMatch[1] as string);
         if (!att) return json({ error: "not found" }, 404);
         const download = url.searchParams.get("dl") === "1";
@@ -801,7 +822,7 @@ const server = Bun.serve({
       // never name a path, and containment is re-checked on disk.
       const mediaMatch = path.match(/^\/channel-media\/(seq\d+-[A-Za-z0-9._-]+)$/);
       if (mediaMatch && request.method === "GET") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         const ctx = openMirrorContext();
         if (!ctx) return json({ error: "not found" }, 404);
         const file = resolve(ctx.mediaDir, mediaMatch[1] as string);
@@ -820,7 +841,7 @@ const server = Bun.serve({
       // The one socket a tab keeps for the right sidebar (notes): watch, live pushes, saves. See hub.ts.
       if (path === "/hub" && request.method === "GET") {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "expected a websocket upgrade" }, 426);
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin websocket refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin websocket refused" }, 403);
         if (srv.upgrade(request, { data: { kind: "hub" } satisfies SocketData })) return undefined as unknown as Response;
         return json({ error: "websocket upgrade failed" }, 400);
       }
@@ -830,7 +851,7 @@ const server = Bun.serve({
       const socketMatch = path.match(/^\/sessions\/([^/]+)\/socket$/);
       if (socketMatch && request.method === "GET") {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "expected a websocket upgrade" }, 426);
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin websocket refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin websocket refused" }, 403);
         const id = decodeURIComponent(socketMatch[1] as string);
         const found = await heldOrError(id);
         if (found.error) return found.error;
@@ -1097,7 +1118,7 @@ const server = Bun.serve({
       // service's health, the open circuits and the last decisions. Same-origin and
       // read-only; the toggle itself is `PATCH /settings`.
       if (path === "/router" && request.method === "GET") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         try {
           const [status, laya] = await Promise.all([Promise.resolve(routerStatus()), layaHealth()]);
           return json({ ...status, laya: { reachable: laya.reachable, detail: laya.detail }, decisions: auditStore().recent(limitParam(url, 25), levelParam(url)) });
@@ -1108,7 +1129,7 @@ const server = Bun.serve({
       // A dry run: what would this task get right now? Runs the real decision
       // path and audits it, so the panel's "preview" is the real thing.
       if (path === "/router/preview" && request.method === "POST") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         const routerLimit = rateLimited("routerPreview", request, srv);
         if (routerLimit) return routerLimit;
         try {
@@ -1122,7 +1143,7 @@ const server = Bun.serve({
       // Forget a cooldown, so an operator can retry a tripped model now.
       const breakerMatch = path.match(/^\/router\/breaker\/([\w./-]+)$/);
       if (breakerMatch && request.method === "DELETE") {
-        if (!sameOrigin(request.headers)) return json({ error: "cross-origin request refused" }, 403);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
         const model = decodeURIComponent(breakerMatch[1]!).slice(0, 200);
         return breakerStore().reset(model) ? json({ ok: true, model }) : json({ error: "no open circuit" }, 404);
       }
