@@ -93,7 +93,11 @@ routed where and why.
 
 `mini-queue-lane.service` runs `mini-agent-rs queue run --owner wa-chat-lane`
 under a 25 % CPU / 2 GB cgroup — queue work is heavy-lane work and never runs
-against a benchmark measurement. The queue binary must be built with
+against a benchmark measurement.
+Stopping or restarting that unit (a deploy) returns any in-flight card to
+`pending` — the runner kills its own worker, so the lease is provably free — and
+the next wave picks it back up. A card the lane was running is never turned into
+a failure by a restart. The queue binary must be built with
 `--features task-graph`; the consumer takes it via `MINITUI_QUEUE_BIN`
 (default: the resolved Rust agent binary, which may not carry the feature).
 
