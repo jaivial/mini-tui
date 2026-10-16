@@ -8,6 +8,7 @@
   import { hub } from "../hub";
   import { TermSession, termIdFor } from "../termClient";
   import { ui } from "../stores/ui.svelte";
+  import { ansiTheme, paletteFor } from "../terminalPalette";
 
   /**
    * An interactive terminal in the pane's right sidebar: a real shell (in a PTY on the server) in the
@@ -31,7 +32,13 @@
 
   const id = $derived(termIdFor(paneId, sessionId));
 
-  /** The app's palette, read from its CSS variables, so the terminal matches the theme. */
+  /**
+   * The app's palette, read from its CSS variables, so the terminal matches the
+   * theme — including the ANSI sixteen, which xterm would otherwise take from
+   * its own stock palette. Those are built for a dark background: on the light
+   * ladder brightYellow read 1.20:1 and brightWhite 1.12:1, so `ls --color` and
+   * every git status line were invisible. See lib/terminalPalette.ts.
+   */
   function theme() {
     const css = getComputedStyle(document.documentElement);
     const v = (n: string, f: string) => css.getPropertyValue(n).trim() || f;
@@ -41,6 +48,7 @@
       cursor: v("--color-brand", "#f54e00"),
       cursorAccent: v("--color-surface", "#1b1a17"),
       selectionBackground: v("--color-brand-soft", "rgba(245,78,0,0.25)"),
+      ...ansiTheme(paletteFor(ui.theme)),
     };
   }
 
