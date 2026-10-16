@@ -6,7 +6,6 @@
 use crate::util::{get, Obj};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -123,7 +122,7 @@ pub fn unregister_group(pid: i32) {
 pub struct Child {
     pid: i32,
     process: std::process::Child,
-    reader: Option<std::thread::JoinHandle<Vec<u8>>>,
+    reader: Option<std::thread::JoinHandle<Collected>>,
 }
 
 /// The marker that ends a run. Shared with `check_finished`, which looks for it in *output*;
@@ -184,12 +183,8 @@ fn spawn(argv: &[String], cwd: Option<&str>, env: Option<&BTreeMap<String, Strin
     };
     drop(cmd); // closes our copies of the pipe's write end
     let pid = child.id() as i32;
-    let reader_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let mut r = reader;
-        let _ = r.read_to_end(&mut buf);
-        buf
-    });
+    let cap = output_max_bytes();
+    let reader_thread = std::thread::spawn(move || collect_bounded(reader, cap));
     Ok(Child { pid, process: child, reader: Some(reader_thread) })
 }
 
@@ -201,9 +196,11 @@ impl Child {
         let _ = self.process.wait();
     }
 
-    /// Drain the reader thread's buffer (killing the group first is the caller's job).
+    /// Drain the reader thread's page (killing the group first is the caller's job). The reader
+    /// thread already bounded it; `render` adds the marker when the middle was dropped, so the
+    /// model is told how much it did not see instead of silently getting a slice.
     fn take_output(&mut self) -> String {
-        String::from_utf8_lossy(&self.reader.take().and_then(|r| r.join().ok()).unwrap_or_default()).into_owned()
+        self.reader.take().and_then(|r| r.join().ok()).unwrap_or_else(|| Collected::new(0)).render()
     }
 
     /// Wait for the command (bounded by `timeout`), kill its group on timeout or stop, and
@@ -234,9 +231,9 @@ impl Child {
             }
             std::thread::sleep(Duration::from_millis(5));
         };
-        let bytes = loop {
+        let collected = loop {
             if self.reader.as_ref().is_some_and(|r| r.is_finished()) {
-                break self.reader.take().and_then(|r| r.join().ok()).unwrap_or_default();
+                break self.reader.take().and_then(|r| r.join().ok()).unwrap_or_else(|| Collected::new(0));
             }
             if Instant::now() >= deadline {
                 unsafe { libc::killpg(self.pid, libc::SIGKILL) };
@@ -249,7 +246,111 @@ impl Child {
             use std::os::unix::process::ExitStatusExt;
             s.code().map(|c| c as i64).unwrap_or_else(|| -(s.signal().unwrap_or(0) as i64))
         });
-        Ok((String::from_utf8_lossy(&bytes).into_owned(), code.unwrap_or(-1)))
+        Ok((collected.render(), code.unwrap_or(-1)))
+    }
+}
+
+/// How much of one command's output may reach the model, head+tail. The read tool's page budget
+/// (`tools::READ_MAX_BYTES`) is the same number on purpose: every tool that can hand the model a
+/// big blob of text shares one notion of "too big". The others were already capped (read 50 KB,
+/// `code`/`codejs` 60 KB, `computer_use` 30 KB); `bash` --- the tool every run uses, and the one
+/// whose output is unbounded by nature --- was the exception: `yes | head -c 20MB` put all
+/// 20 000 045 bytes in one observation and cost 200 MB of RSS on the way there (A4, 2026-10-16).
+pub const OUTPUT_MAX_BYTES: usize = 50 * 1024;
+
+/// `MINITUI_BASH_OUTPUT_MAX` overrides the budget in bytes; `0` disables it, for an operation
+/// that legitimately needs a whole dump (the same convention as `MINI_AGENT_RETRY_BUDGET_S`).
+fn output_max_bytes() -> usize {
+    match std::env::var("MINITUI_BASH_OUTPUT_MAX") {
+        Ok(v) => v.trim().parse().unwrap_or(OUTPUT_MAX_BYTES),
+        Err(_) => OUTPUT_MAX_BYTES,
+    }
+}
+
+/// A command's output, collected under a byte budget *while it is read*: the head is kept whole,
+/// the tail is kept in a ring, the middle is dropped and counted. Bounded memory matters as much
+/// as the prompt budget: `read_to_end` on `yes` for the 30 s command timeout reached gigabytes
+/// before the timeout could fire, and the trajectory stored the text twice.
+struct Collected {
+    head: Vec<u8>,
+    tail: std::collections::VecDeque<u8>,
+    total: usize,
+    cap: usize,
+}
+
+impl Collected {
+    fn new(cap: usize) -> Self {
+        Collected { head: Vec::new(), tail: std::collections::VecDeque::new(), total: 0, cap }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        self.total += chunk.len();
+        if self.cap == 0 {
+            // No budget: the caller asked for the whole thing (`MINITUI_BASH_OUTPUT_MAX=0`).
+            self.head.extend_from_slice(chunk);
+            return;
+        }
+        let head_max = self.cap / 2;
+        let tail_max = self.cap - head_max;
+        let mut rest = chunk;
+        if self.head.len() < head_max {
+            let take = (head_max - self.head.len()).min(rest.len());
+            self.head.extend_from_slice(&rest[..take]);
+            rest = &rest[take..];
+        }
+        if !rest.is_empty() {
+            self.tail.extend(rest.iter().copied());
+            while self.tail.len() > tail_max {
+                self.tail.pop_front();
+            }
+        }
+    }
+
+    /// The bytes the model sees: everything when it fits --- head *and* tail, byte-for-byte, so an
+    /// output under the budget is unchanged --- otherwise head + one marker + tail. The head/tail
+    /// split is an implementation detail of the ring: it says nothing about what the model gets
+    /// when nothing was evicted (an output between `cap/2` and `cap` fills both and is complete).
+    fn render(&self) -> String {
+        if self.cap == 0 || self.total <= self.cap {
+            let mut all = self.head.clone();
+            all.extend(self.tail.iter().copied());
+            return String::from_utf8_lossy(&all).into_owned();
+        }
+        let tail: Vec<u8> = self.tail.iter().copied().collect();
+        let dropped = self.total.saturating_sub(self.head.len() + tail.len());
+        format!(
+            "{}\n\n[{} bytes of output dropped: the command produced {} and the tool budget is {}. The first and last lines are above; narrow it with head/tail/grep, count with wc, or write it to a file and page it with read. MINITUI_BASH_OUTPUT_MAX=0 lifts the budget.]\n\n{}",
+            String::from_utf8_lossy(&self.head),
+            dropped,
+            format_size(self.total),
+            format_size(self.cap),
+            String::from_utf8_lossy(&tail)
+        )
+    }
+}
+
+/// Read `r` to EOF, keeping at most `cap` bytes (head + tail) in memory.
+fn collect_bounded(mut r: impl std::io::Read, cap: usize) -> Collected {
+    let mut out = Collected::new(cap);
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        match r.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => out.push(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+fn format_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes}B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
