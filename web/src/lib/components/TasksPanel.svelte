@@ -37,6 +37,22 @@
 
   let dialog: HTMLDialogElement | undefined = $state();
 
+  /**
+   * The board itself is only built once the drawer has been opened.
+   *
+   * A `<dialog>` that is not open is `display: none`, so the browser paints none of it — but the
+   * markup was still built, and `rows` is every task card every session has ever written (measured
+   * against the deployed build: 236 cards = 8,981 nodes, 97% of the whole document, for a drawer
+   * nobody had opened). It also re-rendered on every push while hidden.
+   *
+   * `seen` latches on the first open and never clears, so from then on the board is the same live
+   * board it was: opening is instant and closing does not throw the list away.
+   */
+  let seen = $state(false);
+  $effect(() => {
+    if (open) seen = true;
+  });
+
   // Not a modal: the drawer sits over the window's right edge while the app keeps working behind
   // it — the board is watched live precisely so it can stay open beside the work it describes.
   $effect(() => {
@@ -96,6 +112,9 @@
     </header>
 
     <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
+      {#if !seen}
+        <!-- Closed and never opened: nothing of the board is built. See `seen` above. -->
+      {:else}
       <QueueSection {open} />
       <ChannelsSection {open} />
       {#if !rows.length}
@@ -170,6 +189,7 @@
             </div>
           </details>
         {/each}
+      {/if}
       {/if}
     </div>
 
