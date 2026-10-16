@@ -19,16 +19,36 @@
     };
   });
 
+  /** The served image under a pointer or the keyboard, if the event is about one at all. */
+  function servedImage(target: EventTarget | null): Element | null {
+    return (target as HTMLElement | null)?.closest?.("img.chat-img") ?? null;
+  }
+
   /** A click on a served image opens the lightbox; every other click is left alone. */
   function onclick(event: MouseEvent) {
-    const img = (event.target as HTMLElement).closest("img.chat-img");
+    const img = servedImage(event.target);
+    if (!img) return;
+    event.preventDefault();
+    openLightbox(img.getAttribute("src") ?? "", img.getAttribute("alt") ?? "");
+  }
+
+  /**
+   * Enter and Space open the viewer from the keyboard.
+   *
+   * The image carries `role="button"` and `tabindex="0"` so it can be reached at all, and a
+   * button that cannot be pressed is worse than one that is hidden: Space would scroll the
+   * transcript and Enter would do nothing. Both go through the same open path as a click.
+   */
+  function onkeydown(event: KeyboardEvent) {
+    if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
+    const img = servedImage(event.target);
     if (!img) return;
     event.preventDefault();
     openLightbox(img.getAttribute("src") ?? "", img.getAttribute("alt") ?? "");
   }
 </script>
 
-<div class="prose-mini {klass}" onclick={onclick}>{@html html}</div>
+<div class="prose-mini {klass}" onclick={onclick} onkeydown={onkeydown}>{@html html}</div>
 
 <style>
   /* Images the bot made (or received) sit inside the bubble: bounded, rounded,
