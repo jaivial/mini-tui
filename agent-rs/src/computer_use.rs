@@ -580,6 +580,81 @@ mod tests {
         assert_eq!(tab_id_from("cu: could not open this session's tab (refused); working in the default page"), None);
     }
 
+    /// La cascada REAL del pool contra el `cu` DESPLEGADO: la pestana que el
+    /// pool tiene guardada se pierde (registro vaciado), y la `navigate` que
+    /// sigue tiene que volver a descubrir el id por stderr. Con el parser que
+    /// solo conocia "fresh tab (" el id se pierde y `snapshot` -- que exige
+    /// `--tab` -- aborta con "no tab open yet" para el resto del turno.
+    ///
+    /// `MINITUI_CU_BIN` debe apuntar al binario desplegado. Ignorado por
+    /// defecto (arranca un daemon real y Chrome).
+    #[test]
+    #[ignore]
+    fn live_cascade_tab_lost() {
+        use std::io::{BufRead, BufReader, Write};
+        let work = std::env::temp_dir().join(format!("cu-cascade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::env::set_var("MINITUI_COMPUTER_USE", "1");
+        std::env::set_var("MINITUI_CU_POOL_DIR", &work);
+        std::env::set_var("MINITUI_CU_IDLE_SECS", "600");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let mut r = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = r.read_line(&mut line);
+                let mut s = stream;
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 33\r\n\r\n<html><body><h1>CASCADE OK</h1></body></html>");
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        struct Guard(std::path::PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                if let Ok(items) = serde_json::from_slice::<Vec<serde_json::Value>>(&std::fs::read(self.0.join("registry.json")).unwrap_or_default()) {
+                    for item in items {
+                        if let Some(pid) = item["pid"].as_u64() {
+                            unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+                        }
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _guard = Guard(work.clone());
+
+        let r1 = super::outcome(&serde_json::json!({"action": "navigate", "url": url}));
+        assert_eq!(r1["returncode"], 0, "navigate failed: {r1}");
+        let r2 = super::outcome(&serde_json::json!({"action": "snapshot"}));
+        assert_eq!(r2["returncode"], 0, "snapshot before the loss failed: {r2}");
+
+        // El registro pierde la pestana guardada: el daemon sigue vivo con la
+        // pagina de la sesion, pero el pool ya no sabe cual es.
+        let reg = work.join("registry.json");
+        let mut items: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(&reg).unwrap()).unwrap_or_default();
+        for e in items.iter_mut() {
+            e["tab"] = serde_json::Value::String(String::new());
+        }
+        std::fs::write(&reg, serde_json::to_vec(&items).unwrap()).unwrap();
+
+        // Esta navigate recibe de stderr la linea de pestana REUTILIZADA.
+        let r3 = super::outcome(&serde_json::json!({"action": "navigate", "url": format!("{url}otra")}));
+        assert_eq!(r3["returncode"], 0, "navigate after the loss failed: {r3}");
+        let tab = r3["extra"]["tab"].as_str().unwrap_or("");
+        println!("tab recuperada tras perderla: {tab:?}");
+
+        // El fallo real: sin id, snapshot aborta y el agente se queda sin pagina.
+        let r4 = super::outcome(&serde_json::json!({"action": "snapshot"}));
+        assert_eq!(r4["returncode"], 0, "CASCADE: el snapshot no recupero la pagina: {r4}");
+        assert!(
+            format!("{}", r4["output"]).contains("CASCADE OK"),
+            "snapshot leyo otra pagina: {r4}"
+        );
+    }
+
     /// The REAL pool E2E (ignored by default — it spawns a real cu daemon and
     /// Chrome): navigate → snapshot → shot (native image) → reuse (same
     /// daemon, no second spawn) → external URL refused → idle teardown kills
