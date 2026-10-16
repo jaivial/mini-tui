@@ -54,6 +54,12 @@ function load(options: MarkdownOptions): Promise<Engine> {
         // Offscreen images cost nothing until scrolled to: the transcript can be long.
         token.attrSet("loading", "lazy");
         token.attrSet("decoding", "async");
+        // The image opens the lightbox, so it is a control and has to be one for the keyboard too:
+        // an <img> is not focusable and carries no role, so Tab walked straight past every
+        // picture in the transcript and there was no way to open one without a mouse.
+        token.attrSet("role", "button");
+        token.attrSet("tabindex", "0");
+        if (!token.attrGet("aria-label")) token.attrSet("aria-label", "Abrir imagen");
       }
       return defaultImage(tokens, idx, opts, env, self);
     };
