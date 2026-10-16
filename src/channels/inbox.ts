@@ -211,6 +211,34 @@ export class ChannelInbox {
     if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error("invalid inbox cursor");
     return this.db.query(`SELECT seq,channel,account,thread,message_id,sent_at,payload,session,project FROM channel_inbox WHERE seq>?1 ORDER BY seq LIMIT ?2`).all(after, limit);
   }
+  /** The senders' own words in this thread, newest first.
+   *
+   * A thread is a conversation in ONE language, and a failure note lands in the middle of it. One
+   * short line is not enough to know which: "di hola y nada mas" carries no accent and no ñ, so a
+   * single-message guess calls it English inside a thread whose last twenty messages are Spanish —
+   * and the user reads a failure note in a language he did not write in. The thread itself is the
+   * reliable sample, and it is already here.
+   *
+   * Text only, and only what each sender typed: a whole thread is evidence of the conversation's
+   * language, never an instruction to act. Bounded so a long thread cannot turn a note into an essay. */
+  threadTexts(account: string, thread: string, limit = 12) {
+    if (typeof account !== "string" || typeof thread !== "string") throw new Error("invalid thread key");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid thread text limit");
+    const rows = this.db
+      .query(`SELECT payload FROM channel_inbox WHERE channel='whatsapp' AND account=?1 AND thread=?2 ORDER BY seq DESC LIMIT ?3`)
+      .all(account, thread, limit) as Array<{ payload: string }>;
+    const texts: string[] = [];
+    for (const row of rows) {
+      try {
+        const text = (JSON.parse(row.payload) as Inbound).text;
+        if (typeof text === "string" && text.trim()) texts.push(text);
+      } catch {
+        // An unreadable payload is not evidence of anything; skip it rather than
+        // failing a reply over a row this method only reads for its language.
+      }
+    }
+    return texts;
+  }
   /** Transcript completion feed independent of message-delivery checkpoints.
    * The projection carries the original accepted session/project and current
    * payload. It does not replay acceptance or grant authority to launch work.

@@ -76,12 +76,34 @@ const ENDED_WITHOUT_ANSWER: { match: RegExp; es: string; en: string }[] = [
  * reads like a different bot answered. */
 const ES_STRONG = /[¿¡ñ]/;
 const ES_WEAK = /[áéíóúü]|\b(?:el|la|los|las|un|una|de|del|que|para|con|por|como|pero|más|está|están|hay|este|esta|esto|mis|tus|su)\b/gi;
+/** The mirror image, so an English thread is not mistaken for a signal-less one. Without it the only
+ * way to reach English is "no Spanish detected", which makes every short unaccented Spanish line
+ * English. These are the words that actually show up in the English threads this consumer serves.
+ *
+ * Deliberately excludes words Spanish also uses (`me`, `mi`, `a`, `no`, `son`, `ha`) and words a URL
+ * or an id contains (`in`, `on`, `to`, `of`, `it`, `we`, `my`): those match constantly in this
+ * corpus and would drown the real signal. What is left cannot be read as Spanish by accident. */
+const EN_MARK = /\b(?:the|and|please|can|could|would|you|your|yours|what|when|where|why|how|check|fix|help|thanks|hello|there|this|that|with|for|from|need|want|should|are|does|done|error|failed|send|show|tell)\b/gi;
 
-/** Which language to answer a failure in. Ties go to Spanish: the bound threads this consumer
- * serves are Spanish, and a wrong guess must not make the note unreadable for its usual reader. */
-export function replyLanguage(text: string): "es" | "en" {
-  if (ES_STRONG.test(text)) return "es";
-  return (text.match(ES_WEAK)?.length ?? 0) >= 2 ? "es" : "en";
+/** Which language to answer a failure in.
+ *
+ * `context` is the rest of the conversation — the thread's own recent messages. It is what makes the
+ * answer reliable: the live QA that motivated this asked for "di hola y nada mas" in a group whose
+ * previous twenty messages were all Spanish, and the note came back in English, because a single
+ * four-word line with no accents carries no signal at all. The thread carries plenty.
+ *
+ * The thread is the unit of language here, because the note lands in the middle of the thread: the
+ * failure note is read by everyone in that conversation, not only by whoever typed the failing line.
+ *
+ * Ties go to Spanish, and so does a thread with no signal at all: these bound threads are Spanish,
+ * a wrong guess must not make the note unreadable for its usual reader, and an unreadable line is
+ * the case this whole function exists to survive. */
+export function replyLanguage(text: string, context: string[] = []): "es" | "en" {
+  const haystack = [text, ...context].join("\n");
+  if (ES_STRONG.test(haystack)) return "es";
+  const es = haystack.match(ES_WEAK)?.length ?? 0;
+  const en = haystack.match(EN_MARK)?.length ?? 0;
+  return es >= en ? "es" : "en";
 }
 
 /** Why a turn failed, in one sentence a person can act on — or "" when nothing recognizable is

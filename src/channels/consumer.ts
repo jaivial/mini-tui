@@ -1019,8 +1019,11 @@ async function runTurn(
   // The turn kept failing: an honest failure note is still a reply — better
   // than a silent thread or a poison message blocking the cursor forever.
   // Mapped to the sender's language and to the cause that actually ended the turn, never the
-  // agent's log tail.
-  return turnFailureNote(firstError || lastError, firstExitStatus, replyLanguage(message.text));
+  // agent's log tail. The thread's own recent messages are the language sample: one short line
+  // ("di hola y nada mas") carries no accents and no ñ, so on its own it reads as English inside a
+  // conversation that is entirely Spanish — which is exactly what the live QA saw.
+  const threadTexts = options.inbox.threadTexts(row.account, row.thread);
+  return turnFailureNote(firstError || lastError, firstExitStatus, replyLanguage(message.text, threadTexts));
 }
 
 const LATE_NOTE_WINDOW = 20;
