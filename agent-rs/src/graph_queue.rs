@@ -10,6 +10,68 @@ fn error(e: impl std::fmt::Display) -> String {
 fn now() -> i64 {
     crate::util::now() as i64
 }
+
+/// `/proc/<pid>/stat` fields 3 (state) and 22 (start time, in clock ticks since boot). `comm`
+/// (field 2) may contain spaces and parentheses, so parsing starts after the LAST `)`.
+fn proc_stat(pid: i64) -> Option<(char, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    // Fields 3..=21 were skipped by the iterator above plus this `nth`: field 22 is the start.
+    Some((state, fields.nth(18)?.parse().ok()?))
+}
+
+/// The boot id changes on every reboot: a lease recorded under a different one cannot have a
+/// live worker, because the machine that would have run it no longer exists.
+fn boot_id() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// What can be *proved* about the worker behind an expired lease.
+#[derive(PartialEq)]
+enum Worker {
+    Alive,
+    /// Nothing can write for this fence any more: the process is gone, its pid was recycled by
+    /// an unrelated one, it is a zombie, or the machine rebooted under it.
+    Gone,
+    /// Never recorded, or the evidence is unreadable. Nothing is proven either way.
+    Unknown,
+}
+
+/// One running card whose lease has run out, together with the identity of its worker.
+struct Expired {
+    id: String,
+    pid: Option<i64>,
+    start: Option<i64>,
+    boot: Option<String>,
+}
+
+fn worker_state(pid: Option<i64>, start: Option<i64>, recorded_boot: Option<&str>) -> Worker {
+    let (Some(pid), Some(start), Some(recorded_boot)) = (pid, start, recorded_boot) else {
+        return Worker::Unknown;
+    };
+    let current = boot_id();
+    if current.is_empty() {
+        // Without /proc there is no evidence at all, and "the process is gone" would be an
+        // assumption that relaunches work. Only a positive proof may requeue a card.
+        return Worker::Unknown;
+    }
+    if !recorded_boot.is_empty() && recorded_boot != current {
+        return Worker::Gone;
+    }
+    // A pid that /proc cannot describe at all is only "gone" if /proc works and the entry is
+    // missing -- which is what the boot-id guard above just established.
+    match proc_stat(pid) {
+        None => Worker::Gone,
+        // A zombie has already exited; it cannot write to the project any more.
+        Some(('Z', _)) => Worker::Gone,
+        Some((_, ticks)) if ticks as i64 == start => Worker::Alive,
+        // Same pid, different start time: the number was recycled by another process.
+        Some(_) => Worker::Gone,
+    }
+}
 fn ident(s: &str) -> Result<(), String> {
     if s.is_empty()
         || s.len() > 128
@@ -54,6 +116,19 @@ impl Store {
             cols.collect::<rusqlite::Result<Vec<_>>>().map_err(error)?.iter().any(|c| c == "goal_version")
         };
         if !has_version { db.execute_batch("ALTER TABLE task_nodes ADD COLUMN goal_version INTEGER NOT NULL DEFAULT 1;").map_err(error)?; }
+        // A lease is only safe to requeue automatically if we can prove its worker is gone, so
+        // the claim records the worker's identity (pid + start time + boot) with the lease.
+        // Rows claimed before this column existed carry no identity and keep the old behaviour.
+        let has_identity = {
+            let mut q = db.prepare("PRAGMA table_info(task_nodes)").map_err(error)?;
+            let cols = q.query_map([], |r| r.get::<_, String>(1)).map_err(error)?;
+            cols.collect::<rusqlite::Result<Vec<_>>>().map_err(error)?.iter().any(|c| c == "worker_pid")
+        };
+        if !has_identity {
+            db.execute_batch("ALTER TABLE task_nodes ADD COLUMN worker_pid INTEGER;
+              ALTER TABLE task_nodes ADD COLUMN worker_start INTEGER;
+              ALTER TABLE task_nodes ADD COLUMN worker_boot TEXT;").map_err(error)?;
+        }
         db.execute_batch("CREATE TABLE IF NOT EXISTS task_events(
           seq INTEGER PRIMARY KEY AUTOINCREMENT, task TEXT NOT NULL, kind TEXT NOT NULL,
           goal_version INTEGER NOT NULL, fence INTEGER NOT NULL, status TEXT NOT NULL, created INTEGER NOT NULL);
@@ -125,9 +200,36 @@ impl Store {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(error)?;
-        // Do not silently relaunch expired work: its process might still be running. Operator
-        // reconciliation is required before retry, avoiding concurrent writes to a project.
-        tx.execute("UPDATE task_nodes SET status='interrupted',updated=?1 WHERE status='running' AND lease_until<?1", [now()]).map_err(error)?;
+        // An expired lease is not the same as a dead worker. Relaunching work whose process is
+        // still alive would give two writers to one project, so the operator reconciles that
+        // case. But when the worker is *provably* gone -- the machine rebooted under it, its
+        // pid is gone or was recycled, it is a zombie -- there is nobody left to reconcile and
+        // nothing to protect: the card goes back to `pending` for the next wave by itself.
+        // Freezing those cards until a human typed `retry --reconciled yes` is what left a
+        // whole project tree stuck after an OOM kill or a reboot, with no alive worker at all.
+        let expired: Vec<Expired> = {
+            let mut stmt = tx.prepare("SELECT id,worker_pid,worker_start,worker_boot FROM task_nodes WHERE status='running' AND lease_until<?1").map_err(error)?;
+            let rows = stmt.query_map([now()], |r| Ok(Expired { id: r.get(0)?, pid: r.get(1)?, start: r.get(2)?, boot: r.get(3)? }))
+                .map_err(error)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(error)?
+        };
+        for Expired { id, pid, start, boot } in expired {
+            match worker_state(pid, start, boot.as_deref()) {
+                Worker::Gone => {
+                    tx.execute("UPDATE task_nodes SET status='pending',owner=NULL,lease_until=NULL,result=NULL,fence=fence+1,updated=?4 WHERE id=?1 AND status='running'",
+                        params![id, now(), now(), now()]).map_err(error)?;
+                    // The generic status trigger already records `running -> pending`; this row
+                    // says WHY it happened without an operator, which is the whole point.
+                    tx.execute("INSERT INTO task_events(task,kind,goal_version,fence,status,created)
+                        SELECT id,'lease_expired_worker_gone',goal_version,fence,status,?2 FROM task_nodes WHERE id=?1",
+                        params![id, now()]).map_err(error)?;
+                }
+                _ => {
+                    tx.execute("UPDATE task_nodes SET status='interrupted',updated=?2 WHERE id=?1 AND status='running'",
+                        params![id, now()]).map_err(error)?;
+                }
+            }
+        }
         let tasks = {
             let mut stmt = tx.prepare("SELECT t.id,t.project,t.cwd,t.goal,t.fence,t.goal_version FROM task_nodes t WHERE t.status='pending'
               AND NOT EXISTS(SELECT 1 FROM task_edges e JOIN task_nodes d ON d.id=e.dependency WHERE e.task=t.id AND d.status!='done')
@@ -169,6 +271,24 @@ impl Store {
         }
         tx.commit().map_err(error)?;
         Ok(out)
+    }
+    /// Record which process holds this lease. The pid alone is not identity (the kernel recycles
+    /// pids), so the process start time and the boot id are stored with it; a card claimed by a
+    /// binary without this column keeps NULLs and is never auto-requeued.
+    pub fn bind_worker(&self, id: &str, owner: &str, fence: i64, pid: i64) -> Result<(), String> {
+        ident(id)?;
+        ident(owner)?;
+        let start = proc_stat(pid).map(|(_, ticks)| ticks as i64);
+        if start.is_none() {
+            return Err("worker process is not readable; refusing an unverifiable lease".into());
+        }
+        let n = self.db.execute("UPDATE task_nodes SET worker_pid=?4,worker_start=?5,worker_boot=?6,updated=?7
+            WHERE id=?1 AND owner=?2 AND fence=?3 AND status='running' AND lease_until>=?7",
+            params![id,owner,fence,pid,start,boot_id(),now()]).map_err(error)?;
+        if n != 1 {
+            return Err("stale lease or wrong owner: worker not bound".into());
+        }
+        Ok(())
     }
     pub fn finish(
         &self,
@@ -303,10 +423,14 @@ impl Store {
     }
     pub fn graph(&self) -> Result<Value, String> {
         let has_version = self.db.prepare("SELECT goal_version FROM task_nodes LIMIT 0").is_ok();
-        let sql = if has_version { "SELECT id,project,cwd,goal,priority,status,owner,fence,lease_until,result,goal_version FROM task_nodes ORDER BY created,id" }
-            else { "SELECT id,project,cwd,goal,priority,status,owner,fence,lease_until,result,1 AS goal_version FROM task_nodes ORDER BY created,id" };
-        let mut stmt=self.db.prepare(sql).map_err(error)?;
-        let rows=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"project":r.get::<_,String>(1)?,"cwd":r.get::<_,String>(2)?,"goal":r.get::<_,String>(3)?,"priority":r.get::<_,i64>(4)?,"status":r.get::<_,String>(5)?,"owner":r.get::<_,Option<String>>(6)?,"fence":r.get::<_,i64>(7)?,"lease_until":r.get::<_,Option<i64>>(8)?,"result":r.get::<_,Option<String>>(9)?,"goal_version":r.get::<_,i64>(10)?}))).map_err(error)?;
+        // `worker_pid` is exposed because it is the only way to answer "is the process behind
+        // this lease still alive?" from outside. Old databases without the column select NULL.
+        let has_worker = self.db.prepare("SELECT worker_pid FROM task_nodes LIMIT 0").is_ok();
+        let pid = if has_worker { "worker_pid" } else { "NULL AS worker_pid" };
+        let sql = if has_version { format!("SELECT id,project,cwd,goal,priority,status,owner,fence,lease_until,result,goal_version,{pid} FROM task_nodes ORDER BY created,id") }
+            else { format!("SELECT id,project,cwd,goal,priority,status,owner,fence,lease_until,result,1 AS goal_version,{pid} FROM task_nodes ORDER BY created,id") };
+        let mut stmt=self.db.prepare(&sql).map_err(error)?;
+        let rows=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"project":r.get::<_,String>(1)?,"cwd":r.get::<_,String>(2)?,"goal":r.get::<_,String>(3)?,"priority":r.get::<_,i64>(4)?,"status":r.get::<_,String>(5)?,"owner":r.get::<_,Option<String>>(6)?,"fence":r.get::<_,i64>(7)?,"lease_until":r.get::<_,Option<i64>>(8)?,"result":r.get::<_,Option<String>>(9)?,"goal_version":r.get::<_,i64>(10)?,"worker_pid":r.get::<_,Option<i64>>(11)?}))).map_err(error)?;
         let nodes = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(error)?;
         let mut stmt = self
             .db
@@ -518,6 +642,36 @@ fn run(args: &[String]) -> Result<Value, String> {
             Ok(json!({"cancelled":true}))
         },
         "cancel" => { store.cancel(get("--id")?,number("--goal-version",-1)?)?; Ok(json!({"cancel_requested":true})) },
+        // Test-only hooks, refused unless the caller opts in explicitly. `bind-worker` could
+        // otherwise point a card at a dead pid and make the sweep relaunch work that is still
+        // being written -- the exact double-write this feature exists to prevent. They are not
+        // part of the operator surface for that reason.
+        "expire" | "bind-worker" | "unbind-worker" | "set-worker-start" => {
+            if std::env::var("MINI_AGENT_QUEUE_TEST_HOOKS").as_deref() != Ok("yes") {
+                return Err(format!("{cmd} is a test-only hook; set MINI_AGENT_QUEUE_TEST_HOOKS=yes to use it"));
+            }
+            match cmd {
+                "expire" => {
+                    let at = number("--at", -1)?;
+                    let n = store.db.execute("UPDATE task_nodes SET lease_until=?2 WHERE id=?1 AND status='running'", params![get("--id")?, at]).map_err(error)?;
+                    if n != 1 { return Err("expire requires a running card".into()); }
+                    Ok(json!({"expired": true, "lease_until": at}))
+                }
+                "bind-worker" => {
+                    let pid = number("--pid", std::process::id() as i64)?;
+                    store.bind_worker(get("--id")?, get("--owner")?, number("--fence", -1)?, pid)?;
+                    Ok(json!({"worker_pid": pid}))
+                }
+                "unbind-worker" => {
+                    store.db.execute("UPDATE task_nodes SET worker_pid=NULL,worker_start=NULL,worker_boot=NULL WHERE id=?1", [get("--id")?]).map_err(error)?;
+                    Ok(json!({"unbound": true}))
+                }
+                _ => {
+                    store.db.execute("UPDATE task_nodes SET worker_start=?2 WHERE id=?1", params![get("--id")?, number("--start", -1)?]).map_err(error)?;
+                    Ok(json!({"worker_start": number("--start", -1)?}))
+                }
+            }
+        }
         "events" => store.events(number("--after",0)?,number("--limit",100)?),
         "claim" => Ok(
             json!({"claimed":store.claim(get("--owner")?,number("--ttl",600)?,number("--limit",2)?.max(1) as usize)?}),
@@ -661,6 +815,17 @@ fn execute_wave(
             unsafe {cmd.pre_exec(||{if libc::setpgid(0,0)!=0{return Err(std::io::Error::last_os_error());}Ok(())});}
             let store=Store::open(&db)?;
             let mut child=match cmd.spawn(){Ok(c)=>c,Err(e)=>{store.finish(id,owner,fence,"blocked",&format!("spawn failed: {e}"))?;return Err(error(e));}};
+            // Bind the lease to the process that actually does the work, so a later claim can
+            // tell "the lease expired but the worker is still writing" from "the worker is
+            // provably gone". Without this identity every expiry looks identical and the only
+            // safe-looking transition is the one that needs a human.
+            if let Err(e)=store.bind_worker(id,owner,fence,child.id() as i64){
+                unsafe{libc::killpg(child.id() as i32,libc::SIGTERM);}
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                unsafe{libc::killpg(child.id() as i32,libc::SIGKILL);}
+                let _=child.wait();
+                return Err(e);
+            }
             let mut beat=std::time::Instant::now();
             let mut lease_check=std::time::Instant::now();
             let exit=loop {
