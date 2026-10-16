@@ -468,14 +468,42 @@ pub fn read_chat_sse(reader: impl Read, sink: &mut Option<DeltaSink>) -> std::io
 /// A refused TCP connect is the one non-abort error that retrying cannot fix by itself: the
 /// gateway is down, not slow. It is also the one that comes back fastest, so it gets its own
 /// policy (see `refused_wait`); any other error keeps the shared exponential schedule.
-pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<T, ModelError> {
+///
+/// The attempts cap bounds how MANY retries; [`DEFAULT_RETRY_BUDGET_S`]
+/// (`MINI_AGENT_RETRY_BUDGET_S`, 0 disables it) bounds how LONG they may wait in total. Ten
+/// attempts against a server that answers `retry-after: 60` — what a throttled provider does —
+/// is ten minutes inside ONE model call, and the channel consumer then retried the whole turn on
+/// top of it (measured 2026-10-15 23:48: over ten minutes of agent for a message that said "Di en
+/// una linea: TOKENHARBOR-ACTIVO"). Past the budget the last error comes back instead: an honest
+/// failure in ~2 minutes beats a quiet ten-minute wait that ends the same way.
+pub fn with_retry<T>(call: impl FnMut() -> Result<T, ModelError>) -> Result<T, ModelError> {
     let attempts: u32 = std::env::var("MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT").ok().and_then(|s| s.parse().ok()).unwrap_or(10).max(1);
     let min_wait: f64 = std::env::var("MINI_AGENT_RETRY_MIN_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(4.0);
     // A ceiling for one-shot callers (shard/hybrid set it): Zai's limit is on requests in flight,
     // so a slot frees within seconds, and the exponential curve's 8-17 s waits were the wall time
     // of whole waves (measured, speed8 t08: 37-39 s tails behind 8.9/11.6/17.6 s retries).
     let max_wait: f64 = std::env::var("MINI_AGENT_RETRY_MAX_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(f64::INFINITY);
+    let budget: f64 = std::env::var("MINI_AGENT_RETRY_BUDGET_S").ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_RETRY_BUDGET_S);
+    retry_within(call, attempts, min_wait, max_wait, budget)
+}
+
+/// Total waiting one [`with_retry`] call may spend: two minutes. Longer than any single transient
+/// blip (the shapes that heal do it in seconds) and far shorter than the ten-minute burn a
+/// throttle with a `retry-after` hint used to cost.
+pub const DEFAULT_RETRY_BUDGET_S: f64 = 120.0;
+
+/// The retry policy with its knobs passed in, so the budget arithmetic is testable without
+/// touching the process environment. `budget` is the summed sleep; a call that is merely slow has
+/// its own timeout and is not charged here.
+fn retry_within<T>(
+    mut call: impl FnMut() -> Result<T, ModelError>,
+    attempts: u32,
+    min_wait: f64,
+    max_wait: f64,
+    budget: f64,
+) -> Result<T, ModelError> {
     let mut attempt = 0;
+    let mut waited = 0.0f64;
     loop {
         attempt += 1;
         match call() {
@@ -483,7 +511,19 @@ pub fn with_retry<T>(mut call: impl FnMut() -> Result<T, ModelError>) -> Result<
             Err(e) if e.abort || attempt >= attempts => return Err(e),
             Err(e) => {
                 let wait = retry_delay(attempt, min_wait, max_wait, &e);
+                if budget > 0.0 && waited + wait > budget {
+                    eprintln!(
+                        "WARNING: not retrying ({} retries spent, {:.1}s of the {:.0}s retry budget already waited) as it raised {}: {}. Raise MINI_AGENT_RETRY_BUDGET_S to wait longer.",
+                        attempt - 1,
+                        waited,
+                        budget,
+                        e.kind,
+                        e.message
+                    );
+                    return Err(e);
+                }
                 eprintln!("WARNING: Retrying in {wait:.1} seconds as it raised {}: {}.", e.kind, e.message);
+                waited += wait;
                 if !crate::agent::interruptible_sleep(Duration::from_secs_f64(wait)) {
                     return Err(ModelError { message: "interrupted".into(), status: None, abort: true, kind: "KeyboardInterrupt".into(), connect_refused: false, retry_after: None, });
                 }
@@ -606,6 +646,74 @@ mod tests {
     fn retry_waits_like_tenacity() {
         let waits: Vec<f64> = (1..=7).map(|a| retry_wait(a, 4.0)).collect();
         assert_eq!(waits, vec![4.0, 4.0, 4.0, 8.0, 16.0, 32.0, 60.0]);
+    }
+
+    /// A throttled provider that asks for sixty seconds used to cost ten sleeps of a minute
+    /// inside one model call. The budget is the total waiting, so the call gives up instead.
+    #[test]
+    fn the_retry_budget_refuses_to_wait_past_it() {
+        let mut calls = 0;
+        let err = retry_within(
+            || {
+                calls += 1;
+                Err::<(), _>(ModelError {
+                    message: "HTTP 429 from https://tokenharbor.ai/v1: Too many failed authentication attempts".into(),
+                    status: Some(429),
+                    abort: false,
+                    kind: "ProviderError".into(),
+                    connect_refused: false,
+                    retry_after: Some(60.0),
+                })
+            },
+            10,
+            4.0,
+            f64::INFINITY,
+            0.3,
+        )
+        .unwrap_err();
+        // Not one sleep was spent: the first wait alone (60 s) is past the 0.3 s budget.
+        assert_eq!(calls, 1);
+        assert_eq!(err.status, Some(429));
+    }
+
+    /// The budget is spent, not per-retry: two cheap waits fit, the third does not.
+    #[test]
+    fn the_retry_budget_counts_the_waits_it_allows() {
+        let mut calls = 0;
+        let started = std::time::Instant::now();
+        let _ = retry_within(
+            || {
+                calls += 1;
+                Err::<(), _>(ModelError { message: "HTTP 429 Too many requests".into(), status: Some(429), abort: false, kind: "ProviderError".into(), connect_refused: false, retry_after: None })
+            },
+            10,
+            4.0,
+            f64::INFINITY,
+            0.8,
+        )
+        .unwrap_err();
+        // Throttle waits are 0.5 s, 1 s, 2 s... jittered x0.75-1.25: one fits under 0.8 s and the
+        // next cannot (0.375 + 0.75 is already past it), so exactly two calls were made.
+        assert_eq!(calls, 2);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    /// 0 disables the budget: the attempts cap stays the only limit, exactly as before.
+    #[test]
+    fn a_zero_budget_keeps_the_old_behaviour() {
+        let mut calls = 0;
+        let _ = retry_within(
+            || {
+                calls += 1;
+                Err::<(), _>(ModelError { message: "boom".into(), status: None, abort: false, kind: "ProviderError".into(), connect_refused: false, retry_after: None })
+            },
+            3,
+            0.0,
+            f64::INFINITY,
+            0.0,
+        )
+        .unwrap_err();
+        assert_eq!(calls, 3);
     }
 
     #[test]
