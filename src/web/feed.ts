@@ -166,22 +166,13 @@ export function allowedCorsOrigin(headers: Headers): string | null {
 }
 
 /**
- * Cross-site WebSocket hijacking guard. A browser always sends `Origin` on a
- * WebSocket handshake, and a page on another site cannot forge it, so it must
- * name this same host. Loopback pairs are allowed for the Vite dev proxy,
- * which rewrites `Host` but not `Origin`.
+ * The cross-site guards moved to hostGuard.ts, and the reason is worth keeping
+ * in this file's history: they used to live here, comparing `Origin` against
+ * the request's own `Host`/`X-Forwarded-Host`. Both halves of that pair can be
+ * chosen by whoever is attacking, so the check passed for `Host: evil.example`
+ * + `Origin: http://evil.example` — which is exactly what DNS rebinding
+ * produces, and it handed this server's terminal socket (an interactive shell)
+ * and session spawn to a page on the internet. `sameOrigin` now compares
+ * against the server's own bind address and the names the operator declares.
  */
-export function sameOrigin(headers: Headers): boolean {
-  const origin = headers.get("origin");
-  if (!origin) return true; // not a browser (curl, tests): nothing to hijack
-  let host: string;
-  try {
-    host = new URL(origin).host;
-  } catch {
-    return false;
-  }
-  const allowed = [headers.get("host"), headers.get("x-forwarded-host")].filter(Boolean) as string[];
-  if (allowed.includes(host)) return true;
-  const loopback = (h: string) => /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(h);
-  return loopback(host) && allowed.some(loopback);
-}
+export { sameOrigin } from "./hostGuard";
