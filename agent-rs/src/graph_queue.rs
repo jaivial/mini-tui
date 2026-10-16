@@ -223,6 +223,22 @@ impl Store {
         }
         Ok(())
     }
+    /// Hand a lease this process itself owns and has already terminated back to the queue.
+    ///
+    /// Only the runner's own shutdown path calls this: it killed and reaped the worker process
+    /// group itself, so no other process can write for this fence any more. The card returns to
+    /// `pending` for the next wave. `blocked` would be a lie: it discards the work and demands a
+    /// manual `retry --reconciled yes` for what is really "the runner was restarted". The fence is
+    /// bumped so the dead worker cannot finish, heartbeat or re-claim anything.
+    pub fn release(&self, id: &str, owner: &str, fence: i64) -> Result<(), String> {
+        ident(id)?;
+        ident(owner)?;
+        let n = self.db.execute("UPDATE task_nodes SET status='pending',result=NULL,owner=NULL,lease_until=NULL,fence=fence+1,updated=?4 WHERE id=?1 AND owner=?2 AND fence=?3 AND status='running' AND lease_until>=?4",params![id,owner,fence,now()]).map_err(error)?;
+        if n != 1 {
+            return Err("stale lease or wrong owner: card not requeued".into());
+        }
+        Ok(())
+    }
     pub fn heartbeat(&self, id: &str, owner: &str, fence: i64, ttl: i64) -> Result<(), String> {
         ident(id)?;
         ident(owner)?;
@@ -237,7 +253,7 @@ impl Store {
     }
     pub fn retry(&self, id: &str) -> Result<(), String> {
         ident(id)?;
-        let n=self.db.execute("UPDATE task_nodes SET status='pending',owner=NULL,lease_until=NULL,fence=fence+1,updated=?2 WHERE id=?1 AND status IN ('blocked','interrupted')",params![id,now()]).map_err(error)?;
+        let n=self.db.execute("UPDATE task_nodes SET status='pending',owner=NULL,lease_until=NULL,result=NULL,fence=fence+1,updated=?2 WHERE id=?1 AND status IN ('blocked','interrupted')",params![id,now()]).map_err(error)?;
         if n != 1 {
             return Err(
                 "retry requires blocked/interrupted task and reconciliation of its worker".into(),
@@ -261,7 +277,7 @@ impl Store {
     pub fn cancel(&self, id: &str, expected: i64) -> Result<(), String> {
         ident(id)?;
         let n = self.db.execute("UPDATE task_nodes SET status=CASE WHEN status='running' THEN 'interrupted' ELSE 'cancelled' END,
-            fence=fence+1,result='cancel requested; reconcile any running worker before retry',updated=?3
+            fence=fence+1,result=CASE WHEN status='running' THEN 'cancel requested; reconcile any running worker before retry' ELSE NULL END,updated=?3
             WHERE id=?1 AND goal_version=?2 AND status IN ('pending','running','blocked')", params![id,expected,now()]).map_err(error)?;
         if n != 1 { return Err("cancel refused: stale version or task not cancellable".into()); }
         Ok(())
@@ -381,7 +397,7 @@ fn run(args: &[String]) -> Result<Value, String> {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     if matches!(cmd, "help" | "--help" | "-h") {
         return Ok(
-            json!({"usage":"mini-agent-rs queue put|amend|cancel|cancel-reconcile|graph|tree|events|search|run|claim|heartbeat|finish|retry --db PATH [--run-dir DIR --max-depth N --id ID --project PROJECT --cwd DIR --goal-file FILE --deps ID,ID --priority N --embed-dir DIR --owner OWNER --ttl SECONDS --limit N --fence N --status done|blocked --result-file FILE]  ·  tree reads subagents/index.json under --run-dir (delegation hierarchy, read-only)"}),
+            json!({"usage":"mini-agent-rs queue put|amend|cancel|cancel-reconcile|graph|tree|events|search|run|claim|heartbeat|release|finish|retry --db PATH [--run-dir DIR --max-depth N --id ID --project PROJECT --cwd DIR --goal-file FILE --deps ID,ID --priority N --embed-dir DIR --owner OWNER --ttl SECONDS --limit N --fence N --status done|blocked --result-file FILE]  ·  tree reads subagents/index.json under --run-dir (delegation hierarchy, read-only)"}),
         );
     }
     let mut flags = std::collections::BTreeMap::new();
@@ -506,6 +522,10 @@ fn run(args: &[String]) -> Result<Value, String> {
         "claim" => Ok(
             json!({"claimed":store.claim(get("--owner")?,number("--ttl",600)?,number("--limit",2)?.max(1) as usize)?}),
         ),
+        "release" => {
+            store.release(get("--id")?, get("--owner")?, number("--fence", -1)?)?;
+            Ok(json!({"released": true, "status": "pending"}))
+        }
         "heartbeat" => {
             store.heartbeat(
                 get("--id")?,
@@ -661,8 +681,15 @@ fn execute_wave(
                     unsafe{libc::killpg(child.id() as i32,libc::SIGTERM);}
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     unsafe{libc::killpg(child.id() as i32,libc::SIGKILL);}
-                    let _=child.wait();store.finish(id,owner,fence,"blocked","queue worker cancelled")?;
-                    return Ok(json!({"id":id,"status":"blocked","reason":"cancelled"}));
+                    let _=child.wait();
+                    // The runner killed and reaped this worker itself, so the worker is provably
+                    // stopped and the lease can be handed back without an operator: the card stays
+                    // `pending` and the next wave picks it up again. Marking it `blocked` threw the
+                    // work away on every restart of the lane (a deploy), for no reason.
+                    return match store.release(id,owner,fence){
+                        Ok(())=>Ok(json!({"id":id,"status":"pending","reason":"runner stopped; lease released for the next wave"})),
+                        Err(e)=>Ok(json!({"id":id,"status":"running","reason":"runner stopped but the lease was already invalid; the next claim marks it interrupted","error":e})),
+                    };
                 }
                 if let Some(status)=child.try_wait().map_err(error)?{break status;}
                 if beat.elapsed().as_secs() >= (ttl/3) as u64 {
