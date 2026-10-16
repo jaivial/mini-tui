@@ -519,9 +519,13 @@ pub fn outcome(args: &Value) -> Value {
     result
 }
 
+/// The tab id `cu` names on stderr, whether the command opened a fresh tab or
+/// continued in the page its session already had (a session's second command
+/// reuses it): "working in a fresh tab (HEX)" / "working in tab (HEX)".
 fn tab_id_from(text: &str) -> Option<String> {
-    let marker = text.find("fresh tab (")?;
-    let rest = &text[marker + "fresh tab (".len()..];
+    let marker = text.find("fresh tab (").or_else(|| text.find("working in tab ("))?;
+    let open = text[marker..].find('(')? + 1;
+    let rest = &text[marker + open..];
     let id: String = rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
     if id.len() >= 8 { Some(id) } else { None }
 }
@@ -562,6 +566,18 @@ mod tests {
         use super::tab_id_from;
         assert_eq!(tab_id_from("cu: working in a fresh tab (E429869843314F4B9AE4DE8AE966F92B); collected").as_deref(), Some("E429869843314F4B9AE4DE8AE966F92B"));
         assert_eq!(tab_id_from("nothing here"), None);
+    }
+
+    #[test]
+    fn tab_id_parser_finds_the_reused_tab_line() {
+        use super::tab_id_from;
+        // `cu` works in a session's own page from its second command on: the
+        // id is named the same way, with a different sentence around it.
+        assert_eq!(
+            tab_id_from("cu: working in tab (E429869843314F4B9AE4DE8AE966F92B), the page this session already had; it is collected when the session exits").as_deref(),
+            Some("E429869843314F4B9AE4DE8AE966F92B")
+        );
+        assert_eq!(tab_id_from("cu: could not open this session's tab (refused); working in the default page"), None);
     }
 
     /// The REAL pool E2E (ignored by default — it spawns a real cu daemon and
