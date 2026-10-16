@@ -641,8 +641,15 @@ impl Agent {
             }
             let dropped = Self::drop_pending_task_copies(&mut history, &pending);
             if dropped > 0 {
+                // The collapse itself is the fix working, not a failure. It must NEVER reach the
+                // error channel: stderr is captured verbatim into the run log, the headless runner
+                // turns that log's tail into the result's `error` field, and the channel consumer
+                // pastes `error` into the note the user reads. Printed there it hid the real cause
+                // of the turn — the run that exposed it reported "collapsing them into one" for a
+                // turn that had in fact died of TimeExceeded two attempts earlier. The prefix marks
+                // the line as a diagnostic so the runner can recognise (and drop) it.
                 eprintln!(
-                    "WARNING: the resumed session already held {dropped} unfinished cop{} of this task; collapsing them into one",
+                    "[turn] resumed session held {dropped} unfinished cop{} of this task; collapsed into one",
                     if dropped == 1 { "y" } else { "ies" }
                 );
             }
