@@ -13,6 +13,11 @@
 //! * **paginated.** `offset` (1-indexed line) and `limit` (lines), with a 2000-line / 50 KB cap
 //!   (`truncateHead`'s two independent limits, whichever is hit first) and a continuation note
 //!   that names the next `offset`, so the model never re-reads what it already has.
+//! * **bounded, and honest about what it will not read.** Its own copy is capped at 64 MB and the
+//!   page at 50 KB, and the cap is enforced *while reading*, not against a `stat` that a FIFO
+//!   (size 0) or a growing log can lie about: a non-regular file is refused with a message that
+//!   says why, because the alternatives on this path are a `read_to_end` that blocks for ever on
+//!   a FIFO with no writer and one that never ends on `/dev/zero`.
 //! * **parity-safe.** The tool is offered only when mini-tui asks for the extra tools
 //!   ([`crate::agents::tools_enabled`], the same `MINITUI_AGENT_TOOLS=1` gate the native agent
 //!   tools use), so a plain run --- and the byte-for-byte parity suite --- sends exactly
@@ -225,13 +230,26 @@ pub fn read_file(path: &str, offset: Option<i64>, limit: Option<i64>, cwd: &str)
     if meta.is_dir() {
         return failed(&shown, extra, format!("'{shown}' is a directory (use bash ls to list it)"));
     }
+    // `stat` is not a promise about what a read returns. A FIFO, a character device or a socket
+    // reports size 0, and a live log grows behind the caller, so the size check below cannot be
+    // the only guard: `read_to_end` would run past any budget -- a FIFO with no writer blocks
+    // *for ever* (this path has no timeout) and `/dev/zero` never ends. The image arm of this
+    // tool already asks `is_file()`; the text arm has to ask it too.
+    if !meta.is_file() {
+        return failed(&shown, extra, format!("'{shown}' is not a regular file (FIFO, device or socket); read only reads regular files"));
+    }
     let size = meta.len() as usize;
     if size > READ_HARD_CAP {
         return failed(&shown, extra, format!("'{shown}' is {} and over the {} read cap; use bash to split it first", format_size(size), format_size(READ_HARD_CAP)));
     }
     let mut raw = Vec::with_capacity(size.min(2 * READ_MAX_BYTES));
-    if let Err(e) = std::fs::File::open(&abs).and_then(|mut f| f.read_to_end(&mut raw)) {
+    if let Err(e) = std::fs::File::open(&abs).and_then(|f| f.take(READ_HARD_CAP as u64 + 1).read_to_end(&mut raw)) {
         return failed(&shown, extra, format!("cannot read '{shown}': {}", io_message(&e)));
+    }
+    // The cap, re-checked against what was actually read: a file that grew between the `stat`
+    // above and here (a live log) made that size a stale promise, and `take` is what bounds it.
+    if raw.len() > READ_HARD_CAP {
+        return failed(&shown, extra, format!("'{shown}' grew past the {} read cap while it was being read; use bash to split it first", format_size(READ_HARD_CAP)));
     }
     if image_mime(&raw).is_some() {
         return failed(&shown, extra, "This is an image, not text. Use the native read tool directly to attach its visual content.".into());
@@ -356,4 +374,68 @@ pub fn with_read_responses(base: Vec<Value>) -> Vec<Value> {
         out.push(read_tool_responses());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmpdir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tools-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A FIFO is not a file `read` may open: `stat` says 0 bytes, so the size cap cannot hold it,
+    /// and on the deployed binary (A4 evidence, 2026-10-16) this exact call **without a writer**
+    /// never returned at all: killed by an external timeout after 10.3 s, no observation, no
+    /// error. The call runs on its own thread here so that a regression fails the test in five
+    /// seconds instead of hanging the suite for ever.
+    #[test]
+    fn read_refuses_a_fifo() {
+        let dir = tmpdir("fifo");
+        let fifo = dir.join("pipe");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo failed");
+        let path = fifo.display().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_file(&path, None, None, "/"));
+        });
+        let page = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(p) => p,
+            Err(_) => panic!("read blocked on the FIFO: the `is_file` guard is gone"),
+        };
+        assert!(page.error.is_some(), "{:?}", page.text);
+        assert!(page.text.contains("not a regular file"), "{}", page.text);
+    }
+
+    /// `/dev/null` is a character device of size 0: the same lie as the FIFO, a clean failure
+    /// instead of a hang, and the guard that refuses it is the one that also refuses `/dev/zero`
+    /// (`read_to_end` there never ends).
+    #[test]
+    fn read_refuses_a_device() {
+        let page = read_file("/dev/null", None, None, "/");
+        assert!(page.error.is_some(), "{:?}", page.text);
+        assert!(page.text.contains("not a regular file"), "{}", page.text);
+    }
+
+    /// A regular file still reads, and a regular file over the cap is still refused with the cap
+    /// wording the trajectory already shows.
+    #[test]
+    fn regular_files_still_read_and_respect_the_cap() {
+        let dir = tmpdir("regular");
+        let small = dir.join("small.txt");
+        std::fs::write(&small, "alpha\nbeta\n").unwrap();
+        let page = read_file(small.to_str().unwrap(), None, None, "/");
+        assert!(page.error.is_none(), "{:?}", page.text);
+        assert!(page.text.starts_with("alpha\nbeta\n"), "{}", page.text);
+        assert_eq!(page.extra.get("total_lines").and_then(Value::as_u64), Some(2));
+        // `offset` pages, and an offset past the end is an honest error rather than an empty page.
+        let page = read_file(small.to_str().unwrap(), Some(2), None, "/");
+        assert!(page.text.starts_with("beta"));
+        let page = read_file(small.to_str().unwrap(), Some(9), None, "/");
+        assert!(page.text.contains("beyond the end of file"), "{}", page.text);
+    }
 }
