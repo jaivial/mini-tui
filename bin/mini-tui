@@ -1,5 +1,39 @@
 #!/usr/bin/env bash
 # mini-tui — a pretty terminal UI for mini-swe-agent.
 # Installed globally; the project lives at MINITUI_HOME (default ~/mini-tui).
+#
+# The whole point of this wrapper is to be honest about *which* checkout is about to
+# run, because a stale one starts fine, works fine, and answers --version with the
+# same string as the deployed one. Silence there is how you debug code you shipped
+# four days ago.
+
+die() { printf 'mini-tui: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+# bun is not on PATH in every place this gets invoked (cron, a systemd unit, a
+# non-interactive `ssh host 'mini-tui -p ...'`). `exec bun` then dies with a bare
+# `exec: bun: not found` and no hint, so look where bun actually installs first.
+bun_bin="$(command -v bun 2>/dev/null || true)"
+if [ -z "$bun_bin" ]; then
+  for candidate in "${BUN_INSTALL:-$HOME/.bun}/bin/bun" "$HOME/.local/bin/bun" /usr/local/bin/bun; do
+    if [ -x "$candidate" ]; then bun_bin="$candidate"; break; fi
+  done
+fi
+[ -n "$bun_bin" ] || die "bun not found: not on PATH and not in \${BUN_INSTALL:-$HOME/.bun}/bin. Install bun (https://bun.sh) or point BUN_INSTALL at it" 127
+
 MINITUI_HOME="${MINITUI_HOME:-$HOME/mini-tui}"
-exec bun "$MINITUI_HOME/src/index.ts" "$@"
+entry="$MINITUI_HOME/src/index.ts"
+[ -f "$entry" ] || die "no mini-tui checkout at $MINITUI_HOME (no src/index.ts). Set MINITUI_HOME to a checkout of https://github.com/jaivial/mini-tui" 127
+
+# How far behind origin/main is this checkout? Best effort: no git, no origin/main
+# ref or an unreadable repo all mean "cannot tell", which must never be a crash.
+behind=0
+if command -v git >/dev/null 2>&1 && git -C "$MINITUI_HOME" rev-parse --git-dir >/dev/null 2>&1; then
+  behind="$(git -C "$MINITUI_HOME" rev-list --count HEAD..origin/main 2>/dev/null || true)"
+fi
+case "$behind" in '' | *[!0-9]*) behind=0 ;; esac
+if [ "$behind" -gt 0 ]; then
+  printf 'mini-tui: %s is %s commit(s) behind origin/main — this is NOT the deployed code; set MINITUI_HOME or pull\n' \
+    "$MINITUI_HOME" "$behind" >&2
+fi
+
+exec "$bun_bin" "$entry" "$@"
