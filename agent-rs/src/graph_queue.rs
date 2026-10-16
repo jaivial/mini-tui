@@ -53,9 +53,16 @@ fn worker_state(pid: Option<i64>, start: Option<i64>, recorded_boot: Option<&str
         return Worker::Unknown;
     };
     let current = boot_id();
-    if !recorded_boot.is_empty() && !current.is_empty() && recorded_boot != current {
+    if current.is_empty() {
+        // Without /proc there is no evidence at all, and "the process is gone" would be an
+        // assumption that relaunches work. Only a positive proof may requeue a card.
+        return Worker::Unknown;
+    }
+    if !recorded_boot.is_empty() && recorded_boot != current {
         return Worker::Gone;
     }
+    // A pid that /proc cannot describe at all is only "gone" if /proc works and the entry is
+    // missing -- which is what the boot-id guard above just established.
     match proc_stat(pid) {
         None => Worker::Gone,
         // A zombie has already exited; it cannot write to the project any more.
