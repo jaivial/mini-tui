@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import shutil
@@ -40,10 +41,57 @@ import time
 
 URI = os.getenv("BOTGRAPH_NEO4J_URI", "bolt://127.0.0.1:7687")
 DRIVER_VENV = os.path.expanduser("~/.venvs/neo4j-e2e/bin/python")
-MINITUI = os.getenv("BOTGRAPH_MINITUI", shutil.which("mini-tui") or "mini-tui")
+#: per-query ceiling handed to the driver, so no query can pin a bot forever
+QUERY_TIMEOUT_S = float(os.getenv("BOTGRAPH_QUERY_TIMEOUT_S", "30"))
+BUN_CANDIDATES = ("~/.bun/bin/bun", "/usr/local/bin/bun", "/usr/bin/bun")
+MINITUI_CANDIDATES = ("~/.local/bin/mini-tui", "~/bin/mini-tui", "~/.bun/bin/mini-tui")
+MINITUI = os.getenv("BOTGRAPH_MINITUI") or "mini-tui"   # legacy name; see _minitui_bin()
 HERMES = shutil.which("hermes") or "hermes"
 
 WRITE_WORDS = ("CREATE", "MERGE", "SET ", "DELETE", "DETACH", "REMOVE", "FOREACH", "CALL {")
+
+
+def _first_executable(cands) -> str | None:
+    for c in cands:
+        p = os.path.expanduser(c)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def _child_env() -> dict:
+    """Environment for the child processes this tool launches.
+
+    `mini-tui` is a bash wrapper that `exec`s `bun` BY NAME, and bun lives in
+    ~/.bun/bin. Neither ~/.bun/bin nor ~/.local/bin is on PATH for a non-login
+    environment (cron, systemd unit, agent shell), so the wrapper died with
+    `exec: bun: not found`. Measured on the production host 2026-10-16: that
+    string was handed back as if it were the bot's task card.
+    """
+    env = dict(os.environ)
+    extra = [os.path.expanduser("~/.bun/bin"), os.path.expanduser("~/.local/bin"),
+             os.path.expanduser("~/bin")]
+    bun = _first_executable(BUN_CANDIDATES)
+    if bun:
+        extra.insert(0, os.path.dirname(bun))
+    extra.extend(sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin")), reverse=True))
+    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    for d in reversed(extra):
+        if os.path.isdir(d) and d not in parts:
+            parts.insert(0, d)
+    env["PATH"] = os.pathsep.join(parts)
+    return env
+
+
+def _minitui_bin() -> str:
+    """Absolute path to the mini-tui launcher, not a PATH guess."""
+    override = os.getenv("BOTGRAPH_MINITUI")
+    if override:
+        return override
+    found = _first_executable(MINITUI_CANDIDATES)
+    if found:
+        return found
+    return shutil.which("mini-tui", path=_child_env()["PATH"]) or "mini-tui"
 
 
 def _ensure_driver() -> None:
@@ -65,10 +113,11 @@ def _driver():
 
 
 def _run(cypher: str, params: dict | None = None):
+    """Run Cypher with a ceiling: without one, a bad query pins the bot forever."""
     d = _driver()
     try:
         with d.session() as s:
-            return [r.data() for r in s.run(cypher, params or {})]
+            return [r.data() for r in s.run(cypher, params or {}, timeout=QUERY_TIMEOUT_S)]
     finally:
         d.close()
 
@@ -171,35 +220,74 @@ def cmd_query(a) -> None:
 
 # ------------------------------------------------- kanban / task visibility
 
-def _mini_tui(*args: str) -> str:
-    p = subprocess.run([MINITUI, *args], capture_output=True, text=True, timeout=30)
-    return p.stdout + (p.stderr if p.returncode else "")
-
-
-def _kanban_sessions() -> list[dict]:
-    out = _mini_tui("sessions", "--json")
+def _mini_tui(*args: str) -> tuple[int, str]:
+    """Run the mini-tui CLI. Returns (exit code, combined output)."""
     try:
-        return json.loads(out)
+        p = subprocess.run([_minitui_bin(), *args], capture_output=True, text=True,
+                           timeout=30, env=_child_env())
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, f"mini-tui {' '.join(args)} could not run: {e}"
+    return p.returncode, p.stdout + p.stderr
+
+
+def _kanban_sessions() -> tuple[list[dict], str]:
+    """(sessions, error). An empty list with an error is NOT 'no sessions'."""
+    rc, out = _mini_tui("sessions", "--json")
+    if rc != 0:
+        return [], f"`mini-tui sessions --json` failed (exit {rc}): {out.strip()[:400]}"
+    try:
+        data = json.loads(out)
     except json.JSONDecodeError:
-        return []
+        return [], f"`mini-tui sessions --json` did not return JSON: {out.strip()[:400]}"
+    return (data if isinstance(data, list) else []), ""
 
 
 def cmd_kanban(a) -> None:
-    """READ-ONLY: other bots' task cards + shared Hermes kanban board."""
-    report: dict = {"read_only": True, "task_cards": [], "hermes_kanban": None}
+    """READ-ONLY: other bots' task cards + shared Hermes kanban board.
+
+    Failures are reported AS failures. The old code pasted the child's stderr
+    into `card`, so a launcher that could not start looked like a task card
+    reading `exec: bun: not found`, and a failure to LIST sessions looked like
+    "there are no sessions".
+    """
+    report: dict = {"read_only": True, "ok": True, "errors": [],
+                    "task_cards": [], "hermes_kanban": None}
 
     if a.session:
-        report["task_cards"].append({"session": a.session, "card": _mini_tui("tasks", "show", a.session).strip()})
+        sessions = [a.session]
     else:
-        for s in _kanban_sessions():
-            sid = s.get("id") or s.get("session") or s.get("name")
-            if sid:
-                report["task_cards"].append({"session": sid, "card": _mini_tui("tasks", "show", str(sid)).strip()})
+        raw, err = _kanban_sessions()
+        sessions = [str(s.get("id") or s.get("session") or s.get("name"))
+                    for s in raw if (s.get("id") or s.get("session") or s.get("name"))]
+        if err:
+            report["ok"] = False
+            report["errors"].append(err)
+
+    for sid in sessions:
+        rc, out = _mini_tui("tasks", "show", sid)
+        if rc != 0:
+            report["ok"] = False
+            report["errors"].append(
+                f"`mini-tui tasks show {sid}` failed (exit {rc}): {out.strip()[:400]}")
+            report["task_cards"].append({"session": sid, "card": None})
+        else:
+            report["task_cards"].append({"session": sid, "card": out.strip()})
 
     if not a.no_hermes:
-        p = subprocess.run([HERMES, "kanban", "list"], capture_output=True, text=True, timeout=30)
-        if p.returncode == 0 and p.stdout.strip():
-            report["hermes_kanban"] = p.stdout.strip()
+        try:
+            p = subprocess.run([HERMES, "kanban", "list"], capture_output=True, text=True,
+                               timeout=30, env=_child_env())
+        except (OSError, subprocess.TimeoutExpired) as e:
+            report["ok"] = False
+            report["errors"].append(f"`hermes kanban list` could not run: {e}")
+        else:
+            if p.returncode == 0 and p.stdout.strip():
+                report["hermes_kanban"] = p.stdout.strip()
+            else:
+                report["ok"] = False
+                report["errors"].append(
+                    f"`hermes kanban list` failed (exit {p.returncode}): "
+                    f"{(p.stdout + p.stderr).strip()[:400]}")
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
@@ -255,13 +343,28 @@ def cmd_e2e(a) -> int:
     check("B ve solo su propio subgrafo en `get` (namespacing)", own["facts"] == [])
 
     # 3. bot B lists kanban: sees A's task card (read-only)
-    subprocess.run([MINITUI, "tasks", "set", "--session", "e2e-bot-a", "--title",
+    subprocess.run([_minitui_bin(), "tasks", "set", "--session", "e2e-bot-a", "--title",
                     f"Revisar API de pagos v2 (e2e {base})", "--pending", "leer fact de e2e-a"],
-                   capture_output=True, text=True, timeout=30)
+                   capture_output=True, text=True, timeout=30, env=_child_env())
     kb = run("e2e-b", "kanban", "--session", "e2e-bot-a")
     card = kb["task_cards"][0]["card"] if kb["task_cards"] else ""
-    check("B ve el kanban/tarjeta de A (read-only)", f"e2e {base}" in card, card)
+    check("B ve el kanban/tarjeta de A (read-only)", bool(card) and f"e2e {base}" in card,
+          repr(card) + " | " + " | ".join(kb.get("errors") or []))
     check("la vista de kanban es read-only", kb.get("read_only") is True)
+
+    # 3b. the caller's PATH must not matter: a bot's shell has no ~/.bun/bin and
+    # no ~/.local/bin, and that used to hand back `exec: bun: not found` as a card
+    stripped = subprocess.run([py, cli, "kanban", "--session", "e2e-bot-a", "--no-hermes"],
+                              capture_output=True, text=True, timeout=60,
+                              env=dict(os.environ, PATH="/usr/sbin:/usr/bin:/sbin:/bin"))
+    try:
+        stripped_kb = json.loads(stripped.stdout)
+    except json.JSONDecodeError:
+        stripped_kb = {"ok": False, "task_cards": [], "errors": [stripped.stderr.strip()[:200]]}
+    stripped_card = stripped_kb["task_cards"][0]["card"] if stripped_kb.get("task_cards") else None
+    check("kanban funciona sin bun ni ~/.local/bin en el PATH del que llama",
+          stripped.returncode == 0 and bool(stripped_card) and f"e2e {base}" in stripped_card,
+          f"rc={stripped.returncode} card={stripped_card!r} err={stripped_kb.get('errors')}")
 
     # 4. read-only guard on the general graph
     guard = subprocess.run([py, cli, "query", "--cypher", "CREATE (x:TROLL) RETURN x"],
@@ -271,7 +374,8 @@ def cmd_e2e(a) -> int:
     # 5. cleanup: bots delete their own subgraphs
     run("e2e-a", "forget")
     run("e2e-b", "forget")
-    subprocess.run([MINITUI, "tasks", "clear", "e2e-bot-a"], capture_output=True, text=True, timeout=30)
+    subprocess.run([_minitui_bin(), "tasks", "clear", "e2e-bot-a"], capture_output=True,
+                   text=True, timeout=30, env=_child_env())
     check("cleanup: subgrafos e2e borrados", run("e2e-a", "get")["facts"] == [])
     after = run("e2e-b", "query", "--cypher", "MATCH (n) RETURN count(n) AS c", "--limit", "1")["rows"][0]["c"]
     check("grafo base intacto tras el E2E", int(after) == int(baseline), f"{baseline} -> {after}")
