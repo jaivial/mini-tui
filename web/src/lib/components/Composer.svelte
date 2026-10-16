@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowUp, Square, Terminal as TerminalIcon, Globe, SquareSlash, Sparkles, Paperclip, FileText, X, CircleAlert, Mic } from "@lucide/svelte";
+  import { ArrowUp, Square, Terminal as TerminalIcon, Globe, Paperclip, FileText, X, CircleAlert, Mic } from "@lucide/svelte";
   import { untrack } from "svelte";
   import Chip from "./Chip.svelte";
   import Button from "./Button.svelte";
@@ -90,29 +90,6 @@
     area?.focus();
   }
 
-  /**
-   * The Commands and Skills buttons open the same menus as typing `/` or `$`, for a phone keyboard that
-   * buries both characters. A command is the whole message, so the button is inert once anything else
-   * is in the bar (it would otherwise type a `/` mid-sentence that does nothing).
-   */
-  function trigger(char: "/" | "$") {
-    if (char === "/") {
-      if (value.trim() || chips.length) return;
-      value = "/";
-      caret = 1;
-    } else {
-      const at = area?.selectionStart ?? value.length;
-      const glue = at > 0 && !/\s/.test(value[at - 1]!) ? " " : "";
-      value = value.slice(0, at) + glue + "$" + value.slice(at);
-      caret = at + glue.length + 1;
-    }
-    dismissed = "";
-    queueMicrotask(() => {
-      area?.focus();
-      area?.setSelectionRange(caret, caret);
-    });
-  }
-  const slashBlocked = $derived(!!value.trim() || chips.length > 0);
   // ---- attachments: pick, drop, upload
   /** Files on their way to the server; the finished ones move into `attachments`. */
   let uploading = $state<{ key: string; name: string; size: number }[]>([]);
@@ -552,27 +529,12 @@
             (event.currentTarget as HTMLInputElement).value = "";
           }}
         />
-        <!-- Touch only: on a keyboard, typing / or $ is faster than reaching for these. -->
-        <button
-          type="button"
-          class="interactive hidden size-11 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:grid"
-          aria-label="Commands"
-          title="Commands"
-          disabled={disabled || slashBlocked}
-          onclick={() => trigger("/")}
-        >
-          <SquareSlash size={17} strokeWidth={1.75} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          class="interactive hidden size-11 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:opacity-40 pointer-coarse:grid"
-          aria-label="Skills"
-          title="Skills"
-          {disabled}
-          onclick={() => trigger("$")}
-        >
-          <Sparkles size={17} strokeWidth={1.75} aria-hidden="true" />
-        </button>
+        <!--
+          v6-G: the Commands and Skills buttons are gone. Typing `/` or `$` still opens the same
+          menus (the completion is driven by `completionAt` over the field's own value); the two
+          buttons only inserted those characters for a phone keyboard, and the soft keyboard of the
+          target devices exposes both on its symbol page.
+        -->
         {#if running}
           <Button variant="ghost" size="icon" icon={Square} title="Stop" aria-label="Stop the run" onclick={oninterrupt} />
         {/if}

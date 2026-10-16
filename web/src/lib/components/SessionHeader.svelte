@@ -6,17 +6,19 @@
   import Avatar from "./Avatar.svelte";
   import HeaderMenu, { type MenuRow } from "./HeaderMenu.svelte";
   import { store } from "../stores/sessions.svelte";
-  import { cost, duration } from "../format";
+  import { duration } from "../format";
   import type { SessionState } from "../types";
 
   /**
    * The pane's header: who you are talking to, what it is doing, and — from v6 — ONE three-dots
    * button holding every action the header used to spread across six icon buttons and two menus.
    *
-   * The identity half (avatar, title, state in words, cwd, calls, cost, elapsed) stays exactly
-   * where it was: it is the thing you read, not a control. Everything you DO moved into
-   * `HeaderMenu`, which draws one popover through a portal. `rows` is built by ChatPane, so a
-   * brand-new chat and a live one offer different sets without a second popover.
+   * The identity half (avatar, title, state in words, cwd, elapsed) stays exactly
+   * where it was: it is the thing you read, not a control. The calls/cost strip that used to sit
+   * under the header is gone (v6-G): the numbers were noise on a phone and the same data is on the
+   * usage panel. Everything you DO moved into `HeaderMenu`, which draws one popover through a
+   * portal. `rows` is built by ChatPane, so a brand-new chat and a live one offer different sets
+   * without a second popover.
    */
   let {
     session,
@@ -102,12 +104,6 @@
         <Folder size={11} strokeWidth={1.75} class="shrink-0" />
         <span class="truncate font-mono">{session.cwd}</span>
       </span>
-      {#if session.apiCalls}
-        <span class="tnum shrink-0 whitespace-nowrap">{session.apiCalls} {session.apiCalls === 1 ? "call" : "calls"}</span>
-      {/if}
-      {#if session.cost > 0}
-        <span class="tnum shrink-0 whitespace-nowrap">{cost(session.cost)}</span>
-      {/if}
       {#if elapsed > 0}
         <span class="tnum shrink-0 whitespace-nowrap">{duration(elapsed)}</span>
       {/if}
