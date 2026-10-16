@@ -2,6 +2,7 @@
   import { tick, untrack } from "svelte";
   import { Plus, X, CalendarClock, Network, Server, Settings, RotateCcw, Keyboard } from "@lucide/svelte";
   import SessionSidebar from "./lib/components/SessionSidebar.svelte";
+  import { findToggle, focusableWithin, nextStop } from "./lib/drawerModal";
   import ChatPane from "./lib/components/ChatPane.svelte";
   import PaneTree from "./lib/components/PaneTree.svelte";
   import TasksPanel from "./lib/components/TasksPanel.svelte";
@@ -224,8 +225,24 @@
    */
   let dragFrom = $state("");
   let dragTarget = $state("");
+  /**
+   * The phone drawer. It covers the whole screen, so it behaves as the modal it is: Escape closes
+   * it, Tab stays inside it, and the page behind is inert. See `lib/drawerModal.ts` for why each of
+   * those is needed and what the rules are.
+   */
+  let drawer: HTMLElement | null = $state(null);
+
   /** Where a phone swipe that should dismiss the full-screen bots list started. */
   let swipeFrom: { x: number; y: number } | null = null;
+
+  /*
+   * Opening the drawer moves focus into it. The toggle that opened it is in the header, which the
+   * drawer now covers, so leaving focus there would put the keyboard on an invisible control.
+   */
+  $effect(() => {
+    if (!sidebarOpen || !narrow || !drawer) return;
+    focusableWithin(drawer)[0]?.focus();
+  });
 
   function dragStart(paneId: string, event: PointerEvent) {
     if (event.button !== 0 || tabbed || panes.count < 2) return;
@@ -407,6 +424,19 @@
     if (event.defaultPrevented) event.stopPropagation();
   }
 
+  /**
+   * Close the phone drawer and hand focus back to the control that opened it.
+   *
+   * The toggle is named, not remembered: focusing "whatever had focus before" would put the keyboard
+   * back on the chat the drawer was covering, which is where the user just came from and does not
+   * expect to be returned to.
+   */
+  function closeDrawer() {
+    if (!sidebarOpen) return;
+    sidebarOpen = false;
+    queueMicrotask(() => findToggle(layout)?.focus());
+  }
+
   function handleKey(event: KeyboardEvent) {
     const mod = event.metaKey || event.ctrlKey;
     // Inside the terminal, the shell owns Ctrl+letters (Ctrl+K kills a line, Ctrl+B moves back...):
@@ -418,7 +448,20 @@
     }
     const key = event.key;
     const code = event.code;
-    if (mod && !event.altKey && key.toLowerCase() === "k") {
+    if (sidebarOpen && narrow && key === "Escape") {
+      // A full-screen sheet with no keyboard way out is a trap: Escape is the one close every modal
+      // is expected to have. It runs before the pane shortcuts so it always wins while it is up.
+      event.preventDefault();
+      closeDrawer();
+    } else if (sidebarOpen && narrow && code === "Tab" && drawer) {
+      // Tab has to walk the drawer's own controls and come back round. Letting it continue would
+      // step into the chat painted behind the sheet: real stops, zero pixels, so the keyboard cursor
+      // vanishes and Enter presses something nobody can see.
+      const stop = nextStop(focusableWithin(drawer), event.target as Element | null, event.shiftKey);
+      if (!stop) return;
+      event.preventDefault();
+      stop.focus();
+    } else if (mod && !event.altKey && key.toLowerCase() === "k") {
       event.preventDefault();
       newChat();
     } else if (mod && key === ",") {
@@ -470,28 +513,28 @@
 <svelte:window onkeydowncapture={onkey} />
 
 <div class="relative flex h-full w-full overflow-hidden bg-canvas text-ink">
-  {#if sidebarOpen && narrow}
-    <!-- On a phone the rail IS the screen (v6): nothing of the chat shows behind it, so the
-         backdrop is only there for the swipe-down gesture that closes it, not as a dimmed layer.
-         It is NOT a button: a full-screen invisible button sat in the tab order with the same
-         accessible name as the header's real close control, so a keyboard or screen-reader user
-         met two identical "Close the bots list" controls, the first one invisible. The visible X
-         in the rail's header is the named control; this is a pointer-only surface. -->
+  <!--
+    The phone drawer IS the screen (v6), so there is no backdrop to press: it sits behind a
+    full-width rail at a higher z-index and nothing of it can ever be hit. The swipe that lived on
+    it has been on the rail itself since, and Escape now closes it for the keyboard (see
+    `lib/drawerModal.ts`). What is left of the old backdrop is nothing to render.
+  -->
+  {#if sidebarOpen}
     <div
-      class="absolute inset-0 z-40 cursor-default bg-transparent"
-      aria-hidden="true"
-      onclick={() => (sidebarOpen = false)}
-      onpointerdown={(e) => (swipeFrom = { x: e.clientX, y: e.clientY })}
+      bind:this={drawer}
+      class="enter-1 {narrow ? 'absolute inset-0 z-50' : 'relative w-[288px]'}"
+      role={narrow ? "dialog" : undefined}
+      aria-modal={narrow ? "true" : undefined}
+      aria-label={narrow ? "Bots" : undefined}
+      onpointerdown={(e) => narrow && (swipeFrom = { x: e.clientX, y: e.clientY })}
       onpointerup={(e) => {
         const from = swipeFrom;
         swipeFrom = null;
-        // A swipe down or right from anywhere over the scroller closes it, like a sheet.
-        if (from && (e.clientY - from.y > 64 || e.clientX - from.x > 64)) sidebarOpen = false;
+        // A swipe down or right from anywhere over the rail closes it, like a sheet. It rides on the
+        // rail because on a phone the rail is the screen: a backdrop behind it is unreachable.
+        if (narrow && from && (e.clientY - from.y > 64 || e.clientX - from.x > 64)) closeDrawer();
       }}
-    ></div>
-  {/if}
-  {#if sidebarOpen}
-    <div class="enter-1 {narrow ? 'absolute inset-0 z-50' : 'relative w-[288px]'}">
+    >
       <SessionSidebar
         full={narrow}
         onnew={newChat}
@@ -511,7 +554,12 @@
     </div>
   {/if}
 
-  <div class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
+  <!--
+    Inert, not just unpainted. The drawer covers this, so its stops are still focusable and still
+    clickable underneath: without `inert` a screen reader reads the conversation the sheet is hiding
+    and the keyboard walks into it (the Tab loop above stops that for keys, not for a reader).
+  -->
+  <div class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)]" inert={sidebarOpen && narrow}>
     {#if tabbed && panes.count > 1}
       <!-- Narrow screens: the panes are tabs. Same panes, same order, same numbers as the split view. -->
       <div class="flex shrink-0 items-center gap-1 border-b border-line/80 px-2 py-1.5">
