@@ -15,6 +15,7 @@
   import { humanSize, uploadAttachment, ATTACH_ACCEPT, ATTACH_MAX, type AttachmentRef } from "../attachments";
   import AudioRecorder from "./control-ui/AudioRecorder.svelte";
   import { preferredAudioMimeType, type AudioRecording } from "../control-ui/recorder.svelte";
+  import { recorderCanDiscard } from "../recorderBar";
   import { toasts } from "../stores/toast.svelte";
 
   /**
@@ -136,6 +137,13 @@
    * there it is an ordinary attachment: it rides the prompt to the agent and
    * comes back out on the normal output path to WhatsApp, with no audio-only
    * side channel anywhere.
+   *
+   * E21: a failed upload RETHROWS. It used to swallow the error, which made the
+   * recorder's `submitRecording` see a resolved promise and reset to `idle` with
+   * `recording: undefined` — the take was gone and nothing on screen said so.
+   * Throwing lands the recorder in the state it has for exactly this (`recorded`
+   * with the blob kept and the reason attached), where "Enviar" is still there
+   * for the retry. The toast stays; it is the transient half, not the whole news.
    */
   async function attachRecording(recording: AudioRecording) {
     // MediaRecorder hands back a container type ("audio/webm;codecs=opus");
@@ -154,9 +162,42 @@
       area?.focus();
     } catch (error) {
       toasts.push("No se pudo adjuntar la nota de voz", { detail: (error as Error).message, tone: "err" });
+      throw error;
     } finally {
       uploading = uploading.filter((u) => u.key !== key);
     }
+  }
+
+  /**
+   * The outer mic toggles the panel, but it must not be a silent shredder: with
+   * E21 the recorder keeps its take in `recorded`, and unmounting it runs
+   * `destroy()`. So closing over a take in hand asks first, and a plain close is
+   * only allowed when there is nothing to lose.
+   *
+   * `recordingBusy` is true while there is anything the panel would throw away.
+   */
+  let recordingBusy = $state(false);
+  let confirmClose = $state(false);
+
+  function toggleRecording() {
+    if (!recordingOpen) {
+      confirmClose = false;
+      recordingOpen = true;
+      return;
+    }
+    // Closing the panel with nothing in it (idle, or the mic never granted).
+    if (!recordingBusy) {
+      recordingOpen = false;
+      return;
+    }
+    confirmClose = true;
+  }
+
+  /** Confirming the close is the only path that throws a recorded take away. */
+  function closeRecordingAnyway() {
+    confirmClose = false;
+    recordingBusy = false;
+    recordingOpen = false;
   }
 
   function onDrop(event: DragEvent) {
@@ -420,12 +461,42 @@
     {#if recordingOpen}
       <!-- Inside the pill, above the field. Control UI's AudioRecorder, ported
            to Svelte 5; the take is uploaded exactly like a picked file. -->
-      <div class="mx-2.5 mt-2 flex min-w-0 items-center rounded-xl border border-line bg-canvas/70 px-1.5 py-1">
+      <div id="{uid}-recorder" class="mx-2.5 mt-2 flex min-w-0 items-center rounded-xl border border-line bg-canvas/70 px-1.5 py-1">
         <AudioRecorder
           disabled={disabled || sending}
           onRecordingComplete={attachRecording}
-          onCancel={() => (recordingOpen = false)}
+          onstatechange={(next) => (recordingBusy = recorderCanDiscard(next))}
+          onCancel={() => {
+            recordingOpen = false;
+            confirmClose = false;
+          }}
         />
+        <!-- E21: closing the panel over a recorded take asks first. Unmounting the
+             recorder destroys the controller, and the blob only exists in memory. -->
+        {#if confirmClose}
+          <div
+            role="alertdialog"
+            aria-modal="false"
+            aria-label="Descartar la nota de voz"
+            class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 pr-1 text-[12px] text-ink-muted"
+          >
+            <span class="min-w-0">¿Descartar la nota de voz?</span>
+            <button
+              type="button"
+              class="interactive h-7 shrink-0 cursor-pointer rounded-md border border-line px-2 text-[12px] font-medium text-ink hover:bg-raised"
+              onclick={closeRecordingAnyway}
+            >
+              Descartar
+            </button>
+            <button
+              type="button"
+              class="interactive h-7 shrink-0 cursor-pointer rounded-md px-2 text-[12px] font-medium text-brand hover:bg-raised"
+              onclick={() => (confirmClose = false)}
+            >
+              Seguir grabando
+            </button>
+          </div>
+        {/if}
       </div>
     {/if}
     <!-- Measuring copy of the text: same box as the field, invisible, inert, clipped to the bar. -->
@@ -500,8 +571,9 @@
           aria-label="Grabar nota de voz"
           title="Grabar nota de voz"
           aria-expanded={recordingOpen}
+          aria-controls={recordingOpen ? `${uid}-recorder` : undefined}
           {disabled}
-          onclick={() => (recordingOpen = !recordingOpen)}
+          onclick={toggleRecording}
         >
           <Mic size={16} strokeWidth={1.75} aria-hidden="true" />
         </button>
