@@ -25,6 +25,17 @@ export const NAME_MAX = 64;
 const MAX_BYTES = 512;
 
 /**
+ * Bytes of a string, in the runtime we happen to be in. This module is imported
+ * by the Bun server AND bundled into the browser (Transcript.svelte), where
+ * `Buffer` does not exist — using it here threw `ReferenceError: Buffer is not
+ * defined` at module load and took the WHOLE transcript down, which the server
+ * tests could never have caught because they only ever ran it under Bun.
+ * `TextEncoder` is in both, so the count is the same number either way.
+ */
+const encoder = new TextEncoder();
+const byteLength = (value: string): number => encoder.encode(value).length;
+
+/**
  * The name a sender chose, when it is usable as one. Returns null for every
  * shape that must not reach a reader as a name: absent, empty/whitespace, or
  * carrying control characters (which would break a line or smuggle a newline
@@ -40,7 +51,7 @@ export function cleanSenderName(raw: unknown): string | null {
   // too long for a header is still a label. Refusing it would drop the name
   // exactly when the sender chose a long one, and the reader would be back to
   // the number. The hard byte cap is a backstop against an absurd payload.
-  if (Buffer.byteLength(trimmed) > MAX_BYTES) return null;
+  if (byteLength(trimmed) > MAX_BYTES) return null;
   return trimmed.length > NAME_MAX ? trimmed.slice(0, NAME_MAX) : trimmed;
 }
 
