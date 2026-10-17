@@ -15,16 +15,47 @@
     onsubmit?: (message: string) => void;
   } = $props();
 
+  const uid = $props.id();
   const form = $derived(validateForm(props));
   let values = $state<Record<string, string | boolean>>({});
   let sent = $state(false);
 
-  // Reset the draft when a different form arrives in the transcript.
+  // Reset the draft only when the form ACTUALLY changes.
+  //
+  // It used to key off `props` itself, which is wrong twice over. A socket snapshot
+  // (a reconnect, or the resync the client asks for whenever a delta does not line
+  // up) rebuilds every event object, so `props` is a new object every time even
+  // though the form on screen is the same one: the draft the user had typed was
+  // thrown away, and `sent` went back to false, which re-armed a submit button that
+  // had already delivered the form — so the same answer could reach the agent twice.
+  // Keying off the rendered signature fixes the first half; `sent` is latched so a
+  // form that already went out can never be sent again from the same instance.
+  const signature = $derived(
+    form.ok ? `${form.props.title ?? ""}|${form.props.submitLabel}|${form.props.fields.map((f) => `${f.name}:${f.type}`).join(",")}` : "invalid",
+  );
+  let lastSignature: string | undefined = undefined;
   $effect(() => {
-    props;
+    // The first pass only records the signature: there is nothing to clear yet.
+    if (lastSignature === undefined || signature === lastSignature) {
+      lastSignature = signature;
+      return;
+    }
+    lastSignature = signature;
     values = {};
-    sent = false;
   });
+
+  /**
+   * The shortcut the hint promises, so it has to exist: a `<select>` swallows plain
+   * Enter (it opens the dropdown) and the browser's implicit submit is not something
+   * to rely on with a date or a number field in the form either. Bound to the
+   * fields rather than to the `<form>`, because that is where the focus is while
+   * the shortcut can mean anything.
+   */
+  function onFieldKey(event: KeyboardEvent) {
+    if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLInputElement | HTMLSelectElement).form?.requestSubmit();
+  }
 
   function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -36,6 +67,8 @@
       if (value === undefined || value === "" || value === false) continue;
       parts.push(`${field.label}: ${value === true ? "sí" : String(value)}`);
     }
+    // Latched only once the answer is complete, and before the send so nothing in
+    // between can open the window for a second submit of the same form.
     sent = true;
     const head = form.props.title ? `${form.props.title}` : "Formulario";
     onsubmit?.(`[${head}] ${parts.join(" · ")}`);
@@ -43,7 +76,12 @@
 </script>
 
 {#if form.ok}
-  <form class="ui-form" aria-label={form.props.title ?? "Formulario"} onsubmit={submit}>
+  <form
+    class="ui-form"
+    aria-label={form.props.title ?? "Formulario"}
+    aria-describedby="{uid}-hint"
+    onsubmit={submit}
+  >
     {#if form.props.title}<p class="ui-form-title">{form.props.title}</p>{/if}
     {#each form.props.fields as field (field.name)}
       <label class="ui-field">
@@ -51,7 +89,7 @@
           {field.label}{#if field.required}<span class="ui-required" aria-hidden="true">*</span>{/if}
         </span>
         {#if field.type === "select"}
-          <select class="ui-input" bind:value={values[field.name]} required={field.required}>
+          <select class="ui-input" bind:value={values[field.name]} required={field.required} onkeydown={onFieldKey}>
             <option value="" disabled selected>Elige…</option>
             {#each field.options ?? [] as option (option)}
               <option value={option}>{option}</option>
@@ -63,6 +101,7 @@
             type="checkbox"
             checked={values[field.name] === true}
             onchange={(event) => (values[field.name] = event.currentTarget.checked)}
+            onkeydown={onFieldKey}
           />
         {:else}
           <input
@@ -71,12 +110,13 @@
             bind:value={values[field.name]}
             required={field.required}
             placeholder={field.placeholder}
+            onkeydown={onFieldKey}
           />
         {/if}
       </label>
     {/each}
     <div class="ui-form-actions">
-      <span class="ui-form-hint">⌘ Enter para enviar</span>
+      <span class="ui-form-hint" id="{uid}-hint">Enter o ⌘ Enter para enviar</span>
       <button type="submit" class="ui-submit" disabled={sent}>{sent ? "Enviado" : form.props.submitLabel}</button>
     </div>
   </form>

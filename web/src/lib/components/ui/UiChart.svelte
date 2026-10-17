@@ -1,7 +1,7 @@
 <script lang="ts">
   /** Generative chart (bar | line) as plain SVG: validated numbers only. */
   import { validateChart } from "../../ui/validate";
-  import { chartPlot, CHART_W, CHART_H, CHART_PAD } from "../../ui/chartGeometry";
+  import { chartPlot, formatValue, CHART_W, CHART_H, CHART_PAD } from "../../ui/chartGeometry";
 
   let { props }: { props: Record<string, unknown> } = $props();
 
@@ -18,6 +18,28 @@
   const plot = $derived(chart.ok ? chartPlot(chart.props.values) : null);
   const path = $derived(plot ? plot.points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ") : "");
   const hasNegative = $derived(!!chart.ok && Math.min(...chart.props.values, 0) < 0);
+  const uid = $props.id();
+  /**
+   * What the chart SAYS, for a reader that cannot see it.
+   *
+   * `role="img"` with the title as its only name announced the title and nothing
+   * else: measured against the built app, the accessibility tree held one `image`
+   * node named "Precio por tren" and not a single node naming any value. The label
+   * row is `aria-hidden`, and the marks are rects and circles with no text, so the
+   * numbers existed nowhere but in the geometry. A chart whose data no assistive
+   * technology can reach is a picture of a chart, not a chart.
+   */
+  const summary = $derived(
+    !chart.ok
+      ? ""
+      : [
+          `Gráfico de ${chart.props.kind === "bar" ? "barras" : "líneas"}`,
+          chart.props.title,
+          ...chart.props.labels.map((label, i) => `${label}: ${formatValue(chart.props.values[i]!)}${chart.props.unit ? ` ${chart.props.unit}` : ""}`),
+        ]
+          .filter(Boolean)
+          .join(". "),
+  );
 </script>
 
 {#if chart.ok && plot}
@@ -30,7 +52,18 @@
     {/if}
     <!-- The plot and the label row share one column, so a label always sits under its own mark. -->
     <div class="ui-chart-body">
-      <svg viewBox="0 0 {CHART_W} {CHART_H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label={chart.props.title ?? "Gráfico"}>
+      <!-- role="img" makes the browser expose ONE node and hide the subtree, so the
+           data has to live in the name itself: `aria-label` is the title, and
+           `aria-describedby` carries the series. Splitting them means the reader
+           hears the caption, then the numbers, without a wall of text as a name. -->
+      <svg
+        viewBox="0 0 {CHART_W} {CHART_H}"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label={chart.props.title ?? "Gráfico"}
+        aria-describedby="{uid}-data"
+      >
+        <desc id="{uid}-data">{summary}</desc>
         {#if hasNegative}
           <!-- The zero line, so a bar that crosses it reads as negative rather than merely short. -->
           <line x1={CHART_PAD} y1={plot.zeroY} x2={CHART_W - CHART_PAD} y2={plot.zeroY} stroke="var(--color-line-strong)" stroke-width="1" />
@@ -56,6 +89,8 @@
       <!-- One equal cell per band: flex-1 centres each label on its own mark. `space-between`
            spread them edge to edge across a row wider than the plot, so the last label sat under
            empty space. -->
+      <!-- aria-hidden porque los nombres de serie ya los anuncia el <desc> del svg:
+           leerlos dos veces es peor que leerlos una. -->
       <div class="ui-chart-labels" aria-hidden="true">
         {#each chart.props.labels as label, i (i)}
           <span title={label}>{label}</span>
