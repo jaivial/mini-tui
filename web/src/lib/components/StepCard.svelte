@@ -32,6 +32,10 @@
    */
   let { event, class: klass = "" }: { event: RunEvent; class?: string } = $props();
 
+  // The body's id, so the header's `aria-controls` points at something real.
+  // A transcript holds hundreds of these; `$props.id()` is unique per instance.
+  const uid = $props.id();
+
   // A row is a command, a result, or both (the transcript pairs them).
   const command = $derived("command" in event ? String(event.command ?? "") : "");
   const output = $derived("output" in event ? String(event.output ?? "") : "");
@@ -156,6 +160,7 @@
       expanded = !expanded;
     }}
     aria-expanded={expanded}
+    aria-controls="{uid}-body"
   >
     <span
       class="grid size-6 shrink-0 place-items-center rounded-lg {running
@@ -170,7 +175,13 @@
       <Icon size={13} strokeWidth={1.75} />
     </span>
     <span class="shrink-0 text-[12px] leading-4 font-semibold tracking-[-0.01em] text-ink">{label}</span>
-    <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-4 text-ink-muted" aria-hidden="true">
+    <!--
+      NOT `aria-hidden`. It was, and the header's accessible name was then just "bash OK"
+      for every one of the 58 cards in a real transcript (measured in Chrome 145 against
+      the deployed build): a screen-reader user had 58 identically-named buttons and no way
+      to tell a `git status` from a failing deploy. The name now carries what the card says.
+    -->
+    <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-4 text-ink-muted">
       {summary}
     </span>
     {#if timeLabel}
@@ -194,7 +205,22 @@
     The body collapses on a 0fr -> 1fr grid track (the browser animates the
     intrinsic height, no measurement, no timer) and its content mounts lazily.
   -->
+  <!--
+    `id` + the header's `aria-controls`: without them `aria-expanded` was a claim about
+    nothing, and a screen-reader user could not get from the toggle to the thing it
+    toggles. Deliberately NOT `role="region"`: a named region is a landmark, and a
+    transcript with 58 tool calls would put 58 of them in the user's landmark list.
+
+    `inert` (not `aria-hidden`) is what takes the collapsed body out of the tab order AND
+    out of the accessibility tree while it is still mounted. It has to be `inert` rather
+    than merely unmounted because of E14: the body stays in the DOM for the closing
+    transition and for the release timer, and `aria-expanded="false"` has to be true
+    during all of that — measured at 229 ms after the click, with the Copy buttons still
+    focusable and still in the accessibility tree.
+  -->
   <div
+    id="{uid}-body"
+    inert={!expanded}
     class="grid transition-[grid-template-rows] duration-(--duration-base) ease-(--ease-standard) {expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}"
     ontransitionend={onbodytransitionend}
   >
