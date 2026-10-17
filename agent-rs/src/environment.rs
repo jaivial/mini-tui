@@ -379,7 +379,8 @@ fn result_value(r: Result<(String, i64), (String, String, String)>) -> Value {
     }
 }
 
-/// The argv of one bash-tool command. A dispatched child with a lane (`MINI_AGENT_LANE`, one
+/// The argv of one bash-tool command: `/bin/sh -c <fixed string>`, the command itself riding in
+/// the environment (`shell_command_env`). A dispatched child with a lane (`MINI_AGENT_LANE`, one
 /// path per line, set by the hub) runs it in a bubblewrap mount namespace where the lane root
 /// (`MINI_AGENT_LANE_ROOT`, its work tree) is READ-ONLY except the lane paths, which stay
 /// writable. Everything outside the work tree is untouched (`--dev-bind / /`): /tmp, the shared
@@ -387,8 +388,8 @@ fn result_value(r: Result<(String, i64), (String, String, String)>) -> Value {
 /// sibling's repo; a lane turns the expensive version of that (editing a sibling's file, which
 /// the sibling then has to re-read or fight) into an immediate `Read-only file system`.
 /// No bwrap on PATH, or no lane: the command runs as before.
-pub fn lane_argv(command: &str) -> Vec<String> {
-    let plain = vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()];
+pub fn lane_argv() -> Vec<String> {
+    let plain = vec!["/bin/sh".to_string(), "-c".to_string(), SHELL_EVAL.to_string()];
     let lane = std::env::var("MINI_AGENT_LANE").unwrap_or_default();
     let root = std::env::var("MINI_AGENT_LANE_ROOT").unwrap_or_default();
     if lane.trim().is_empty() || root.is_empty() {
@@ -406,8 +407,28 @@ pub fn lane_argv(command: &str) -> Vec<String> {
             argv.extend(["--bind".into(), t.clone(), t]);
         }
     }
-    argv.extend(["--".into(), "/bin/sh".into(), "-c".into(), command.to_string()]);
+    argv.extend(["--".into(), "/bin/sh".into(), "-c".into(), SHELL_EVAL.to_string()]);
     argv
+}
+
+/// The command text, carried in the environment instead of on argv. See [`shell_command_env`].
+pub const SHELL_COMMAND_VAR: &str = "MINI_TUI_SHELL_COMMAND";
+
+/// What actually goes on argv in place of the command: a fixed string with no model text in it.
+const SHELL_EVAL: &str = "eval \"$MINI_TUI_SHELL_COMMAND\"";
+
+/// The env entry that carries one command's text into the shell.
+///
+/// `sh -c "<command>"` puts the whole command in the shell's own `argv`, and `/proc/<pid>/cmdline`
+/// is exactly that. So a `pgrep -f`/`pkill -f` whose pattern appears anywhere in the command
+/// matches the shell that is running it -- the agent's own command kills the agent's own command,
+/// with no output and no explanation: measured, `pkill -f <marker>; echo REACHED` returns exit -15
+/// and an EMPTY observation, the shell SIGTERMed before the `echo` ever ran.
+/// Moving the text to the environment puts it in `/proc/<pid>/environ`, which `pgrep -f` does not
+/// match, while `eval` keeps every other shell semantic identical: `$0` is still `/bin/sh`, exit
+/// codes, positional parameters, multi-line text, quoting and stdin all behave as before.
+fn shell_command_env(command: &str) -> impl Iterator<Item = (String, String)> {
+    std::iter::once((SHELL_COMMAND_VAR.to_string(), command.to_string()))
 }
 
 /// `_check_finished`: the first line of the output (after leading whitespace) is the marker.
@@ -470,8 +491,11 @@ impl Environment for LocalEnvironment {
         let cwd = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
         let mut env: BTreeMap<String, String> = std::env::vars().collect();
         env.extend(self.env.clone());
-        // subprocess.Popen(shell=True) runs `/bin/sh -c`.
-        let argv = lane_argv(command);
+        // subprocess.Popen(shell=True) runs `/bin/sh -c` -- but with the command in the
+        // environment, not on argv, so `pgrep -f`/`pkill -f` cannot match the shell running it.
+        // See `shell_command_env`.
+        env.extend(shell_command_env(command));
+        let argv = lane_argv();
         let r = run(&argv, Some(&cwd), Some(&env), self.timeout, command);
         if is_stopped(&r) {
             return Outcome::Stopped;
@@ -524,7 +548,9 @@ impl Environment for LocalEnvironment {
                     stopped = true;
                     break;
                 }
-                match spawn(&lane_argv(&commands[next]), Some(&cwd), Some(&env)) {
+                let mut batch_env = env.clone();
+                batch_env.extend(shell_command_env(&commands[next]));
+                match spawn(&lane_argv(), Some(&cwd), Some(&batch_env)) {
                     Ok(child) => {
                         register_group(child.pid);
                         batch_groups.push((next, child));
@@ -778,4 +804,110 @@ mod tests {
         }
         assert!(start.elapsed() < Duration::from_secs(5));
     }
+
+
+    /// E6: a `pkill -f`/`pgrep -f` in the agent's own command used to match the shell RUNNING it
+    /// (`/proc/<pid>/cmdline` of `sh -c <command>` is the command), so the agent killed its own
+    /// command and got an empty observation back -- or, with a background job holding the pipe,
+    /// a bogus 30 s "timed out". The marker is assembled at runtime so it cannot appear in the
+    /// test binary's own argv, which would make the test kill the runner (measured: it does).
+    fn marker(tag: &str) -> String {
+        // One token, no whitespace: `pgrep -f` splits its pattern on blanks, so a marker with a
+        // space in it would be two patterns. Assembled at runtime so it cannot appear verbatim in
+        // the test binary's argv.
+        format!("mini{}e6{}", "tui", tag)
+    }
+
+    fn out_of(command: &str) -> String {
+        match local().execute(command) {
+            Outcome::Output(v) => {
+                assert_eq!(v["exception_info"], "", "unexpected exception: {}", v["exception_info"]);
+                assert_eq!(v["returncode"], 0, "unexpected rc: {} out={:?}", v["returncode"], v["output"].as_str());
+                v["output"].as_str().unwrap_or_default().to_string()
+            }
+            Outcome::Stopped => panic!("stopped"),
+            Outcome::Submitted(s) => s,
+        }
+    }
+
+    #[test]
+    fn pkill_f_does_not_kill_the_shell_running_it() {
+        let m = marker("alpha");
+        // The old code never reached the echo: the shell matched its own pattern and was SIGTERMed.
+        assert_eq!(out_of(&format!("pkill -f {m}; echo REACHED")), "REACHED\n");
+    }
+
+    #[test]
+    fn pgrep_f_does_not_report_the_shell_running_it() {
+        let m = marker("charlie");
+        // `pgrep -f` used to answer with the agent's own shell pid (and nothing else).
+        assert_eq!(out_of(&format!("pgrep -f {m}; echo done")), "done\n");
+    }
+
+    /// A process that really carries the marker on ITS argv, kept short-lived and cleaned up:
+    /// a leaked `sleep 120` from an earlier run would be counted by the next run's `pgrep -f`,
+    /// which is how this test failed the second time it ran in the full suite.
+    fn real_target(m: &str) -> String {
+        let start = Instant::now();
+        let out = out_of(&format!(
+            "bash -c 'exec -a {m} sleep 30' >/dev/null 2>&1 & bg=$!; sleep 1; \
+             echo target=$(pgrep -f {m} | grep -v $$ | wc -l); kill $bg 2>/dev/null; echo cleaned=$?",
+        ));
+        assert!(start.elapsed() < Duration::from_secs(10), "took {:?}", start.elapsed());
+        out
+    }
+
+    #[test]
+    fn pgrep_f_still_finds_a_real_target() {
+        // The fix must not break the thing the command was FOR: a real process whose own argv
+        // carries the marker is still found. One per run, and it dies with the test.
+        let out = real_target(&marker("delta"));
+        assert!(out.contains("target=1"), "{out:?}");
+        assert!(out.contains("cleaned=0"), "the target outlived the test: {out:?}");
+    }
+
+    #[test]
+    fn pgrep_f_can_kill_a_real_target_without_touching_the_shell() {
+        let m = marker("echo");
+        let out = out_of(&format!(
+            "bash -c 'exec -a {m} sleep 30' >/dev/null 2>&1 & bg=$!; sleep 1; \
+             before=$(pgrep -f {m} | grep -v $$ | wc -l); pkill -f {m}; sleep 1; \
+             after=$(pgrep -f {m} | grep -v $$ | wc -l); echo before=$before after=$after; \
+             kill $bg 2>/dev/null; true",
+        ));
+        assert!(out.contains("before=1"), "{out:?}");
+        assert!(out.contains("after=0"), "the real target survived: {out:?}");
+    }
+
+    #[test]
+    fn the_command_is_not_on_the_argv_of_its_own_shell() {
+        // The root cause itself, asserted directly: the argv the tool builds must not carry any
+        // of the model's text. (A pattern-based kill cannot match a shell that does not hold it.)
+        let argv = lane_argv();
+        assert!(!argv.iter().any(|a| a.contains("pkill") || a.contains("pgrep")), "{argv:?}");
+        assert_eq!(argv, vec!["/bin/sh".to_string(), "-c".to_string(), "eval \"$MINI_TUI_SHELL_COMMAND\"".to_string()]);
+    }
+
+    #[test]
+    fn shell_semantics_survive_the_env_carry() {
+        // The env-and-eval rewrite must not change what a command MEANS: `$0`, exit status,
+        // positional parameters, multi-line text, quoting, stderr merge and cwd all as before.
+        assert_eq!(out_of("echo zero=$0"), "zero=/bin/sh\n");
+        match local().execute("exit 7") {
+            Outcome::Output(v) => assert_eq!(v["returncode"], 7),
+            _ => panic!(),
+        }
+        assert_eq!(out_of("echo one\necho two"), "one\ntwo\n");
+        assert_eq!(out_of("echo out; echo err 1>&2"), "out\nerr\n");
+        assert_eq!(out_of("echo 'a b' | tr ' ' '_'; echo $(echo sub); echo $HOME"), format!("a_b\nsub\n{}\n", std::env::var("HOME").unwrap_or_default()));
+    }
+
+    #[test]
+    fn a_command_can_still_use_its_own_name_without_tripping_over_itself() {
+        // The eval indirection must not leak a variable the command could collide with in a way
+        // that changes its meaning: a command that reads the var sees its own text, like `$0`.
+        let out = out_of("echo self=[$MINI_TUI_SHELL_COMMAND]");
+        assert_eq!(out, "self=[echo self=[$MINI_TUI_SHELL_COMMAND]]\n");
+    }
+
 }
