@@ -39,6 +39,7 @@ import { log } from "./log";
 import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
 import { syncAllSkills } from "../skills";
+import { etagFor, isFresh, mayRevalidate, revalidationHeaders } from "./etag";
 import {
   COMMANDS,
   connectProvider,
@@ -435,6 +436,34 @@ function json(body: unknown, status = 200, headers?: Record<string, string>): Re
   });
 }
 
+/**
+ * Every JSON read leaves here with a validator, and a client that already has the body gets
+ * a `304` instead of a second copy of it. See `etag.ts` for what was measured.
+ *
+ * This wraps the response at the ONE point every route already returns through, rather than
+ * adding a call per endpoint: 102 `json(...)` call sites exist and the three payloads that
+ * actually cost something (`/api/skills` at 36 KB, `/api/task-graph` at 12 KB plus a
+ * subprocess, `/api/settings`) are in no way distinguishable from the reader's point of view
+ * from `/api/hosts`. A rule that has to be remembered at each site is a rule that will be
+ * forgotten at the site that matters.
+ *
+ * The body is hashed, not the object, so two identical lists get the same validator and a
+ * changed one does not — including a changed `SKILL.md` on disk, which is read before this
+ * point on every request.
+ */
+async function revalidate(request: Request, response: Response): Promise<Response> {
+  if (response.status !== 200 || response.headers.get("etag")) return response;
+  const body = new Uint8Array(await response.clone().arrayBuffer());
+  if (!mayRevalidate(request.method, response.status, response.headers, body)) return response;
+  const etag = etagFor(body);
+  if (isFresh(request.headers.get("if-none-match"), etag)) {
+    return new Response(null, { status: 304, headers: revalidationHeaders(etag) });
+  }
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(revalidationHeaders(etag))) headers.set(key, value);
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+}
+
 async function readJson(request: Request): Promise<Record<string, unknown>> {
   try {
     return (await request.json()) as Record<string, unknown>;
@@ -579,6 +608,23 @@ const server = Bun.serve({
     },
   },
   async fetch(request, srv) {
+    // One wrapper, applied where the response is finished rather than where it is built, so
+    // no route can be born without a validator and no route can answer a `GET` in full when
+    // the client already holds the bytes. Upgrades return `undefined` and pass through.
+    const response = await handle(request, srv);
+    return response === undefined ? (undefined as unknown as Response) : revalidate(request, response);
+  },
+});
+
+/**
+ * The router itself; `fetch` above only adds conditional-GET handling to what this returns.
+ *
+ * `srv` is the server itself, named for the parameter Bun passes to `fetch`; it is only
+ * read for `upgrade`, which is how the two WebSocket routes answer (they return `undefined`
+ * because there is no HTTP response to send).
+ */
+const handle = async (request: Request, srv: import("bun").Server<SocketData>): Promise<Response | undefined> => {
+  {
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/api/, "") || "/";
     // The Host gate comes FIRST and runs on EVERY request, reads included.
@@ -1224,8 +1270,8 @@ const server = Bun.serve({
     } catch (error) {
       return json({ error: (error as Error).message }, 500);
     }
-  },
-});
+  }
+};
 
 console.log(`mini-tui web server on http://${server.hostname}:${server.port}`);
 console.log(existsSync(STATIC_DIR) ? `serving the web app from ${STATIC_DIR}` : "web/dist not built - run `bun run build` in web/ (API only for now)");
