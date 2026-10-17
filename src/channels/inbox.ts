@@ -1,6 +1,7 @@
 /** Transport-neutral inbox. Incoming text is data, never a grant to act as the user. */
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
+import { cleanSenderName } from "./senderName";
 import { dirname } from "node:path";
 
 /** v5-E: what one binding overrides about its immediate ack. The TEXT is never
@@ -28,7 +29,13 @@ export interface Inbound {
   account: string;
   thread: string;
   messageId: string;
+  /** The sender's stable jid. This — never `senderName` — is identity: it is
+   * what the binding's `allowedSenders` compares. */
   sender: string;
+  /** The name the sender chose for themselves (WhatsApp `pushName`). DISPLAY
+   * ONLY: a label for readers and for the agent's context. It can neither
+   * authorize a turn nor stand in for the jid anywhere. */
+  senderName?: string;
   sentAt: number;
   text: string;
   replyTo?: string;
@@ -162,6 +169,10 @@ export class ChannelInbox {
   accept(message: Inbound): { seq: number; duplicate: boolean; session: string; project: string } {
     checkRoute(message);
     if (!bounded(message.messageId) || !bounded(message.sender) || !Number.isSafeInteger(message.sentAt) || message.sentAt < 0 || Buffer.byteLength(message.text) > 64_000 || message.attachments.length > 16 || (message.replyTo && !bounded(message.replyTo))) throw new Error("invalid inbound message");
+    // The name is bounded like any other free-text field, and a present-but-unusable
+    // one is DROPPED rather than refused: it is a label, so a malformed label must
+    // never cost the message it labels.
+    if (message.senderName !== undefined && !cleanSenderName(message.senderName)) delete message.senderName;
     for (const a of message.attachments) {
       if ((a.mime && !bounded(a.mime,128)) || (a.transcriptionState && !["pending","complete","uncertain","failed"].includes(a.transcriptionState))) throw new Error("invalid attachment metadata");
       if (!bounded(a.id) || !["image", "audio", "document"].includes(a.kind) || (a.providerRef && Buffer.byteLength(a.providerRef) > 2048) || (a.transcript && Buffer.byteLength(a.transcript) > 64_000)) throw new Error("invalid attachment");
@@ -180,6 +191,11 @@ export class ChannelInbox {
         const previous = JSON.parse(old.original) as Inbound;
         const canonical = (attachments: Attachment[]) => JSON.stringify(attachments.map(a => ({ id: a.id, kind: a.kind, mime: a.mime ?? null, providerRef: a.providerRef ?? null, transcript: a.transcript ?? null, transcriptionState: a.transcriptionState ?? null })));
         const canonicalMentions = (m: Inbound) => JSON.stringify([...(m.mentions ?? [])].sort());
+        // `senderName` is deliberately NOT compared: a sender who renames
+        // themselves on WhatsApp redelivers identical CONTENT, and refusing that
+        // as "identifier reused" would drop a real message over a label. The
+        // first delivery's name is what the transcript shows, which is the same
+        // rule `sentAt` already follows.
         const sameContent = previous.channel === message.channel && previous.account === message.account && previous.thread === message.thread && previous.messageId === message.messageId && previous.sender === message.sender && previous.text === message.text && (previous.replyTo ?? null) === (message.replyTo ?? null) && canonical(previous.attachments) === canonical(message.attachments) && canonicalMentions(previous) === canonicalMentions(message);
         if (!sameContent) throw new Error("message identifier reused with different content");
         return { seq: old.seq, duplicate: true, session: old.session, project: old.project };

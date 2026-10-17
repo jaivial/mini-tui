@@ -77,7 +77,11 @@ export type RunEvent =
       type: "channel";
       channel: string;
       origin: "whatsapp";
+      /** Stable jid. Identity. */
       sender: string;
+      /** Display only: the name the sender chose, when the delivery carried
+       * one. Never identity — the web shows it, nothing authorizes on it. */
+      senderName?: string;
       text: string;
       ts: number;
       /** The mirror row it came from (dedupes against the saved transcript). */

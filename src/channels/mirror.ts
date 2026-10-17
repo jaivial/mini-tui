@@ -18,6 +18,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { cleanSenderName } from "./senderName";
 
 export interface MirrorAttachment {
   id: string;
@@ -35,6 +36,8 @@ export interface MirrorAppend {
   thread: string;
   messageId: string;
   sender: string;
+  /** Display only: the name the sender chose, when the delivery carried one. */
+  senderName?: string;
   sentAt: number;
   text: string;
   attachments: MirrorAttachment[];
@@ -49,6 +52,7 @@ export interface MirrorRow {
   thread: string;
   messageId: string;
   sender: string;
+  senderName: string | null;
   sentAt: number;
   text: string;
   attachments: MirrorAttachment[];
@@ -76,6 +80,11 @@ export class MirrorStore {
       created_at INTEGER NOT NULL,
       UNIQUE(channel, message_id))`);
     db.exec(`CREATE INDEX IF NOT EXISTS channel_mirror_session ON channel_mirror(session,id)`);
+    // Additive column on stores written by an older build (CREATE TABLE IF NOT
+    // EXISTS alone never widens an existing table), the same pattern
+    // ChannelInbox uses for channel_bindings.
+    const columns = (db.query("PRAGMA table_info(channel_mirror)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (!columns.includes("sender_name")) db.exec(`ALTER TABLE channel_mirror ADD COLUMN sender_name TEXT`);
   }
 
   /** Idempotent per (channel, message_id): a replayed delivery or a second
@@ -93,10 +102,10 @@ export class MirrorStore {
     }
     const result = this.db
       .query(
-        `INSERT OR IGNORE INTO channel_mirror(inbox_seq,session,channel,account,thread,message_id,sender,sent_at,text,attachments,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)`,
+        `INSERT OR IGNORE INTO channel_mirror(inbox_seq,session,channel,account,thread,message_id,sender,sender_name,sent_at,text,attachments,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)`,
       )
-      .run(row.inboxSeq, row.session, row.channel, row.account, row.thread, row.messageId, row.sender, row.sentAt, row.text, JSON.stringify(row.attachments), Date.now());
+      .run(row.inboxSeq, row.session, row.channel, row.account, row.thread, row.messageId, row.sender, cleanSenderName(row.senderName), row.sentAt, row.text, JSON.stringify(row.attachments), Date.now());
     if (Number(result.changes) === 0) return null; // already mirrored
     return Number(result.lastInsertRowid) || null;
   }
@@ -104,8 +113,8 @@ export class MirrorStore {
   after(after: number, limit = 200): MirrorRow[] {
     if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 1000) return [];
     const rows = this.db
-      .query(`SELECT id,inbox_seq,session,channel,account,thread,message_id,sender,sent_at,text,attachments FROM channel_mirror WHERE id>?1 ORDER BY id LIMIT ?2`)
-      .all(after, limit) as Array<{ id: number; inbox_seq: number; session: string; channel: string; account: string; thread: string; message_id: string; sender: string; sent_at: number; text: string; attachments: string }>;
+      .query(`SELECT id,inbox_seq,session,channel,account,thread,message_id,sender,sender_name,sent_at,text,attachments FROM channel_mirror WHERE id>?1 ORDER BY id LIMIT ?2`)
+      .all(after, limit) as Array<{ id: number; inbox_seq: number; session: string; channel: string; account: string; thread: string; message_id: string; sender: string; sender_name: string | null; sent_at: number; text: string; attachments: string }>;
     return rows.map(fromRow);
   }
 
@@ -119,8 +128,8 @@ export class MirrorStore {
         .filter((id): id is number => typeof id === "number"),
     );
     const rows = this.db
-      .query(`SELECT id,inbox_seq,session,channel,account,thread,message_id,sender,sent_at,text,attachments FROM channel_mirror WHERE session=?1 ORDER BY id DESC LIMIT ?2`)
-      .all(session, limit) as Array<{ id: number; inbox_seq: number; session: string; channel: string; account: string; thread: string; message_id: string; sender: string; sent_at: number; text: string; attachments: string }>;
+      .query(`SELECT id,inbox_seq,session,channel,account,thread,message_id,sender,sender_name,sent_at,text,attachments FROM channel_mirror WHERE session=?1 ORDER BY id DESC LIMIT ?2`)
+      .all(session, limit) as Array<{ id: number; inbox_seq: number; session: string; channel: string; account: string; thread: string; message_id: string; sender: string; sender_name: string | null; sent_at: number; text: string; attachments: string }>;
     return rows
       .reverse()
       .map(fromRow)
@@ -133,7 +142,7 @@ export class MirrorStore {
   }
 }
 
-function fromRow(row: { id: number; inbox_seq: number; session: string; channel: string; account: string; thread: string; message_id: string; sender: string; sent_at: number; text: string; attachments: string }): MirrorRow {
+function fromRow(row: { id: number; inbox_seq: number; session: string; channel: string; account: string; thread: string; message_id: string; sender: string; sender_name: string | null; sent_at: number; text: string; attachments: string }): MirrorRow {
   let attachments: MirrorAttachment[] = [];
   try {
     const parsed = JSON.parse(row.attachments) as unknown;
@@ -155,6 +164,9 @@ function fromRow(row: { id: number; inbox_seq: number; session: string; channel:
     thread: row.thread,
     messageId: row.message_id,
     sender: row.sender,
+    // Read back through the same rule: a name that somehow got stored unusable
+    // falls back to the jid here rather than reaching a reader as-is.
+    senderName: cleanSenderName(row.sender_name),
     sentAt: row.sent_at,
     text: row.text,
     attachments,
@@ -168,6 +180,9 @@ export function mirrorEvent(row: MirrorRow, mediaUrl: (path: string) => string |
   channel: string;
   origin: "whatsapp";
   sender: string;
+  /** Display only. Absent when the delivery carried no usable name; the web
+   * falls back to the jid exactly as it did before this field existed. */
+  senderName?: string;
   text: string;
   ts: number;
   mirrorId: number;
@@ -178,6 +193,7 @@ export function mirrorEvent(row: MirrorRow, mediaUrl: (path: string) => string |
     channel: row.channel,
     origin: "whatsapp",
     sender: row.sender,
+    ...(row.senderName ? { senderName: row.senderName } : {}),
     text: row.text,
     ts: row.sentAt,
     mirrorId: row.id,

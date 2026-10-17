@@ -22,7 +22,10 @@ export interface ChannelsMessage {
   channel: string;
   account: string;
   thread: string;
+  /** Stable jid: identity. */
   sender: string;
+  /** Display only: the sender's chosen name, or null. */
+  senderName: string | null;
   messageId: string;
   sentAt: number;
   receivedAt: number;
@@ -101,7 +104,8 @@ function validMessage(value: unknown): value is ChannelsMessage {
   const attachments = m.attachments;
   return int(m.seq) !== null
     && typeof m.channel === "string" && typeof m.thread === "string"
-    && typeof m.sender === "string" && typeof m.text === "string" && m.text.length <= MAX_TEXT
+    && typeof m.sender === "string" && (m.senderName === null || typeof m.senderName === "string")
+    && typeof m.text === "string" && m.text.length <= MAX_TEXT
     && typeof m.truncated === "boolean" && int(m.sentAt) !== null && int(m.receivedAt) !== null
     && Array.isArray(attachments) && attachments.length <= 16
     && (attachments as unknown[]).every(a => a !== null && typeof a === "object"

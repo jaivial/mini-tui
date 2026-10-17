@@ -12,6 +12,7 @@
    */
   import { Radio } from "@lucide/svelte";
   import { ChannelsClient, type ChannelsView } from "../channelsClient";
+  import { senderDisplayName } from "../../../../src/channels/senderName";
   import WhatsAppConnect from "./WhatsAppConnect.svelte";
 
   let { open = false }: { open?: boolean } = $props();
@@ -91,7 +92,11 @@
           {#each view.messages as m (m.seq)}
             <li class="interactive rounded-lg border border-line/70 bg-canvas/60 px-2 py-1.5 text-[10.5px] leading-4 hover:border-line-strong">
               <span class="tnum font-medium text-ink">#{m.seq}</span>
-              <span class="text-ink-muted"> {m.sender} · {time(m.receivedAt)}</span>
+              <!-- Name when the delivery carried one, jid otherwise — the same
+                   rule the transcript header uses, so the two never disagree. -->
+              <span class="text-ink-muted" title={m.sender}>
+                {senderDisplayName(m.sender, m.senderName)} · {time(m.receivedAt)}
+              </span>
               <span class="block break-words text-ink-muted">{m.text}{m.truncated ? "…" : ""}</span>
               {#if m.attachments.length}
                 <span class="block text-ink-faint">
