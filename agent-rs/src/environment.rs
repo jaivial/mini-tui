@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 // The codejs host bridge runs synchronously on this agent thread. Propagate its
@@ -122,7 +124,62 @@ pub fn unregister_group(pid: i32) {
 pub struct Child {
     pid: i32,
     process: std::process::Child,
-    reader: Option<std::thread::JoinHandle<Collected>>,
+    reader: Option<Reader>,
+}
+
+/// The reader thread of one command, plus the two facts the waiter polls it for.
+///
+/// The output lives behind an `Arc<Mutex<..>>` instead of being the thread's return value because
+/// the waiter may have to walk away from a reader that never finishes: a command that left a
+/// background child holding the pipe (`sleep 300 & echo done`) keeps that thread blocked in
+/// `read` for as long as the child lives. The thread is then detached instead of joined, and both
+/// facts stay readable without it.
+struct Reader {
+    collected: Arc<Mutex<Collected>>,
+    /// The pipe reached EOF: no more bytes can arrive and the thread is about to end.
+    eof: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl Reader {
+    fn new(r: std::fs::File, cap: usize) -> Self {
+        let collected = Arc::new(Mutex::new(Collected::new(cap)));
+        let eof = Arc::new(AtomicBool::new(false));
+        let (c, e) = (Arc::clone(&collected), Arc::clone(&eof));
+        let handle = std::thread::spawn(move || {
+            collect_bounded(r, c);
+            e.store(true, Ordering::SeqCst);
+        });
+        Reader { collected, eof, handle }
+    }
+
+    fn done(&self) -> bool {
+        self.eof.load(Ordering::SeqCst)
+    }
+
+    /// Bytes collected so far. What the drain window watches for progress.
+    fn total(&self) -> usize {
+        lock(&self.collected).total
+    }
+
+    /// Take the page, joining the thread when it is already finished (the normal case). When it is
+    /// not, the thread is detached --- it is blocked in `read` on a pipe a loose child still
+    /// holds, and waiting for that is the defect being fixed --- and `note` says so in the output.
+    fn take(self, note: Option<String>) -> String {
+        let finished = self.done();
+        if finished {
+            let _ = self.handle.join();
+        }
+        let mut out = lock(&self.collected);
+        if !finished {
+            out.note = note;
+        }
+        out.render()
+    }
+}
+
+fn lock(m: &Mutex<Collected>) -> MutexGuard<'_, Collected> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The marker that ends a run. Shared with `check_finished`, which looks for it in *output*;
@@ -131,7 +188,6 @@ pub struct Child {
 pub const SUBMIT_MARKER: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT";
 
 fn run(argv: &[String], cwd: Option<&str>, env: Option<&BTreeMap<String, String>>, timeout: u64, label: &str) -> Result<(String, i64), (String, String, String)> {
-    use std::sync::atomic::Ordering;
     let mut child = spawn(argv, cwd, env)?;
     // The signal handler kills this group on SIGTERM; a batch tracks its own groups instead.
     crate::agent::CHILD_GROUP.store(child.pid, Ordering::SeqCst);
@@ -184,8 +240,7 @@ fn spawn(argv: &[String], cwd: Option<&str>, env: Option<&BTreeMap<String, Strin
     drop(cmd); // closes our copies of the pipe's write end
     let pid = child.id() as i32;
     let cap = output_max_bytes();
-    let reader_thread = std::thread::spawn(move || collect_bounded(reader, cap));
-    Ok(Child { pid, process: child, reader: Some(reader_thread) })
+    Ok(Child { pid, process: child, reader: Some(Reader::new(reader, cap)) })
 }
 
 impl Child {
@@ -199,16 +254,56 @@ impl Child {
     /// Drain the reader thread's page (killing the group first is the caller's job). The reader
     /// thread already bounded it; `render` adds the marker when the middle was dropped, so the
     /// model is told how much it did not see instead of silently getting a slice.
-    fn take_output(&mut self) -> String {
-        self.reader.take().and_then(|r| r.join().ok()).unwrap_or_else(|| Collected::new(0)).render()
+    /// Wait for the reader to reach EOF, but only while bytes keep arriving or `idle` passes.
+    /// The pipe is open for good once that returns, and the rest of the output belongs to whoever
+    /// else holds it --- `note` is what the model is told in that case.
+    ///
+    /// After a `killpg` the pipe is closing no matter what, so this is just the few milliseconds
+    /// it takes the reader to see the EOF; without it a killed command's last words could be
+    /// dropped on the floor by a race between the SIGKILL landing and the thread being scheduled.
+    fn drain(&mut self, idle: Duration, note: Option<String>) -> String {
+        let mut total = self.reader.as_ref().map_or(0, Reader::total);
+        let mut idle_since = Instant::now();
+        while let Some(r) = self.reader.as_ref() {
+            if r.done() {
+                break;
+            }
+            let now = Instant::now();
+            let seen = r.total();
+            if seen != total {
+                total = seen;
+                idle_since = now;
+            }
+            if now - idle_since >= idle {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.reader.take().map_or_else(String::new, |r| r.take(note))
+    }
+
+    fn take_output(&mut self, note: Option<String>) -> String {
+        self.drain(Duration::from_millis(drain_idle_ms()), note)
     }
 
     /// Wait for the command (bounded by `timeout`), kill its group on timeout or stop, and
-    /// collect its merged output. The command's own children may still hold the pipe open:
-    /// Python's `communicate()` waits for EOF too, so do the same (bounded by the deadline).
+    /// collect its merged output.
+    ///
+    /// Two waits, and they are not the same wait. The first one is for the process this command
+    /// IS; the second is for the pipe it wrote to, which a child it left behind can still be
+    /// holding open. Only the first decides whether the command finished --- and it decides it
+    /// by itself: once the leader is reaped its exit code is final, so anything that arrives
+    /// afterwards belongs to a process the command detached on purpose (`&`, `nohup`, a daemon).
+    ///
+    /// So the second wait is bounded by its OWN window --- [`DRAIN_IDLE`], which only closes
+    /// while no new byte has arrived --- instead of by the rest of the command timeout. Measured
+    /// before the fix, `sleep 300 & echo done` took the full 30.002 s and came back as
+    /// `returncode -1` / "Command timed out after 30 seconds" for a command that had exited 0
+    /// in milliseconds, and the model is told its command hung when it did not (E11). Everything
+    /// that changes is that the tail of the output now belongs to the observation whether the
+    /// pipe closes in microseconds (it does, when nothing is left running) or in minutes.
     fn wait_collect(&mut self, label: &str, timeout: u64) -> Result<(String, i64), (String, String, String)> {
         use crate::agent::STOP;
-        use std::sync::atomic::Ordering;
         let command_deadline = Instant::now() + Duration::from_secs(timeout.max(1));
         let deadline = HOST_DEADLINE.with(|slot| slot.get().map_or(command_deadline, |end| end.min(command_deadline)));
         let status = loop {
@@ -220,33 +315,30 @@ impl Child {
             if STOP.load(Ordering::SeqCst) {
                 unsafe { libc::killpg(self.pid, libc::SIGKILL) };
                 let _ = self.process.wait();
-                let _ = self.reader.take().map(|r| r.join());
+                // Dropped, NOT joined: a detached child may still hold the pipe, and a stop has
+                // to get out now.
+                drop(self.reader.take());
                 return Err((String::new(), "Stopped".into(), String::new()));
             }
             if Instant::now() >= deadline {
                 unsafe { libc::killpg(self.pid, libc::SIGKILL) };
                 let _ = self.process.wait();
-                let out = self.take_output();
+                let out = self.take_output(None);
                 return Err((out, "TimeoutExpired".into(), format!("Command '{label}' timed out after {timeout} seconds")));
             }
             std::thread::sleep(Duration::from_millis(5));
         };
-        let collected = loop {
-            if self.reader.as_ref().is_some_and(|r| r.is_finished()) {
-                break self.reader.take().and_then(|r| r.join().ok()).unwrap_or_else(|| Collected::new(0));
-            }
-            if Instant::now() >= deadline {
-                unsafe { libc::killpg(self.pid, libc::SIGKILL) };
-                let out = self.take_output();
-                return Err((out, "TimeoutExpired".into(), format!("Command '{label}' timed out after {timeout} seconds")));
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        // The leader is reaped: the command is OVER and its exit code is final. What can still
+        // arrive is output from a process it detached on purpose, so this wait ends on silence
+        // rather than on the command deadline --- and never turns a finished command into a
+        // timeout. `deadline` is deliberately NOT an exit condition here: the command already
+        // beat it, and reporting `TimeoutExpired` now would be the same lie in a new place.
+        let collected = self.drain(Duration::from_millis(drain_idle_ms()), Some(BACKGROUND_HELD_PIPE.to_string()));
         let code = status.map(|s| {
             use std::os::unix::process::ExitStatusExt;
             s.code().map(|c| c as i64).unwrap_or_else(|| -(s.signal().unwrap_or(0) as i64))
         });
-        Ok((collected.render(), code.unwrap_or(-1)))
+        Ok((collected, code.unwrap_or(-1)))
     }
 }
 
@@ -276,11 +368,14 @@ struct Collected {
     tail: std::collections::VecDeque<u8>,
     total: usize,
     cap: usize,
+    /// Agent-added text about the output itself (not command output, so not counted in `total`),
+    /// appended after everything: where to look when the command's own bytes are not all here.
+    note: Option<String>,
 }
 
 impl Collected {
     fn new(cap: usize) -> Self {
-        Collected { head: Vec::new(), tail: std::collections::VecDeque::new(), total: 0, cap }
+        Collected { head: Vec::new(), tail: std::collections::VecDeque::new(), total: 0, cap, note: None }
     }
 
     fn push(&mut self, chunk: &[u8]) {
@@ -311,6 +406,14 @@ impl Collected {
     /// split is an implementation detail of the ring: it says nothing about what the model gets
     /// when nothing was evicted (an output between `cap/2` and `cap` fills both and is complete).
     fn render(&self) -> String {
+        let body = self.body();
+        match &self.note {
+            Some(n) => format!("{body}\n\n{n}"),
+            None => body,
+        }
+    }
+
+    fn body(&self) -> String {
         if self.cap == 0 || self.total <= self.cap {
             let mut all = self.head.clone();
             all.extend(self.tail.iter().copied());
@@ -329,20 +432,39 @@ impl Collected {
     }
 }
 
-/// Read `r` to EOF, keeping at most `cap` bytes (head + tail) in memory.
-fn collect_bounded(mut r: impl std::io::Read, cap: usize) -> Collected {
-    let mut out = Collected::new(cap);
+/// Read `r` to EOF, keeping at most `cap` bytes (head + tail) in memory and publishing them as
+/// it goes, so a waiter that gives up on the pipe can still take what arrived.
+fn collect_bounded(r: impl std::io::Read, into: Arc<Mutex<Collected>>) {
+    let mut r = r;
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         match r.read(&mut buf) {
             Ok(0) => break,
-            Ok(n) => out.push(&buf[..n]),
+            Ok(n) => lock(&into).push(&buf[..n]),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
     }
-    out
 }
+
+/// How long the pipe may stay silent AFTER the command's own process exited before the output is
+/// taken as it stands. A command that leaves nothing running closes the pipe the moment its last
+/// write is read, so this costs it one poll (5 ms); only a detached child can stretch it, and
+/// the bytes such a child writes are its own, not the command's. `MINITUI_BASH_DRAIN_IDLE_MS`
+/// tunes it; `0` restores the old behaviour of waiting for EOF until the command deadline.
+const DRAIN_IDLE: u64 = 500;
+
+fn drain_idle_ms() -> u64 {
+    match std::env::var("MINITUI_BASH_DRAIN_IDLE_MS") {
+        Ok(v) => v.trim().parse().unwrap_or(DRAIN_IDLE),
+        Err(_) => DRAIN_IDLE,
+    }
+}
+
+/// What the model is told when its command finished but something it started is still holding the
+/// output pipe. Without it the observation would silently be missing a tail; with it the model
+/// knows its output is complete up to the command's exit and where to look for the rest.
+const BACKGROUND_HELD_PIPE: &str = "[this command finished, but a background process it started is still holding its output open, so anything that process writes later is not in the output above. Start background jobs with their own redirect (cmd > /tmp/job.log 2>&1 &) and read that file.]";
 
 fn format_size(bytes: usize) -> String {
     if bytes < 1024 {
@@ -526,7 +648,6 @@ impl Environment for LocalEnvironment {
     /// prompt reserves for independent work, and pi runs the whole batch unconditionally.
     fn execute_batch(&mut self, commands: &[String]) -> Vec<Outcome> {
         use crate::agent::STOP;
-        use std::sync::atomic::Ordering;
         let cwd = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
         let mut env: BTreeMap<String, String> = std::env::vars().collect();
         env.extend(self.env.clone());
@@ -877,6 +998,116 @@ mod tests {
         ));
         assert!(out.contains("before=1"), "{out:?}");
         assert!(out.contains("after=0"), "the real target survived: {out:?}");
+    }
+
+    /// E11: a background job holds the command's output pipe open, and the wait for it was the
+    /// wait for the COMMAND. `sleep 300 & echo done` runs in milliseconds and exits 0, but the
+    /// pipe stays open until the `sleep` dies, so the whole 30 s timeout was burned and the
+    /// model was told its command had hung --- a lie that costs a turn and makes a working
+    /// background launch look broken.
+    ///
+    /// These run the real command through the real environment, so they measure wall time and
+    /// the shape of the observation rather than a helper's return value.
+    const BG: &str = "sleep 300 &";
+
+    fn obs_of(command: &str) -> (String, i64, String) {
+        match local().execute(command) {
+            Outcome::Output(v) => (
+                v["output"].as_str().unwrap_or_default().to_string(),
+                v["returncode"].as_i64().unwrap_or(-99),
+                v["exception_info"].as_str().unwrap_or_default().to_string(),
+            ),
+            Outcome::Stopped => panic!("stopped"),
+            Outcome::Submitted(s) => ("<submitted>".into(), 0, s),
+        }
+    }
+
+    #[test]
+    fn a_background_job_does_not_make_a_finished_command_time_out() {
+        let start = Instant::now();
+        let (out, rc, exc) = obs_of(&format!("{BG} echo done"));
+        let took = start.elapsed();
+        assert!(!exc.contains("timed out"), "reported as a timeout: {exc:?} out={out:?}");
+        assert_eq!(rc, 0, "the command exited 0; out={out:?}");
+        assert!(out.starts_with("done\n"), "out={out:?}");
+        // The old code needed the full timeout for this; anything near it is the defect.
+        assert!(took < Duration::from_secs(5), "took {took:?}");
+    }
+
+    #[test]
+    fn a_background_job_still_gets_its_output_and_its_exit_code() {
+        // The fix must not trade "no timeout" for "no output" or "wrong code": the command's own
+        // bytes and its own status are what the model asked for.
+        let (out, rc, exc) = obs_of(&format!("{BG} echo first; echo second; exit 7"));
+        assert_eq!(rc, 7, "out={out:?}");
+        assert_eq!(exc, "", "out={out:?}");
+        assert!(out.starts_with("first\nsecond\n"), "out={out:?}");
+    }
+
+    #[test]
+    fn output_a_background_job_writes_later_is_declared_missing_not_hidden() {
+        // The bytes the detached process writes are NOT the command's output, and pretending
+        // otherwise is the other half of the lie. The observation must say so --- otherwise the
+        // model cannot tell a complete command from a truncated one.
+        let (out, rc, _) = obs_of(&format!("{BG} echo done"));
+        assert_eq!(rc, 0);
+        assert!(out.contains("background process"), "no note about the held pipe: {out:?}");
+        assert!(out.contains("2>&1"), "the note does not say how to avoid it: {out:?}");
+    }
+
+    #[test]
+    fn a_command_that_really_does_time_out_still_times_out() {
+        // The other half of the contract: a command that does NOT finish must still be killed at
+        // its timeout and reported as such. The drain window is not a way to hang forever.
+        let mut o = Obj::new();
+        o.insert("timeout".into(), json!(1));
+        let start = Instant::now();
+        match LocalEnvironment::new(&o).execute("echo partial; sleep 30") {
+            Outcome::Output(v) => {
+                assert_eq!(v["returncode"], -1);
+                assert_eq!(v["output"], "partial\n");
+                assert!(v["exception_info"].as_str().unwrap().contains("timed out after 1 seconds"));
+            }
+            _ => panic!("expected a timeout"),
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn a_command_that_leaves_nothing_running_is_untouched() {
+        // The common case must be byte-for-byte what it was, note included: no note, no wait.
+        let start = Instant::now();
+        assert_eq!(out_of("echo plain"), "plain\n");
+        let (out, rc, exc) = obs_of("echo a; echo b 1>&2; exit 3");
+        assert_eq!((out.as_str(), rc, exc.as_str()), ("a\nb\n", 3, ""));
+        assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn a_background_job_does_not_stall_a_batch_either() {
+        // The batch path (`execute_batch`) waits the same way, so the same defect would have hit
+        // every command the model batches --- and a batch is where a `&` is most tempting.
+        let cmds = vec![format!("{BG} echo one").to_string(), "echo two".to_string()];
+        let start = Instant::now();
+        let out = local().execute_batch(&cmds);
+        let took = start.elapsed();
+        assert_eq!(out.len(), 2);
+        assert!(took < Duration::from_secs(5), "took {took:?}");
+        match &out[0] {
+            Outcome::Output(v) => {
+                assert!(v["output"].as_str().unwrap().starts_with("one\n"), "{v}");
+                assert_eq!(v["returncode"], 0, "{v}");
+            }
+            _ => panic!("expected output"),
+        }
+    }
+
+    /// What the fix must NOT break: the pipe is shared with children, and a command whose
+    /// children all exit still gets its full output, head and tail, byte for byte.
+    #[test]
+    fn a_command_with_a_short_lived_child_still_gets_all_of_its_output() {
+        let out = out_of("echo head; (sleep 0.2; echo from-child) & echo tail; wait");
+        assert!(out.contains("head") && out.contains("tail") && out.contains("from-child"), "{out:?}");
     }
 
     #[test]
