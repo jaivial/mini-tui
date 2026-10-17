@@ -5,6 +5,7 @@
   import StepCard from "./StepCard.svelte";
   import Spinner from "./Spinner.svelte";
   import { arrivalOf, callDuration } from "../toolTimings";
+  import { sameRun } from "../transcriptGroup";
   import UiComponent from "./ui/UiComponent.svelte";
   import VoiceNote from "./VoiceNote.svelte";
 
@@ -88,8 +89,15 @@
   const GAP = "mt-3.5 pane-sm:mt-3";
   const TUCK = "mt-1";
 
+  /** Consecutive messages of the SAME author keep one header (transcriptGroup.ts). */
   function grouped(prev: Row | undefined, row: Row) {
-    return prev !== undefined && prev.kind === row.kind && (row.kind === "assistant" || row.kind === "task" || row.kind === "channel");
+    if (row.kind !== "assistant" && row.kind !== "task" && row.kind !== "channel") return false;
+    return sameRun(
+      prev && (prev.kind === "assistant" || prev.kind === "task" || prev.kind === "channel")
+        ? { kind: prev.kind, sender: prev.kind === "channel" ? prev.event.sender : undefined }
+        : undefined,
+      { kind: row.kind, sender: row.kind === "channel" ? row.event.sender : undefined },
+    );
   }
 
   /** A WhatsApp sender jid reads as a name: the phone part, else the jid. */
