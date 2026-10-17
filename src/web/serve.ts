@@ -40,6 +40,7 @@ import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
 import { syncAllSkills } from "../skills";
 import { etagFor, isFresh, mayRevalidate, revalidationHeaders } from "./etag";
+import { compressBody } from "./compress";
 import {
   COMMANDS,
   connectProvider,
@@ -450,23 +451,31 @@ function json(body: unknown, status = 200, headers?: Record<string, string>): Re
  * The body is hashed, not the object, so two identical lists get the same validator and a
  * changed one does not — including a changed `SKILL.md` on disk, which is read before this
  * point on every request.
+ *
+ * The identity body is returned ALONGSIDE the response rather than re-read from it: reading a
+ * `Response` body twice is not possible, and the compression step that runs after this one
+ * needs the same bytes. `null` means "nothing was read, so there is nothing to compress" — which
+ * is the answer for every stream, for a non-JSON body, and for a `304`.
  */
-async function revalidate(request: Request, response: Response): Promise<Response> {
+async function revalidate(
+  request: Request,
+  response: Response,
+): Promise<{ response: Response; body: Uint8Array | null }> {
   // Headers FIRST, body never unless this is a plain JSON read. Reading the body of a live
   // stream never resolves (measured: `/api/stream` and the SSE queue feed answered 0 bytes
   // where the build before this one answered 59 and 62), so a caller that hashes first and
   // asks later hangs both feeds forever. See `mayRevalidate`.
-  if (response.headers.get("etag")) return response;
-  if (!mayRevalidate(request.method, response.status, response.headers)) return response;
+  if (response.headers.get("etag")) return { response, body: null };
+  if (!mayRevalidate(request.method, response.status, response.headers)) return { response, body: null };
   const body = new Uint8Array(await response.arrayBuffer());
-  if (!body.length) return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+  if (!body.length) return { response: new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers }), body: null };
   const etag = etagFor(body);
   if (isFresh(request.headers.get("if-none-match"), etag)) {
-    return new Response(null, { status: 304, headers: revalidationHeaders(etag) });
+    return { response: new Response(null, { status: 304, headers: revalidationHeaders(etag) }), body: null };
   }
   const headers = new Headers(response.headers);
   for (const [key, value] of Object.entries(revalidationHeaders(etag))) headers.set(key, value);
-  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+  return { response: new Response(body, { status: response.status, statusText: response.statusText, headers }), body };
 }
 
 async function readJson(request: Request): Promise<Record<string, unknown>> {
@@ -617,7 +626,15 @@ const server = Bun.serve({
     // no route can be born without a validator and no route can answer a `GET` in full when
     // the client already holds the bytes. Upgrades return `undefined` and pass through.
     const response = await handle(request, srv);
-    return response === undefined ? (undefined as unknown as Response) : revalidate(request, response);
+    if (response === undefined) return undefined as unknown as Response;
+    // ORDER IS LOAD-BEARING: revalidate first, compress second. `mayRevalidate` refuses any
+    // response that already carries `content-encoding`, so compressing before this point would
+    // make it answer false, attach no validator, and quietly turn every 304 back into a full
+    // body — measured `false` that way and `true` this way. See `compress.ts`.
+    const { response: validated, body } = await revalidate(request, response);
+    return body === null
+      ? validated
+      : compressBody(validated, body, request.headers.get("accept-encoding"));
   },
 });
 
