@@ -30,7 +30,7 @@ desde cualquier runtime del bot que escriba texto en el hilo.
 | --- | --- |
 | `card` | `title` (req), `body?`, `tone?: neutral\|info\|ok\|warn` |
 | `list` | `items` (req; string o `{title, detail?}`, máx 50), `title?` |
-| `table` | `columns` (req, máx 8), `rows` (req, máx 60×columns) |
+| `table` | `columns` (req, máx 8), `rows` (req, máx 60×columns), `title?` (se pinta como `<caption>`, o sea es el nombre de la tabla para un lector de pantalla) |
 | `chart` | `kind: bar\|line` (req), `labels` (req, máx 60), `values` (req, mismos que labels), `title?`, `unit?` |
 | `form` | `fields` (req, máx 10: `{name, label, type: text\|number\|date\|select\|checkbox, required?, placeholder?, options?}`), `title?`, `submitLabel?` |
 | `gallery` | `images` (req, máx 24; `/api/attachments/…` o `https?://` — nada más), `title?` |
@@ -43,6 +43,12 @@ Reglas:
   contra la whitelist de cada plantilla (tipos, cotas, claves desconocidas
   fuera). Un bloque roto o una plantilla desconocida degradan a un aviso
   discreto (`UiFallback`) — nunca a un error ni a HTML sin validar.
+- Las filas que no quepan se **recortan**, no tumban la tabla: una fila con más
+  celdas que columnas se corta a la cabecera, una fila que no es una lista de
+  textos se cuenta en `skipped` y el navegador la dice ("N filas no tenían la
+  forma de una tabla y se han omitido"). Antes una sola fila mal contada
+  devolvía la tabla entera como inválida y el usuario veía "Tabla no
+  renderizada" en lugar de las 59 filas buenas que la acompañaban.
 - Los `form` responden **en el chat**: al enviar, el componente publica un
   mensaje de usuario normal `[Título] campo: valor · …` por el mismo camino que
   la prompt bar.

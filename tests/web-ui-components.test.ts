@@ -68,7 +68,11 @@ describe("browser-side prop validation", () => {
   test("list/table/progress bounds", () => {
     expect(validateList({ items: ["a", { title: "b", detail: "d" }] }).ok).toBe(true);
     expect(validateList({ items: [] }).ok).toBe(false);
-    expect(validateTable({ columns: ["a"], rows: [["1"], ["2", "extra"] ] }).ok).toBe(false); // row longer than columns
+    // A row longer than the header is CUT, not fatal: see "una fila mala no tira la tabla" below.
+    const over = validateTable({ columns: ["a"], rows: [["1"], ["2", "extra"]] });
+    expect(over.ok).toBe(true);
+    expect(over.ok && over.props.rows).toEqual([["1"], ["2"]]);
+    expect(over.ok && over.props.skipped).toBe(0);
     expect(validateTable({ columns: ["a", "b"], rows: [["1"]] }).ok).toBe(true);
     expect(validateProgress({ value: 150 }).ok).toBe(false);
     expect(validateProgress({ value: 42, label: "L" })).toEqual({ ok: true, props: { label: "L", value: 42, detail: undefined } });

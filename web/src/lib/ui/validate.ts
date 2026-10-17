@@ -88,8 +88,11 @@ export function validateList(props: Record<string, unknown>): Result<ListProps> 
 
 // ---- table
 export interface TableProps {
+  title?: string;
   columns: string[];
   rows: string[][];
+  /** Rows the model shaped in a way this renderer could not draw. Reported, never silently dropped. */
+  skipped: number;
 }
 export function validateTable(props: Record<string, unknown>): Result<TableProps> {
   const columns = strArray(props.columns, 8, 60);
@@ -97,14 +100,27 @@ export function validateTable(props: Record<string, unknown>): Result<TableProps
   const raw = props.rows;
   if (!Array.isArray(raw)) return bad("table necesita rows");
   const rows: string[][] = [];
+  let skipped = 0;
   for (const row of raw.slice(0, 60)) {
-    if (!Array.isArray(row) || row.length > columns.length) return bad("table row inválida");
-    const cells = strArray(row, columns.length, 300)!;
-    if (!cells) return bad("table row inválida");
+    // ONE malformed row used to cost the whole table: the loop returned `bad()` and the
+    // browser drew "Tabla no renderizada" in place of 60 good rows, because a model that
+    // miscounts one row out of sixty is a model that will, eventually. A row is now worth
+    // what it carries: long rows are cut to the header (the extra cells were never going to
+    // be drawn anyway — there is no column to put them in), short rows were already padded,
+    // and a row that is not an array of strings at all is counted and left out.
+    if (!Array.isArray(row)) {
+      skipped++;
+      continue;
+    }
+    const cells = strArray(row.slice(0, columns.length), columns.length, 300);
+    if (!cells) {
+      skipped++;
+      continue;
+    }
     while (cells.length < columns.length) cells.push("");
     rows.push(cells);
   }
-  return ok({ columns, rows });
+  return ok({ title: str(props.title, 200) ?? undefined, columns, rows, skipped });
 }
 
 // ---- chart
