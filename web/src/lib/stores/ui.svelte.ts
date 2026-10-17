@@ -82,6 +82,13 @@ class UiStore {
     const root = document.documentElement;
     root.classList.toggle("light", this.theme === "light");
     root.classList.toggle("dark", this.theme === "dark");
+    // Also the property, not just the class: `color-scheme` decides what mode the
+    // browser paints the controls IT draws (the calendar icon of a date field,
+    // a select's popup, autofill), and that follows the declared scheme, not the
+    // system setting. Without this a user whose system is light got a light
+    // calendar icon inside a dark field — measured 1.91:1. The app's switch is
+    // the one that counts, so it is declared here too.
+    root.style.colorScheme = this.theme;
     root.dataset.theme = this.palette;
     root.dataset.density = this.density;
     root.style.setProperty("--ui-scale", String(this.appliedUiScale));

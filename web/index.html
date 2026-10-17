@@ -27,6 +27,12 @@
         if (t === "dark" || t === "light") {
           document.documentElement.classList.toggle("dark", t === "dark");
           document.documentElement.classList.toggle("light", t === "light");
+          // The same switch, as the property the browser reads for the controls
+          // it paints itself. Set here too so the first paint already has it:
+          // a date field's calendar icon is drawn by the browser, and until the
+          // bundle boots the stylesheet would still leave it on the system's
+          // scheme instead of the one the user picked.
+          document.documentElement.style.colorScheme = t;
         }
       } catch {}
     </script>
