@@ -87,14 +87,22 @@ describe("E22 · una fila mala no tira la tabla", () => {
 
   test("el aviso de filas omitidas se dibuja y se anuncia", () => {
     const src = readFileSync(new URL("../web/src/lib/components/ui/UiTable.svelte", import.meta.url), "utf8");
-    expect(src).toMatch(/\{#if table\.props\.skipped > 0\}/);
+    // El guard mira la FRASE, no `skipped > 0`: E23 bildó el mismo aviso para la causa
+    // nueva (las filas que se quedaron sin leer, mas alla del tope de 60), asi que una
+    // guarda sobre `skipped` sola dejaria ese aviso sin pintar nunca.
+    expect(src).toMatch(/\{#if skippedNotice\}/);
     // `note` y no `status`: un live region anuncia CAMBIOS de contenido, y este aviso se
     // escribe una vez al dibujar la tabla.
     expect(src).toMatch(/class="ui-skip" role="note"/);
     expect(src).not.toMatch(/class="ui-skip" role="status"/);
     // Singular y plural: "1 fila" no es "1 filas".
-    expect(src).toContain("fila no tenía la forma de una tabla y se ha omitido");
-    expect(src).toContain("filas no tenían la forma de una tabla y se han omitido");
+    // Las frases se fueron a `ui/omittedNotice` en E23, porque la tabla y la lista
+    // necesitaban el MISMO aviso y duplicado divergen. Se comprueban alli, byte a byte
+    // (incluido "1 fila" contra "5 filas"); aqui solo se comprueba que la tabla DIBUJA
+    // el aviso que le devuelven, que es lo que este test sujetaba.
+    const notice = readFileSync(new URL("../web/src/lib/ui/omittedNotice.ts", import.meta.url), "utf8");
+    expect(src).toContain("omittedNotice");
+    expect(notice).toContain("no ${one ? \"tenía\" : \"tenían\"} la forma de ${shape}");
   });
 
   test("una tabla perfecta no se queja de nada", () => {

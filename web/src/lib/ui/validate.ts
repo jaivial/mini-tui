@@ -65,25 +65,51 @@ export function validateCard(props: Record<string, unknown>): Result<CardProps> 
 export interface ListProps {
   title?: string;
   items: { title: string; detail?: string }[];
+  /** Items the model shaped in a way this renderer could not draw. Reported, never silently dropped. */
+  skipped: number;
+  /** Items left out by the draw cap. A list that shows 50 of 100 must say it shows 50. */
+  truncated: number;
 }
+/** Items drawn at most. The cap is a bound, not a silent editor. */
+export const LIST_MAX = 50;
 export function validateList(props: Record<string, unknown>): Result<ListProps> {
   const raw = props.items;
   if (!Array.isArray(raw) || !raw.length) return bad("list necesita items");
   const items: ListProps["items"] = [];
-  for (const item of raw.slice(0, 50)) {
+  // ONE malformed item used to cost the whole list: the loop returned `bad()` and the
+  // browser drew "Componente no renderizado" in place of forty good ones. Measured
+  // against the deployed build, 41 items with ONE without a title drew ZERO. A model
+  // that drops a field out of one item out of forty is a model that will, eventually —
+  // and the cost of that mistake was the entire answer.
+  let skipped = 0;
+  for (const item of raw.slice(0, LIST_MAX)) {
     if (typeof item === "string") {
       items.push({ title: item.slice(0, 300) });
       continue;
     }
     if (typeof item === "object" && item !== null) {
       const title = str((item as Record<string, unknown>).title, 300);
-      if (!title) return bad("list item sin title");
+      // A title that is not text (a number, an object) is the same defect as no title
+      // at all: this item cannot be announced, so it is counted and left out rather
+      // than taking its neighbours with it.
+      if (!title) {
+        skipped++;
+        continue;
+      }
       items.push({ title, detail: str((item as Record<string, unknown>).detail, 500) ?? undefined });
       continue;
     }
-    return bad("list item inválido");
+    skipped++;
   }
-  return ok({ title: str(props.title, 200) ?? undefined, items });
+  // A list with nothing drawable in it is not a list: that case still falls back, but
+  // with the honest reason rather than pretending forty items exist.
+  if (!items.length) return bad("list sin ningún elemento que se pueda dibujar");
+  return ok({
+    title: str(props.title, 200) ?? undefined,
+    items,
+    skipped,
+    truncated: Math.max(0, raw.length - LIST_MAX),
+  });
 }
 
 // ---- table
@@ -93,7 +119,11 @@ export interface TableProps {
   rows: string[][];
   /** Rows the model shaped in a way this renderer could not draw. Reported, never silently dropped. */
   skipped: number;
+  /** Rows left out by the draw cap. A table that shows 60 of 100 must say it shows 60. */
+  truncated: number;
 }
+/** Rows drawn at most. The cap is a bound, not a silent editor. */
+export const TABLE_MAX = 60;
 export function validateTable(props: Record<string, unknown>): Result<TableProps> {
   const columns = strArray(props.columns, 8, 60);
   if (!columns || !columns.length) return bad("table necesita columns");
@@ -101,7 +131,7 @@ export function validateTable(props: Record<string, unknown>): Result<TableProps
   if (!Array.isArray(raw)) return bad("table necesita rows");
   const rows: string[][] = [];
   let skipped = 0;
-  for (const row of raw.slice(0, 60)) {
+  for (const row of raw.slice(0, TABLE_MAX)) {
     // ONE malformed row used to cost the whole table: the loop returned `bad()` and the
     // browser drew "Tabla no renderizada" in place of 60 good rows, because a model that
     // miscounts one row out of sixty is a model that will, eventually. A row is now worth
@@ -120,7 +150,17 @@ export function validateTable(props: Record<string, unknown>): Result<TableProps
     while (cells.length < columns.length) cells.push("");
     rows.push(cells);
   }
-  return ok({ title: str(props.title, 200) ?? undefined, columns, rows, skipped });
+  // The rows past the cap were being dropped in silence: measured against the deployed
+  // build, a 100-row table arrived on screen holding 60 rows and saying nothing, which
+  // reads as "that was all of them". `skipped` counts what could not be drawn; this
+  // counts what was never read. Both are drawn.
+  return ok({
+    title: str(props.title, 200) ?? undefined,
+    columns,
+    rows,
+    skipped,
+    truncated: Math.max(0, raw.length - TABLE_MAX),
+  });
 }
 
 // ---- chart

@@ -8,7 +8,8 @@
    * Factura Control-UI (chat patterns): bordered surface card, caption labels,
    * quiet hover states, 44px touch targets — todo con los tokens del tema.
    */
-    import { validateCard, validateGallery, validateList, validateProgress, type CardProps, type GalleryProps, type ListProps, type ProgressProps } from "../../ui/validate";
+    import { LIST_MAX, validateCard, validateGallery, validateList, validateProgress, type CardProps, type GalleryProps, type ListProps, type ProgressProps } from "../../ui/validate";
+  import { LIST_NOUNS, omittedNotice } from "../../ui/omittedNotice";
   import UiForm from "./UiForm.svelte";
   import UiChart from "./UiChart.svelte";
   import UiTable from "./UiTable.svelte";
@@ -25,6 +26,25 @@
     /** Forms submit into the chat as a normal user message. */
     onsubmit?: (message: string) => void;
   } = $props();
+
+  /** Stable per-instance id so the list's `aria-labelledby` can point at its own title. */
+  // `$props.id()` tiene que ser la declaracion misma, no una plantilla: Svelte 5 lo
+  // rechaza como "initializer" si lo envuelves en otro sitio (`svelte-check` lo dice).
+  const uid = $props.id();
+  const uidTitle = `${uid}-title`;
+  const rawList = $derived(validateList(props));
+  /** What the list is called when the model wrote no title of its own. */
+  const listName = $derived(
+    rawList.ok
+      ? `Lista: ${rawList.props.items.length} ${rawList.props.items.length === 1 ? "elemento" : "elementos"}`
+      : "",
+  );
+  /** What the list left out: items it could not draw, and items past the cap. */
+  const listNotice = $derived(
+    rawList.ok
+      ? omittedNotice({ ...LIST_NOUNS, skipped: rawList.props.skipped, truncated: rawList.props.truncated, cap: LIST_MAX })
+      : "",
+  );
 </script>
 
 {#if template === "card"}
@@ -41,8 +61,22 @@
   {@const list = validateList(props)}
   {#if list.ok}
     <div class="ui-surface">
-      {#if list.props.title}<p class="ui-title">{list.props.title}</p>{/if}
-      <ul class="ui-list">
+      <!--
+        The list was the one generative surface that never said what it was. Measured
+        against the deployed build, the accessibility tree held four `list` nodes and
+        three of them were named "" — the model's `title` arrived, but as a loose `<p>`
+        ABOVE the `<ul>`, where nothing links it to the list. A reader entering a
+        fifty-step checklist heard "list, 50 items" and nothing else.
+
+        A `<ul>` has no `<caption>`, so the name goes on the list itself. It points at
+        the title element rather than repeating the text in `aria-label`: one string,
+        one place, and the visible title and the announced name cannot drift apart.
+        When the model wrote no title the list is still named, from its own shape —
+        the same rule E22 set for the table, whose caption cannot depend on the model
+        having been helpful.
+      -->
+      {#if list.props.title}<p class="ui-title" id={uidTitle}>{list.props.title}</p>{/if}
+      <ul class="ui-list" aria-labelledby={list.props.title ? uidTitle : undefined} aria-label={list.props.title ? undefined : listName}>
         {#each list.props.items as item, i (i)}
           <li>
             <span class="ui-item-title">{item.title}</span>
@@ -50,6 +84,12 @@
           </li>
         {/each}
       </ul>
+      {#if listNotice}
+        <!-- `role="note"`, not `role="status"`: same reason as the table's sibling notice
+             below — a live region announces CHANGES to its content, and this text is
+             written once, when the list is drawn. -->
+        <p class="ui-skip" role="note">{listNotice}</p>
+      {/if}
     </div>
   {:else}
     <UiFallback reason={list.reason} />
@@ -151,6 +191,14 @@
   .ui-item-detail {
     font-size: 12px;
     color: var(--color-ink-muted);
+  }
+  /* The same aside as the table's, one surface down: the notice is information ABOUT the
+     list, not part of it, so it sits outside the <ul> and can never be counted as an item. */
+  .ui-skip {
+    margin-top: 0.3rem;
+    padding: 0 0.15rem;
+    font-size: 11.5px;
+    color: var(--color-warn);
   }
   .ui-progress {
     height: 6px;

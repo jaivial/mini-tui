@@ -21,10 +21,26 @@
    *   fit are now counted, and the count says so out loud rather than the table
    *   pretending to be complete.
    */
-  import { validateTable } from "../../ui/validate";
+  import { TABLE_MAX, validateTable } from "../../ui/validate";
+  import { TABLE_NOUNS, omittedNotice } from "../../ui/omittedNotice";
 
   let { props }: { props: Record<string, unknown> } = $props();
   const table = $derived(validateTable(props));
+  /**
+   * What the table left out, in one sentence. `skipped` counts rows it could not draw;
+   * E23 measured the other half, which nobody was counting: the rows past the 60 cap
+   * were dropped in silence, so a 100-row liquidation arrived on screen holding 60 rows
+   * and saying nothing, which reads as "that was all of them".
+   *
+   * It reads `table` AFTER the declaration on purpose. `svelte-check` cannot narrow a
+   * `$derived` union inside a sibling `$derived`, which is the same reason
+   * `tableReason` below pulls `table.reason` out instead of reading it in the template.
+   */
+  const skippedNotice = $derived(
+    table.ok
+      ? omittedNotice({ ...TABLE_NOUNS, skipped: table.props.skipped, truncated: table.props.truncated, cap: TABLE_MAX })
+      : "",
+  );
   // Same reason as `UiChart`: the `{:else}` branch cannot narrow the `$derived`,
   // so `table.reason` there is a type error even though only an invalid one gets there.
   const tableReason = $derived(table.ok ? "" : table.reason);
@@ -63,18 +79,16 @@
       </tbody>
     </table>
   </div>
-  {#if table.props.skipped > 0}
+  {#if skippedNotice}
     <!-- `role="note"`, not `role="status"`: a live region exists to announce CHANGES to
          its content, and this notice is written once, when the table is drawn. Measured both
          ways in the built app — each way reaches the accessibility tree with the text as
          its static children — so the difference is not legibility but intent: `note` says
          "this is an aside", `status` says "watch this". It is also what the sibling
-         "Tabla no renderizada" branch below already uses. -->
-    <p class="ui-skip" role="note">
-      {table.props.skipped === 1
-        ? "1 fila no tenía la forma de una tabla y se ha omitido."
-        : `${table.props.skipped} filas no tenían la forma de una tabla y se han omitido.`}
-    </p>
+         "Tabla no renderizada" branch below already uses.
+         The wording lives in `ui/omittedNotice` so this notice and the list's cannot drift
+         apart, and so `bun test` can hold the sentences without a DOM. -->
+    <p class="ui-skip" role="note">{skippedNotice}</p>
   {/if}
 {:else}
   <div class="flex items-start gap-2 rounded-lg border border-dashed border-line px-3 py-2 text-[12px] text-ink-faint" role="note">
