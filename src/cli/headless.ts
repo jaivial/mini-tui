@@ -368,12 +368,25 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  // v6-G (E2): the caller's own abort. An embedding process that has to stop
+  // cannot rely on a signal IT did not receive — the consumer's `stop()` used to
+  // reach nothing at all, so the turn ran to its own end (measured: 7945 ms of
+  // an 8 s turn) and systemd SIGKILLed the control group at TimeoutStopSec. Same
+  // teardown as the signal path, so the agent still writes its own session row.
+  const onAbort = () => {
+    if (args.signal?.aborted) onSignal();
+  };
+  if (args.signal) {
+    if (args.signal.aborted) onAbort();
+    else args.signal.addEventListener("abort", onAbort, { once: true });
+  }
   let code: number | null;
   try {
     code = await run.exited;
   } finally {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
+    args.signal?.removeEventListener("abort", onAbort);
     watch.stop();
   }
   const final = readTrajectory(run.session.trajPath);
