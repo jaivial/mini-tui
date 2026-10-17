@@ -179,6 +179,7 @@ interface Internal {
   probing?: boolean;
   /** Newest `updated_at` of the saved row this copy already reflects (ours or another UI's save). */
   syncedAt?: number;
+
   /** The next trajectory snapshot rebuilds the transcript (just attached to another UI's agent). */
   rebuild?: boolean;
   /** Transcript counts at the last mid-run save: a running session persists at most every PERSIST_MS. */
@@ -1175,11 +1176,48 @@ export class SessionManager {
     this.#emit(entry);
   }
 
+  /**
+   * True when the saved row is newer than the copy this entry holds, and we are not the agent
+   * driving it: another UI (a terminal) saved this session after we last read it, so what we hold
+   * is already history and writing it would throw that history away.
+   *
+   * A held session is not written just because it is held. `#persistDirty` runs for every held
+   * entry on every tick and `persistAll` for every held entry on every shutdown, so this one
+   * unguarded write rolled back whatever a terminal had appended since: the new turn disappeared
+   * from the row AND from the /resume file the TUI reads — and because `#persist` stamped
+   * `syncedAt` afterwards, the reload that should have recovered it then saw nothing left to do.
+   *
+   * A run this server owns is exempt: mid-run persistence is the whole reason `#persist` exists,
+   * and no one else writes that row while our agent is producing it.
+   */
+  #supersededByRow(entry: Internal): boolean {
+    // An agent of ours owns the row, whether it is still running or already finished. This is the
+    // discriminator, and liveness is NOT it: the agent process writes the row itself as it exits, so
+    // its stamp runs ahead of ours exactly while our run is finishing. Judging that stale silently
+    // dropped the final save of every turn we ran (caught by the model-switch suite: a session went
+    // `interrupted` -> `error` after an interrupt). An ATTACHED run is another UI's agent, so it is
+    // the one run that does not make us the writer.
+    if (entry.run && !entry.run.attached) return false;
+    if (entry.syncedAt === undefined) return false; // restored but never stamped: nothing to compare against
+    try {
+      const stamp = sessionStamps(this.db(), [entry.session.id]).get(entry.session.id);
+      // A missing row is not a newer one. Strictly greater, never `>=`: `updated_at` has
+      // millisecond resolution, so a save landing in the same millisecond as our last one is
+      // indistinguishable from it and must not count as somebody else moving ahead.
+      return stamp !== undefined && stamp > entry.syncedAt;
+    } catch {
+      return false; // a busy database is not evidence of a newer row
+    }
+  }
+
   /** Save to the same /resume history the TUI reads. */
   #persist(entry: Internal): void {
     const session = entry.session;
     // An agent another UI owns is saved by that UI: two writers of one row would only fight.
     if (entry.run?.attached && !entry.exited) return;
+    // A newer copy already exists: keep it. The next sync pass adopts it (and the next prompt
+    // reloads through `#refreshIfStale`), so nothing is lost by not writing ours here.
+    if (this.#supersededByRow(entry)) return;
     try {
       if (session.messages.length) {
         saveTranscript(this.db(), session.id, session.events, session.info, session.messages);

@@ -180,7 +180,7 @@ describe("App rendering", () => {
     await setup.renderOnce();
     let frame = setup.captureCharFrame();
     expect(frame).toContain("open the model picker"); // palette is open with all commands
-    expect(frame).toContain("output display settings");
+    expect(frame).toContain("output display, theme, jev toggles"); // the palette's own wording for /settings
 
     await setup.mockInput.typeText("set");
     await Bun.sleep(20);
