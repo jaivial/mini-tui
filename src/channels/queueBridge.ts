@@ -98,6 +98,11 @@ export interface QueueBridgeOptions {
   /** Milliseconds to hold after the interrupt event before retrying (the runner's
    * watchdog kills a fenced worker group within ~1 s; this is the settle margin). */
   reconcileSettleMs?: number;
+  /** Milliseconds a claimable task may sit `pending` with no live worker anywhere
+   * before the thread is told the truth about the lane. Defaults to 10 min: a live
+   * idle lane claims within its restart interval, so silence this long is not a
+   * busy queue, it is an absent one. */
+  unclaimedAfterMs?: number;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
@@ -128,6 +133,11 @@ interface OutboxRow {
   attempts: number;
 }
 
+interface QueueEdge {
+  task: string;
+  dependency: string;
+}
+
 interface GraphNode {
   id: string;
   project: string;
@@ -152,6 +162,30 @@ interface QueueEvent {
 }
 
 const OPEN_STATUSES = new Set(["pending", "running", "blocked", "interrupted"]);
+/** Conservative unit-name shape: the value reaches an argv, never a shell. */
+const UNIT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
+
+/** Real state of the lane unit, when the deployment names one. The watchdog never
+ * infers supervision from this: it is a fact to put in the note, and a failed probe
+ * is reported as unknown instead of guessed either way. */
+async function laneUnitState(): Promise<{ unit: string; state: string }> {
+  const unit = (process.env.MINITUI_QUEUE_LANE_UNIT ?? "mini-queue-lane").trim();
+  if (!UNIT_NAME.test(unit)) return { unit: "mini-queue-lane", state: "unknown" };
+  try {
+    const child = Bun.spawn(["systemctl", "is-active", unit], { stdout: "pipe", stderr: "ignore" });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 3_000);
+    try {
+      await child.exited;
+    } finally {
+      clearTimeout(timer);
+    }
+    // `systemctl is-active` exits 0 when active and prints the state either way.
+    const state = (await new Response(child.stdout).text()).trim();
+    return { unit, state: /^[a-z]+$/.test(state) ? state : "unknown" };
+  } catch {
+    return { unit, state: "unknown" };
+  }
+}
 /** Statuses whose change is worth telling the thread about. */
 const REPORTED_STATUSES = new Set(["done", "blocked", "interrupted", "cancelled"]);
 const EVENT_POLL_LIMIT = 100;
@@ -171,6 +205,7 @@ export class QueueBridge {
   private readonly pollMs: number;
   private readonly reconcileTimeoutS: number;
   private readonly reconcileSettleMs: number;
+  private readonly unclaimedAfterMs: number;
   private readonly log: (event: string, fields?: Record<string, unknown>) => void;
   private stopped = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -192,6 +227,7 @@ export class QueueBridge {
     this.pollMs = Math.max(1_000, options.pollMs ?? 5_000);
     this.reconcileTimeoutS = options.reconcileTimeoutS ?? 180;
     this.reconcileSettleMs = Math.max(0, options.reconcileSettleMs ?? 30_000);
+    this.unclaimedAfterMs = Math.max(1_000, options.unclaimedAfterMs ?? 600_000);
     this.log = options.log ?? (() => {});
     this.db.exec(`CREATE TABLE IF NOT EXISTS channel_tasks(
       task TEXT PRIMARY KEY, inbox_seq INTEGER NOT NULL,
@@ -209,6 +245,11 @@ export class QueueBridge {
     // that account's identity. Additive column on pre-existing stores.
     const outboxColumns = (this.db.query("PRAGMA table_info(channel_task_outbox)").all() as Array<{ name: string }>).map((c) => c.name);
     if (!outboxColumns.includes("account")) this.db.exec(`ALTER TABLE channel_task_outbox ADD COLUMN account TEXT NOT NULL DEFAULT ''`);
+    // One stall episode per task: set when the thread is told, cleared as soon as the
+    // task leaves `pending`, so a later stall (claim → release → silent again) is a
+    // NEW fact worth reporting rather than a repeat of the same one.
+    const taskColumns = (this.db.query("PRAGMA table_info(channel_tasks)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (!taskColumns.includes("stall_notified_at")) this.db.exec(`ALTER TABLE channel_tasks ADD COLUMN stall_notified_at INTEGER`);
   }
 
   // ── Reply planning (called synchronously inside the consumer turn path) ──
@@ -481,6 +522,71 @@ export class QueueBridge {
     await this.enqueueChatNote(row, undefined, `status-${row.seq}`, body);
   }
 
+  // ── Lane watchdog (A3b) ──
+
+  /** A thread that was told "apuntado en la cola, te aviso cuando termine" must
+   * learn the truth when the lane that was supposed to finish it is not there.
+   *
+   * The proof is the lease, not a guess about supervision: a lane holds a lease on
+   * the task it is running, so "no task anywhere in the graph holds a fresh lease"
+   * means no worker has been alive for the whole queue. A lane that is up and idle
+   * claims a pending task within its restart interval (seconds), so a task this old
+   * with nothing running anywhere is not a busy queue — it is an absent one.
+   *
+   * Deliberately NOT auto-starting the lane: those cards are real work with effects
+   * off-box, and the lane burns quota. Say it in the thread and let Jaime decide. */
+  private async watchStalledTasks(): Promise<void> {
+    const cutoff = Date.now() - this.unclaimedAfterMs;
+    const rows = this.db
+      .query("SELECT task,updated_at,stall_notified_at FROM channel_tasks WHERE state='queued' AND updated_at<=?1")
+      .all(cutoff) as Array<{ task: string; updated_at: number; stall_notified_at: number | null }>;
+    if (!rows.length) return;
+    let nodes: GraphNode[];
+    let edges: QueueEdge[];
+    try {
+      ({ nodes, edges } = await this.graphWithEdges());
+    } catch (error) {
+      // An unreadable store is not evidence of a dead lane: stay quiet, retry next tick.
+      this.log("channel.queue.lane_check_failed", { error: String(error instanceof Error ? error.message : error).slice(0, 200) });
+      return;
+    }
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const nowS = Date.now() / 1000;
+    const laneAlive = nodes.some((n) => n.status === "running" && n.lease_until !== null && n.lease_until > nowS);
+    for (const row of rows) {
+      const node = byId.get(row.task);
+      // Left `pending` (claimed, blocked, done, cancelled): close the episode so a
+      // later silence is reported once as the new fact it is.
+      if (node && node.status !== "pending") {
+        if (row.stall_notified_at !== null) this.db.query("UPDATE channel_tasks SET stall_notified_at=NULL WHERE task=?1").run(row.task);
+        continue;
+      }
+      // Unknown to the store (put still in flight, or a store we cannot read yet):
+      // silence here says nothing, so it proves nothing.
+      if (!node || laneAlive || row.stall_notified_at !== null) continue;
+      // Name the blocker, not its position: "waiting on chat-1 (blocked)" is
+      // actionable in the thread, "waiting on the second dependency" is not.
+      const waiting = edges
+        .filter((e) => e.task === row.task)
+        .map((e) => byId.get(e.dependency))
+        .filter((dep): dep is GraphNode => !!dep && dep.status !== "done")
+        .map((dep) => `${dep.id} (${dep.status})`);
+      const mins = Math.max(1, Math.round((Date.now() - row.updated_at) / 60_000));
+      const lane = await laneUnitState();
+      const facts = [
+        `⏳ ${row.task}: encolada hace ${mins} min y NADIE la ha reclamado.`,
+        "No hay ningún worker vivo en la cola (ninguna tarea con lease activa), así que no va a terminar por sí sola.",
+        waiting.length ? `Además espera por: ${waiting.join(", ")}.` : "",
+        lane.state === "unknown" ? "" : `El carril ${lane.unit} está ${lane.state}.`,
+        "Levántalo con: sudo systemctl start " + lane.unit,
+        "No lo levanto yo: son tarjetas reales con efectos fuera de la caja y el carril consume cuota.",
+      ].filter(Boolean);
+      this.audit("lane_absent", { task: row.task, age_ms: Date.now() - row.updated_at, lane: lane.state });
+      await this.deliverOperatorNote(row.task, facts.join("\n"));
+      this.db.query("UPDATE channel_tasks SET stall_notified_at=?2 WHERE task=?1").run(row.task, Date.now());
+    }
+  }
+
   // ── Event consumer: queue outcomes back to the originating thread ──
 
   /** Re-arm fenced-interrupt reconciliation for mapped tasks the store still
@@ -525,6 +631,7 @@ export class QueueBridge {
       await this.deliverPendingOutbox();
       await this.consumeQueueEvents();
       await this.reconcileRunningAmendments();
+      await this.watchStalledTasks();
     } catch (error) {
       this.log("channel.queue.tick_error", { error: String(error instanceof Error ? error.message : error).slice(0, 200) });
     }
@@ -717,10 +824,15 @@ export class QueueBridge {
 
   // ── Queue reads ──
 
-  private async graph(): Promise<GraphNode[]> {
+  private async graphWithEdges(): Promise<{ nodes: GraphNode[]; edges: QueueEdge[] }> {
     const result = await queueCommand(["graph-read"], undefined, { bin: this.queueBin });
     if (result.code !== 0) throw new Error(result.error.trim() || `graph-read exit ${result.code}`);
-    return (JSON.parse(result.output) as { nodes: GraphNode[] }).nodes;
+    const parsed = JSON.parse(result.output) as { nodes?: GraphNode[]; edges?: QueueEdge[] };
+    return { nodes: parsed.nodes ?? [], edges: parsed.edges ?? [] };
+  }
+
+  private async graph(): Promise<GraphNode[]> {
+    return (await this.graphWithEdges()).nodes;
   }
 
   private async readEvents(after: number, limit: number): Promise<QueueEvent[]> {

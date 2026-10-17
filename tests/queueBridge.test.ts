@@ -76,7 +76,7 @@ interface Harness {
   rowForAccepted(messageId: string): PendingRow;
 }
 
-function makeHarness(scenario: QueueScenario = {}, options: { reconcileTimeoutS?: number; reconcileSettleMs?: number; embedDir?: string } = {}): Harness {
+function makeHarness(scenario: QueueScenario = {}, options: { reconcileTimeoutS?: number; reconcileSettleMs?: number; embedDir?: string; unclaimedAfterMs?: number } = {}): Harness {
   n += 1;
   const hdir = join(dir, `h${n}`); // isolated scenario + call log per harness
   const inbox = new ChannelInbox(join(hdir, "channels.sqlite"));
@@ -95,6 +95,7 @@ function makeHarness(scenario: QueueScenario = {}, options: { reconcileTimeoutS?
     reconcileTimeoutS: options.reconcileTimeoutS,
     reconcileSettleMs: options.reconcileSettleMs,
     embedDir: options.embedDir,
+    unclaimedAfterMs: options.unclaimedAfterMs,
     log: () => {},
   });
   const message = (text: string, id: string): Inbound => ({
@@ -450,5 +451,83 @@ describe("status reporting", () => {
     expect(note.text).toContain("[running] v2");
     expect(note.text).toContain("trabajo largo");
     expect(note.text).toContain("worker wa-chat-lane");
+  });
+});
+
+// ── Lane watchdog: "encolado" with no lane running (A3b) ──
+
+describe("lane watchdog", () => {
+  /** One mapped task that has been `queued` in the bridge since `ageMs` ago. */
+  const agedTask = (h: Harness, id: string, ageMs: number) => {
+    h.inbox.db
+      .query("INSERT INTO channel_tasks(task,inbox_seq,channel,account,thread,session,project,cwd,goal,state,attempts,created_at,updated_at) VALUES(?1,90,'whatsapp',?2,?3,'sess-1',?4,'/tmp','g','queued',0,1,?5)")
+      .run(id, ACCOUNT, THREAD, PROJECT, Date.now() - ageMs);
+    writeQueueState(h.graphDb, (s) => {
+      s.tasks[id] = { id, project: PROJECT, cwd: "/tmp", goal: "trabajo real", status: "pending", owner: null, fence: 0, lease_until: null, result: null, goal_version: 1, events: [] };
+    });
+  };
+  const NOTE = "NADIE la ha reclamado";
+
+  test("an aged pending task with no live worker is reported to its thread once", async () => {
+    const h = makeHarness({}, { unclaimedAfterMs: 1_000 });
+    agedTask(h, "chat-90", 10 * 60_000);
+    await (h.bridge as any).watchStalledTasks();
+    expect(h.sender.sent.filter((m) => m.text.includes(NOTE))).toHaveLength(1);
+    const note = h.sender.sent.find((m) => m.text.includes(NOTE))!;
+    expect(note.text).toContain("chat-90");
+    expect(note.number).toBe(THREAD);
+    // Idempotent: the next tick must not repeat the same fact.
+    await (h.bridge as any).watchStalledTasks();
+    expect(h.sender.sent.filter((m) => m.text.includes(NOTE))).toHaveLength(1);
+  });
+
+  test("a task young enough, or with a live lease anywhere, is never reported", async () => {
+    const young = makeHarness({}, { unclaimedAfterMs: 3_600_000 });
+    agedTask(young, "chat-91", 60_000);
+    await (young.bridge as any).watchStalledTasks();
+    expect(young.sender.sent).toEqual([]);
+
+    const busy = makeHarness({}, { unclaimedAfterMs: 1_000 });
+    agedTask(busy, "chat-92", 10 * 60_000);
+    writeQueueState(busy.graphDb, (s) => {
+      s.tasks["other-1"] = { id: "other-1", project: "otro", cwd: "/srv", goal: "x", status: "running", owner: "wa-chat-lane", fence: 1, lease_until: Date.now() / 1000 + 600, result: null, goal_version: 1, events: [] };
+    });
+    await (busy.bridge as any).watchStalledTasks();
+    expect(busy.sender.sent.filter((m) => m.text.includes(NOTE))).toEqual([]);
+  });
+
+  test("the note says who still blocks it, and leaves `pending` untouched", async () => {
+    const h = makeHarness({}, { unclaimedAfterMs: 1_000 });
+    agedTask(h, "chat-93", 10 * 60_000);
+    writeQueueState(h.graphDb, (s) => { s.tasks["chat-93"].edges = ["chat-1"]; s.tasks["chat-1"] = { id: "chat-1", project: PROJECT, cwd: "/tmp", goal: "base", status: "blocked", owner: null, fence: 0, lease_until: null, result: null, goal_version: 1, events: [] }; });
+    await (h.bridge as any).watchStalledTasks();
+    const note = h.sender.sent.find((m) => m.text.includes(NOTE))!;
+    expect(note.text).toContain("Además espera por: chat-1 (blocked)");
+    // Observing is not touching: the watchdog never re-queues or rewrites work.
+    expect(graph(h).tasks["chat-93"].status).toBe("pending");
+    expect(graph(h).tasks["chat-93"].fence).toBe(0);
+    expect(h.queue.calls().some((c) => c[0] === "retry" || c[0] === "release")).toBe(false);
+  });
+
+  test("once the task is claimed the episode closes, and a later stall is a new fact", async () => {
+    const h = makeHarness({}, { unclaimedAfterMs: 1_000 });
+    agedTask(h, "chat-94", 10 * 60_000);
+    await (h.bridge as any).watchStalledTasks();
+    expect(h.sender.sent.filter((m) => m.text.includes(NOTE))).toHaveLength(1);
+    writeQueueState(h.graphDb, (s) => { s.tasks["chat-94"].status = "running"; s.tasks["chat-94"].owner = "wa-chat-lane"; s.tasks["chat-94"].lease_until = Date.now() / 1000 + 600; });
+    await (h.bridge as any).watchStalledTasks(); // claimed: nothing to say
+    writeQueueState(h.graphDb, (s) => { s.tasks["chat-94"].status = "pending"; s.tasks["chat-94"].owner = null; s.tasks["chat-94"].lease_until = null; });
+    h.inbox.db.query("UPDATE channel_tasks SET updated_at=?2 WHERE task=?1").run("chat-94", Date.now() - 10 * 60_000);
+    await (h.bridge as any).watchStalledTasks();
+    expect(h.sender.sent.filter((m) => m.text.includes(NOTE))).toHaveLength(2);
+  });
+
+  test("a task that vanished from the store, or an unreadable one, is never called a stall", async () => {
+    const h = makeHarness({}, { unclaimedAfterMs: 1_000 });
+    h.inbox.db
+      .query("INSERT INTO channel_tasks(task,inbox_seq,channel,account,thread,session,project,cwd,goal,state,attempts,created_at,updated_at) VALUES('chat-95',91,'whatsapp',?1,?2,'sess-1',?3,'/tmp','g','queued',0,1,?4)")
+      .run(ACCOUNT, THREAD, PROJECT, Date.now() - 10 * 60_000);
+    await (h.bridge as any).watchStalledTasks();
+    expect(h.sender.sent).toEqual([]);
   });
 });
