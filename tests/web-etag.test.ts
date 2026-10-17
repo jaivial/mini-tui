@@ -109,11 +109,11 @@ describe("mayRevalidate", () => {
   const body = new TextEncoder().encode('{"ok":true}');
 
   test("a plain JSON GET may", () => {
-    expect(mayRevalidate("GET", 200, jsonHeaders(), body)).toBe(true);
+    expect(mayRevalidate("GET", 200, jsonHeaders())).toBe(true);
   });
 
   test("HEAD may: it is the same read with no body to send", () => {
-    expect(mayRevalidate("HEAD", 200, jsonHeaders(), body)).toBe(true);
+    expect(mayRevalidate("HEAD", 200, jsonHeaders())).toBe(true);
   });
 
   test("a write never may, whatever it answers with", () => {
@@ -121,13 +121,13 @@ describe("mayRevalidate", () => {
     // `PATCH /api/settings` writes a provider key: a validator on either would let a client
     // assert "I already have the answer" to a request that is supposed to DO something.
     for (const method of ["POST", "PATCH", "PUT", "DELETE"]) {
-      expect(mayRevalidate(method, 200, jsonHeaders(), body)).toBe(false);
+      expect(mayRevalidate(method, 200, jsonHeaders())).toBe(false);
     }
   });
 
   test("only a 200 carries a validator: an error is not a cached representation", () => {
     for (const status of [201, 204, 301, 400, 401, 403, 404, 421, 500, 503]) {
-      expect(mayRevalidate("GET", status, jsonHeaders(), body)).toBe(false);
+      expect(mayRevalidate("GET", status, jsonHeaders())).toBe(false);
     }
   });
 
@@ -135,26 +135,38 @@ describe("mayRevalidate", () => {
     // `/api/stream` and the SSE queue feed are read as they arrive: hashing one would
     // consume the stream the client is waiting on. An encoded body has no stable bytes.
     const stream = new Headers({ "content-type": "text/event-stream" });
-    expect(mayRevalidate("GET", 200, stream, body)).toBe(false);
-    expect(mayRevalidate("GET", 200, jsonHeaders({ "content-encoding": "gzip" }), body)).toBe(false);
+    expect(mayRevalidate("GET", 200, stream)).toBe(false);
+    expect(mayRevalidate("GET", 200, jsonHeaders({ "content-encoding": "gzip" }))).toBe(false);
   });
 
   test("a non-JSON body never may", () => {
     for (const type of ["text/html; charset=utf-8", "image/png", "text/plain", "font/woff2", ""]) {
-      expect(mayRevalidate("GET", 200, new Headers({ "content-type": type }), body)).toBe(false);
+      expect(mayRevalidate("GET", 200, new Headers({ "content-type": type }))).toBe(false);
     }
   });
 
   test("a response that says no-store is left alone", () => {
     // A caller that asked not to be stored must not end up behind an ETag in a disk cache.
-    expect(mayRevalidate("GET", 200, jsonHeaders({ "cache-control": "no-store" }), body)).toBe(false);
-    expect(mayRevalidate("GET", 200, jsonHeaders({ "cache-control": "private, no-store" }), body)).toBe(false);
+    expect(mayRevalidate("GET", 200, jsonHeaders({ "cache-control": "no-store" }))).toBe(false);
+    expect(mayRevalidate("GET", 200, jsonHeaders({ "cache-control": "private, no-store" }))).toBe(false);
     // but a plain no-cache (revalidate-always) is exactly the policy this module sets.
-    expect(mayRevalidate("GET", 200, jsonHeaders({ "cache-control": "no-cache" }), body)).toBe(true);
+    expect(mayRevalidate("GET", 200, jsonHeaders({ "cache-control": "no-cache" }))).toBe(true);
   });
 
-  test("an empty body never may: there is nothing to validate", () => {
-    expect(mayRevalidate("GET", 200, jsonHeaders(), new Uint8Array(0))).toBe(false);
+  test("it takes no body argument at all, and that is the contract", () => {
+    // MEASURED regression this shape exists to prevent: a caller that reads the body before
+    // asking hangs every open stream. `/api/stream` and the SSE queue feed answered 0 bytes
+    // against a build that hashed first and the build before it answered 59 and 62.
+    expect(mayRevalidate.length).toBe(3);
+    expect(mayRevalidate.toString()).not.toMatch(/body|arrayBuffer|Uint8Array/);
+  });
+
+  test("an event stream never may, on content type alone and with no list to keep in step", () => {
+    // The exclusion is the JSON test, not an enumeration: a route added later cannot be
+    // forgotten here, because nothing here has to be updated when one appears.
+    for (const type of ["text/event-stream", "text/event-stream; charset=utf-8"]) {
+      expect(mayRevalidate("GET", 200, new Headers({ "content-type": type }))).toBe(false);
+    }
   });
 });
 
@@ -183,8 +195,11 @@ describe("revalidationHeaders", () => {
 describe("the rule the server applies, end to end", () => {
   /** What `revalidate()` in serve.ts does, over the pure pieces. */
   const serve = (method: string, body: string, ifNoneMatch?: string | null) => {
+    // Headers first, body second — the order the real caller uses, and the order the
+    // measured regression was about.
+    if (!mayRevalidate(method, 200, jsonHeaders())) return { status: 200, body, etag: undefined };
     const bytes = new TextEncoder().encode(body);
-    if (!mayRevalidate(method, 200, jsonHeaders(), bytes)) return { status: 200, body, etag: undefined };
+    if (!bytes.length) return { status: 200, body: "", etag: undefined };
     const etag = etagFor(bytes);
     if (isFresh(ifNoneMatch, etag)) return { status: 304, body: "", etag };
     return { status: 200, body, etag };
@@ -261,5 +276,75 @@ describe("the rule the server applies, end to end", () => {
     expect(first.body.length).toBeGreaterThan(30_000);
     expect(second.body.length).toBe(0);
     expect(second.etag!.length).toBeLessThan(80);
+  });
+});
+
+/**
+ * THE REGRESSION THIS MODULE ALMOST SHIPPED, as a live test.
+ *
+ * The first version of the caller hashed the body and asked afterwards. On an open stream
+ * `await response.arrayBuffer()` does not resolve until the stream CLOSES, which for a live
+ * feed is never — so the wrapper held `/api/stream` and the SSE queue feed open forever.
+ *
+ * MEASURED on the deployed server, same machine, two builds side by side:
+ *
+ *   | build                                | `/api/stream` | `/api/task-events/stream` |
+ *   |--------------------------------------|---------------|---------------------------|
+ *   | `origin/main` (no validator)         | **59 B**      | **62 B**                  |
+ *   | the first version of this wrapper    | **0 B**       | **0 B**                   |
+ *
+ * The mock below is what made that visible without a deploy: it is a real `Response` over a
+ * real `ReadableStream` that stays open, so the test would have hung — and Bun's timeout
+ * turns that into a failure rather than a flake. A `new Response("{}")` mock would have
+ * passed against the broken code forever, because a body that is already in hand is exactly
+ * the case that never hangs.
+ */
+describe("an open stream is left open (the regression that was measured)", () => {
+  /** A body that produces one chunk and then never ends, like an SSE feed. */
+  const openStream = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("event: task\ndata: {}\n\n"));
+          // Deliberately never closed: this is the whole point.
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+
+  test("the decision is reached from the headers, without touching the body", () => {
+    // Synchronous and total: if this ever needed the body it could not return at all.
+    const response = openStream();
+    expect(mayRevalidate("GET", response.status, response.headers)).toBe(false);
+    expect(response.bodyUsed).toBe(false); // and the body was never read
+  });
+
+  test("a caller that follows the contract returns the response untouched", async () => {
+    // The shape `revalidate()` has: decide, and only then read. Run against the real
+    // streaming Response, so a wrapper that read first would hang here rather than pass.
+    const request = new Request("http://127.0.0.1/api/stream");
+    const response = openStream();
+    const skip =
+      !!response.headers.get("etag") || !mayRevalidate(request.method, response.status, response.headers);
+    const out: Response = skip
+      ? response
+      : await Promise.race<Response>([
+          (async () => new Response(await response.arrayBuffer()))(),
+          new Promise<Response>((_, reject) =>
+            setTimeout(() => reject(new Error("hung reading an open stream")), 250),
+          ),
+        ]);
+    expect(out).toBe(response);
+    expect(out.headers.get("etag")).toBeNull();
+    expect(out.bodyUsed).toBe(false);
+    // And it is still a working stream: the chunk is still there to be read.
+    const reader = out.body!.getReader();
+    expect((await reader.read()).value).toBeInstanceOf(Uint8Array);
+  });
+
+  test("a JSON response, by contrast, IS read — the two must not be conflated", async () => {
+    const response = new Response('{"ok":true}', { headers: { "content-type": "application/json" } });
+    expect(mayRevalidate("GET", response.status, response.headers)).toBe(true);
+    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
   });
 });

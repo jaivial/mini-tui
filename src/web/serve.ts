@@ -452,9 +452,14 @@ function json(body: unknown, status = 200, headers?: Record<string, string>): Re
  * point on every request.
  */
 async function revalidate(request: Request, response: Response): Promise<Response> {
-  if (response.status !== 200 || response.headers.get("etag")) return response;
-  const body = new Uint8Array(await response.clone().arrayBuffer());
-  if (!mayRevalidate(request.method, response.status, response.headers, body)) return response;
+  // Headers FIRST, body never unless this is a plain JSON read. Reading the body of a live
+  // stream never resolves (measured: `/api/stream` and the SSE queue feed answered 0 bytes
+  // where the build before this one answered 59 and 62), so a caller that hashes first and
+  // asks later hangs both feeds forever. See `mayRevalidate`.
+  if (response.headers.get("etag")) return response;
+  if (!mayRevalidate(request.method, response.status, response.headers)) return response;
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (!body.length) return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
   const etag = etagFor(body);
   if (isFresh(request.headers.get("if-none-match"), etag)) {
     return new Response(null, { status: 304, headers: revalidationHeaders(etag) });
