@@ -18,11 +18,17 @@
  * that an event never arrives.
  */
 import { describe, expect, test } from "bun:test";
-import { BODY_TRANSITION_PROPERTY, RELEASE_GRACE_MS, createLazyBody } from "../web/src/lib/lazyBody";
+import { BODY_TRANSITION_PROPERTY, RELEASE_GRACE_MS, createLazyBody, parseCssTime } from "../web/src/lib/lazyBody";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-/** The card's closing transition in the shipped tokens. */
-const DURATION = 180;
+/**
+ * The card's closing transition, read the way the component reads it. The token
+ * is authored as `180ms` but `getComputedStyle` hands back SECONDS (`0.18s`), and
+ * the live value in the browser is `.18s` — so the unit is the whole point here,
+ * not a detail: parsing it as a bare number yields 0.18 ms, which releases the
+ * body ~1000x early and cuts the closing animation in half.
+ */
+const DURATION = parseCssTime(".18s");
 
 describe("lazy body: the release must not depend on the transition arriving", () => {
   test("a close whose transition NEVER runs still releases the body", async () => {
@@ -119,5 +125,39 @@ describe("lazy body: the release must not depend on the transition arriving", ()
     await sleep(DURATION + RELEASE_GRACE_MS + 120);
     // Teardown is not a state change the owner needs to hear about.
     expect(seen).toEqual([true]);
+  });
+});
+
+describe("reading the transition duration out of the live token", () => {
+  test("seconds are scaled, milliseconds are not", () => {
+    // The shipped token, exactly as getComputedStyle reports it.
+    expect(parseCssTime("0.18s")).toBe(180);
+    expect(parseCssTime(".18s")).toBe(180);
+    // The authored form, in case a browser ever hands back the declaration.
+    expect(parseCssTime("180ms")).toBe(180);
+    expect(parseCssTime("120ms")).toBe(120);
+    expect(parseCssTime("260ms")).toBe(260);
+  });
+
+  test("reduced motion and nonsense are zero, never NaN", () => {
+    expect(parseCssTime("0s")).toBe(0);
+    expect(parseCssTime("0ms")).toBe(0);
+    expect(parseCssTime("")).toBe(0);
+    expect(parseCssTime("   ")).toBe(0);
+    expect(parseCssTime("auto")).toBe(0);
+    expect(parseCssTime("inherit")).toBe(0);
+    expect(Number.isFinite(parseCssTime("nonsense"))).toBe(true);
+  });
+
+  test("a duration read as 0.18ms would cut the closing animation short", async () => {
+    // The regression this parser exists to prevent, stated as a behaviour: the
+    // body must still be there a good way into a 180ms close.
+    const body = createLazyBody({ durationMs: parseCssTime(".18s") });
+    body.open();
+    body.close();
+    await sleep(120); // two thirds of the way through the close
+    expect(body.mounted).toBe(true);
+    await sleep(DURATION + RELEASE_GRACE_MS + 120);
+    expect(body.mounted).toBe(false);
   });
 });

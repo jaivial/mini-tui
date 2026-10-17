@@ -42,6 +42,25 @@ export const BODY_TRANSITION_PROPERTY = "grid-template-rows";
  */
 export const RELEASE_GRACE_MS = 60;
 
+/**
+ * A CSS time value in milliseconds. `getComputedStyle` normalises durations to
+ * SECONDS (`--duration-base: 180ms` reads back as `0.18s`), so a bare
+ * `parseFloat` is wrong twice over: it turns `180ms` into 180 (right by luck)
+ * and `0.18s` into 0.18 ms — a 1000x error that would cut the closing animation
+ * short and release the body before it has finished collapsing. Measured on the
+ * deployed build before this was caught: the body left the DOM at 61 ms while
+ * the transition itself ran to 189 ms.
+ */
+export function parseCssTime(value: string): number {
+  const raw = String(value ?? "").trim();
+  if (!raw) return 0;
+  const m = /^(-?[\d.]+)(ms|s)?$/.exec(raw);
+  if (!m) return 0;
+  const n = Number.parseFloat(m[1]!);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, m[2] === "s" ? n * 1000 : n);
+}
+
 export interface LazyBodyOptions {
   /** The closing transition's duration, in ms (0 under reduced motion). */
   durationMs: number;
