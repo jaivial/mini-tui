@@ -13,8 +13,10 @@
     Terminal,
     Wrench,
   } from "@lucide/svelte";
+  import { onDestroy } from "svelte";
   import type { RunEvent } from "../types";
   import { arrivalOf, callDuration, callIsRunning, formatDuration } from "../toolTimings";
+  import { createLazyBody } from "../lazyBody";
   import Spinner from "./Spinner.svelte";
 
   /**
@@ -81,13 +83,36 @@
     if (failed && !touched) expanded = true;
   });
 
-  // Lazy body: mounted on first open, unmounted after the closing transition ends.
+  // Lazy body: mounted on first open, released after the closing transition.
+  // The release is a TIMER, not the transition's end event — see lib/lazyBody.ts
+  // for why a transition that never runs must not strand the body in the DOM.
   let mounted = $state(false);
-  $effect(() => {
-    if (expanded) mounted = true;
+  const body = createLazyBody({
+    // The card's own closing transition rides --duration-base, which is 0 under
+    // reduced motion; read it from the token instead of hardcoding 180ms.
+    durationMs: bodyTransitionMs(),
+    // The release timer fires outside any reactive context, so the change has
+    // to be pushed in: reading `mounted` after the fact would miss it.
+    onChange: (on) => {
+      mounted = on;
+    },
   });
+  $effect(() => {
+    if (expanded) body.open();
+    else body.close();
+  });
+  onDestroy(() => body.dispose());
+  // A transition that really runs frees the body early; the timer covers the rest.
   function onbodytransitionend(e: TransitionEvent) {
-    if (!expanded && e.propertyName === "grid-template-rows") mounted = false;
+    body.transitionEnded(e.propertyName);
+  }
+
+  /** The card's closing-transition duration, from the live motion token. */
+  function bodyTransitionMs(): number {
+    if (typeof document === "undefined" || typeof getComputedStyle !== "function") return 180;
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--duration-base").trim();
+    const n = parseFloat(raw);
+    return Number.isFinite(n) ? n : 180;
   }
 
   // The visible tail of a long output: the whole thing stays in the clipboard copy.
