@@ -26,6 +26,7 @@
  * user's ears.
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { VOICE_SCALE } from "../web/src/lib/audio/voicePlayback";
 
 // ---------------------------------------------------------------------------
 // A WebAudio graph that renders only what the destination can reach.
@@ -340,5 +341,173 @@ describe("E12: the voice-note player's audio actually reaches the output", () =>
     expect(el).toBeDefined();
     expect(el!.paused).toBe(false);
     expect(createdContexts.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E13: the meter loop died on the first pause and never came back.
+//
+// #260 made the audio audible, and in doing so it made `startMeter` bail on
+// `sourceNode !== null`. That guard answered "is the graph BUILT?" (a
+// once-per-page fact, since the reroute is permanent) with "is the loop
+// RUNNING?" (a per-play fact). `tickMeter` then returned early while paused
+// WITHOUT rescheduling, so the two halves agreed perfectly and the meter died
+// on the first pause and stayed dead: measured in Chrome 145, 37 meter reads on
+// the first play and 0 on each of the next two, with the painted `levelDb`
+// frozen at a value the audio had long since stopped reaching.
+//
+// The audio was fine. The level readout — a hairline whose width is
+// `status.levelDb` — lied from the second play onwards, forever.
+//
+// The tests below run a REAL rAF queue on purpose. `installBrowser` stubs
+// `requestAnimationFrame` to a no-op, which is why this shipped: with a stub,
+// "the loop stopped calling itself" and "the loop is running fine" look the
+// same from the outside. Only a queue that can actually be drained can tell.
+// ---------------------------------------------------------------------------
+
+/** A rAF queue that runs only when a test asks it to, so bun never hangs. */
+function installRealRaf() {
+  const globals = globalThis as Record<string, unknown>;
+  const targets: Array<Record<string, unknown>> = [globals];
+  if (globals.window !== globalThis) targets.push(globals.window as Record<string, unknown>);
+  let nextId = 1;
+  // A real rAF is handed a timestamp that advances by roughly one frame. The
+  // meter's release is time-based (24 dB/s), so a frozen clock would make a
+  // decaying level look frozen too, and the test would pass for the wrong
+  // reason.
+  const FRAME_MS = 16;
+  const realNow = performance.now.bind(performance);
+  let clock = realNow();
+  // The module times the meter with `performance.now()`, so the clock has to be
+  // the thing that advances. Handing rAF a synthetic timestamp alone would let
+  // `elapsed` stay at zero and a real decay would look like a frozen one.
+  performance.now = () => clock;
+  const queue = new Map<number, FrameRequestCallback>();
+  const saved = targets.map((t) => ({ t, raf: t.requestAnimationFrame, caf: t.cancelAnimationFrame }));
+  for (const t of targets) {
+    t.requestAnimationFrame = (cb: FrameRequestCallback) => {
+      const id = nextId++;
+      queue.set(id, cb);
+      return id;
+    };
+    t.cancelAnimationFrame = (id: number) => { queue.delete(id); };
+  }
+  return {
+    /** Pending callbacks: >0 means the loop is still asking to be called. */
+    pending: () => queue.size,
+    /** Run one queued frame, the way a browser would between paints. */
+    pump() {
+      const entry = [...queue.entries()][0];
+      if (!entry) return false;
+      queue.delete(entry[0]);
+      clock += FRAME_MS;
+      entry[1](clock);
+      return true;
+    },
+    /** Drain up to `n` frames, returning how many actually ran. */
+    drain(n: number) {
+      let ran = 0;
+      for (let i = 0; i < n && this.pump(); i++) ran++;
+      return ran;
+    },
+    restore() {
+      for (const entry of saved) { entry.t.requestAnimationFrame = entry.raf; entry.t.cancelAnimationFrame = entry.caf; }
+      performance.now = realNow;
+    },
+  };
+}
+
+describe("E13: the level meter survives a pause and comes back on every replay", () => {
+  test("a replay restarts the meter loop, and never asks for a second graph", async () => {
+    restore.push(installBrowser());
+    const raf = installRealRaf();
+    restore.push(() => raf.restore());
+    const player = await freshPlayer();
+
+    await player.toggleVoiceNote("http://x/note.wav");
+    const element = builtElements.at(-1)!;
+
+    raf.drain(5);
+    expect(raf.pending()).toBeGreaterThan(0); // loop is alive while playing
+    const ctxAfterFirstPlay = createdContexts.length;
+
+    player.pauseAll();
+    expect(element.paused).toBe(true);
+    // `stopMeter` cancels the frame on purpose, so a paused page has no loop.
+    expect(raf.pending()).toBe(0);
+
+    // The defect lived HERE: the replay has to restart the loop, and before the
+    // fix it silently could not, because `startMeter` bailed on a graph that
+    // was already built. One context for the whole page, still.
+    await player.toggleVoiceNote("http://x/note.wav");
+    raf.drain(5);
+    expect(raf.pending()).toBeGreaterThan(0);
+    expect(createdContexts.length).toBe(ctxAfterFirstPlay);
+  });
+
+  test("pausing mid-play decays the meter to the floor instead of freezing it", async () => {
+    restore.push(installBrowser());
+    const raf = installRealRaf();
+    restore.push(() => raf.restore());
+    const player = await freshPlayer();
+
+    await player.toggleVoiceNote("http://x/note.wav");
+    const element = builtElements.at(-1)!;
+    const seen: number[] = [];
+    player.subscribeVoiceNote((s: { levelDb: number }) => seen.push(s.levelDb));
+    raf.drain(6);
+
+    // The element pauses on its own (the user paused, or it scrolled away).
+    // The loop must keep running and the paint must fall back to the floor: a
+    // graph renders nothing while paused, so any "live" reading now is a lie.
+    element.pause();
+    raf.drain(160);
+    expect(seen.at(-1)).toBe(VOICE_SCALE.minDb);
+  });
+
+  test("the meter samples again on every replay, not just the first play", async () => {
+    restore.push(installBrowser());
+    const raf = installRealRaf();
+    restore.push(() => raf.restore());
+    const player = await freshPlayer();
+
+    await player.toggleVoiceNote("http://x/note.wav");
+    const element = builtElements.at(-1)!;
+
+    // Frames actually delivered to the meter, per play. This is the measurement
+    // that separates "the note is audible" from "the level readout is alive":
+    // the audio kept playing on main while this fell to zero from play two on.
+    const perPlay: number[] = [raf.drain(6)];
+
+    // Pause, then replay three more times — the shape of a real user session.
+    for (let play = 0; play < 3; play++) {
+      element.pause();
+      player.pauseAll();
+      raf.drain(4);
+      await player.toggleVoiceNote("http://x/note.wav");
+      perPlay.push(raf.drain(6));
+    }
+
+    expect(perPlay[0]).toBeGreaterThan(0);
+    // Every replay must sample too. Before the fix this was [6, 0, 0, 0]: the
+    // first play worked and the meter was dead for the rest of the page's life.
+    expect(perPlay.every((frames) => frames > 0)).toBe(true);
+  });
+
+  test("stopping the meter returns the painted level to the floor", async () => {
+    restore.push(installBrowser());
+    const raf = installRealRaf();
+    restore.push(() => raf.restore());
+    const player = await freshPlayer();
+
+    await player.toggleVoiceNote("http://x/note.wav");
+    const element = builtElements.at(-1)!;
+    const seen: number[] = [];
+    player.subscribeVoiceNote((s: { levelDb: number }) => seen.push(s.levelDb));
+    raf.drain(6);
+
+    player.pauseAll();
+    // Otherwise the fill stays frozen on the last level the audio reached.
+    expect(seen.at(-1)).toBe(VOICE_SCALE.minDb);
   });
 });
