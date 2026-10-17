@@ -2,16 +2,45 @@
   /**
    * Generative table: validated strings only, bounded size, and the mobile
    * rule from the standing checklist — the scroll wrapper is the affordance.
+   *
+   * A table is the one generative surface that carries DATA, so it is also the
+   * one that has to say what it is and what it left out:
+   *
+   * - `<caption>` is the table's name. Measured against the built app, the
+   *   accessibility tree held three `table` nodes and **all three were named
+   *   ""**: a reader arriving at a 60-row liquidation was told "table, 60 rows,
+   *   4 columns" and nothing else. The model's `title` never even reached the
+   *   DOM — `validateTable` dropped it as an unknown key — so the caption
+   *   cannot be conditional on the model having been helpful.
+   * - The first column is the row's identity (`Ruta`, `Tren`, `Anden`), so it
+   *   is a `<th scope="row">`: without it a cell announces as "Madrid" with no
+   *   subject, and with it "R-014, Origen: Madrid".
+   * - `skipped` is drawn. validateTable used to reject the WHOLE table when one
+   *   row was malformed, so a single miscounted row out of sixty erased sixty
+   *   good ones behind a "Tabla no renderizada" notice. Rows that still do not
+   *   fit are now counted, and the count says so out loud rather than the table
+   *   pretending to be complete.
    */
   import { validateTable } from "../../ui/validate";
 
   let { props }: { props: Record<string, unknown> } = $props();
   const table = $derived(validateTable(props));
+  // Same reason as `UiChart`: the `{:else}` branch cannot narrow the `$derived`,
+  // so `table.reason` there is a type error even though only an invalid one gets there.
+  const tableReason = $derived(table.ok ? "" : table.reason);
+  /** What the table is called when the model gave no title of its own. */
+  const caption = $derived(
+    !table.ok
+      ? ""
+      : table.props.title ||
+        `Tabla: ${table.props.columns.length} columnas y ${table.props.rows.length} filas`,
+  );
 </script>
 
 {#if table.ok}
   <div class="ui-table-wrap">
     <table class="ui-table">
+      <caption class="ui-caption">{caption}</caption>
       <thead>
         <tr>
           {#each table.props.columns as column, i (i)}
@@ -23,16 +52,33 @@
         {#each table.props.rows as row, i (i)}
           <tr>
             {#each row as cell, j (j)}
-              <td>{cell}</td>
+              {#if j === 0}
+                <th scope="row">{cell}</th>
+              {:else}
+                <td>{cell}</td>
+              {/if}
             {/each}
           </tr>
         {/each}
       </tbody>
     </table>
   </div>
+  {#if table.props.skipped > 0}
+    <!-- `role="note"`, not `role="status"`: a live region exists to announce CHANGES to
+         its content, and this notice is written once, when the table is drawn. Measured both
+         ways in the built app — each way reaches the accessibility tree with the text as
+         its static children — so the difference is not legibility but intent: `note` says
+         "this is an aside", `status` says "watch this". It is also what the sibling
+         "Tabla no renderizada" branch below already uses. -->
+    <p class="ui-skip" role="note">
+      {table.props.skipped === 1
+        ? "1 fila no tenía la forma de una tabla y se ha omitido."
+        : `${table.props.skipped} filas no tenían la forma de una tabla y se han omitido.`}
+    </p>
+  {/if}
 {:else}
   <div class="flex items-start gap-2 rounded-lg border border-dashed border-line px-3 py-2 text-[12px] text-ink-faint" role="note">
-    Tabla no renderizada: {table.reason}
+    Tabla no renderizada: {tableReason}
   </div>
 {/if}
 
@@ -49,6 +95,34 @@
     width: 100%;
     font-size: 12.5px;
   }
+  /* The caption is a real cell of the table, so it must read as the table's name and
+     not as a floating label: it sits above the header, inside the wrapper's border. */
+  .ui-caption {
+    caption-side: top;
+    text-align: left;
+    padding: 0.5rem 0.55rem 0.35rem;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--color-ink);
+    /* A `<caption>` takes the TABLE's width, and on a wide table inside the scroll
+       wrapper that is wider than what is on screen: measured at 390px, the caption of
+       the 8-column table measured 501px in a 350px box, so its last words were only
+       reachable by scrolling sideways.
+       `position: sticky` alone does NOT fix it here — measured, a `table-caption`
+       ignores it and kept travelling with the scroll (-141px at the far end). Leaving
+       the caption's own `table-caption` display DOES pin it, and `max-width` in px is
+       what actually brings the box back to the width of the screen: measured at the far
+       right of the scroll the caption sits at x=1 in both cases, instead of -141.
+       The name in the accessibility tree is unaffected — it is read from the DOM. */
+    display: block;
+    position: sticky;
+    left: 0;
+    max-width: calc(100% - 0px);
+    box-sizing: border-box;
+    /* The scroll wrapper paints the caption's own background, not the table's canvas
+       underneath it, or the cells would show through while it slides over them. */
+    background: var(--color-canvas);
+  }
   .ui-table th {
     text-align: left;
     font-weight: 600;
@@ -58,13 +132,33 @@
     border-bottom: 1px solid var(--color-line);
     white-space: nowrap;
   }
+  /* The row header shares the header look but stays in the body's reading order:
+     it names the row instead of announcing a column header. */
+  .ui-table tbody th {
+    background: transparent;
+    font-weight: 600;
+    color: var(--color-ink);
+    border-bottom: 0;
+  }
   .ui-table td {
     padding: 0.3rem 0.55rem;
     border-top: 1px solid var(--color-line);
     color: var(--color-ink-muted);
     overflow-wrap: anywhere;
   }
-  .ui-table tr:first-child td {
+  .ui-table tbody th {
+    padding: 0.3rem 0.55rem;
+  }
+  /* Scoped to `tbody` on purpose: a bare `tr:first-child` also matches the header row
+     (it is the first child of `thead`), which would take the header's own rule with it. */
+  .ui-table tbody tr:first-child td,
+  .ui-table tbody tr:first-child th {
     border-top: 0;
+  }
+  .ui-skip {
+    margin-top: 0.3rem;
+    padding: 0 0.15rem;
+    font-size: 11.5px;
+    color: var(--color-warn);
   }
 </style>
