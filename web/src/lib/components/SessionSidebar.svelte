@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { Search, Server, Square, ChevronRight, PanelLeftClose, X, Pencil, Plus } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import Skeleton from "./Skeleton.svelte";
@@ -10,6 +10,7 @@
   import { statusLine } from "../mascot";
   import { partitionBots } from "../botGroups";
   import { botProgress, progressLabel, runningLabel } from "../botRows";
+  import { createRenameField } from "../renameField";
   import { agentTree, type BotRow } from "../stores/agentTree.svelte";
   import type { SessionState, SessionTask } from "../types";
 
@@ -116,15 +117,76 @@
   };
 
   // ---- Renaming a bot: the pencil (or a double-click) turns the title into a one-line input.
+  //
+  // The rules live in `renameField.ts` (E20); what is left here is the wiring: hand it the
+  // row's current title whenever the store moves, paint what it reports, and put the focus
+  // where a person expects it — into the field when it opens, back on the row when it closes.
+  //
+  // `editing` is a plain `$state` mirror, NOT a `$derived` of the machine: the machine is an
+  // ordinary object of getters, and Svelte cannot see those change, so a `$derived` over it
+  // is frozen at its first value and the field never opens. The mirror is what the template
+  // reads, and every path that opens or closes an edit writes it.
+  const rename = createRenameField({ onSave: (id, title) => onrenamebot?.(id, title) });
   let editing = $state("");
   let draft = $state("");
-  const startRename = (bot: { id: string; title: string }) => {
+  /**
+   * The title that arrived underneath a dirty draft, mirrored into `$state` for the same
+   * reason as `editing`: the machine is an object of plain getters and Svelte cannot see
+   * those change, so the template has to read something reactive.
+   */
+  let conflict = $state<string | null>(null);
+  let renameEl = $state<HTMLInputElement | null>(null);
+  /** The row that had the field open, so closing can hand the focus back to it. */
+  let renameRow = $state<HTMLElement | null>(null);
+
+  // The store is the truth about the title, and it moves under the field's feet (a WhatsApp
+  // `/rename`, the other client, the AI title). Reconcile on every change, or the draft
+  // silently reverts whoever renamed it while this field sat open.
+  $effect(() => {
+    const id = editing;
+    if (!id) {
+      conflict = null;
+      return;
+    }
+    const live = store.sessions[id]?.title ?? "";
+    rename.sync(live);
+    draft = rename.draft;
+    conflict = rename.conflict;
+  });
+
+  const startRename = async (bot: { id: string; title: string }) => {
+    renameRow = railEl?.querySelector<HTMLElement>(`[data-bot="${CSS.escape(bot.id)}"]`) ?? null;
+    rename.open({ id: bot.id, title: bot.title });
     editing = bot.id;
-    draft = bot.title;
+    draft = rename.draft;
+    conflict = rename.conflict;
+    await tick();
+    // Focus the field itself, and select what is in it: the whole point of opening a rename
+    // is to replace the name, not to append to it.
+    renameEl?.focus();
+    renameEl?.select();
   };
-  const commitRename = () => {
-    if (editing && draft.trim()) onrenamebot?.(editing, draft.trim());
+
+  /** Leave the field: the write (if any) then the focus back on the row it came from. */
+  const endRename = async () => {
+    const row = renameRow;
+    rename.cancel();
     editing = "";
+    draft = "";
+    conflict = null;
+    renameRow = null;
+    await tick();
+    row?.querySelector<HTMLElement>("[data-nav]")?.focus();
+  };
+
+  const commitRename = async () => {
+    rename.commit();
+    draft = rename.draft;
+    conflict = rename.conflict;
+    // The first Enter after a conflict only announces it (see `renameField.ts`), so the field
+    // must stay open, keep its draft and keep the focus.
+    if (rename.editing) return;
+    await endRename();
   };
 
   // ---- The work folded under a bot: its task card, then the delegates it is running.
@@ -194,7 +256,7 @@
       {@const progress = progressOf(session.id)}
       {@const card = cardOf(session.id)}
       {@const openRow = isOpen(session.id)}
-      <div role="listitem" class="mb-1.5">
+      <div role="listitem" class="mb-1.5" data-bot={session.id}>
         <div
           class="group/botrow relative flex items-center rounded-[18px] {focusedSession === session.id ? 'bg-raised' : 'hover:bg-raised/70'}"
         >
@@ -217,24 +279,61 @@
           {/if}
 
           {#if editing === session.id}
-            <!-- v5-A: the title becomes a one-line input; Enter renames, Escape backs out. -->
-            <input
-              bind:value={draft}
-              aria-label="Bot title"
-              class="h-8 min-w-0 flex-1 rounded-lg border border-brand bg-canvas px-2 text-[14px] text-ink focus:outline-none"
-              onkeydown={(e) => {
-                if (e.key === "Enter") commitRename();
-                else if (e.key === "Escape") editing = "";
-              }}
-              onblur={commitRename}
-            />
+            <!--
+              v5-A: the title becomes a one-line input; Enter renames, Escape backs out.
+              E20: the field is a real edit, so it behaves like one — it takes the focus when
+              it opens (`startRename`), it hands it back when it closes, it only writes a
+              title that actually changed, and it says so when the row was renamed underneath
+              it instead of quietly reverting that rename.
+            -->
+            <div class="min-w-0 flex-1">
+              <input
+                bind:this={renameEl}
+                value={draft}
+                oninput={(e) => {
+                  draft = e.currentTarget.value;
+                  rename.type(draft);
+                  conflict = rename.conflict;
+                }}
+                aria-label="Rename {session.title || 'Untitled'}"
+                aria-describedby={conflict ? `rename-hint-${session.id}` : undefined}
+                aria-invalid={conflict ? "true" : undefined}
+                class="h-8 w-full min-w-0 rounded-lg border bg-canvas px-2 text-[14px] text-ink focus:outline-none {conflict ? "border-err" : "border-brand"}"
+                onkeydown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void commitRename();
+                  } else if (e.key === "Escape") {
+                    // Escape must not fall through to `onblur`'s commit: it is the way out
+                    // that writes nothing.
+                    e.preventDefault();
+                    void endRename();
+                  }
+                }}
+                onblur={() => {
+                  // Only a real departure commits. `endRename` moving the focus itself fires
+                  // this too, and by then the edit is already closed.
+                  if (rename.editing) void commitRename();
+                }}
+              />
+              {#if conflict}
+                <p id="rename-hint-{session.id}" class="mt-0.5 truncate text-[11px] leading-4 text-err">
+                  Already renamed to “{conflict}” — Enter again to overwrite
+                </p>
+              {/if}
+            </div>
           {:else}
             <button
               data-nav
               type="button"
               class="interactive flex min-h-14 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[18px] px-2 text-left max-md:pr-14"
               onclick={() => onopen(session.id)}
-              ondblclick={() => startRename(session)}
+              ondblclick={(e) => {
+                // A double-click is also two clicks, and a single click OPENS the session:
+                // renaming from here used to switch panes twice on the way to the field.
+                e.preventDefault();
+                void startRename(session);
+              }}
               title={session.title}
               aria-current={focusedSession === session.id ? "true" : undefined}
             >
@@ -316,7 +415,7 @@
               icon={Pencil}
               title="Rename"
               aria-label="Rename {session.title || 'Untitled'}"
-              onclick={() => startRename(session)}
+              onclick={() => void startRename(session)}
             />
           </div>
         </div>
