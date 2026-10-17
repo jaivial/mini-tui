@@ -30,7 +30,21 @@ export type VoiceNoteStatus = {
 };
 
 let audio: HTMLAudioElement | null = null;
+/**
+ * The meter context, built once and kept for as long as the page lives.
+ *
+ * `createMediaElementSource` is a ONE-SHOT, PERMANENT reroute: an element can
+ * only ever be bound to one MediaElementAudioSourceNode, and once that node
+ * exists the element's audio is delivered *into the graph* instead of straight
+ * to the device. So this context is not rebuilt per play. It is created on the
+ * first play and, crucially, never `close()`d — a closed context takes the
+ * element's audio down with it and the element cannot be rebound, because the
+ * second `createMediaElementSource` throws InvalidStateError and the first node
+ * is already gone with the context that owned it.
+ */
 let audioCtx: AudioContext | null = null;
+/** The node that owns `audio`'s output. Null until the first play. */
+let sourceNode: MediaElementAudioSourceNode | null = null;
 let analyser: AnalyserNode | null = null;
 let samples: Uint8Array<ArrayBuffer> | null = null;
 let meter: LevelMeterReading = { levelDb: VOICE_SCALE.minDb, peakDb: VOICE_SCALE.minDb, peakHeldUntilMs: 0 };
@@ -122,38 +136,73 @@ function tickMeter() {
   frame = requestAnimationFrame(tickMeter);
 }
 
+/**
+ * Build the meter graph, once, on the first play.
+ *
+ * The chain is source -> analyser -> **destination**, and the last hop is the
+ * whole point: `createMediaElementSource` moves the element's audio into this
+ * graph, so a graph that stops at the analyser is a graph the sound never
+ * leaves. A branch with no path to `ctx.destination` is not even rendered
+ * (measured: 0 render callbacks vs 31 with the wire), which means the note
+ * plays silently while the UI reports it as playing.
+ *
+ * Idempotent, because a second call is what used to throw: the element is
+ * already bound, and a fresh context cannot take it over.
+ */
 function startMeter(el: HTMLAudioElement) {
-  stopMeter();
+  if (frame !== null || sourceNode !== null) return; // already built, or already running
   try {
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) return;
-    audioCtx = new Ctor();
-    const source = audioCtx.createMediaElementSource(el);
-    analyser = audioCtx.createAnalyser();
+    const ctx = new Ctor();
+    let bound: MediaElementAudioSourceNode;
+    try {
+      bound = ctx.createMediaElementSource(el);
+    } catch {
+      // Someone else already owns this element's output. Our context never
+      // touched it, so it is safe to drop; theirs keeps working.
+      void ctx.close().catch(() => {});
+      analyser = null;
+      samples = null;
+      return;
+    }
+    audioCtx = ctx;
+    sourceNode = bound;
+    analyser = ctx.createAnalyser();
     analyser.fftSize = 1024;
     analyser.smoothingTimeConstant = 0.2;
     samples = new Uint8Array(analyser.fftSize);
-    source.connect(analyser);
-    // The element's own output stays the only audible path: the analyser is a
-    // tap, never a reroute, so nothing is doubled or muted.
+    bound.connect(analyser);
+    // The reroute took the element's output off the direct device path, so
+    // this hop has to put it back. The analyser stays a tap: it is in the
+    // path, but it neither adds gain nor duplicates the signal.
+    analyser.connect(ctx.destination);
+    // A context created before the page had a gesture starts suspended, and a
+    // suspended graph renders nothing — audible or not.
+    if (ctx.state === "suspended") void ctx.resume().catch(() => {});
     lastMeterAt = performance.now();
     frame = requestAnimationFrame(tickMeter);
   } catch {
-    // No WebAudio (or a cross-origin source): the player still works, only the
-    // level readout is flat.
+    // No WebAudio: the player still works, only the level readout stays flat.
     audioCtx = null;
+    sourceNode = null;
     analyser = null;
     samples = null;
   }
 }
 
+/**
+ * Stop sampling, and leave the graph alone.
+ *
+ * This deliberately does NOT close the context. `stopMeter` used to, and that
+ * is unrecoverable for the element: the permanent reroute is bound to *that*
+ * context, so closing it strands the element with no output path at all — it
+ * keeps reporting `playing` and stops advancing, and a rebuild throws
+ * InvalidStateError because the element is still bound to the dead node.
+ */
 function stopMeter() {
   if (frame !== null) cancelAnimationFrame(frame);
   frame = null;
-  analyser = null;
-  samples = null;
-  void audioCtx?.close().catch(() => {});
-  audioCtx = null;
   meter = { levelDb: VOICE_SCALE.minDb, peakDb: VOICE_SCALE.minDb, peakHeldUntilMs: 0 };
 }
 
