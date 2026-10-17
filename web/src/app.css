@@ -71,6 +71,26 @@
   --color-bubble-user-ink: #f5f5f8;
   --color-bubble-bot: #f1f1f5;
 
+  /* La burbuja del usuario tiene su propia paleta INTERNA, y tiene que vivir
+     aqui y no dentro de la burbuja: `--color-bubble-user` se invierte con el
+     modo (casi negra en claro, casi blanca en oscuro), asi que un literal
+     blanco escrito en el componente solo es correcto en un lado. Medido en
+     navegador contra el build desplegado, con la prosa completa dentro de la
+     burbuja (enlace, cita, codigo en linea y bloque): un enlace #9dc0ff daba
+     8.90:1 en claro y **1.67:1 en oscuro**, y la cita a 75% daba 8.98:1 y
+     **1.01:1** — cero pixeles de tinta, es decir invisible. Los pasos de abajo
+     estan medidos sobre SU burbuja: enlace 8.90:1, cita 9.03:1, marca del
+     espejo 3.97:1 (borde de 2px, minimo 3:1). */
+  --color-bubble-user-link: #9dc0ff;      /* 8.90:1 sobre --color-bubble-user */
+  --color-bubble-user-quote: #c0c0c4;    /* 9.03:1 — la cita ya no desaparece */
+  /* Superficies: se derivan de la tinta de la propia burbuja, asi que bajan y
+     suben con ella. El TEXTO dentro es lo que tiene que pasar AA, no el chip:
+     9.71:1 en claro y 13.59:1 en oscuro. */
+  --color-bubble-user-chip: rgb(255 255 255 / 0.14);
+  --color-bubble-user-pre: rgb(255 255 255 / 0.08);
+  --color-bubble-user-pre-line: rgb(255 255 255 / 0.16);
+  --color-bubble-user-mirror: rgb(37 211 102 / 0.62); /* 3.97:1 */
+
   --color-accent: var(--theme-accent, var(--color-brand));
 
   /* Concentric radius scale. Outer = inner + padding everywhere. */
@@ -162,6 +182,17 @@
   --color-bubble-user: #f3f4f8;
   --color-bubble-user-ink: #17171d;
   --color-bubble-bot: #262a34;
+
+  /* La burbuja se vuelve casi blanca, asi que su paleta interior tiene que
+     volverse con ella: los chips son ahora una mezcla de TINTA sobre claro, no
+     de blanco sobre negro. Enlace 6.10:1, cita 7.52:1, marca 7.12:1 — medidos
+     sobre `--color-bubble-user` de este bloque, no copiados del de arriba. */
+  --color-bubble-user-link: #1d4ed8;      /* 6.10:1 */
+  --color-bubble-user-quote: #4e4e54;    /* 7.52:1 */
+  --color-bubble-user-chip: rgb(0 0 0 / 0.08);
+  --color-bubble-user-pre: rgb(0 0 0 / 0.07);
+  --color-bubble-user-pre-line: rgb(0 0 0 / 0.14);
+  --color-bubble-user-mirror: rgb(21 94 52); /* 7.12:1 */
 }
 
 /* Dark-mode theme accents. Same three themes as above, bright end of the
@@ -377,8 +408,26 @@
 :root {
   --ui-scale: 1;
   --text-scale: 1;
+
+  /* `color-scheme` DECIDE de que modo pintan los controles que dibuja el
+     navegador, no el CSS: el icono del calendario de un `<input type=date>`,
+     el desplegable de un `<select>`, el relleno automatico, las barras de
+     desplazamiento del navegador. Hasta ahora solo habia el `<meta
+     name="color-scheme" content="light dark">`, que resuelve contra el Ajustes
+     del SISTEMA, y el interruptor de la app es otro distinto: medido en vivo,
+     con la app en oscuro y el sistema en claro, el icono del calendario pintaba
+     1.91:1 sobre el fondo del campo (y 17.38:1 con el sistema en oscuro, mismo
+     campo, misma app). Es decir, el unico campo `date` que puede emitir el
+     modelo se quedaba sin icono. Se ata al mismo interruptor que los colores:
+     `ui.svelte.ts` ya alterna `.dark`/`.light` en `<html>`. */
+  color-scheme: light;
+
   --vw: calc(1vw / var(--ui-scale));
   --vh: calc(1dvh / var(--ui-scale));
+}
+/* El mismo interruptor, para los controles que dibuja el navegador. */
+:root.dark {
+  color-scheme: dark;
 }
 #app {
   zoom: var(--ui-scale);

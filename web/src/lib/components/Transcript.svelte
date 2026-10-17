@@ -362,26 +362,33 @@
   /* Espejo: a mirrored WhatsApp bubble keeps its own bubble style plus a quiet
      green underline — the origin marker the timestamp row already names. */
   .wa-mirror {
-    box-shadow: inset 0 -2px 0 rgb(37 211 102 / 0.45);
+    box-shadow: inset 0 -2px 0 var(--color-bubble-user-mirror);
   }
 
-  /* Inside the near-black bubble the palette flips: links go light blue,
-     strong text to the bubble's own ink, code to a translucent chip — the
-     prose-mini defaults assume a page-coloured surface and would vanish. */
+  /* Inside the bubble the palette flips: the prose-mini defaults assume a
+     page-coloured surface and would vanish against the bubble's own ink.
+     Every value here comes from a token because `--color-bubble-user`
+     INVERTS with the mode (near-black in light, near-white in dark): the
+     literals that used to live here were written for the dark bubble and only
+     ever correct in one mode. Measured live against the deployed build, with a
+     link, a quote, inline code and a code block inside one user message:
+     the link read 1.67:1 and the quote 1.01:1 in dark mode — zero ink pixels,
+     i.e. invisible — and 8.90 / 8.98 in light. See `--color-bubble-user-*`
+     in app.css for the per-mode values. */
   .msg-user :global(.prose-mini a) {
-    color: #9dc0ff;
+    color: var(--color-bubble-user-link);
   }
   .msg-user :global(.prose-mini strong) {
     color: var(--color-bubble-user-ink);
   }
   .msg-user :global(.prose-mini code) {
-    background: rgb(255 255 255 / 0.14);
+    background: var(--color-bubble-user-chip);
   }
   .msg-user :global(.prose-mini pre) {
-    background: rgb(255 255 255 / 0.08);
-    border-color: rgb(255 255 255 / 0.16);
+    background: var(--color-bubble-user-pre);
+    border-color: var(--color-bubble-user-pre-line);
   }
   .msg-user :global(.prose-mini blockquote) {
-    color: rgb(245 245 248 / 0.75);
+    color: var(--color-bubble-user-quote);
   }
 </style>
