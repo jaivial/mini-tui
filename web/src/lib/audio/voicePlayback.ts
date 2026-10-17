@@ -124,11 +124,21 @@ function readLevelDb(): number {
 
 function tickMeter() {
   frame = null;
-  if (!audio || audio.paused) return;
+  // A PAUSED element is not a reason to stop looping. The loop used to return
+  // here without rescheduling, so the first pause killed the meter for good:
+  // every later play went on making sound, but the level readout stayed frozen
+  // on whatever the first play left behind (measured: 37 meter reads on the
+  // first play, 0 and 0 on the next two, with `levelDb` stuck at the value the
+  // audio had long since stopped reaching). Keep the loop alive and let
+  // `startMeter` be the only thing that ever stops it.
+  if (!audio || !analyser) return;
   const now = performance.now();
   const elapsed = now - lastMeterAt;
   lastMeterAt = now;
-  meter = advanceLevelMeterReading(meter, readLevelDb(), elapsed, now, VOICE_SCALE);
+  // While paused the graph renders nothing, so a reading now would be a lie
+  // painted as a live level: decay to the floor instead of sampling silence.
+  const levelDb = audio.paused ? VOICE_SCALE.minDb : readLevelDb();
+  meter = advanceLevelMeterReading(meter, levelDb, elapsed, now, VOICE_SCALE);
   if (meter.levelDb !== status.levelDb || meter.peakDb !== status.peakDb) {
     status = { ...status, levelDb: meter.levelDb, peakDb: meter.peakDb };
     publish();
@@ -150,7 +160,18 @@ function tickMeter() {
  * already bound, and a fresh context cannot take it over.
  */
 function startMeter(el: HTMLAudioElement) {
-  if (frame !== null || sourceNode !== null) return; // already built, or already running
+  // Two different questions were conflated here. "Is the graph BUILT?" is a
+  // once-per-page fact — the reroute is permanent, so it must never be rebuilt.
+  // "Is the meter LOOP running?" is a per-play one. Bailing on `sourceNode`
+  // answered the first with the second, which is what stranded the level
+  // readout after the first pause.
+  if (frame !== null) return; // already sampling
+  if (sourceNode !== null) {
+    // Graph is built and correct; only the loop needs restarting.
+    lastMeterAt = performance.now();
+    frame = requestAnimationFrame(tickMeter);
+    return;
+  }
   try {
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) return;
@@ -204,6 +225,12 @@ function stopMeter() {
   if (frame !== null) cancelAnimationFrame(frame);
   frame = null;
   meter = { levelDb: VOICE_SCALE.minDb, peakDb: VOICE_SCALE.minDb, peakHeldUntilMs: 0 };
+  // The paint has to follow the reset, or the fill stays frozen on the last
+  // level the audio reached instead of dropping back to the floor.
+  if (status.levelDb !== VOICE_SCALE.minDb || status.peakDb !== VOICE_SCALE.minDb) {
+    status = { ...status, levelDb: VOICE_SCALE.minDb, peakDb: VOICE_SCALE.minDb };
+    publish();
+  }
 }
 
 function load(url: string): HTMLAudioElement {
