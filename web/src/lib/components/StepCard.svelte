@@ -16,7 +16,7 @@
   import { onDestroy } from "svelte";
   import type { RunEvent } from "../types";
   import { arrivalOf, callDuration, callIsRunning, formatDuration } from "../toolTimings";
-  import { createLazyBody } from "../lazyBody";
+  import { createLazyBody, parseCssTime } from "../lazyBody";
   import Spinner from "./Spinner.svelte";
 
   /**
@@ -110,9 +110,7 @@
   /** The card's closing-transition duration, from the live motion token. */
   function bodyTransitionMs(): number {
     if (typeof document === "undefined" || typeof getComputedStyle !== "function") return 180;
-    const raw = getComputedStyle(document.documentElement).getPropertyValue("--duration-base").trim();
-    const n = parseFloat(raw);
-    return Number.isFinite(n) ? n : 180;
+    return parseCssTime(getComputedStyle(document.documentElement).getPropertyValue("--duration-base"));
   }
 
   // The visible tail of a long output: the whole thing stays in the clipboard copy.
