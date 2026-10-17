@@ -95,8 +95,20 @@ export function isFresh(ifNoneMatch: IfNoneMatch, etag: Validator): boolean {
 }
 
 /**
- * A JSON read that may be revalidated: a `GET`/`HEAD` whose body is a complete, already
- * computed JSON document.
+ * A JSON read that MAY be revalidated, decided from the request and the RESPONSE HEADERS
+ * ALONE — no body, and that ordering is the whole contract.
+ *
+ * MEASURED, on the deployed server the day this was written: the first version of the
+ * caller took `body` as a parameter and hashed it before asking, and `/api/stream` and the
+ * SSE queue feed answered **0 bytes where the previous build answered 59 and 62**. Those
+ * responses are open streams: `await response.arrayBuffer()` on one does not resolve until
+ * the stream closes, which for a live feed is never, so the wrapper held both routes open
+ * forever and the client saw a connection that never produced a byte. A rule that can only
+ * be applied by consuming the body cannot be applied to a body that never ends.
+ *
+ * So this takes no body, and the caller checks it BEFORE reading anything. Content type is
+ * what does the work: `text/event-stream` and every other non-JSON response is excluded by
+ * the same test, with no list of streaming routes to keep in step with the code.
  *
  * The `method` check is the security-relevant half, not a nicety. `POST /api/sessions`
  * starts an agent and `PATCH /api/settings` writes a provider key; a validator on either
@@ -106,19 +118,12 @@ export function isFresh(ifNoneMatch: IfNoneMatch, etag: Validator): boolean {
  * `no-store` in the caller's own headers is honoured rather than overridden: a response
  * that says it must not be stored must not end up in a disk cache behind an `ETag`.
  */
-export function mayRevalidate(
-  method: string,
-  status: number,
-  headers: Headers,
-  body: Uint8Array,
-): boolean {
+export function mayRevalidate(method: string, status: number, headers: Headers): boolean {
   if (method !== "GET" && method !== "HEAD") return false;
-  // Only a body that is wholly in hand: a streamed response cannot be hashed without
-  // consuming it, and `/api/stream` and the SSE queue feed are exactly that.
   if (status !== 200 || headers.get("content-encoding")) return false;
   if (!/^application\/json\b/i.test(headers.get("content-type") ?? "")) return false;
   if (/\bno-store\b/i.test(headers.get("cache-control") ?? "")) return false;
-  return body.length > 0;
+  return true;
 }
 
 /**
