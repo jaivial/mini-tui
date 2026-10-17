@@ -113,11 +113,37 @@ function stubLaya(probabilities: Record<string, number>, confidence = 0.8) {
 
 const OFFLINE = { offline: true };
 
+/**
+ * What these three were before this file touched them, so `afterEach` can put them back.
+ *
+ * They were **deleted**, not restored, and that is the defect this file caused: `bunfig.toml`'s
+ * preload runs once per process, so deleting `MINITUI_SETTINGS_PATH` here did not just clean up
+ * after this file — it removed the preload's protection for every file that ran afterwards, and
+ * those files read the developer's real `~/.config/mini-tui/settings.json`. Restoring whatever was
+ * there before is the only cleanup that leaves the process as it found it, whether that was the
+ * preload's sandbox or a value an earlier file set.
+ */
+let savedEnv: Record<string, string | undefined> = {};
+
+function pin(key: string, value: string): void {
+  if (!(key in savedEnv)) savedEnv[key] = process.env[key];
+  process.env[key] = value;
+}
+
+function unpinAll(): void {
+  for (const [key, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  savedEnv = {};
+}
+
 beforeEach(() => {
+  savedEnv = {};
   dir = mkdtempSync(join(tmpdir(), "minitui-router-"));
-  process.env.MINITUI_SETTINGS_PATH = settingsPath();
-  process.env.MINITUI_ROUTER_DB = join(dir, "router.sqlite");
-  process.env.MINITUI_USAGE_DB = join(dir, "usage.sqlite");
+  pin("MINITUI_SETTINGS_PATH", settingsPath());
+  pin("MINITUI_ROUTER_DB", join(dir, "router.sqlite"));
+  pin("MINITUI_USAGE_DB", join(dir, "usage.sqlite"));
   resetCatalogCache();
   resetAuditStore();
 });
@@ -126,9 +152,7 @@ afterEach(() => {
   resetCatalogCache();
   resetAuditStore();
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.MINITUI_SETTINGS_PATH;
-  delete process.env.MINITUI_ROUTER_DB;
-  delete process.env.MINITUI_USAGE_DB;
+  unpinAll();
 });
 
 // ------------------------------------------------------------------ the catalog
