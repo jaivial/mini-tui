@@ -53,14 +53,49 @@ function settingsPath(): string {
   return process.env.MINITUI_SETTINGS_PATH ?? join(homedir(), ".config", "mini-tui", "settings.json");
 }
 
+/**
+ * Whether this process is a test run. `NODE_ENV=test` is the marker: `bun test` exports it and a
+ * spawned child inherits it, so it holds for in-process and subprocess runs alike. `MINITUI_TEST`
+ * is the manual marker for a run started outside the runner.
+ *
+ * This is the same guard `src/usage/index.ts` uses to keep the spend ledger out of the operator's
+ * home, applied to the one file that holds UI state. The ledger writes rows; this one decides the
+ * theme every test renders with, so the blast radius is quieter but the rule is identical: a test
+ * run with no settings file of its own gets the shipped defaults, never the machine's.
+ */
+function underTest(env: NodeJS.ProcessEnv): boolean {
+  return env.NODE_ENV === "test" || env.MINITUI_TEST === "1";
+}
+
+/**
+ * The file to read and write, or `null` when there is none to touch.
+ *
+ * `MINITUI_SETTINGS_PATH` still wins when set, so a test that *wants* settings of its own gets
+ * them. Under test with nothing set, this returns `null` and both `loadSettings` and
+ * `saveSettings` become no-ops against the filesystem: the caller falls back to
+ * `DEFAULT_SETTINGS`, and nothing is written.
+ *
+ * Why this cannot be a preload alone: `bunfig.toml`'s preload runs once per process, before the
+ * first file, so any `afterEach` that deletes the variable removes the protection for every file
+ * that runs after it. That is exactly what `tests/router.test.ts` did, and the leak was silent —
+ * the suite still passed, but `loadSettings()` started returning the developer's real theme.
+ */
+function settingsFile(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (env.MINITUI_SETTINGS_PATH) return env.MINITUI_SETTINGS_PATH;
+  if (underTest(env)) return null;
+  return settingsPath();
+}
+
 /** A toggle is off unless the file says on: absent (an old settings.json) must not enable it. */
 function enabled(value: unknown): boolean {
   return value === true;
 }
 
 export function loadSettings(): Settings {
+  const file = settingsFile();
+  if (!file) return { ...DEFAULT_SETTINGS };
   try {
-    const data = JSON.parse(readFileSync(settingsPath(), "utf8")) as Record<string, unknown> | null;
+    const data = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown> | null;
     const mode = data?.outputMode;
     const theme = data?.theme;
     const jev = enabled(data?.jevEnabled);
@@ -82,9 +117,11 @@ export function loadSettings(): Settings {
 }
 
 export function saveSettings(settings: Settings): void {
+  const file = settingsFile();
+  if (!file) return;
   try {
-    mkdirSync(dirname(settingsPath()), { recursive: true });
-    writeFileSync(settingsPath(), `${JSON.stringify(settings, null, 2)}\n`);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
   } catch {
     // settings persistence is best-effort
   }
