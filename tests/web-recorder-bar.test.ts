@@ -117,6 +117,15 @@ describe("recorderBarView: the error states read as errors", () => {
     expect(denied.showTrigger).toBe(true);
   });
 
+  test("the trigger's label is its ACTION, never the error sentence", () => {
+    // Measured live on 4317 with a real NotAllowedError: the mic's accessible name was
+    // the whole 90-character message, so the control announced itself as a paragraph. The
+    // error belongs on the status line, which is announced and visible.
+    const denied = view("error", new Error("Microphone access is blocked. Allow it in your browser's site settings, then try again."));
+    expect(denied.triggerLabel).toBe("Grabar nota de voz");
+    expect(denied.status).toContain("Microphone access is blocked");
+  });
+
   test("a kept take after a failed upload says DESCARTAR, not re-record", () => {
     // Nothing was re-recorded: the blob is right there. The icon and the label have to
     // agree — a screenshot caught them disagreeing (retry arrow + "Descartar la nota").

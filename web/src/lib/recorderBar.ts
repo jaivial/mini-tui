@@ -121,13 +121,18 @@ export function recorderBarView(input: RecorderBarInput): RecorderBarView {
 
   const status = errored ? error?.message || "No se pudo grabar" : STATUS[state];
 
+  // The trigger's own label says what the BUTTON does, never the error sentence: in the
+  // `error` state the mic is the retry, and labelling it with a 90-character message made
+  // the control announce itself as a paragraph (measured live on 4317). The error lives on
+  // the status line, which is visible and announced.
+
   return {
     status,
     statusIsError: errored,
     // With a take in hand the mic is not a verb the user wants; "Descartar" re-arms it.
     showTrigger: !recorderHasTake(state),
     triggerDisabled: sending || live,
-    triggerLabel: errored ? status || RECORDER_LABEL : RECORDER_LABEL,
+    triggerLabel: RECORDER_LABEL,
     showSubmit: submittable,
     submitDisabled: sending,
     showCancel: live || recorderHasTake(state),
