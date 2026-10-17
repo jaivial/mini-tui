@@ -5,7 +5,6 @@
   import { findToggle, focusableWithin, nextStop } from "./lib/drawerModal";
   import ChatPane from "./lib/components/ChatPane.svelte";
   import PaneTree from "./lib/components/PaneTree.svelte";
-  import TasksPanel from "./lib/components/TasksPanel.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
   import type { MenuRow } from "./lib/components/HeaderMenu.svelte";
   import { history, sidebarHistory } from "./lib/stores/history.svelte";
@@ -93,6 +92,11 @@
   // @xyflow/svelte, ~216 kB with its CSS, that no boot needs). Holders stay null until then,
   // which keeps the `{#if}` render sites honest: nothing mounts before its chunk arrives.
   type ModalOf<T> = T extends { default: infer C } ? C : never;
+  // The routines drawer is code-split for the same reason (E28): the board, the queue and the
+  // channels are 8 KB of gzip that a visit which never opens the drawer has no use for. Unlike the
+  // chunk itself, the holder never goes back to null — TasksPanel latches its board with `seen` so
+  // that reopening it does not rebuild every card, and unmounting would throw that away.
+  let TasksPanel = $state<ModalOf<typeof import("./lib/components/TasksPanel.svelte")> | null>(null);
   let TeamMapModal = $state<ModalOf<typeof import("./lib/components/TeamMapModal.svelte")> | null>(null);
   let RemoteHostsModal = $state<ModalOf<typeof import("./lib/components/RemoteHostsModal.svelte")> | null>(null);
   let SettingsModal = $state<ModalOf<typeof import("./lib/components/SettingsModal.svelte")> | null>(null);
@@ -100,6 +104,7 @@
   let ResumeModal = $state<ModalOf<typeof import("./lib/components/ResumeModal.svelte")> | null>(null);
   $effect(() => {
     // Load on first open, and once more on demand if a later open races the fetch.
+    if (tasksOpen && !TasksPanel) void import("./lib/components/TasksPanel.svelte").then((m) => (TasksPanel = m.default));
     if (teamMapOpen && !TeamMapModal) void import("./lib/components/TeamMapModal.svelte").then((m) => (TeamMapModal = m.default));
     if (hostsOpen && !RemoteHostsModal) void import("./lib/components/RemoteHostsModal.svelte").then((m) => (RemoteHostsModal = m.default));
     if (settingsOpen && !SettingsModal) void import("./lib/components/SettingsModal.svelte").then((m) => (SettingsModal = m.default));
@@ -652,7 +657,7 @@
   </div>
 </div>
 
-<TasksPanel open={tasksOpen} rows={taskRows} live={tasksLive} plans={planList} onclose={() => (tasksOpen = false)} />
+{#if TasksPanel}<TasksPanel open={tasksOpen} rows={taskRows} live={tasksLive} plans={planList} onclose={() => (tasksOpen = false)} />{/if}
 {#if TeamMapModal}<TeamMapModal bind:open={teamMapOpen} onopensession={openInFocused} />{/if}
 {#if RemoteHostsModal}<RemoteHostsModal bind:open={hostsOpen} />{/if}
 {#if SettingsModal}<SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />{/if}

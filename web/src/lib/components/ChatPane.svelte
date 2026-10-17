@@ -12,10 +12,14 @@
   import FloatingMascot from "./FloatingMascot.svelte";
   import PixelLoader from "./PixelLoader.svelte";
   import Spinner from "./Spinner.svelte";
-  import NotesPanel from "./NotesPanel.svelte";
-  import AgentsPanel from "./AgentsPanel.svelte";
   // The terminal (xterm.js, ~290 KB) is loaded the first time a terminal is opened, not with the app.
   const TerminalPanel = () => import("./TerminalPanel.svelte");
+  // Notes and Agents are code-split like the terminal (E28): together they are 12 KB of gzip that
+  // no first visit can reach — the side panel is closed in a fresh pane and stays closed until
+  // somebody opens it. Their chunks arrive on the first open, which is why the focus request for
+  // them has to survive (see `sidePanelFocus.ts`).
+  const NotesPanel = () => import("./NotesPanel.svelte");
+  const AgentsPanel = () => import("./AgentsPanel.svelte");
   import { catalog } from "../stores/catalog.svelte";
   import { store } from "../stores/sessions.svelte";
   import { panes, type Pane, type SideTab } from "../stores/panes.svelte";
@@ -25,6 +29,7 @@
   import { splitSent } from "../promptMemory";
   import { paneStatus } from "../paneStatus";
   import { sideWidthStyle } from "../sidePanel";
+  import { deliverSideFocus } from "../sidePanelFocus";
 
   /**
    * One pane: a chat (a session, or a new chat until its first message) with its own header, transcript,
@@ -120,7 +125,8 @@
     composer?.focus();
   }
   export function focusNotes() {
-    notes?.focus();
+    wantSideFocus = "notes";
+    void tick().then(focusSide);
   }
 
   // ↑/↓ memory: seeded from the session's own prompts once its transcript is here (a reload, /resume
@@ -220,11 +226,13 @@
         break;
       case "terminal":
         panes.toggleSide(pane.id, "terminal", true);
-        void tick().then(() => terminal?.focus());
+        wantSideFocus = "terminal";
+        void tick().then(focusSide);
         break;
       case "notes":
         panes.toggleNotes(pane.id, true);
-        void tick().then(() => notes?.focus());
+        wantSideFocus = "notes";
+        void tick().then(focusSide);
         break;
       case "resume":
       case "settings":
@@ -327,8 +335,9 @@
   async function toggleSide(tab: SideTab) {
     panes.toggleSide(pane.id, tab);
     if (!pane.notesOpen) return;
+    wantSideFocus = tab;
     await tick();
-    (tab === "notes" ? notes : tab === "agents" ? agentsPanel : terminal)?.focus();
+    focusSide();
   }
   const toggleNotes = () => toggleSide("notes");
   export function focusTerminal() {
@@ -336,6 +345,26 @@
   }
   const sideOpen = (tab: SideTab) => pane.notesOpen && pane.sideTab === tab;
   let agentsPanel = $state<{ focus: () => void } | null>(null);
+
+  /**
+   * A side panel whose chunk has not landed yet. Opening one asks for focus there, and the panel
+   * mounts a round trip later, so the request waits here instead of being dropped: measured, the
+   * naive split left focus on the prompt bar on every sample up to 3.5 s with the panel open.
+   */
+  let wantSideFocus = $state<SideTab | null>(null);
+  /** Deliver the pending request to whichever panel is mounted, spending it only if one takes it. */
+  function focusSide() {
+    const out = deliverSideFocus(wantSideFocus, { notes, agents: agentsPanel, terminal });
+    wantSideFocus = out.request;
+  }
+  // Re-runs whenever a panel binds (the `{#await}` block resolving is the late case) or the request
+  // changes, which is what makes the wait self-clearing without polling.
+  $effect(() => {
+    notes;
+    agentsPanel;
+    terminal;
+    focusSide();
+  });
   /** Agents this session started (the strip's roster): the menu row shows how many work. */
   const agentCount = $derived(session?.subagents?.length ?? 0);
   const MOVES = { left: false, right: false, up: false, down: false };
@@ -660,18 +689,30 @@
             <div class="m-3 rounded-md bg-err/10 px-3 py-2 text-[12px] text-err" role="alert">Could not load the terminal. Reload the page and try again.</div>
           {/await}
         {:else if pane.sideTab === "agents"}
-          <AgentsPanel bind:this={agentsPanel} sessionId={session?.id ?? null} onopen={openSubagent} onclose={() => panes.toggleSide(pane.id, "agents", false)} />
+          {#await AgentsPanel()}
+            <div class="flex flex-1 items-center justify-center gap-2 text-[12px] text-ink-muted" role="status"><Spinner size={12} label="" />Loading the agents panel</div>
+          {:then mod}
+            <mod.default bind:this={agentsPanel} sessionId={session?.id ?? null} onopen={openSubagent} onclose={() => panes.toggleSide(pane.id, "agents", false)} />
+          {:catch}
+            <div class="m-3 rounded-md bg-err/10 px-3 py-2 text-[12px] text-err" role="alert">Could not load the agents panel. Reload the page and try again.</div>
+          {/await}
         {:else}
-          <NotesPanel
-            bind:this={notes}
-            noteId={session?.id ?? null}
-            title={session?.title ?? ""}
-            onclose={() => panes.toggleNotes(pane.id, false)}
-            width={pane.sideWidth}
-            onresize={(px) => panes.setSideWidth(pane.id, px)}
-            onreset={() => panes.resetSideWidth(pane.id)}
-            {paneLeft}
-          />
+          {#await NotesPanel()}
+            <div class="flex flex-1 items-center justify-center gap-2 text-[12px] text-ink-muted" role="status"><Spinner size={12} label="" />Loading the notes</div>
+          {:then mod}
+            <mod.default
+              bind:this={notes}
+              noteId={session?.id ?? null}
+              title={session?.title ?? ""}
+              onclose={() => panes.toggleNotes(pane.id, false)}
+              width={pane.sideWidth}
+              onresize={(px) => panes.setSideWidth(pane.id, px)}
+              onreset={() => panes.resetSideWidth(pane.id)}
+              {paneLeft}
+            />
+          {:catch}
+            <div class="m-3 rounded-md bg-err/10 px-3 py-2 text-[12px] text-err" role="alert">Could not load the notes. Reload the page and try again.</div>
+          {/await}
         {/if}
       </div>
     </div>
