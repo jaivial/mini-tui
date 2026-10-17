@@ -84,7 +84,8 @@ if (action === "put") {
   process.stdout.write("put " + id + "\\n");
 } else if (action === "graph-read") {
   const nodes = Object.values(state.tasks).map((t) => ({ ...t }));
-  process.stdout.write(JSON.stringify({ nodes }) + "\\n");
+  const edges = Object.values(state.tasks).flatMap((t) => (t.edges ?? []).map((dependency) => ({ task: t.id, dependency })));
+  process.stdout.write(JSON.stringify({ nodes, edges }) + "\\n");
 } else if (action === "events-read") {
   const after = Number(at("--after") ?? 0), limit = Number(at("--limit") ?? 100);
   const all = Object.values(state.tasks).flatMap((t) => eventsOf(t)).sort((a, b) => a.seq - b.seq);
@@ -130,7 +131,9 @@ export function setScenario(dir: string, scenario: QueueScenario): void {
 }
 
 export interface FakeGraphState {
-  tasks: Record<string, { id?: string; project: string; cwd: string; goal: string; status: string; owner: string | null; fence: number; lease_until: number | null; result: string | null; goal_version: number; events: Array<{ seq: number; task?: string; kind: string; status?: string | null; goal_version?: number; fence?: number }> }>;
+  tasks: Record<string, { id?: string; project: string; cwd: string; goal: string; status: string; owner: string | null; fence: number; lease_until: number | null; result: string | null; goal_version: number; /** Task ids this one waits on (the graph `edges` list). */
+    edges?: string[];
+    events: Array<{ seq: number; task?: string; kind: string; status?: string | null; goal_version?: number; fence?: number }> }>;
   seq: number;
 }
 
