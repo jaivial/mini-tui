@@ -262,8 +262,16 @@ function senderForAccount(options: ConsumerOptions, account: string): EvoSender 
  * the very end hand work to the background queue; the bridge strips them before
  * anything is sent, and acts on them with its own deterministic rules. */
 export function turnPrompt(message: Inbound, mediaFrames: string[] = []): string {
+  // Who is speaking, as the agent should see it: the name when the delivery
+  // carried one, the jid otherwise — and the jid ALWAYS alongside it, because
+  // the name is a self-declared label anyone can set. An agent told only
+  // "sender 242554100576489" cannot address anyone; one told a name without the
+  // jid could mistake a label for verified identity. Both halves, name first.
+  const who = message.senderName
+    ? `${message.senderName} (jid ${message.sender})`
+    : message.sender;
   return [
-    `[WhatsApp message received in bound thread ${message.thread} — sender ${message.sender}]`,
+    `[WhatsApp message received in bound thread ${message.thread} — sender ${who}]`,
     message.text,
     ...mediaFrames,
     "",

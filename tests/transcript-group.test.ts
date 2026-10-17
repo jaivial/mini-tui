@@ -77,13 +77,19 @@ describe("the component calls the rule with the sender the header reads", () => 
   });
 
   test("the sender it compares is the same field the header prints", () => {
-    // `senderName(row.event.sender)` is what a reader sees; comparing a
+    // `senderName(row.event.sender, …)` is what a reader sees; comparing a
     // different field would group messages the header names differently.
+    // E24: the second argument is the display NAME (senderDisplayName), while
+    // the grouping still keys on the jid — identity must not follow a label
+    // anyone can change, or a rename would re-split a run.
     expect(source).toMatch(/sender:\s*row\.kind === "channel" \? row\.event\.sender : undefined/);
-    expect(source).toMatch(/senderName\(row\.event\.sender\)/);
+    expect(source).toMatch(/senderName\(row\.event\.sender,\s*row\.event\.senderName\)/);
   });
 
   test("the header is still the one that shows the author", () => {
-    expect(source).toMatch(/\{#if !isGrouped\}[\s\S]{0,400}?\{senderName\(row\.event\.sender\)\}/);
+    // The window is 400 chars; E24 added a two-line comment between the guard
+    // and the span, so it is wider now. The guard being the one that shows the
+    // author is the property, not the distance.
+    expect(source).toMatch(/\{#if !isGrouped\}[\s\S]{0,900}?\{senderName\(row\.event\.sender,\s*row\.event\.senderName\)\}/);
   });
 });

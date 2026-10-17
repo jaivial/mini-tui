@@ -6,6 +6,9 @@
   import Spinner from "./Spinner.svelte";
   import { arrivalOf, callDuration } from "../toolTimings";
   import { sameRun } from "../transcriptGroup";
+  // The SAME module the server and the agent prompt use, so the header a reader
+  // sees and the identity the agent is given can never be two different rules.
+  import { senderDisplayName } from "../../../../src/channels/senderName";
   import UiComponent from "./ui/UiComponent.svelte";
   import VoiceNote from "./VoiceNote.svelte";
 
@@ -100,9 +103,16 @@
     );
   }
 
-  /** A WhatsApp sender jid reads as a name: the phone part, else the jid. */
-  function senderName(sender: string): string {
-    return sender.replace(/@.*$/, "").slice(0, 24) || sender.slice(0, 24);
+  /**
+   * Who a mirrored row reads as. The delivery carries the sender's chosen name
+   * alongside the jid, and this is the ONE place the transcript decides what to
+   * print: name when there is a usable one, jid (domain stripped) otherwise.
+   * The rule itself lives in src/channels/senderName.ts so the agent's prompt and
+   * this header cannot drift apart — they answer the same question for the same
+   * delivery.
+   */
+  function senderName(sender: string, name?: string): string {
+    return senderDisplayName(sender, name);
   }
 
   function clock(event: object) {
@@ -170,7 +180,10 @@
         {#if !isGrouped}
           <div class="tnum pointer-coarse:px-1 flex items-center gap-1 pr-1 text-[10px] leading-3 text-ink-faint">
             <MessageCircle size={10} strokeWidth={2} aria-hidden="true" />
-            <span>{senderName(row.event.sender)}</span>
+            <!-- `title` keeps the jid one hover away: the name is a
+                 self-declared label, so anyone debugging "who was that?" needs
+                 the identity the row is actually grouped by. -->
+            <span title={row.event.sender}>{senderName(row.event.sender, row.event.senderName)}</span>
             {new Date(row.event.ts > 1e12 ? row.event.ts : row.event.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </div>
         {/if}

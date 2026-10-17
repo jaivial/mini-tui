@@ -1,4 +1,5 @@
 import type { Attachment, Inbound } from "./inbox";
+import { cleanSenderName } from "./senderName";
 
 /** Decode an already authenticated Evo delivery. Never trust body.instance as the account. */
 export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[] {
@@ -26,6 +27,15 @@ export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[
     if (key.remoteJid.endsWith("@g.us") && typeof key.participant !== "string") throw new Error("group message lacks participant identity");
     const sender = key.participant || key.remoteJid;
     if (typeof sender !== "string") throw new Error("missing Evo sender");
+    // The delivery carries BOTH halves of the sender: the jid above, and the
+    // name they chose for themselves in the stanza's `notify` attribute, which
+    // the fork forwards as `pushName`. Keeping only the jid meant every reader
+    // downstream — the web transcript, a screen reader, the agent's own prompt
+    // — met a 15-digit number where a name belonged. It is display only and is
+    // cleaned to that role; identity stays the jid. A group delivery names the
+    // PARTICIPANT (`notify` is set per participant), so this is the speaker,
+    // not the group.
+    const senderName = cleanSenderName(item.pushName) ?? undefined;
     let message = item.message ?? {};
     message = message.ephemeralMessage?.message ?? message;
     message = message.viewOnceMessage?.message ?? message;
@@ -66,6 +76,6 @@ export function normalizeEvo(payload: unknown, trustedAccount: string): Inbound[
       if (Number.isFinite(parsed) && new Date(parsed).toISOString() === envelope.date_time) sentAt = parsed;
     }
     if (typeof text !== "string" || !Number.isFinite(sentAt) || sentAt < 0) throw new Error("invalid Evo content/time");
-    return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, sentAt: Math.trunc(sentAt), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, mentions: mentions.length ? mentions : undefined, attachments, ...(key.fromMe === true ? { fromMe: true } : {}) }];
+    return [{ channel: "whatsapp", account: trustedAccount, thread: key.remoteJid, messageId: key.id, sender, ...(senderName ? { senderName } : {}), sentAt: Math.trunc(sentAt), text, replyTo: typeof context?.stanzaId === "string" ? context.stanzaId : undefined, mentions: mentions.length ? mentions : undefined, attachments, ...(key.fromMe === true ? { fromMe: true } : {}) }];
   });
 }

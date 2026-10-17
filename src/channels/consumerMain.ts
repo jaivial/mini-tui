@@ -174,7 +174,7 @@ const voiceDirs = (process.env.EVO_VOICE_DIRS ?? join(homedir(), ".local/share/m
 // whose bytes are here is rendered by the web; one that fails to fetch is
 // still mirrored, as metadata only.
 const mirror = new MirrorStore(inbox.db);
-const mirrorIn = async (row: { seq: number; account: string; thread: string; session: string }, message: { messageId: string; sender: string; sentAt: number; text: string; attachments: Array<{ id: string; kind: "image" | "audio" | "document"; mime?: string; providerRef?: string }> }): Promise<void> => {
+const mirrorIn = async (row: { seq: number; account: string; thread: string; session: string }, message: { messageId: string; sender: string; senderName?: string; sentAt: number; text: string; attachments: Array<{ id: string; kind: "image" | "audio" | "document"; mime?: string; providerRef?: string }> }): Promise<void> => {
   const handling = media;
   const attachments: MirrorAttachment[] = [];
   for (const attachment of message.attachments) {
@@ -197,6 +197,7 @@ const mirrorIn = async (row: { seq: number; account: string; thread: string; ses
     thread: row.thread,
     messageId: message.messageId,
     sender: message.sender,
+    senderName: message.senderName,
     sentAt: message.sentAt,
     text: message.text,
     attachments,

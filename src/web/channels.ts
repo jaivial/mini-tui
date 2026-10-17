@@ -14,6 +14,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { cleanSenderName } from "../channels/senderName";
 
 const TEXT_MAX = 800;
 const MESSAGES_MAX = 20;
@@ -37,7 +38,11 @@ export interface ChannelsMessageView {
   channel: string;
   account: string;
   thread: string;
+  /** Stable jid: identity. */
   sender: string;
+  /** Display only: the sender's chosen name, or null when the delivery carried
+   * no usable one. Never identity — nothing authorizes on it. */
+  senderName: string | null;
   messageId: string;
   sentAt: number;
   receivedAt: number;
@@ -79,12 +84,15 @@ function inboxPath(): string {
   return process.env.EVO_INBOX_DB ?? join(homedir(), ".local/share/mini-tui/channels.sqlite");
 }
 
-function parsePayload(raw: string): { text?: string; replyTo?: string; attachments?: Array<Record<string, unknown>> } {
+function parsePayload(raw: string): { text?: string; replyTo?: string; senderName?: string; attachments?: Array<Record<string, unknown>> } {
   try {
-    const value = JSON.parse(raw) as { text?: unknown; replyTo?: unknown; attachments?: unknown };
+    const value = JSON.parse(raw) as { text?: unknown; replyTo?: unknown; senderName?: unknown; attachments?: unknown };
     return {
       text: typeof value.text === "string" ? value.text : "",
       replyTo: typeof value.replyTo === "string" ? value.replyTo : undefined,
+      // Display only, and read back through the shared rule so a stored name
+      // that is not usable as one never reaches the inbox as a label.
+      senderName: cleanSenderName(value.senderName) ?? undefined,
       attachments: Array.isArray(value.attachments) ? (value.attachments as Array<Record<string, unknown>>).slice(0, 16) : [],
     };
   } catch {
@@ -133,7 +141,8 @@ export async function channelsView(): Promise<ChannelsView> {
         const body = display(payload.text ?? "");
         messages.push({
           seq: row.seq, channel: row.channel, account: row.account, thread: row.thread,
-          sender: row.sender, messageId: row.message_id, sentAt: row.sent_at, receivedAt: row.received_at,
+          sender: row.sender, senderName: payload.senderName ?? null,
+          messageId: row.message_id, sentAt: row.sent_at, receivedAt: row.received_at,
           session: row.session, project: row.project, replyTo: payload.replyTo ?? null,
           text: body.text, truncated: body.truncated,
           attachments: (payload.attachments ?? []).map(a => {
