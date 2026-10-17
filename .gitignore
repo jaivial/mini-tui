@@ -1,13 +1,16 @@
-node_modules/
+# NO trailing slash: a symlink is not a directory to git, so `node_modules/` let two
+# self-referential `node_modules -> node_modules` symlinks reach main (PR #253 and #269)
+# and broke `bun`/`vite` in the deploy checkout with "Too many levels of symbolic links".
+node_modules
 *.log
 docs/screenshots/*.json
 
 # web app build output and deps
 web/dist/
-web/node_modules/
+web/node_modules
 
 # landing page (site/): build output and deps
 site/build/
 site/.svelte-kit/
-site/node_modules/
+site/node_modules
 .worktrees/

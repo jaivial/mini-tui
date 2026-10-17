@@ -159,6 +159,18 @@ describe("the component must not recompute these rules from the live microphone"
     expect(src).not.toMatch(/\{#if live\}[\s\S]{0,200}data-slot="submit"/);
   });
 
+  test("Escape hands the focus back to the mic that opened the panel", () => {
+    // Measured live on 4317 after the first merge: Escape discarded correctly but focus
+    // landed on `body`, because `cancel()` notifies `onCancel`, the Composer unmounts
+    // this component in the same tick, and `triggerEl` no longer existed by the next line.
+    const audio = readFileSync(join(import.meta.dir, "../web/src/lib/components/control-ui/AudioRecorder.svelte"), "utf8");
+    const composer = readFileSync(join(import.meta.dir, "../web/src/lib/components/Composer.svelte"), "utf8");
+    expect(composer).toContain("onDiscard={() => micEl?.focus()}");
+    expect(composer).toContain("bind:this={micEl}");
+    // and the trigger stays as the fallback for a host that does NOT unmount.
+    expect(audio).toContain("queueMicrotask(() => triggerEl?.focus())");
+  });
+
   test("Escape is bound, so the microphone is not left open", () => {
     // Measured: with the state at `recording`, Escape left it at `recording`.
     const src = readFileSync(join(import.meta.dir, "../web/src/lib/components/control-ui/AudioRecorder.svelte"), "utf8");

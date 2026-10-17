@@ -127,14 +127,23 @@
     recorder.cancel();
   }
 
-  /** Escape: throw the take away and say so, rather than leaving the mic open. */
+  /**
+   * Escape: throw the take away and say so, rather than leaving the mic open.
+   *
+   * The focus goes to `onDiscard` and NOT to the trigger here: `cancel()` notifies
+   * `onCancel`, and this component's own host (the Composer) closes the panel on that
+   * callback, so by the time the next line runs `triggerEl` no longer exists and the
+   * focus lands on `body` — measured live. The host knows which control opened the panel,
+   * so it is the one that can put the focus back. The trigger is the fallback for a host
+   * that keeps the panel open.
+   */
   function onKeydown(event: KeyboardEvent) {
     if (event.key !== "Escape" || !view.canDiscard) return;
     event.preventDefault();
     event.stopPropagation();
     recorder.cancel();
     onDiscard?.(recorderState);
-    triggerEl?.focus();
+    queueMicrotask(() => triggerEl?.focus());
   }
 </script>
 

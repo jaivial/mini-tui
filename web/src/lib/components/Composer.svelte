@@ -178,6 +178,8 @@
    */
   let recordingBusy = $state(false);
   let confirmClose = $state(false);
+  /** The mic that opened the panel, so it can take the focus back when it closes. */
+  let micEl = $state<HTMLButtonElement | null>(null);
 
   function toggleRecording() {
     if (!recordingOpen) {
@@ -470,6 +472,7 @@
             recordingOpen = false;
             confirmClose = false;
           }}
+          onDiscard={() => micEl?.focus()}
         />
         <!-- E21: closing the panel over a recorded take asks first. Unmounting the
              recorder destroys the controller, and the blob only exists in memory. -->
@@ -566,6 +569,7 @@
         <!-- The mic lives inside the floating pill, next to the paperclip: one
              rail, two "add something to this prompt" verbs. -->
         <button
+          bind:this={micEl}
           type="button"
           class="interactive grid size-8 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11 pointer-coarse:min-w-11"
           aria-label="Grabar nota de voz"
