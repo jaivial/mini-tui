@@ -49,6 +49,18 @@ export interface HeadlessArgs extends CommonArgs {
   env?: Record<string, string>;
   /** Queue task / channel turn this run belongs to (usage attribution, v6-B). */
   taskId?: string;
+  /**
+   * Abort the run in flight: same teardown as SIGINT/SIGTERM (the agent is
+   * interrupted, so it still writes its own session row) and the result comes
+   * back as `interrupted`, never as a failed turn.
+   *
+   * v6-G (E2): an EMBEDDING process cannot reach the run through a signal it
+   * does not own. The channel consumer is one — every deploy ends in SIGTERM to
+   * the consumer, and the run it had spawned was only reachable through the
+   * signal handlers `runHeadless` installs for its own CLI use. This is that
+   * path, owned by the caller.
+   */
+  signal?: AbortSignal;
 }
 
 export type SessionsAction = "list" | "show" | "rm";

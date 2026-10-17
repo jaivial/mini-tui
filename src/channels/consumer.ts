@@ -298,6 +298,15 @@ export function startChannelConsumer(options: ConsumerOptions): { done: Promise<
   const maxTurnAttempts = options.maxTurnAttempts ?? 2;
   let stopped = false;
   let wake: (() => void) | null = null;
+  // v6-G (E2): the flag above only ends the NEXT loop iteration. With a turn in
+  // flight the loop sits in `await processOne(...)`, so `stop()` reached nothing
+  // at all: the consumer waited for the turn to end on its own and systemd
+  // SIGKILLed the whole control group at TimeoutStopSec (measured 2026-10-15:
+  // five `Failed with result 'timeout'` in 12 h, one message re-run four times).
+  // This controller is the signal that reaches the run, and every attempt of
+  // that turn also reads it BEFORE it spawns — otherwise a shutdown mid-turn
+  // starts attempt 2 and burns a whole second agent run on the way out.
+  const shutdown = new AbortController();
   const done = (async () => {
     // A new consumer starts at the present: history accepted before it existed
     // is never replayed (five stale rows would each become a live agent turn).
@@ -314,11 +323,14 @@ export function startChannelConsumer(options: ConsumerOptions): { done: Promise<
           await Promise.race([sleep(idleMs), new Promise<void>((r) => (wake = r))]);
           continue;
         }
-        await processOne(options, log, consumer, cursor, messages[0] as PendingRow, maxTurnAttempts);
+        await processOne(options, log, consumer, cursor, messages[0] as PendingRow, maxTurnAttempts, shutdown.signal);
         backoff = baseBackoff;
       } catch (error) {
         log("channel.consumer.error", { consumer, error: error instanceof Error ? error.message : String(error) });
-        await sleep(backoff);
+        // A stop during the backoff must not wait it out: the idle branch below
+        // races its sleep against `wake`, and this one has to as well or a
+        // restart pays a full backoff (up to a minute) before it can exit.
+        await Promise.race([sleep(backoff), new Promise<void>((r) => (wake = r))]);
         backoff = Math.min(maxBackoff, backoff * 2);
       }
     }
@@ -328,6 +340,7 @@ export function startChannelConsumer(options: ConsumerOptions): { done: Promise<
     done,
     stop: () => {
       stopped = true;
+      shutdown.abort();
       wake?.();
     },
   };
@@ -340,6 +353,7 @@ async function processOne(
   cursor: number,
   row: PendingRow,
   maxTurnAttempts: number,
+  shutdown: AbortSignal,
 ): Promise<void> {
   const message = JSON.parse(row.payload) as Inbound;
   const seq = row.seq;
@@ -487,8 +501,19 @@ async function processOne(
         mediaFrames = await ensureMediaFrames(options.media, options.inbox, log, seq, message);
       }
       const turn = await acks.race(
-        () => runTurn(options, log, row, message, maxTurnAttempts, mediaFrames, binding?.model || undefined),
+        () => runTurn(options, log, row, message, maxTurnAttempts, mediaFrames, binding?.model || undefined, shutdown),
       );
+      // v6-G (E2): the turn was torn down by `stop()`, so there is no reply to
+      // send and no failure to report. Everything after this point — the note
+      // below, `ledger.begin`, the send, the acknowledge — must be skipped: a
+      // deploy is not the sender's fault, and the row has to stay UNacknowledged
+      // so the next process replays it. (Measured before the fix: a 4 s turn cut
+      // short by SIGTERM sent "(no he podido completar esta tarea)" to the
+      // thread and ADVANCED THE CURSOR, so the work was never redone.)
+      if (shutdown.aborted) {
+        log("channel.consumer.stopped_mid_turn", { seq, session: row.session });
+        return;
+      }
     // Directives leave the reply here: what is journalled and sent is pure chat.
     const planned = options.queueBridge?.planReply(row, message, turn) ?? { text: turn };
     // Group-session directive (WA-5) is parsed from what survives the queue
@@ -932,6 +957,7 @@ async function runTurn(
   maxTurnAttempts: number,
   mediaFrames: string[],
   bindingModel?: string,
+  shutdown?: AbortSignal,
 ): Promise<string> {
   const dbPath = options.sessionsDbPath ?? process.env.MINITUI_DB_PATH ?? DEFAULT_DB_PATH;
   const cwd = options.cwd ?? process.env.EVO_CONSUMER_CWD ?? join(homedir(), "wa-assistant");
@@ -953,6 +979,14 @@ async function runTurn(
   let firstError = "";
   let firstExitStatus = "";
   for (let attempt = 1; attempt <= maxTurnAttempts; attempt++) {
+    // v6-G (E2): a stop between attempts must not start the next one. Measured
+    // before the fix: SIGTERM with a turn in flight started attempt 2 — a whole
+    // second agent run spawned on the way out, for a process systemd was about
+    // to SIGKILL anyway.
+    if (shutdown?.aborted) {
+      log("channel.consumer.turn_stopped", { seq: row.seq, session: row.session, attempt });
+      return "";
+    }
     try {
       const db = openDb(dbPath);
       // The binding's session is the stable conversation: create the row on the
@@ -991,6 +1025,7 @@ async function runTurn(
           ...(options.sessionsDbPath ? { dbPath: options.sessionsDbPath } : {}),
           ...(model ? { model } : {}),
           ...(options.turnTimeoutS ? { timeout: options.turnTimeoutS } : {}),
+          ...(shutdown ? { signal: shutdown } : {}),
         },
         {
           stdout: (text) => captured.push(text),
@@ -1004,6 +1039,13 @@ async function runTurn(
         log("channel.consumer.turn", { seq: row.seq, session: row.session, turn: "ok" });
         return parsed.result.trim();
       }
+      // v6-G (E2): `interrupted` is what an aborted run reports. Treating it as
+      // a failure is what produced the false note and the re-run, so it breaks
+      // out here with no error and no note.
+      if (shutdown?.aborted) {
+        log("channel.consumer.turn_interrupted_by_stop", { seq: row.seq, session: row.session, attempt });
+        return "";
+      }
       lastError = turnFailureCause(parsed.error ?? "");
       if (!lastError && parsed.exit_status) lastError = parsed.exit_status;
       if (!lastError) lastError = `exit ${exitCode}`;
@@ -1011,11 +1053,21 @@ async function runTurn(
       if (!firstError && parsed.error) firstError = turnFailureCause(parsed.error);
       log("channel.consumer.turn", { seq: row.seq, session: row.session, turn: "failed", attempt, exit_status: parsed.exit_status || undefined, error: lastError.slice(0, 200) });
     } catch (error) {
+      // v6-G (E2): an abort can surface as a throw too, and it is still not a
+      // turn failure. Recording it as `firstError` is what minted the false
+      // "(no he podido completar esta tarea)" during a deploy.
+      if (shutdown?.aborted) {
+        log("channel.consumer.turn_stopped", { seq: row.seq, session: row.session, attempt });
+        return "";
+      }
       lastError = error instanceof Error ? error.message : String(error);
       if (!firstError) firstError = lastError;
       log("channel.consumer.turn", { seq: row.seq, session: row.session, turn: "error", attempt, error: lastError.slice(0, 200) });
     }
   }
+  // v6-G (E2): every attempt lost to a shutdown. There is no failure to report
+  // to the sender — the row stays unacknowledged and the next process redoes it.
+  if (shutdown?.aborted) return "";
   // The turn kept failing: an honest failure note is still a reply — better
   // than a silent thread or a poison message blocking the cursor forever.
   // Mapped to the sender's language and to the cause that actually ended the turn, never the
