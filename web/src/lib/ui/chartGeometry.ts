@@ -44,3 +44,16 @@ export function chartPlot(values: number[]): ChartPlot {
   const points = values.map((v, i) => ({ value: v, x: CHART_PAD + band * (i + 0.5), y: y(v) }));
   return { points, zeroY: y(0), barWidth: Math.max(2, band * (1 - CHART_BAR_GAP)), band, plotH };
 }
+/**
+ * How a chart value reads out loud. In the accessibility description and nowhere
+ * else: the marks themselves carry no text, so this string is the only route from
+ * the data to a reader. Kept here, next to the geometry, so `bun test` can pin it
+ * without a DOM (the browser half is `components/ui/UiChart.svelte`).
+ */
+export function formatValue(v: number): string {
+  // Two decimals at most, and no trailing zeros: 58.4 stays "58.4", a float artefact
+  // like 44.900000000000006 becomes "44.9", and a whole 60 stays "60" rather than
+  // "60.00". Read aloud, "sesenta coma cero cero" is noise the reader has to sit through.
+  const rounded = Math.round(v * 100) / 100;
+  return String(rounded);
+}
