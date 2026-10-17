@@ -42,6 +42,37 @@ describe("E24 · la regla unica de como se lee un remitente", () => {
 });
 
 
+describe("E24 · la regla tiene que correr DONDE corre la web", () => {
+  // Este modulo lo importa el servidor (Bun) Y lo empaqueta el navegador. La
+  // primera version usaba `Buffer.byteLength`: verde en los 1308 tests del
+  // servidor y, en el navegador, `ReferenceError: Buffer is not defined` al
+  // cargar el modulo — es decir, el transcript ENTERO caido, con el servidor
+  // sirviendoelo todo bien. Lo que no se puede probar con Bun es que el modulo
+  // no dependa de algo que el navegador no tiene: eso se sujeta aqui, leyendo
+  // el fuente, porque un `import` de este fichero solo se ejecuta bajo Bun.
+  test("el modulo no usa Buffer (no existe en el navegador)", () => {
+    const source = readFileSync(new URL("../src/channels/senderName.ts", import.meta.url), "utf8");
+    expect(source).not.toMatch(/Buffer\./);
+    // Y lo que usa en su lugar existe en los DOS runtimes.
+    expect(source).toMatch(/TextEncoder/);
+  });
+
+  test("el modulo no usa ninguna otra API de Node", () => {
+    const source = readFileSync(new URL("../src/channels/senderName.ts", import.meta.url), "utf8");
+    expect(source).not.toMatch(/require\(|process\.|node:/);
+    // Ni importa nada: un modulo sin imports es importable desde el navegador
+    // sin que Vite tenga que resolver nada del lado del servidor.
+    expect(source).not.toMatch(/^import /m);
+  });
+
+  test("la cuenta de bytes que usa la regla es la misma en los dos runtimes", () => {
+    // TextEncoder mide UTF-8, que es lo que hace Buffer.byteLength; si divergen
+    // el mismo nombre pasaria en el servidor y caeria en la web (o al reves).
+    const value = "Jaime Villanueva";
+    expect(new TextEncoder().encode(value).length).toBe(Buffer.byteLength(value));
+  });
+});
+
 describe("E24 · la web usa la MISMA regla (no una copia que derive)", () => {
   // Una copia local ya existia (`sender.replace(/@.*$/,"")`) y es exactamente lo
   // que se queda vieja. Sujetamos que la regla vive en el modulo compartido.
