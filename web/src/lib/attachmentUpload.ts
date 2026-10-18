@@ -61,16 +61,52 @@ export interface UploadState {
   readonly current: Map<string, UploadToken>;
 }
 
+/** Milliseconds of budget a SMALL upload gets. Kept at the floor the server
+ *  uses for one (`BODY_TOTAL_FLOOR_SECONDS`), so a small file behaves exactly as
+ *  it did before E43. */
+export const UPLOAD_DEADLINE_FLOOR_MS = 5 * 60_000;
+
+/** What the backstop adds to the transfer budget so it never pre-empts the
+ *  server's own answer. */
+export const UPLOAD_BACKSTOP_SLACK_MS = 60_000;
+
+/** The rate an upload may still be running at and count as WORKING (E43).
+ *  12.5 KiB/s is about 100 kbit/s -- a slow mobile uplink that is slow and
+ *  finishing, not one that is stuck. Matches the server's own floor. */
+export const UPLOAD_MIN_BYTES_PER_SECOND = 12_800;
+
 /**
- * How long an upload may take before it is abandoned.
+ * How long an upload of `size` bytes may take before it is abandoned.
  *
- * The largest legal file is 15 MB (`ATTACH_MAX`), and on a phone at 500 kbit/s that is
- * four minutes of honest transfer -- so this is deliberately far above any legitimate
- * upload. It is here for the case where nobody is left to press Cancel: a request that
- * never settles must not keep `canSend` false for the rest of the session. The deadline is
- * the backstop; the chip's cancel button is the way out.
+ * THE DEFECT THIS FIXES (measured against the deployed build, E43, CDP with the
+ * upload throttled to 30 kB/s): the deadline was a FLAT five minutes, so it
+ * decided the answer without asking how much was still owed. A 14,8 MB file --
+ * inside the 15 MB `ATTACH_MAX`, picked from the real file input -- was aborted
+ * by this deadline at **t+304 s**, and because an abort is read as "the user
+ * changed their mind" the failure was painted as NOTHING: the chip vanished and
+ * no toast ever appeared. The network log had one entry, `net::ERR_ABORTED
+ * canceled:true`, at the same instant. The user was told nothing about a file
+ * they had watched crawl for five minutes.
+ *
+ * So the budget is the time this file needs at a working rate, and the floor
+ * keeps every small upload exactly where it was. A 15 MB file gets 1 289 s
+ * instead of 300 s: enough that the SERVER's honest answer wins the race, which
+ * is the point -- the backstop exists for a request nobody is watching, not to
+ * pre-empt a transfer that is still moving.
  */
-export const UPLOAD_DEADLINE_MS = 5 * 60_000;
+export function uploadDeadlineMs(size: number): number {
+  const scaled = Math.ceil((size / UPLOAD_MIN_BYTES_PER_SECOND) * 1000);
+  // The slack is what keeps the ORDER right: the client backstop has to sit
+  // ABOVE the server's own ceiling, so when a transfer really is too slow the
+  // answer the user sees is the server's ("the request body did not finish
+  // within N s"), not a client-side abort with no explanation. Measured without
+  // it, a 15 MB file got 1228,8 s here against the server's 1230 s -- the client
+  // would have won a race it should have lost, by 1,2 s.
+  return Math.max(UPLOAD_DEADLINE_FLOOR_MS, scaled + UPLOAD_BACKSTOP_SLACK_MS);
+}
+
+/** Kept for the callers that only want "the small-file budget". */
+export const UPLOAD_DEADLINE_MS = UPLOAD_DEADLINE_FLOOR_MS;
 
 export function createUploadState(): UploadState {
   return { draft: 0, current: new Map() };
@@ -82,14 +118,18 @@ export function createUploadState(): UploadState {
  * The caller must check `isCurrent` before acting on the answer: this hands out the claim,
  * it does not keep it.
  */
-export function beginUpload(state: UploadState, file: File, key?: string, deadlineMs = UPLOAD_DEADLINE_MS): UploadToken {
+export function beginUpload(state: UploadState, file: File, key?: string, deadlineMs = uploadDeadlineMs(file.size)): UploadToken {
   const token: UploadToken = {
     key: key ?? `${file.name}:${file.size}:${Math.random().toString(36).slice(2, 9)}`,
     draft: state.draft,
     controller: new AbortController(),
     file,
   };
-  const timer = setTimeout(() => token.controller.abort(), deadlineMs);
+  // The deadline aborts with a REASON. An abort the user asked for is silent, but
+  // this one is the app giving up on a file that was still moving, and E43
+  // measured exactly what silence costs: the chip vanished at t+304 s with no
+  // toast, because `isCancel` cannot tell the two apart on the error alone.
+  const timer = setTimeout(() => token.controller.abort(new UploadDeadline(deadlineMs)), deadlineMs);
   // The timer must not hold the process open on its own account; the request is what keeps
   // the work alive, and it is aborted by the same deadline.
   (timer as unknown as { unref?: () => void }).unref?.();
@@ -164,12 +204,31 @@ export function pendingUploads(state: UploadState): PendingUpload[] {
 }
 
 /**
+ * The backstop gave up on an upload that was still in flight.
+ *
+ * Carries the budget it actually gave, so the message can name it instead of
+ * the caller guessing (E43).
+ */
+export class UploadDeadline extends Error {
+  readonly name = "UploadDeadline";
+  constructor(readonly ms: number) {
+    super(`the upload did not finish within ${Math.round(ms / 1000)}s`);
+  }
+}
+
+/**
  * Whether a failed upload is worth reporting.
  *
  * An abort is the user pressing Cancel, switching conversation or closing the pane. Painting
  * that as "could not attach the file" would be wrong in the same way E38's was: it reports
  * the app's own decision as the server's failure.
+ *
+ * But the app also aborts on its OWN deadline, and that is a failure worth
+ * saying out loud -- it is not the server refusing, and it is not the user
+ * changing their mind, so it belongs in neither bucket. `UploadDeadline` names
+ * that case, so it is reported instead of vanishing (measured, E43).
  */
 export function isCancel(error: unknown): boolean {
+  if (error instanceof UploadDeadline) return false;
   return error instanceof Error && error.name === "AbortError";
 }

@@ -29,8 +29,15 @@ import {
   isCurrent,
   pendingUploads,
   settleUpload,
-  UPLOAD_DEADLINE_MS,
+  UPLOAD_DEADLINE_FLOOR_MS,
+  UPLOAD_BACKSTOP_SLACK_MS,
+  UPLOAD_MIN_BYTES_PER_SECOND,
+  UploadDeadline,
+  uploadDeadlineMs,
 } from "../web/src/lib/attachmentUpload";
+import { bodyTotalSeconds, BODY_MIN_BYTES_PER_SECOND as SERVER_MIN_RATE } from "../src/web/bodyRead";
+import { ATTACH_MAX } from "../web/src/lib/attachments";
+import { ATTACH_MAX_BYTES } from "../src/web/attachments";
 
 /** Whether a token may still attach its file to this draft. */
 const attaches = (state: ReturnType<typeof createUploadState>, token: ReturnType<typeof beginUpload>) => isCurrent(state, token);
@@ -159,9 +166,14 @@ describe("upload ownership", () => {
   });
 
   test("the deadline is far above any legitimate upload", () => {
-    // 15 MB (ATTACH_MAX) at 500 kbit/s is about four minutes of honest transfer, so the
-    // backstop has to sit above it or it would kill a slow but working upload.
-    expect(UPLOAD_DEADLINE_MS).toBeGreaterThan(4 * 60_000);
+    // E43: this held only for a SMALL file, because the budget was a flat five
+    // minutes. The claim was true of the floor and false of the thing it was
+    // written about -- the largest legal upload, which is what the backstop is
+    // for. It is now asked of the 15 MB case as well.
+    expect(UPLOAD_DEADLINE_FLOOR_MS).toBeGreaterThan(4 * 60_000);
+    expect(uploadDeadlineMs(15 * 1024 * 1024)).toBeGreaterThan(4 * 60_000);
+    // And the two sides agree on what "working" means, or the same bug ships twice.
+    expect(UPLOAD_MIN_BYTES_PER_SECOND).toBe(SERVER_MIN_RATE);
   });
 
   test("an abort is not reported as a failure", () => {
@@ -209,5 +221,68 @@ describe("the rule origin/main used", () => {
     if (attaches(state, token)) attachments = ["secreto-e39.png"];
 
     expect(attachments).toEqual([]);
+  });
+});
+
+/**
+ * E43: the backstop deadline, measured through the real file input with the
+ * upload throttled by CDP to 30 kB/s.
+ *
+ * Two defects, one cause, and the second is the one a user actually meets:
+ *
+ * 1. The deadline was a FLAT five minutes, so it answered without asking how much
+ *    was still owed. A 14,8 MB file — inside the 15 MB `ATTACH_MAX` — was aborted
+ *    at t+304 s while still moving at ~30 kB/s.
+ * 2. That abort was indistinguishable from the user pressing Cancel, so
+ *    `isCancel` called it a cancel and the failure was painted as NOTHING. The
+ *    chip disappeared and no toast ever appeared; the only trace was one
+ *    `net::ERR_ABORTED canceled:true` in the network log. A file the user watched
+ *    for five minutes simply stopped existing, with the app saying nothing.
+ */
+describe("the upload backstop (E43)", () => {
+  test("the budget is the time this file needs at a working rate, not five minutes", () => {
+    const fifteenMb = 15 * 1024 * 1024;
+    const secondsNeededAtSlowLink = Math.ceil(fifteenMb / 30_000); // the measured rate
+    expect(uploadDeadlineMs(fifteenMb)).toBeGreaterThanOrEqual(secondsNeededAtSlowLink * 1000);
+    expect(uploadDeadlineMs(fifteenMb)).toBeGreaterThan(UPLOAD_DEADLINE_FLOOR_MS);
+  });
+
+  test("a small file keeps the budget it always had", () => {
+    // No regression for the common case: a 200 KB photo is still 5 minutes.
+    expect(uploadDeadlineMs(200_000)).toBe(UPLOAD_DEADLINE_FLOOR_MS);
+    expect(uploadDeadlineMs(0)).toBe(UPLOAD_DEADLINE_FLOOR_MS);
+  });
+
+  test("the client backstop never sits below the server's own ceiling", () => {
+    // Separate packages, separate constants -- which is how this shipped twice.
+    // The client aborting first would pre-empt an honest server answer.
+    const serverCeiling = bodyTotalSeconds(ATTACH_MAX_BYTES + 8192) * 1000;
+    expect(uploadDeadlineMs(ATTACH_MAX)).toBeGreaterThanOrEqual(serverCeiling);
+  });
+
+  test("THE BUG: a deadline abort is not a cancel, so it gets reported", async () => {
+    const state = createUploadState();
+    const token = beginUpload(state, fakeFile("slow-e43.png"), undefined, 40);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(token.controller.signal.aborted).toBe(true);
+
+    // What fetch() rejects with when a signal aborts WITH A REASON.
+    const reason = token.controller.signal.reason;
+    // The measured symptom: this came back an AbortError, isCancel said "the
+    // user changed their mind", and nothing was painted.
+    expect(reason).toBeInstanceOf(UploadDeadline);
+    expect(isCancel(reason)).toBe(false);
+    // ...and it still reads as the app giving up, not the server refusing.
+    expect((reason as UploadDeadline).name).toBe("UploadDeadline");
+    expect((reason as UploadDeadline).message).toContain("did not finish within");
+  });
+
+  test("a user cancel stays silent", () => {
+    const state = createUploadState();
+    const token = beginUpload(state, fakeFile("a.png"));
+    cancelUpload(state, token.key);
+    // The chip's button aborts with no reason, so the rejection is a plain
+    // AbortError and remains a cancel: the user asked, so we say nothing.
+    expect(isCancel(token.controller.signal.reason ?? Object.assign(new Error("x"), { name: "AbortError" }))).toBe(true);
   });
 });

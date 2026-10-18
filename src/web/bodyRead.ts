@@ -65,10 +65,45 @@
  *  Generous on purpose: this fires on a dead socket, not on a slow one. */
 export const BODY_IDLE_SECONDS = 60;
 
-/** Seconds of total budget for a body, whatever the progress. Only reached by
- *  a client trickling one byte just often enough to reset the idle timer, which
- *  is not a thing a browser does with a file. */
-export const BODY_TOTAL_SECONDS = 300;
+/** Seconds of total budget for a SMALL body, whatever the progress. Only reached
+ *  by a client trickling one byte just often enough to reset the idle timer,
+ *  which is not a thing a browser does with a file. */
+export const BODY_TOTAL_FLOOR_SECONDS = 300;
+
+/**
+ * The rate a body may still be arriving at and count as WORKING (measured, E43).
+ *
+ * 12.5 KiB/s is about 100 kbit/s: a slow mobile uplink that is genuinely slow
+ * and genuinely finishing. Below this, a transfer is not slow, it is stuck, and
+ * the idle deadline is what should catch it -- not a clock.
+ */
+export const BODY_MIN_BYTES_PER_SECOND = 12_800;
+
+/** Hard bound on the scaled ceiling, so a large `limit` cannot buy an unbounded
+ *  hold on the connection. */
+export const BODY_TOTAL_MAX_SECONDS = 1_800;
+
+/**
+ * The total budget for a body of up to `limit` bytes.
+ *
+ * THE DEFECT THIS FIXES (measured against the deployed build, E43): the ceiling
+ * was a FLAT 300 s applied to every body, so it decided the answer without ever
+ * asking how much was still owed. A 15 MB upload on a 38 kB/s link — 39 kB every
+ * second, never a second of silence, the largest file the app accepts — was
+ * refused at **301,05 s** with `408 {"error":"the request body did not finish
+ * within 300s"}`, the socket broken while 3,5 MB were still to come. The file's
+ * own comment said "a total-time cap would refuse real work" and then shipped
+ * one that did exactly that.
+ *
+ * So the budget is now derived from the work: how long the LARGEST legal body
+ * needs at the slowest rate still counted as working. For a JSON route
+ * (1 MiB) that is under the floor, so **the small-body behaviour is unchanged**;
+ * only a body big enough to need it gets the longer budget.
+ */
+export function bodyTotalSeconds(limit: number): number {
+  const scaled = Math.ceil(limit / BODY_MIN_BYTES_PER_SECOND);
+  return Math.min(BODY_TOTAL_MAX_SECONDS, Math.max(BODY_TOTAL_FLOOR_SECONDS, scaled));
+}
 
 /** Milliseconds the real read is given AFTER the body ended completely. Not a
  *  deadline on the client — the body is already here — just a bound so a read
@@ -118,8 +153,12 @@ export class EmptyBody extends Error {
 /** Thrown out of a read that gave up; carries the status the route should answer. */
 export class BodyTimeout extends Error {
   readonly status = 408;
-  constructor(readonly reason: "idle" | "total", idleMs = BODY_IDLE_SECONDS * 1000) {
-    super(reason === "idle" ? `the request body stopped arriving for ${Math.round(idleMs / 1000)}s` : `the request body did not finish within ${BODY_TOTAL_SECONDS}s`);
+  constructor(readonly reason: "idle" | "total", budgetMs = (reason === "idle" ? BODY_IDLE_SECONDS : BODY_TOTAL_FLOOR_SECONDS) * 1000) {
+    // The number in the message is the budget this read was ACTUALLY given. It
+    // used to be a constant, which is the same lie E42 closed one layer up: once
+    // the ceiling scales with the body, a message quoting the floor would claim
+    // "300s" about a read that was given 1229s (E43).
+    super(reason === "idle" ? `the request body stopped arriving for ${Math.round(budgetMs / 1000)}s` : `the request body did not finish within ${Math.round(budgetMs / 1000)}s`);
   }
 }
 
@@ -201,7 +240,11 @@ export async function readBody<T>(request: Request, read: (req: Request) => Prom
 
   let settleTotal!: (error: Error) => void;
   const ceiling = new Promise<never>((_, reject) => { settleTotal = reject; });
-  const total = setTimeout(() => settleTotal(new BodyTimeout("total", idleMs)), BODY_TOTAL_SECONDS * 1000);
+  // The ceiling is a function of the limit this read is already enforcing: a
+  // client that may legally send 15 MB gets the time 15 MB needs at a working
+  // rate (E43). A 1 MiB JSON route is unchanged.
+  const totalMs = bodyTotalSeconds(limit) * 1000;
+  const total = setTimeout(() => settleTotal(new BodyTimeout("total", totalMs)), totalMs);
   (total as unknown as { unref?: () => void }).unref?.();
 
   try {
