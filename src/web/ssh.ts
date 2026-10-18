@@ -58,7 +58,66 @@ export MINITUI_PROMPT
 # locally installed mini-tui is found the way it would be in a login shell.
 export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
 cd ${shellQuote(workdir || '~')} 2>/dev/null || cd "$HOME"
-exec mini-tui -p "$MINITUI_PROMPT" -o stream-json -v --no-session ${model ? `-m ${shellQuote(model)}` : ""}
+
+# Job control, so the agent runs in its OWN process group with the default signal
+# dispositions. A background job of a non-interactive shell otherwise inherits
+# SIG_IGN for SIGINT and SIGQUIT (measured: SigIgn 0x6) and would ignore the
+# interrupt, and it would share this shell's group, so one signal could not
+# reach its children.
+set -m
+# The shell that ran us IS the ssh channel: sshd forks one per connection and it
+# dies with the connection. Its pid is the only handle this side has on "is the
+# client still there", so take it now, while it is still true.
+CHANNEL_PPID="$PPID"
+
+# The channel died: the sshd shell we were started by is gone (or we have been
+# reparented away from it, which is how the kernel reports the same thing). The
+# client sends nothing on its way out, so nothing else would ever stop the agent.
+channel_gone() {
+  kill -0 "$CHANNEL_PPID" 2>/dev/null || return 0
+  if [ -r /proc/$$/stat ]; then
+    local stat rest
+    stat=$(< /proc/$$/stat)
+    rest="\${stat##*) }"
+    rest="\${rest#* }"
+    [ "\${rest%% *}" != "$CHANNEL_PPID" ] && return 0
+  fi
+  return 1
+}
+
+mini-tui -p "$MINITUI_PROMPT" -o stream-json -v --no-session ${model ? `-m ${shellQuote(model)}` : ""} &
+AGENT=$!
+
+# Watchdog: while the agent is alive, check that the channel still is. When it is not,
+# take the agent down the way \`interrupt()\` takes down a local run -- TERM first, so the
+# agent gets the chance to record its exit, then KILL. The grace window is short on purpose:
+# the point of stopping a turn is to stop what it is spending.
+#
+# The signals go to the agent's PID, never to its process group. A group signal reaches every
+# child at once, including the \`sleep\` the agent is most likely waiting on, and the agent only
+# runs its own handler once that wait returns -- measured: a group TERM kills the agent without
+# its handler ever running, so it cannot record the stop and cannot escalate politely. The agent
+# is the process that matters; if it has children it will take them down as it exits.
+(
+  while kill -0 "$AGENT" 2>/dev/null; do
+    if channel_gone; then
+      kill -TERM "$AGENT" 2>/dev/null
+      for _ in $(seq 1 8); do
+        kill -0 "$AGENT" 2>/dev/null || exit 0
+        sleep 0.25
+      done
+      kill -KILL "$AGENT" 2>/dev/null
+      exit 0
+    fi
+    sleep 1
+  done
+) &
+WATCHDOG=$!
+
+wait "$AGENT"
+STATUS=$?
+kill "$WATCHDOG" 2>/dev/null
+exit "$STATUS"
 `;
 }
 
