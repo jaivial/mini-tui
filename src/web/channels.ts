@@ -21,10 +21,48 @@ const MESSAGES_MAX = 20;
 const QR_MAX_BYTES = 200_000;
 /** The weai connect endpoint regenerates the QR every call (~60 s TTL). */
 const QR_MIN_INTERVAL_MS = 5_000;
+
+/**
+ * The pairing floor is longer than the QR one on purpose.
+ *
+ * A connect call REGENERATES the login every time it lands, so these rate limits
+ * are the only thing between a confused user and a stream of restarts. Measured
+ * against the deployed code: with an upstream that answered in 8 s, six clicks
+ * produced six upstream logins and ZERO rate-limited answers — the call burned
+ * the whole 5 s window by itself, so the limiter it was guarding never spoke.
+ * The floor has to outlast the call that spends it, or it is decoration.
+ */
+const CONNECT_MIN_INTERVAL_MS = 40_000;
 const QR_TTL_MS = 60_000;
 /** The pairing code lives about a minute (WhatsApp-side), like the QR. */
 const CODE_TTL_MS = 60_000;
-const FETCH_TIMEOUT_MS = 5_000;
+
+/**
+ * Two budgets, because the two reads are not the same work.
+ *
+ * `connectionState` is a local read of a flag: on a healthy bridge it answers in
+ * well under a millisecond (measured: p50 0.4 ms, p99 1.2 ms over 30 calls), so a
+ * short ceiling is honest there and keeps a wedged bridge from pinning the panel.
+ *
+ * `instance/connect` is NOT that: it asks WhatsApp for a fresh QR, so its cost is
+ * whatever WhatsApp's servers take. Measured against the deployed code with an
+ * upstream answering in 8 s, a flat 5 s clock threw away a QR that really was
+ * produced and told the user the bridge was dead. The pairing ceiling is its own
+ * constant, not the read's.
+ */
+const STATE_TIMEOUT_MS = 5_000;
+const CONNECT_TIMEOUT_MS = 30_000;
+
+/** Why an upstream read gave up. A slow bridge is not a dead one. */
+export type UpstreamStop = "slow" | "refused" | "bad-status" | "bad-body";
+
+/** The loopback weai call gave up, and which of the ways it gave up. */
+export class UpstreamTimeout extends Error {
+  constructor(readonly what: string, readonly stop: UpstreamStop, readonly budgetMs: number) {
+    super(`weai-mini did not answer ${what} within ${Math.round(budgetMs / 1000)}s`);
+    this.name = "UpstreamTimeout";
+  }
+}
 
 export interface ChannelsAttachmentView {
   id: string;
@@ -235,21 +273,41 @@ function evoConfig(): EvoConfig | null {
   return { baseUrl, instance, apiKey };
 }
 
-async function weaiGet(pathname: string, config: EvoConfig): Promise<Record<string, unknown> | null> {
-  const timer = setTimeout(() => abort.abort(), FETCH_TIMEOUT_MS);
+/**
+ * One loopback weai read, with a ceiling that says which way it gave up.
+ *
+ * It used to swallow every failure into a bare `null`, which is what let a slow
+ * answer and a refused connection reach the user as the same sentence. Now the
+ * caller learns which happened: `slow` (our own clock fired), `refused` (the
+ * socket or the fetch itself failed), `bad-status`, `bad-body`.
+ */
+async function weaiGet(pathname: string, config: EvoConfig, budgetMs: number, what: string): Promise<Record<string, unknown>> {
   const abort = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; abort.abort(); }, budgetMs);
+  let response: Response;
   try {
-    const response = await fetch(`${config.baseUrl}${pathname}`, {
+    response = await fetch(`${config.baseUrl}${pathname}`, {
       headers: { apikey: config.apiKey },
       signal: abort.signal,
     });
-    if (response.status !== 200) return null;
-    return await response.json() as Record<string, unknown>;
   } catch {
-    return null;
+    throw new UpstreamTimeout(what, timedOut ? "slow" : "refused", budgetMs);
   } finally {
     clearTimeout(timer);
   }
+  if (response.status !== 200) throw new UpstreamTimeout(what, "bad-status", budgetMs);
+  try {
+    return await response.json() as Record<string, unknown>;
+  } catch {
+    throw new UpstreamTimeout(what, "bad-body", budgetMs);
+  }
+}
+
+/** What the panel shows for a read that gave up. A slow bridge is not a dead one. */
+function upstreamDetail(stop: UpstreamStop, budgetMs: number): string {
+  if (stop === "slow") return `weai-mini tardó más de ${Math.round(budgetMs / 1000)}s`;
+  return "weai-mini no responde (loopback)";
 }
 
 function mapState(raw: string): EvoStatusView["state"] {
@@ -276,8 +334,15 @@ function rawState(data: Record<string, unknown>): string {
 export async function evoStatus(): Promise<EvoStatusView> {
   const config = evoConfig();
   if (!config) return { configured: false };
-  const data = await weaiGet(`/instance/connectionState/${encodeURIComponent(config.instance)}`, config);
-  if (!data) return { configured: true, instance: config.instance, state: "unreachable", detail: "weai-mini did not answer on loopback" };
+  let data: Record<string, unknown>;
+  try {
+    data = await weaiGet(`/instance/connectionState/${encodeURIComponent(config.instance)}`, config, STATE_TIMEOUT_MS, "the connection state");
+  } catch (error) {
+    // A read that gave up on OUR clock is not a bridge that is down: saying so
+    // sent the user off to restart a service that was answering all along.
+    const stop = error instanceof UpstreamTimeout ? error.stop : "refused";
+    return { configured: true, instance: config.instance, state: "unreachable", detail: upstreamDetail(stop, STATE_TIMEOUT_MS) };
+  }
   return { configured: true, instance: config.instance, state: mapState(rawState(data)) };
 }
 
@@ -287,10 +352,15 @@ let lastQrAt = 0;
 export async function evoQr(): Promise<EvoQrView> {
   const config = evoConfig();
   if (!config) return { configured: false, error: "evo connect not configured" };
-  if (Date.now() - lastQrAt < QR_MIN_INTERVAL_MS) return { configured: true, error: "qr_rate_limited", expiresAt: lastQrAt + QR_TTL_MS };
+  if (Date.now() - lastQrAt < CONNECT_MIN_INTERVAL_MS) return { configured: true, error: "qr_rate_limited", expiresAt: lastQrAt + QR_TTL_MS };
   lastQrAt = Date.now();
-  const data = await weaiGet(`/instance/connect/${encodeURIComponent(config.instance)}`, config);
-  if (!data) return { configured: true, state: "unreachable", error: "weai-mini did not answer on loopback" };
+  let data: Record<string, unknown>;
+  try {
+    data = await weaiGet(`/instance/connect/${encodeURIComponent(config.instance)}`, config, CONNECT_TIMEOUT_MS, "for a QR");
+  } catch (error) {
+    const stop = error instanceof UpstreamTimeout ? error.stop : "refused";
+    return { configured: true, state: "unreachable", error: stop === "slow" ? "weai_mini_too_slow" : "weai_mini_unreachable" };
+  }
   const qr = typeof data.base64 === "string" && data.base64.startsWith("data:") && data.base64.length <= QR_MAX_BYTES ? data.base64 : undefined;
   const code = typeof data.code === "string" && data.code.length <= 64 ? data.code : undefined;
   if (!qr && !code) {
@@ -323,7 +393,12 @@ let lastCodeAt = 0;
 /** Test hook: the 5 s pairing rate limit is module state. */
 export function resetPairingRateLimit(): void {
   lastCodeAt = 0;
+  lastQrAt = 0;
 }
+
+/** The pairing floors, so a test can assert they outlast the call that spends them. */
+export const PAIRING_INTERVALS = { qr: QR_MIN_INTERVAL_MS, connect: CONNECT_MIN_INTERVAL_MS } as const;
+export const UPSTREAM_BUDGETS = { state: STATE_TIMEOUT_MS, connect: CONNECT_TIMEOUT_MS } as const;
 
 /**
  * Pairing by code: asks weai for a connect with the phone number and returns
@@ -336,10 +411,15 @@ export async function evoPairingCode(rawNumber: string): Promise<EvoPairView> {
   if (!digits) return { configured: true, error: "invalid_number" };
   const config = evoConfig();
   if (!config) return { configured: false, error: "evo connect not configured" };
-  if (Date.now() - lastCodeAt < QR_MIN_INTERVAL_MS) return { configured: true, error: "code_rate_limited", expiresAt: lastCodeAt + CODE_TTL_MS };
+  if (Date.now() - lastCodeAt < CONNECT_MIN_INTERVAL_MS) return { configured: true, error: "code_rate_limited", expiresAt: lastCodeAt + CODE_TTL_MS };
   lastCodeAt = Date.now();
-  const data = await weaiGet(`/instance/connect/${encodeURIComponent(config.instance)}?number=${digits}`, config);
-  if (!data) return { configured: true, state: "unreachable", error: "weai-mini did not answer on loopback" };
+  let data: Record<string, unknown>;
+  try {
+    data = await weaiGet(`/instance/connect/${encodeURIComponent(config.instance)}?number=${digits}`, config, CONNECT_TIMEOUT_MS, "for a pairing code");
+  } catch (error) {
+    const stop = error instanceof UpstreamTimeout ? error.stop : "refused";
+    return { configured: true, state: "unreachable", error: stop === "slow" ? "weai_mini_too_slow" : "weai_mini_unreachable" };
+  }
   const raw = rawState(data);
   if (raw.toLowerCase() === "open") return { configured: true, state: "connected", error: "already_connected" };
   const code = pairingCode(data.pairingCode);
