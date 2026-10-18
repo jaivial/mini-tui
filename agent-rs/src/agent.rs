@@ -184,6 +184,8 @@ pub struct Agent {
     oracle_errors: usize,
     /// Rejections the judge has returned for this run (see MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS).
     oracle_rejections: usize,
+    /// Words of the previous rejection's gaps, to spot a judge repeating itself.
+    oracle_last_gap: std::collections::HashSet<String>,
     /// Original repository baseline, captured before work so committed changes remain evidence.
     goal_baseline: Option<String>,
     /// Small codejs state belongs to this agent run, never a global process or repo.
@@ -230,6 +232,7 @@ impl Agent {
             goal_reports: Vec::new(),
             oracle_errors: 0,
             oracle_rejections: 0,
+            oracle_last_gap: std::collections::HashSet::new(),
             goal_baseline: None,
             codejs_store: Obj::new(),
         }
@@ -865,8 +868,15 @@ impl Agent {
                     // After the cap the closure is accepted and the report says so.
                     self.oracle_rejections += 1;
                     let cap = std::env::var("MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS").ok().and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(3);
-                    if cap > 0 && self.oracle_rejections >= cap {
-                        self.goal_reports.push(json!({"status": "stalemate", "reason": format!("closure accepted after {} judge rejections", self.oracle_rejections)}));
+                    let words: std::collections::HashSet<String> = v.gaps.join(" ").to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() > 3).map(String::from).collect();
+                    let overlap = if words.is_empty() || self.oracle_last_gap.is_empty() { 0.0 } else {
+                        words.intersection(&self.oracle_last_gap).count() as f64 / words.union(&self.oracle_last_gap).count() as f64
+                    };
+                    // The same complaint twice in a row means more work will not change the verdict.
+                    let repeated = self.oracle_rejections >= 2 && overlap >= 0.5;
+                    self.oracle_last_gap = words;
+                    if repeated || (cap > 0 && self.oracle_rejections >= cap) {
+                        self.goal_reports.push(json!({"status": "stalemate", "reason": format!("closure accepted after {} judge rejections{}", self.oracle_rejections, if repeated { " (the judge repeated its complaint)" } else { "" })}));
                         self.messages.push(exit);
                         return;
                     }

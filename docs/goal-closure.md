@@ -12,6 +12,8 @@ The closure judgement replaces the old second plain-text confirmation turn. Afte
 - `MINI_AGENT_GOAL_ORACLE=model` (default): current model, provisional judge.
 - `MINI_AGENT_GOAL_ORACLE=off`: legacy closure and exact-loop abort behavior.
 - `MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS` (default 3, 0 = unlimited): after this many judge rejections in one run the closure is accepted and the report records a `stalemate`, so a judge that disagrees with finished work cannot loop forever.
+- Repeated complaints: if the judge returns a similar gap list twice in a row (word overlap >= 50%), the closure is accepted at once as a stalemate.
+- `MINI_AGENT_LAYA_MAX_LEN` (512-8192, default 8192): token window sent to Laya. Laya gets a compact evidence window (observations tail, diff head); the full model-judge window always came back truncated at max_len 2048 and every closure fell back to the model judge.
 - `MINI_AGENT_GOAL_ORACLE_URL`: exact HTTP(S) endpoint for a replacement service, including a future Laya adapter. No port is guessed and no service is installed automatically.
 - `MINI_AGENT_GOAL_ORACLE_KEY`: optional bearer key for that service.
 
