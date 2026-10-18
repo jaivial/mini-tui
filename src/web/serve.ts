@@ -23,7 +23,7 @@ import { agentsView } from "./agents";
 import { listAgentDefs } from "../mini/agentDefs";
 import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
 import { homedir } from "node:os";
-import { rustAgentBin } from "../mini/spawn";
+import { runQueueRead } from "../mini/queueRead";
 import { ChannelInbox } from "../channels/inbox";
 import { evoReceiver } from "../channels/evoReceiver";
 import { parseReceiverAccounts, parseConsumerAccounts } from "../channels/accounts";
@@ -161,20 +161,14 @@ const listeners = new Set<Listener>();
 // Queue event readers do not launch workers, migrate schemas or call models.
 let queueEventStreams = 0;
 async function queueEvents(after: number, limit = 100): Promise<{ events: Array<{ seq: number; [key: string]: unknown }>; cursor: number }> {
-  const bin = rustAgentBin();
   const db = process.env.MINITUI_TASK_GRAPH_DB ?? join(homedir(), ".local/share/mini-tui/task-graph.sqlite");
   if (!existsSync(db)) return { events: [], cursor: after };
-  if (!bin) throw new Error("task_graph_binary_unavailable");
-  const child = Bun.spawn([bin, "queue", "events-read", "--db", db, "--after", String(after), "--limit", String(limit)], { stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => child.kill(), 5000);
-  try {
-    const [out, , code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    if (code !== 0) throw new Error("task_events_read_failed");
-    const data = JSON.parse(out);
-    if (!Array.isArray(data.events) || !Number.isSafeInteger(data.cursor) || data.cursor < after || data.events.length > limit
-      || data.events.some((e: { seq?: unknown }) => typeof e?.seq !== "number" || !Number.isSafeInteger(e.seq) || e.seq <= after)) throw new Error("invalid_queue_events");
-    return data;
-  } finally { clearTimeout(timer); }
+  const read = await runQueueRead(["queue", "events-read", "--db", db, "--after", String(after), "--limit", String(limit)]);
+  if (read.reason) throw new Error(read.reason === "no-binary" ? "task_graph_binary_unavailable" : `task_events_read_failed:${read.reason}`);
+  const data = read.value as { events?: unknown; cursor?: unknown };
+  if (!Array.isArray(data?.events) || !Number.isSafeInteger(data?.cursor) || (data.cursor as number) < after || data.events.length > limit
+    || data.events.some((e: { seq?: unknown }) => typeof e?.seq !== "number" || !Number.isSafeInteger(e.seq) || e.seq <= after)) throw new Error("invalid_queue_events");
+  return { events: data.events as Array<{ seq: number; [key: string]: unknown }>, cursor: data.cursor as number };
 }
 
 function broadcast(event: { type: string; [key: string]: unknown }): void {
@@ -778,18 +772,12 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       // call, schema creation or browser-selected filesystem path.
       if (path === "/task-graph" && request.method === "GET") {
         if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
-        console.log("task-graph request", new Date().toISOString());
-        const bin = rustAgentBin();
         const db = process.env.MINITUI_TASK_GRAPH_DB ?? join(homedir(), ".local/share/mini-tui/task-graph.sqlite");
-        if (!bin) return json({ error: "task_graph_binary_unavailable" }, 503);
         if (!existsSync(db)) return json({ nodes: [], edges: [], configured: false });
-        const child = Bun.spawn([bin, "queue", "graph-read", "--db", db], { stdout: "pipe", stderr: "pipe" });
-        const timeout = setTimeout(() => child.kill(), 5000);
-        try {
-          const [out, _err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-          if (code !== 0) return json({ error: "task_graph_read_failed", detail: "Queue feature unavailable or registry could not be read" }, 503);
-          return json(JSON.parse(out));
-        } finally { clearTimeout(timeout); }
+        const read = await runQueueRead(["queue", "graph-read", "--db", db]);
+        if (read.reason === "no-binary") return json({ error: "task_graph_binary_unavailable", detail: "no binary answers the queue subcommand (build it with --features task-graph, or set MINITUI_QUEUE_BIN)" }, 503);
+        if (read.reason) return json({ error: "task_graph_read_failed", detail: read.reason }, 503);
+        return json(read.value);
       }
       if ((path === "/task-events" || path === "/task-events/stream") && request.method === "GET") {
         if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
