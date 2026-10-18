@@ -4,6 +4,7 @@
   import Badge from "./Badge.svelte";
   import Modal from "./Modal.svelte";
   import { api } from "../api";
+  import { isCancel, withVerdict, withoutVerdict, type ProbeResults } from "../probeState";
   import { store } from "../stores/sessions.svelte";
   import { toasts } from "../stores/toast.svelte";
   import type { RemoteHost } from "../types";
@@ -12,7 +13,7 @@
 
   let editing = $state<RemoteHost | null>(null);
   let probing = $state<string | null>(null);
-  let probeResult = $state<Record<string, { ok: boolean; message: string }>>({});
+  let probeResult = $state<ProbeResults>({});
 
   function blank(): RemoteHost {
     return { id: `h${Date.now().toString(36)}`, label: "", host: "", port: 22, user: "", workdir: "~" };
@@ -44,22 +45,17 @@
     const controller = new AbortController();
     probes = new Map(probes).set(host.id, controller);
     probing = host.id;
-    const rest = new Map(probeResult);
-    rest.delete(host.id);
-    probeResult = rest;
+    probeResult = withoutVerdict(probeResult, host.id);
     try {
       const res = await api.probeHost(host, controller.signal);
-      probeResult = { ...probeResult, [host.id]: { ok: res.ok, message: res.message } };
+      probeResult = withVerdict(probeResult, host.id, { ok: res.ok, message: res.message });
       toasts.push(res.ok ? `Connected to ${host.label}` : `Failed: ${res.message}`, {
         tone: res.ok ? "ok" : "err",
       });
     } catch (error) {
       // An abort is us cancelling, not a failed host: it must not paint an error.
-      if ((error as Error).name === "AbortError") return;
-      probeResult = {
-        ...probeResult,
-        [host.id]: { ok: false, message: (error as Error).message },
-      };
+      if (isCancel(error)) return;
+      probeResult = withVerdict(probeResult, host.id, { ok: false, message: (error as Error).message });
     } finally {
       const rest = new Map(probes);
       rest.delete(host.id);
