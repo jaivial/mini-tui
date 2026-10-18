@@ -52,8 +52,22 @@ function isSubsequence(needle: string, hay: string): boolean {
  *   2 the name contains it              `$ody`      → pr-body
  *   3 every query word is in the name, any order    `$body-pr`, `$fix.pr` → pr-fix-loop
  *   4 every query word's letters, in order, in some word  `$bdy`  → pr-body
+ *
+ * With a `detail` (the skill's own description) two more ranks open below every name rank, so
+ * a name match ALWAYS outranks a description match — `$cu` still leads with `$cu`. They exist
+ * because the description is what a skill is FOR, and the server already ships it: without them
+ * `$react` found nothing at all while five installed skills say React in their description.
+ *   5 the query is a whole word of the description   `$react`  → dashboard-design
+ *   6 the description contains it                     `$docke`  → villa-release
+ *
+ * Nothing matches a description on fewer than 3 characters: every description in the catalogue
+ * contains `a`, `e` and `s`, so a 1-letter query would list all sixty skills as "matches".
  */
-export function skillMatchRank(query: string, name: string): number | null {
+
+/** Below this length a description match is noise, not a signal (see the ranks above). */
+const DETAIL_MIN = 3;
+
+export function skillMatchRank(query: string, name: string, detail?: string): number | null {
   const q = query.trim().toLowerCase().replace(/^\$/, "");
   const n = name.toLowerCase();
   if (!q) return 0;
@@ -65,13 +79,33 @@ export function skillMatchRank(query: string, name: string): number | null {
   if (terms.length && terms.every((term) => n.includes(term))) return 3;
   const joined = n.replace(/[\s._-]+/g, "");
   if (terms.length && terms.every((term) => words.some((word) => isSubsequence(term, word)) || isSubsequence(term, joined))) return 4;
+  if (q.length < DETAIL_MIN) return null;
+  const d = (detail ?? "").toLowerCase();
+  if (!d) return null;
+  // Whole word first: `react` in "Works for React, Next.js" beats a stray substring hit.
+  const pattern = new RegExp(`\\b${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+  if (pattern.test(d)) return 5;
+  if (d.includes(q)) return 6;
   return null;
 }
 
-/** Skills for the `$` panel, best matches first (a stable sort keeps the folder order). */
-export function filterSkills<T>(query: string, items: T[], nameOf: (item: T) => string): T[] {
+/**
+ * Skills for the `$` panel, best matches first (a stable sort keeps the folder order).
+ * `detailOf` is optional: pass it and the descriptions join the ranking (see `skillMatchRank`);
+ * omit it and this is exactly the old name-only filter.
+ */
+export function filterSkills<T>(
+  query: string,
+  items: T[],
+  nameOf: (item: T) => string,
+  detailOf?: (item: T) => string | undefined,
+): T[] {
   return items
-    .map((item, index) => ({ item, index, rank: skillMatchRank(query, nameOf(item)) }))
+    .map((item, index) => ({
+      item,
+      index,
+      rank: skillMatchRank(query, nameOf(item), detailOf?.(item)),
+    }))
     .filter((row): row is { item: T; index: number; rank: number } => row.rank !== null)
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map((row) => row.item);

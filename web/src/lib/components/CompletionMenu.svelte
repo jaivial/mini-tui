@@ -54,7 +54,10 @@
       }}
     >
       <span class="shrink-0 font-mono text-[12.5px] font-medium text-ink">{row.title}</span>
-      <span class="min-w-0 flex-1 truncate text-[12px] text-ink-muted">{row.detail}</span>
+      <!-- The row shows one line of a description that averages 561 characters. `title` is the
+           same affordance the rest of the app uses for truncated text (AgentsPanel): hover to read
+           the whole thing. Without it the truncation is invisible and silent. -->
+      <span class="min-w-0 flex-1 truncate text-[12px] text-ink-muted" title={row.detail}>{row.detail}</span>
     </div>
   {/each}
 </div>

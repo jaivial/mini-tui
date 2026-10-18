@@ -4,7 +4,14 @@ import type { SelectOption } from "@opentui/core";
 export interface CommandOption {
   insert: string;
   label: string;
+  /** Shown in the row, so it may be cut for display. */
   detail: string;
+  /**
+   * The untruncated text, when there is more than `detail` shows. `$` search matches on THIS,
+   * not on the display string: a description cut at 71 characters would make the terminal find
+   * skills the web does not (and the two are supposed to share one matcher).
+   */
+  full?: string;
 }
 
 export function buildOptions(models: SelectOption[]): CommandOption[] {
