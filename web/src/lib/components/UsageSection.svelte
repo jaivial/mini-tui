@@ -20,6 +20,7 @@
     type UsageRow,
     type UsageView,
   } from "../usageClient";
+  import { cancelLoad, createUsageLoad, isCancel, isLatest, settleLoad, startLoad } from "../usageLoad";
 
   let { open = false }: { open?: boolean } = $props();
 
@@ -27,32 +28,50 @@
   let view = $state<UsageView | null>(null);
   let window_ = $state<string>("24h");
   let error = $state("");
-  let poller: ReturnType<typeof setInterval> | undefined;
+  // Which load may paint. Without it the panel rendered whichever response arrived
+  // last; see usageLoad.ts for the measurement that made this necessary.
+  const load = createUsageLoad("24h");
 
-  async function load() {
+  /**
+   * Fetch one window and paint it only if it is still the one being asked about.
+   *
+   * Every caller goes through here, so there is exactly one path a response can take to
+   * the screen and one place that decides whether it still belongs there.
+   */
+  async function fetchWindow(selected: string) {
+    const token = startLoad(load, selected);
     try {
-      view = await client.window(window_);
+      const next = await client.window(selected, token.controller.signal);
+      if (!isLatest(load, token)) return;
+      view = next;
       error = "";
     } catch (e) {
+      // A superseded or closed load is us changing our mind, not the ledger failing.
+      if (!isLatest(load, token) || isCancel(e)) return;
       error = (e as Error).message;
+    } finally {
+      settleLoad(load, token);
     }
   }
 
+  // Opening the panel and closing it again: poll the window on screen, and take the
+  // in-flight request down with the panel so it cannot paint into a closed modal.
   $effect(() => {
     if (!open) return;
-    void load();
-    poller = setInterval(() => { void load(); }, 15_000);
+    const pollerFor = setInterval(() => { void fetchWindow(window_); }, 15_000);
     return () => {
-      if (poller) clearInterval(poller);
-      poller = undefined;
+      clearInterval(pollerFor);
+      cancelLoad(load);
     };
   });
 
-  // A window change refetches immediately; the poll keeps the same window.
+  // The one trigger that follows the window: opening it, and every change to it. The
+  // poll deliberately does not depend on `window_` -- it reads it when it fires, so a
+  // window change is a single fetch instead of one per effect that mentions it.
   $effect(() => {
     const selected = window_;
     if (!open) return;
-    void client.window(selected).then((next) => { view = next; error = ""; }).catch((e) => { error = (e as Error).message; });
+    void fetchWindow(selected);
   });
 
   function rows(list: UsageRow[]) {
@@ -75,7 +94,7 @@
         type="button"
         class="rounded-md px-1.5 py-0.5 text-[10.5px] font-medium {window_ === w.id ? 'bg-brand-soft text-brand' : 'text-ink-muted hover:text-ink'}"
         aria-pressed={window_ === w.id}
-        onclick={() => { window_ = w.id; void load(); }}
+        onclick={() => { window_ = w.id; }}
       >{w.label}</button>
     {/each}
   </div>
