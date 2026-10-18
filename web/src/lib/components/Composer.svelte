@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ArrowUp, Square, Terminal as TerminalIcon, Globe, Paperclip, FileText, X, CircleAlert, Mic } from "@lucide/svelte";
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import Chip from "./Chip.svelte";
   import Button from "./Button.svelte";
   import ModelPicker from "./ModelPicker.svelte";
@@ -13,6 +13,17 @@
   import { fitHeight } from "../grow";
   import type { PromptMemory } from "../promptMemory";
   import { humanSize, uploadAttachment, ATTACH_ACCEPT, ATTACH_MAX, type AttachmentRef } from "../attachments";
+  import {
+    abandonDraft,
+    beginUpload,
+    cancelAllUploads,
+    cancelUpload,
+    createUploadState,
+    isCancel,
+    isCurrent,
+    pendingUploads,
+    settleUpload,
+  } from "../attachmentUpload";
   import AudioRecorder from "./control-ui/AudioRecorder.svelte";
   import { preferredAudioMimeType, type AudioRecording } from "../control-ui/recorder.svelte";
   import { recorderCanDiscard } from "../recorderBar";
@@ -38,6 +49,12 @@
     modelOpen = $bindable(false),
     disabled = false,
     /**
+     * E39: which conversation this prompt bar is writing for (the pane's session, "" for a
+     * new chat). It changes when the user moves to another conversation, which is exactly when
+     * a still-uploading file stops belonging to what is on screen.
+     */
+    draftKey = "",
+    /**
      * Float as a pill over the content (absolute in the pane's overlay layer) instead of a solid
      * full-width band: the transcript keeps the pane's full height behind it.
      */
@@ -49,6 +66,8 @@
   }: {
     /** ↑/↓ recall of the prompts sent in this chat (see lib/promptMemory.ts). */
     memory?: PromptMemory;
+    /** Which conversation this bar writes for; changes when the pane moves to another. */
+    draftKey?: string;
     value?: string;
     /** Commands and skills picked from the menus; joined to `value` only when the message is sent. */
     chips?: ChipT[];
@@ -92,11 +111,69 @@
   }
 
   // ---- attachments: pick, drop, upload
+  /**
+   * E39: uploads are owned by a registry (`attachmentUpload.ts`, no Svelte so a test can
+   * hold it), not by a local list that only knew when to push a result.
+   *
+   * What was measured on the deployed build: the in-flight chip had NO button at all, so a
+   * stalled upload could not be cancelled and `canSend` stayed false at t+2.5, t+12, t+22 and
+   * t+42 s; and the answer landing after the user had switched conversation attached the file
+   * to the NEXT message -- measured body: `POST /api/sessions {"prompt":"hola, esto es otra
+   * cosa", ... "attachments":[{"name":"secreto-e39.png"}]}`.
+   *
+   * So: every upload takes a real `AbortController` (the chip's button, `abandonDraft` when
+   * the pane shows another conversation, unmount, and the deadline all cancel it), and an
+   * answer may only attach while it is still the one this draft is waiting for.
+   */
+  const uploads = createUploadState();
   /** Files on their way to the server; the finished ones move into `attachments`. */
   let uploading = $state<{ key: string; name: string; size: number }[]>([]);
   let fileInput = $state<HTMLInputElement | null>(null);
   let dragging = $state(false);
   const canSend = $derived((hasMessage(chips, value) || attachments.length > 0) && !uploading.length && !disabled && !sending);
+
+  /** Repaint the chip row from the registry (a new array, so Svelte sees the change). */
+  function syncUploads() {
+    uploading = pendingUploads(uploads);
+  }
+
+  /**
+   * Run one upload to completion. Returns whether its file joined `attachments`: a cancelled
+   * or superseded answer does not, and must not be able to later -- which is why the check is
+   * `isCurrent(uploads, token)` and not "did we get a result".
+   */
+  async function runUpload(file: File, key: string): Promise<boolean> {
+    const token = beginUpload(uploads, file, key);
+    syncUploads();
+    try {
+      const ref = await uploadAttachment(file, token.controller.signal);
+      if (!isCurrent(uploads, token)) return false;
+      attachments = [...attachments, ref];
+      return true;
+    } finally {
+      settleUpload(uploads, token);
+      syncUploads();
+    }
+  }
+
+  /** Cancel one upload: the chip's button. Aborting settles the request for real. */
+  function cancelUploadByKey(key: string) {
+    if (cancelUpload(uploads, key)) syncUploads();
+  }
+
+  // Another conversation: nothing still in flight belongs to it. Measured without this, the
+  // answer landed in the fresh draft and rode out with the NEXT message the user typed.
+  $effect(() => {
+    draftKey;
+    const dropped = abandonDraft(uploads);
+    if (dropped) syncUploads();
+  });
+
+  // Leaving the pane takes its uploads with it: an answer nobody is waiting for must not
+  // reach a pane that is gone.
+  onDestroy(() => {
+    cancelAllUploads(uploads);
+  });
 
   function pickFiles() {
     fileInput?.click();
@@ -110,14 +187,14 @@
         continue;
       }
       const key = `${file.name}:${file.size}:${Math.random().toString(36).slice(2, 7)}`;
-      uploading = [...uploading, { key, name: file.name, size: file.size }];
       try {
-        const ref = await uploadAttachment(file);
-        attachments = [...attachments, ref];
+        await runUpload(file, key);
       } catch (error) {
-        toasts.push("Could not attach the file", { detail: (error as Error).message, tone: "err" });
-      } finally {
-        uploading = uploading.filter((u) => u.key !== key);
+        // A cancel is the user pressing the chip's button (or switching conversation, or the
+        // deadline firing): not something the server refused, so it is not painted as one.
+        if (!isCancel(error)) {
+          toasts.push("Could not attach the file", { detail: (error as Error).message, tone: "err" });
+        }
       }
     }
   }
@@ -154,17 +231,18 @@
     const stamp = new Date().toISOString().slice(11, 19).replaceAll(":", "-");
     const file = new File([recording.blob], `nota-de-voz-${stamp}.${ext}`, { type: ext === "m4a" ? "audio/mp4" : "audio/webm" });
     const key = `voice:${file.name}`;
-    uploading = [...uploading, { key, name: file.name, size: file.size }];
     try {
-      const ref = await uploadAttachment(file);
-      attachments = [...attachments, ref];
+      const attached = await runUpload(file, key);
+      // A cancelled or superseded upload keeps the take: the recorder's `recorded` state is
+      // exactly where a failed upload belongs, and "Enviar" is still there for the retry.
+      if (!attached) throw new DOMException("upload cancelled", "AbortError");
       recordingOpen = false;
       area?.focus();
     } catch (error) {
-      toasts.push("No se pudo adjuntar la nota de voz", { detail: (error as Error).message, tone: "err" });
+      if (!isCancel(error)) {
+        toasts.push("No se pudo adjuntar la nota de voz", { detail: (error as Error).message, tone: "err" });
+      }
       throw error;
-    } finally {
-      uploading = uploading.filter((u) => u.key !== key);
     }
   }
 
@@ -452,10 +530,25 @@
           </li>
         {/each}
         {#each uploading as up (up.key)}
-          <li class="flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-line/70 bg-canvas py-1 pl-2 pr-2 text-[12px] text-ink-faint" role="status">
+          <!--
+            E39: this chip used to render a spinner, a name and NOTHING else, so a stalled
+            upload had no way out and Send stayed disabled with no button to press (measured
+            disabled at t+42 s). Cancel is a real abort, not a spinner swap.
+          -->
+          <li class="flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-line/70 bg-canvas py-1 pl-2 pr-1 text-[12px] text-ink-faint">
+            <span class="sr-only">{up.name}:</span>
             <span class="size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-line-strong border-t-brand" aria-hidden="true"></span>
-            <span class="max-w-44 truncate" title={up.name}>{up.name}</span>
-            <span class="tnum shrink-0">{humanSize(up.size)}</span>
+            <span class="max-w-44 truncate" title={up.name} aria-hidden="true">{up.name}</span>
+            <span class="tnum shrink-0" aria-hidden="true">{humanSize(up.size)}</span>
+            <button
+              type="button"
+              class="interactive grid size-7 shrink-0 cursor-pointer place-items-center rounded-md text-ink-faint hover:bg-raised hover:text-ink pointer-coarse:size-11"
+              aria-label="Cancel the upload of {up.name}"
+              title="Cancel this upload"
+              onclick={() => cancelUploadByKey(up.key)}
+            >
+              <X size={12} strokeWidth={2} aria-hidden="true" />
+            </button>
           </li>
         {/each}
       </ul>

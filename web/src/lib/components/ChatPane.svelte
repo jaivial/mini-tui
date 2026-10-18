@@ -577,6 +577,7 @@
           bind:value={pane.prompt}
           bind:chips={pane.chips}
           bind:attachments={pane.attachments}
+          draftKey={pane.sessionId ?? ""}
           bind:modelOpen
           running={session.status === "running"}
           {sending}
@@ -658,6 +659,7 @@
           bind:value={pane.prompt}
           bind:chips={pane.chips}
           bind:attachments={pane.attachments}
+          draftKey={pane.sessionId ?? ""}
           bind:modelOpen
           {sending}
           {targets}

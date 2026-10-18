@@ -20,13 +20,21 @@ export interface AttachmentRef {
 export const ATTACH_MAX = 15 * 1024 * 1024;
 export const ATTACH_ACCEPT = ".png,.jpg,.jpeg,.gif,.webp,.bmp,.avif,.pdf,.txt,.md,.csv,.json,.log,.mp3,.wav,.ogg,.m4a,.mp4,.webm,.zip";
 
-/** Upload one file. Throws with the server's reason (type, size, IO). */
-export async function uploadAttachment(file: File): Promise<AttachmentRef> {
+/**
+ * Upload one file. Throws with the server's reason (type, size, IO).
+ *
+ * E39: `signal` is wired because this is the one web request that WRITES -- a bare
+ * `fetch` here could not be cancelled and had no deadline, so a stalled upload pinned
+ * `canSend` false with no button to press (measured: Send still disabled at t+42 s, and
+ * the answer landing after the user had moved on attached the file to the NEXT message).
+ * The caller owns cancellation; see `attachmentUpload.ts`.
+ */
+export async function uploadAttachment(file: File, signal?: AbortSignal): Promise<AttachmentRef> {
   if (file.size > ATTACH_MAX) throw new Error(`${file.name}: pasa de ${Math.round(ATTACH_MAX / 1024 / 1024)} MB`);
   if (!file.size) throw new Error(`${file.name}: el archivo está vacío`);
   const body = new FormData();
   body.append("file", file, file.name);
-  const res = await fetch("/api/attachments", { method: "POST", body });
+  const res = await fetch("/api/attachments", { method: "POST", body, signal });
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
     try {
