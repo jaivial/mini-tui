@@ -53,6 +53,23 @@
     }
   }
 
+  /**
+   * Why there is no QR. A bridge that was merely slow and one that refused the
+   * call are different problems with different fixes, and the old single string
+   * ("QR no disponible ahora") said neither — so a slow bridge looked exactly
+   * like a dead one, which is what sent people to restart a working service.
+   */
+  function qrMessage(error: string): string {
+    switch (error) {
+      case "qr_rate_limited": return "Pide uno cada ~40 s: WhatsApp reinicia el emparejamiento en cada intento.";
+      case "weai_mini_too_slow": return "weai-mini tardó demasiado en responder. El servicio está vivo: reintenta en unos segundos.";
+      case "weai_mini_unreachable": return "weai-mini no responde. Comprueba que el servicio esté arrancado.";
+      case "already_connected": return "";
+      case "no_qr_available": return "No llegó ningún QR. Comprueba el estado y reintenta en unos segundos.";
+      default: return "QR no disponible ahora.";
+    }
+  }
+
   async function refreshQr() {
     if (qrBusy) return;
     qrBusy = true;
@@ -62,7 +79,7 @@
       const next = await client.evoQr(token.controller.signal);
       if (!isLatest(qrReads, token)) return;
       qr = next;
-      if (next.error && next.error !== "already_connected") qrError = next.error === "qr_rate_limited" ? "Espera unos segundos y vuelve a intentarlo." : "QR no disponible ahora.";
+      if (next.error && next.error !== "already_connected") qrError = qrMessage(next.error);
       else if (next.error === "already_connected") qrError = "";
     } catch (e) {
       if (isCancel(e) || !isLatest(qrReads, token)) return;
@@ -90,9 +107,11 @@
   function pairMessage(error?: string): string {
     switch (error) {
       case "invalid_number": return "Ese número no parece válido. Usa formato internacional, p. ej. +34 600 000 000.";
-      case "code_rate_limited": return "Espera unos segundos y vuelve a intentarlo.";
+      case "code_rate_limited": return "Pide uno cada ~40 s: cada intento reinicia el emparejamiento.";
       case "already_connected": return "La instancia ya está conectada. No hace falta emparejar nada.";
       case "no_code_available": return "No llegó ningún código. Comprueba el estado y reintenta en unos segundos.";
+      case "weai_mini_too_slow": return "weai-mini tardó demasiado en responder. El servicio está vivo: reintenta en unos segundos.";
+      case "weai_mini_unreachable": return "weai-mini no responde. Comprueba que el servicio esté arrancado.";
       default: return "No se pudo pedir el código.";
     }
   }
