@@ -36,8 +36,8 @@ const names = (l: { entries: { name: string }[] }) => l.entries.map((e) => e.nam
 const WANT = ["api", "it's quoted", "Proj9", "Proj10", "web", "web-link", "with space", "$(touch pwned)", "locked"];
 
 describe("local listing", () => {
-  test("only folders (links to folders too), visible first, numbers in order, git marked", () => {
-    const l = listLocal(root);
+  test("only folders (links to folders too), visible first, numbers in order, git marked", async () => {
+    const l = await listLocal(root);
     expect(names(l).sort()).toEqual([...WANT, ".cache"].sort());
     expect(names(l).at(-1)).toBe(".cache"); // hidden ones last
     expect(names(l).indexOf("Proj9")).toBeLessThan(names(l).indexOf("Proj10"));
@@ -45,27 +45,27 @@ describe("local listing", () => {
     expect(l.entries.find((e) => e.name === "web")!.git).toBe(false);
     expect(l.parent).toBe(join(root, ".."));
   });
-  test("~, relative and .. paths resolve to the real folder", () => {
+  test("~, relative and .. paths resolve to the real folder", async () => {
     expect(expandLocal("", root)).toBe(root);
     expect(expandLocal("~/api", root)).toBe(join(root, "api"));
     expect(expandLocal("api", root)).toBe(join(root, "api"));
-    expect(listLocal("api/..", root).path).toBe(listLocal(root).path);
-    expect(listLocal(join(root, "web-link")).path).toBe(listLocal(join(root, "web")).path); // symlink resolved
+    expect((await listLocal("api/..", root)).path).toBe((await listLocal(root)).path);
+    expect((await listLocal(join(root, "web-link"))).path).toBe((await listLocal(join(root, "web"))).path); // symlink resolved
   });
-  test("the root has no parent", () => {
-    expect(listLocal("/").parent).toBeNull();
+  test("the root has no parent", async () => {
+    expect((await listLocal("/")).parent).toBeNull();
   });
-  test("a missing path, a file and a folder you cannot open are errors with a status", () => {
-    const err = (p: string) => { try { listLocal(p); return null; } catch (e) { return e as FolderError; } };
-    expect(err(join(root, "nope"))?.status).toBe(404);
-    expect(err(join(root, "README.md"))?.status).toBe(400);
-    if (process.getuid?.() !== 0) expect(err(join(root, "locked"))?.status).toBe(403);
+  test("a missing path, a file and a folder you cannot open are errors with a status", async () => {
+    const err = async (p: string) => { try { await listLocal(p); return null; } catch (e) { return e as FolderError; } };
+    expect((await err(join(root, "nope")))?.status).toBe(404);
+    expect((await err(join(root, "README.md")))?.status).toBe(400);
+    if (process.getuid?.() !== 0) expect((await err(join(root, "locked")))?.status).toBe(403);
   });
-  test("a huge folder is capped and says so", () => {
+  test("a huge folder is capped and says so", async () => {
     const big = join(root, "big");
     mkdirSync(big);
     for (let i = 0; i < FOLDER_LIMIT + 5; i++) mkdirSync(join(big, `d${i}`));
-    const l = listLocal(big);
+    const l = await listLocal(big);
     expect(l.entries.length).toBe(FOLDER_LIMIT);
     expect(l.truncated).toBe(true);
     rmSync(big, { recursive: true });
@@ -88,10 +88,11 @@ describe("remote listing (the real script, through bash -s)", () => {
   test("a path with quotes is passed through quoted", () => {
     expect(parseRemoteListing(runRemote(join(root, "it's quoted"))).path).toBe(join(root, "it's quoted"));
   });
-  test("~ and relative paths use the remote $HOME", () => {
-    expect(parseRemoteListing(runRemote("~")).path).toBe(listLocal(root).path);
-    expect(parseRemoteListing(runRemote("~/api")).path).toBe(join(listLocal(root).path, "api"));
-    expect(parseRemoteListing(runRemote("web")).path).toBe(join(listLocal(root).path, "web"));
+  test("~ and relative paths use the remote $HOME", async () => {
+    const local = await listLocal(root);
+    expect(parseRemoteListing(runRemote("~")).path).toBe(local.path);
+    expect(parseRemoteListing(runRemote("~/api")).path).toBe(join(local.path, "api"));
+    expect(parseRemoteListing(runRemote("web")).path).toBe(join(local.path, "web"));
   });
   test("missing, not-a-folder and no-permission come back as the same errors as local", () => {
     const err = (p: string) => { try { parseRemoteListing(runRemote(p)); return null; } catch (e) { return e as FolderError; } };
@@ -140,7 +141,7 @@ describe("where a chat starts", async () => {
     const script = buildRemoteScript("hi", "/srv/odd name/it's");
     expect(script).toContain(`cd '/srv/odd name/it'\\''s' 2>/dev/null || cd "$HOME"`);
   });
-  test("the remote script really starts in the folder (run through bash, as ssh would)", () => {
+  test("the remote script really starts in the folder (run through bash, as ssh would)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "minitui-remote-cwd-"));
     mkdirSync(join(dir, "odd name"));
     // The agent line is no longer `exec mini-tui ...` — the script supervises the agent so it
@@ -153,7 +154,7 @@ describe("where a chat starts", async () => {
       'echo "STARTED_IN=$(pwd -P)"; exit 0; # ',
     );
     const out = Bun.spawnSync({ cmd: ["bash", "-s"], stdin: Buffer.from(script) }).stdout.toString();
-    expect(out.trim()).toBe(`STARTED_IN=${listLocal(join(dir, "odd name")).path}`);
+    expect(out.trim()).toBe(`STARTED_IN=${(await listLocal(join(dir, "odd name"))).path}`);
     rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -1215,7 +1215,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         const asked = url.searchParams.get("path") ?? "";
         if (asked.length > 4096 || asked.includes("\0")) return json({ error: "invalid path" }, 400);
         try {
-          if (!hostId || hostId === "local") return json(listLocal(asked));
+          if (!hostId || hostId === "local") return json(await listLocal(asked));
           const host = loadHosts().find((h) => h.id === hostId);
           if (!host) return json({ error: "unknown remote host" }, 404);
           return json(await listRemote({ host: host.host, port: host.port, user: host.user, identity: host.identity }, asked || host.workdir || "~"));

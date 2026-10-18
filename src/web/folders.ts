@@ -3,10 +3,11 @@
  * so the picker is the same component either way.
  *
  * Only directories are listed (names, never contents), hidden ones last, capped so a folder with 50 000
- * entries cannot stall the server or the page. The path a listing returns is the resolved, absolute one,
+ * entries cannot stall the server or the page -- the cap bounds the work as well as the answer, and
+ * the listing hands the thread back while it reads (E45). The path a listing returns is the resolved, absolute one,
  * so `~`, `..` and symlinks all end up as a real folder the agent will actually start in.
  */
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -42,9 +43,94 @@ export class FolderError extends Error {
   }
 }
 
+/**
+ * ONE shared `Intl.Collator`, because `String.localeCompare` builds a fresh collator on every
+ * single comparison. Measured on a 30 000-folder directory: 1 018 ms of the 1 165 ms this listing
+ * took was the sort, and 27 ms of it is the same comparison with the collator reused (E45).
+ */
+const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+/**
+ * Visible before hidden, then by name with numbers in order and case and accents ignored. A
+ * collation tie ("a" vs "A") is broken by codepoint, so the answer never depends on the order in
+ * which the filesystem happened to hand the names over.
+ */
+function compareNames(a: string, b: string): number {
+  if (a === b) return 0;
+  return Number(a.startsWith(".")) - Number(b.startsWith(".")) || COLLATOR.compare(a, b) || (a < b ? -1 : 1);
+}
+
 /** Sort: visible before hidden, then by name, case-insensitively and with numbers in order. */
 function sortEntries(entries: FolderEntry[]): FolderEntry[] {
-  return entries.sort((a, b) => Number(a.hidden) - Number(b.hidden) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  return entries.sort((a, b) => compareNames(a.name, b.name));
+}
+
+/** One subfolder candidate: a directory entry, or a link -- only a `stat` can say about a link. */
+export interface FolderCandidate {
+  name: string;
+  /** True for a symlink: its kind in the dirent says nothing, so it takes a probe to know. */
+  link: boolean;
+}
+
+/** What the selection may ask about a candidate. Injected so it can be measured without a disk. */
+export interface FolderProbes {
+  /** Asked only about links. */
+  isFolder: (name: string) => Promise<boolean> | boolean;
+  /** Asked only about entries that are actually returned. */
+  hasGit: (name: string) => Promise<boolean> | boolean;
+}
+
+/** Candidates per slice: bounded, so a huge folder cannot monopolise the thread it runs on. */
+const SLICE = 2_048;
+const yieldLoop = () => new Promise<void>((done) => setImmediate(done));
+
+/**
+ * The first `limit` folders of a directory, in the order the picker shows, and whether there are
+ * more than `limit`.
+ *
+ * THE CAP HAS TO BOUND THE WORK AND NOT ONLY THE ANSWER. The old local listing walked every entry
+ * of the folder and stat-ed every one of them -- 30 000 stats and 30 000 caught ENOENT exceptions
+ * (the `.git` that is not there) for a 30 000-folder directory whose answer is 500 entries, on the
+ * server's one thread, which froze every other request on the box for over a second (E45). Only the
+ * head of the collated order can
+ * change the answer, and the shortest head that can hold `limit` folders plus one more to report
+ * truncation is `limit + 1 + links`: at the very worst every link turns out not to be a folder.
+ * Everything past it sorts after the answer.
+ */
+export async function selectFolders(
+  candidates: readonly FolderCandidate[],
+  probes: FolderProbes,
+  limit = FOLDER_LIMIT,
+): Promise<{ entries: Array<{ name: string; hidden: boolean; git: boolean }>; truncated: boolean }> {
+  if (limit <= 0) return { entries: [], truncated: candidates.length > 0 };
+  let links = 0;
+  for (const c of candidates) if (c.link) links++;
+  const window = Math.min(candidates.length, limit + 1 + links);
+  const top: FolderCandidate[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i]!;
+    if (top.length === window && compareNames(c.name, top[window - 1]!.name) >= 0) continue;
+    let lo = 0, hi = top.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (compareNames(c.name, top[mid]!.name) < 0) hi = mid;
+      else lo = mid + 1;
+    }
+    top.splice(lo, 0, c);
+    if (top.length > window) top.pop();
+    if (i % SLICE === SLICE - 1) await yieldLoop();
+  }
+  const entries: Array<{ name: string; hidden: boolean; git: boolean }> = [];
+  let truncated = false;
+  for (const c of top) {
+    if (c.link && !(await probes.isFolder(c.name))) continue;
+    if (entries.length === limit) {
+      truncated = true;
+      break;
+    }
+    entries.push({ name: c.name, hidden: c.name.startsWith("."), git: await probes.hasGit(c.name) });
+  }
+  return { entries, truncated };
 }
 
 /** `~`, `~/x`, relative (to home) and absolute paths, to an absolute path. Empty means home. */
@@ -55,51 +141,55 @@ export function expandLocal(input: string, home = homedir()): string {
   return isAbsolute(raw) ? resolve(raw) : resolve(home, raw);
 }
 
-export function listLocal(input: string, home = homedir()): FolderListing {
+/**
+ * The subfolders of a folder on this machine, resolved to real absolute paths.
+ *
+ * Async, and it hands the thread back every slice, on purpose: this runs on the server's one
+ * thread, and a folder with many subfolders used to freeze every other request on the box while it
+ * worked through all of them (E45). Each returned entry costs exactly one stat, and the cap bounds
+ * how many are ever looked at.
+ */
+export async function listLocal(input: string, home = homedir()): Promise<FolderListing> {
   const asked = expandLocal(input, home);
   let path: string;
   try {
-    path = realpathSync(asked);
+    path = await realpath(asked);
   } catch {
     throw new FolderError(`${asked} does not exist`, 404);
   }
-  let isDir = false;
-  try {
-    isDir = statSync(path).isDirectory();
-  } catch {
-    /* unreadable */
-  }
-  if (!isDir) throw new FolderError(`${path} is not a folder`, 400);
+  // `throwIfNoEntry: false` answers "no" instead of throwing: a missing `.git` is the normal case,
+  // and throwing it 30 000 times is not something a listing should ever do.
+  const at = (p: string) => stat(p, { throwIfNoEntry: false }).catch(() => undefined);
+  if (!(await at(path))?.isDirectory()) throw new FolderError(`${path} is not a folder`, 400);
   let names: import("node:fs").Dirent[];
   try {
-    names = readdirSync(path, { withFileTypes: true });
+    names = await readdir(path, { withFileTypes: true });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    throw new FolderError(code === "EACCES" || code === "EPERM" ? `no permission to open ${path}` : `could not open ${path}`, code === "EACCES" || code === "EPERM" ? 403 : 400);
+    const denied = code === "EACCES" || code === "EPERM";
+    throw new FolderError(denied ? `no permission to open ${path}` : `could not open ${path}`, denied ? 403 : 400);
   }
-  const entries: FolderEntry[] = [];
+  const candidates: FolderCandidate[] = [];
   for (const d of names) {
-    let dir = d.isDirectory();
-    if (!dir && d.isSymbolicLink()) {
-      try {
-        dir = statSync(join(path, d.name)).isDirectory();
-      } catch {
-        dir = false; // a dangling link
-      }
-    }
-    if (!dir) continue;
-    const full = join(path, d.name);
-    let git = false;
-    try {
-      git = statSync(join(full, ".git")).isDirectory() || statSync(join(full, ".git")).isFile();
-    } catch {
-      /* not a repo */
-    }
-    entries.push({ name: d.name, path: full, hidden: d.name.startsWith("."), git });
+    if (d.isDirectory()) candidates.push({ name: d.name, link: false });
+    else if (d.isSymbolicLink()) candidates.push({ name: d.name, link: true });
   }
-  sortEntries(entries);
-  const parent = dirname(path) === path ? null : dirname(path);
-  return { path, parent, home, entries: entries.slice(0, FOLDER_LIMIT), truncated: entries.length > FOLDER_LIMIT };
+  const picked = await selectFolders(candidates, {
+    // A folder's kind is already in the dirent: only a link costs a probe.
+    isFolder: async (name) => !!(await at(join(path, name)))?.isDirectory(),
+    // One stat, not the old two plus a thrown exception for every folder that was not a repo.
+    hasGit: async (name) => {
+      const dot = await at(join(path, name, ".git"));
+      return !!dot && (dot.isDirectory() || dot.isFile());
+    },
+  });
+  return {
+    path,
+    parent: dirname(path) === path ? null : dirname(path),
+    home,
+    entries: picked.entries.map((e) => ({ name: e.name, path: join(path, e.name), hidden: e.hidden, git: e.git })),
+    truncated: picked.truncated,
+  };
 }
 
 /** Single-quote for a POSIX shell. */
