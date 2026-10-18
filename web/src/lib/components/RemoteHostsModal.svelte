@@ -4,7 +4,16 @@
   import Badge from "./Badge.svelte";
   import Modal from "./Modal.svelte";
   import { api } from "../api";
-  import { isCancel, withVerdict, withoutVerdict, type ProbeResults } from "../probeState";
+  import {
+    canProbe,
+    isCancel,
+    settleProbe,
+    startProbe,
+    withVerdict,
+    withoutVerdict,
+    type ProbeInFlight,
+    type ProbeResults,
+  } from "../probeState";
   import { store } from "../stores/sessions.svelte";
   import { toasts } from "../stores/toast.svelte";
   import type { RemoteHost } from "../types";
@@ -12,7 +21,15 @@
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
   let editing = $state<RemoteHost | null>(null);
-  let probing = $state<string | null>(null);
+  /**
+   * Which rows are being tested, one entry per host.
+   *
+   * This was a single `probing: string | null`, which is the whole defect: probing host B
+   * un-probed host A, so A's row went back to an enabled "Test" while A's own request was
+   * still in flight. Measured on the deployed build: probe A, probe B, probe A again, then
+   * close the panel -> 3 requests, 2 aborted, 1 left running.
+   */
+  let inFlight = $state<ProbeInFlight>(new Set());
   let probeResult = $state<ProbeResults>({});
 
   function blank(): RemoteHost {
@@ -38,13 +55,23 @@
     if (editing?.id === id) editing = null;
     await store.load();
   }
-  /** In flight probes, so closing the panel actually cancels them. */
-  let probes = new Map<string, AbortController>();
+  /**
+   * In flight probes, so closing the panel actually cancels them.
+   *
+   * Keyed by a fresh token per probe and NOT by host id. Keyed by host id, a second probe of
+   * the same host overwrote the first controller and the first request could never be
+   * aborted again -- measured: closing the panel left one of three running. A token per
+   * probe makes "cancel everything" mean every controller that was ever created.
+   */
+  let probes = new Map<symbol, AbortController>();
 
   async function probe(host: RemoteHost) {
+    // The row's own state decides, so two hosts can be tested at once and neither row lies.
+    if (!canProbe(inFlight, host.id)) return;
+    const token = Symbol(host.id);
     const controller = new AbortController();
-    probes = new Map(probes).set(host.id, controller);
-    probing = host.id;
+    probes = new Map(probes).set(token, controller);
+    inFlight = startProbe(inFlight, host.id);
     probeResult = withoutVerdict(probeResult, host.id);
     try {
       const res = await api.probeHost(host, controller.signal);
@@ -58,9 +85,9 @@
       probeResult = withVerdict(probeResult, host.id, { ok: false, message: (error as Error).message });
     } finally {
       const rest = new Map(probes);
-      rest.delete(host.id);
+      rest.delete(token);
       probes = rest;
-      if (probing === host.id) probing = null;
+      inFlight = settleProbe(inFlight, host.id);
     }
   }
 
@@ -68,7 +95,7 @@
   function cancelAll() {
     for (const controller of probes.values()) controller.abort();
     probes = new Map();
-    probing = null;
+    inFlight = new Set();
   }
 </script>
 
@@ -149,7 +176,7 @@
             <div class="tnum mt-0.5 truncate font-mono text-[11px] text-ink-faint">
               {host.user}@{host.host}:{host.port} · {host.workdir}
             </div>
-            {#if probing === host.id}
+            {#if inFlight.has(host.id)}
               <div class="mt-1 flex items-center gap-1.5 text-[11px] text-ink-muted" role="status">
                 <span class="inline-block size-1.5 animate-pulse rounded-full bg-brand" aria-hidden="true"></span>
                 <span>Connecting…</span>
@@ -166,9 +193,9 @@
             variant="outline"
             size="sm"
             icon={Plug}
-            loading={probing === host.id}
+            loading={inFlight.has(host.id)}
             onclick={() => probe(host)}
-          >{probing === host.id ? "Testing" : "Test"}</Button>
+          >{inFlight.has(host.id) ? "Testing" : "Test"}</Button>
           <Button variant="ghost" size="icon-sm" icon={Trash2} title="Remove" onclick={() => remove(host.id)} />
         </div>
       {/each}
