@@ -364,6 +364,7 @@ export function App(props: AppProps) {
         insert: `$${skill.name} `,
         label: `$${skill.name}`,
         detail: skill.description.length > 72 ? `${skill.description.slice(0, 71)}…` : skill.description,
+        full: skill.description,
       })),
     [skillsDir],
   );
@@ -387,12 +388,14 @@ export function App(props: AppProps) {
   };
   /** Palette rows for the prompt text: commands after a leading `/`, skills for a `$name` being
    * typed anywhere — matched on any word of the name in any order, so `$pr` lists `$pr-body`,
-   * `$pr-fix-loop`, … and `$body` or `$body-pr` finds `$pr-body` too. */
+   * `$pr-fix-loop`, … and `$body` or `$body-pr` finds `$pr-body` too. A name match always wins; the description is searched too, but only below every name rank. */
   const paletteFor = (text: string, cursor: number = cursorOf(text)): CommandOption[] => {
     if (text.startsWith("/") && !text.includes(" ")) return matchOptions(text, commandOptionsRef.current);
     if (text.startsWith("/model ")) return matchOptions(text, commandOptionsRef.current);
     const at = skillQueryAt(text, cursor);
-    return at ? filterSkills(at.query, skillOptionsRef.current, (option) => option.label.slice(1)) : [];
+    return at
+      ? filterSkills(at.query, skillOptionsRef.current, (option) => option.label.slice(1), (option) => option.full)
+      : [];
   };
 
   // `$skill` references in the prompt keep a color of their own (known skills only).

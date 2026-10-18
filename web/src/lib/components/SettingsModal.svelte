@@ -15,6 +15,7 @@
   import { toasts } from "../stores/toast.svelte";
   import { api } from "../api";
   import { relativeTime } from "../format";
+  import { skillIsCut } from "../skillDescription";
   import type { ProviderCatalogEntry } from "../types";
 
   let {
@@ -52,6 +53,15 @@
   let testing = $state(false);
   let formError = $state("");
   let removing = $state("");
+  // Which skill descriptions are showing in full. Clamped to two lines otherwise (see
+  // skillDescription.ts): a Set, so it survives the list re-rendering when skills change.
+  let openSkills = $state<Set<string>>(new Set());
+  const toggleSkill = (name: string) => {
+    const next = new Set(openSkills);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    openSkills = next;
+  };
   let filter = $state("");
 
   const connectedIds = $derived(new Set(catalog.connected.map((p) => p.id)));
@@ -373,9 +383,27 @@
         {:else}
           <ul class="flex flex-col gap-1.5">
             {#each catalog.skills as s (s.name)}
+              {@const cut = skillIsCut(s.description)}
               <li class="rounded-lg border border-line px-3 py-2">
                 <div class="font-mono text-[12.5px] font-medium text-ink">${s.name}</div>
-                {#if s.description}<div class="mt-0.5 line-clamp-2 text-[12.5px] text-ink-muted">{s.description}</div>{/if}
+                {#if s.description}
+                  <div
+                    id="{uid}-skill-{s.name}"
+                    class="mt-0.5 text-[12.5px] text-ink-muted {cut && !openSkills.has(s.name) ? 'line-clamp-2' : ''}"
+                  >{s.description}</div>
+                  {#if cut}
+                    <!-- Two lines of a description that averages 561 characters read as the WHOLE
+                         one, which is E22/E23's exact failure: a clipped surface presented as a
+                         complete one. The button is what makes the rest reachable. -->
+                    <button
+                      type="button"
+                      class="interactive mt-0.5 cursor-pointer text-[11.5px] text-ink-faint hover:text-ink"
+                      aria-expanded={openSkills.has(s.name)}
+                      aria-controls="{uid}-skill-{s.name}"
+                      onclick={() => toggleSkill(s.name)}
+                    >{openSkills.has(s.name) ? "less" : "more"}</button>
+                  {/if}
+                {/if}
               </li>
             {/each}
           </ul>

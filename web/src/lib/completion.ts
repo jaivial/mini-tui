@@ -38,7 +38,9 @@ export function completionAt(text: string, cursor: number, commands: CommandInfo
   }
   const skill = skillQueryAt(text, cursor);
   if (skill) {
-    const items = filterSkills(skill.query, skills, (s) => s.name);
+    // The description joins the ranking: the server already ships it, and it is what says what
+    // a skill is FOR. Every name rank still wins, so $cu keeps leading with $cu (skillMatchRank).
+    const items = filterSkills(skill.query, skills, (s) => s.name, (s) => s.description);
     return items.length ? { kind: "skill", start: skill.start, query: skill.query, items } : null;
   }
   return null;
