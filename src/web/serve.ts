@@ -38,6 +38,7 @@ import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
+import { bodyRefusal, BodyTimeout, EmptyBody, readBody, readJsonBody, type BodyOutcome } from "./bodyRead";
 import { syncAllSkills } from "../skills";
 import { etagFor, isFresh, mayRevalidate, revalidationHeaders } from "./etag";
 import { compressBody } from "./compress";
@@ -125,6 +126,18 @@ function rateLimited(which: keyof typeof LIMITS, request: Request, srv: unknown)
   const taken = LIMITS[which].take(ip);
   if (taken.ok) return null;
   return json({ error: "too many requests" }, 429, { "retry-after": String(taken.retryAfter) });
+}
+
+/**
+ * The same limiter, but handing back the KEY it charged rather than only the
+ * verdict, so the caller can `give` it back if the request it was charged for
+ * turns out never to have happened (E40: a client that opens the connection and
+ * stops sending spends the token and delivers nothing).
+ */
+function charged(which: keyof typeof LIMITS, request: Request, srv: unknown): { limited: Response | null; key: string } {
+  const key = (srv as { requestIP?: (r: Request) => { address: string } | null }).requestIP?.(request)?.address ?? "local";
+  const taken = LIMITS[which].take(key);
+  return { limited: taken.ok ? null : json({ error: "too many requests" }, 429, { "retry-after": String(taken.retryAfter) }), key };
 }
 
 /** v6-C: a bounded `?limit=`, so a panel can page the decision trail. */
@@ -479,11 +492,44 @@ async function revalidate(
 }
 
 async function readJson(request: Request): Promise<Record<string, unknown>> {
+  const outcome = await readJsonBody(request);
+  return outcome.ok ? outcome.value : {};
+}
+
+/**
+ * The JSON body, or the refusal. Every STATE-CHANGING route goes through here.
+ *
+ * `readJson` answering `{}` to a body that never arrived is what let a
+ * truncated `POST /api/sessions` answer 201 and spawn a real agent (measured,
+ * E40): the client was gone, the body was half a JSON document, and the route
+ * read the difference as "a request to create a session with no prompt". A
+ * request that carries nothing is refused with the reason, not executed.
+ *
+ * The token the limiter already took goes back when the body never arrived.
+ */
+async function readJsonOrRefuse(
+  request: Request,
+  limiter?: RateLimiter,
+  key?: string,
+): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; response: Response }> {
+  let outcome: BodyOutcome;
   try {
-    return (await request.json()) as Record<string, unknown>;
-  } catch {
-    return {};
+    outcome = await readJsonBody(request);
+  } catch (error) {
+    // The watchdog gave up, or there was never a body. Either way the token was
+    // charged for a request that did not happen, so it goes back. 408 is the
+    // honest status for a body that stopped arriving; 400 for one never sent.
+    if (limiter && key) limiter.give(key);
+    if (error instanceof BodyTimeout) return { ok: false, response: json({ error: error.message }, error.status) };
+    if (error instanceof EmptyBody) return { ok: false, response: json({ error: "expected a JSON body" }, 400) };
+    return { ok: false, response: json({ error: "the request body could not be read" }, 400) };
   }
+  if (outcome.ok) return { ok: true, body: outcome.value };
+  // Nothing arrived, or what arrived is not a body this route can act on: the
+  // token goes back (it was charged for a request that did not happen) and the
+  // answer is a 400 that says which.
+  if (limiter && key) limiter.give(key);
+  return { ok: false, response: json({ error: bodyRefusal(outcome) }, 400) };
 }
 
 function hostToApi(host: RemoteHostRecord): RemoteHost {
@@ -841,16 +887,36 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       // what the client sends on with its next prompt (ids only).
       if (path === "/attachments" && request.method === "POST") {
         if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
-        const limited = rateLimited("attachment", request, srv);
+        const { limited, key: uploadKey } = charged("attachment", request, srv);
         if (limited) return limited;
         // Refuse the upload before reading it: formData() would buffer the whole
         // body in memory before the size rule could answer 413. A declared
         // content-length already past the cap never gets parsed. (A missing
         // header still parses and is bounded by ATTACH_MAX_BYTES afterwards.)
         const declared = Number(request.headers.get("content-length") ?? "");
-        if (Number.isFinite(declared) && declared > ATTACH_MAX_BYTES + 8192) return json({ error: `el archivo pasa de ${Math.round(ATTACH_MAX_BYTES / 1024 / 1024)} MB` }, 413);
-        const form = await request.formData().catch(() => null);
-        const file = form?.get("file");
+        if (Number.isFinite(declared) && declared > ATTACH_MAX_BYTES + 8192) {
+          // Refused without reading: the token was charged for a body that is
+          // never going to arrive, so it goes back (E40).
+          LIMITS.attachment.give(uploadKey);
+          return json({ error: `el archivo pasa de ${Math.round(ATTACH_MAX_BYTES / 1024 / 1024)} MB` }, 413);
+        }
+        // The read has a PROGRESS deadline (E40): `idleTimeout` is a property of
+        // the connection, so a client that sends the headers and then stops
+        // parks this handler indefinitely — measured >130 s with the connection
+        // still open and the token already spent. `readBody` watches a clone for
+        // progress and gives up when none arrives; `formData()` on the original
+        // still spools the file exactly as before.
+        let form: FormData;
+        try {
+          form = await readBody(request, (req: Request) => req.formData(), ATTACH_MAX_BYTES + 8192);
+        } catch (error) {
+          LIMITS.attachment.give(uploadKey);
+          // 408 is the client's socket going quiet; 400 is a request that simply
+          // is not an upload. Conflating them is the lie E40 already had.
+          if (error instanceof BodyTimeout) return json({ error: error.message }, error.status);
+          return json({ error: "expected multipart/form-data with a `file` field" }, 400);
+        }
+        const file = form.get("file");
         if (!file || typeof file === "string") return json({ error: "expected multipart/form-data with a `file` field" }, 400);
         try {
           const bytes = new Uint8Array(await file.arrayBuffer());
@@ -929,9 +995,14 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
 
       if (path === "/sessions" && request.method === "GET") return json(sessions.list().map(summarize));
       if (path === "/sessions" && request.method === "POST") {
-        const spawnLimit = rateLimited("sessionCreate", request, srv);
+        const { limited: spawnLimit, key: spawnKey } = charged("sessionCreate", request, srv);
         if (spawnLimit) return spawnLimit;
-        const body = await readJson(request);
+        // A body that never arrived is not an empty request (E40): this route
+        // starts an AGENT, and a truncated body used to answer 201 and spawn one
+        // for a client that was already gone.
+        const spawnBody = await readJsonOrRefuse(request, LIMITS.sessionCreate, spawnKey);
+        if (!spawnBody.ok) return spawnBody.response;
+        const body = spawnBody.body;
         log("api.session.create", { cwd: body.cwd ?? "", model: body.model ?? "", target: body.target ?? "local" });
         let session;
         try {
@@ -1015,9 +1086,11 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         const id = decodeURIComponent(sessionMatch[1] as string);
         const action = sessionMatch[2];
         if (action === "/prompt" && request.method === "POST") {
-          const turnLimit = rateLimited("prompt", request, srv);
+          const { limited: turnLimit, key: turnKey } = charged("prompt", request, srv);
           if (turnLimit) return turnLimit;
-          const body = await readJson(request);
+          const turnBody = await readJsonOrRefuse(request, LIMITS.prompt, turnKey);
+          if (!turnBody.ok) return turnBody.response;
+          const body = turnBody.body;
           log("api.session.prompt", { id, len: String(body.prompt ?? "").length });
           try {
             await sessions.send(id, String(body.prompt ?? ""), body.attachments);
@@ -1032,7 +1105,9 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
           return json({ ok: true });
         }
         if (action === "/model" && request.method === "POST") {
-          const body = await readJson(request);
+          const modelBody = await readJsonOrRefuse(request);
+          if (!modelBody.ok) return modelBody.response;
+          const body = modelBody.body;
           const model = String(body.model ?? "").trim();
           if (!model) return json({ error: "a model name is required" }, 400);
           if (!sessions.get(id)) return json({ error: "unknown session" }, 404);
@@ -1042,7 +1117,9 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         }
         if (action === "/title" && request.method === "POST") {
           // v5-A: rename a session at any time (the sidebar's pencil, double-click).
-          const body = await readJson(request);
+          const titleBody = await readJsonOrRefuse(request);
+          if (!titleBody.ok) return titleBody.response;
+          const body = titleBody.body;
           const title = String(body.title ?? "").trim();
           if (!title) return json({ error: "a title is required" }, 400);
           try {
@@ -1137,9 +1214,11 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       // ----------------------------------------------------------- hosts
       if (path === "/hosts" && request.method === "GET") return json(loadHosts().map(hostToApi));
       if (path === "/hosts/probe" && request.method === "POST") {
-        const probeLimit = rateLimited("hostProbe", request, srv);
+        const { limited: probeLimit, key: probeKey } = charged("hostProbe", request, srv);
         if (probeLimit) return probeLimit;
-        const body = await readJson(request);
+        const probeBody = await readJsonOrRefuse(request, LIMITS.hostProbe, probeKey);
+        if (!probeBody.ok) return probeBody.response;
+        const body = probeBody.body;
         const result = await probeHost(
           {
             host: String(body.host ?? ""),
@@ -1155,7 +1234,9 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         return json(result);
       }
       if (path === "/hosts" && request.method === "PUT") {
-        const body = (await readJson(request)) as unknown as RemoteHostRecord;
+        const putBody = await readJsonOrRefuse(request);
+        if (!putBody.ok) return putBody.response;
+        const body = putBody.body as unknown as RemoteHostRecord;
         if (!body.id) return json({ error: "id is required" }, 400);
         const hosts = loadHosts();
         const next: RemoteHostRecord = {
@@ -1225,15 +1306,24 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       if (path === "/commands" && request.method === "GET") return json(COMMANDS);
       if (path === "/skills" && request.method === "GET") return json(skillList());
       if (path === "/settings" && request.method === "GET") return json(settingsView());
-      if (path === "/settings" && request.method === "PATCH") return json(patchSettings(await readJson(request)));
+      if (path === "/settings" && request.method === "PATCH") {
+        // A settings patch from a body that never arrived is a patch of nothing,
+        // answered as a success (E40). It writes this machine's config, so the
+        // absence has to be visible.
+        const patchBody = await readJsonOrRefuse(request);
+        if (!patchBody.ok) return patchBody.response;
+        return json(patchSettings(patchBody.body));
+      }
 
       // ------------------------------------------------------------ providers
       // Keys go in through /providers/connect and never come back out: reads are masked.
       if (path === "/providers" && request.method === "GET") return json({ connected: connectedProviders(), catalog: providerCatalog() });
       if (path === "/providers/connect" && request.method === "POST") {
-        const connectLimit = rateLimited("providerConnect", request, srv);
+        const { limited: connectLimit, key: connectKey } = charged("providerConnect", request, srv);
         if (connectLimit) return connectLimit;
-        const body = await readJson(request);
+        const connectBody = await readJsonOrRefuse(request, LIMITS.providerConnect, connectKey);
+        if (!connectBody.ok) return connectBody.response;
+        const body = connectBody.body;
         const providerId = String(body.providerId ?? "");
         if (connecting.has(providerId)) return json({ error: "already connecting this provider" }, 409);
         connecting.add(providerId);
