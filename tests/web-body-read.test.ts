@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { bodyRefusal, BodyTimeout, BODY_IDLE_SECONDS, EmptyBody, readBody, readJsonBody } from "../src/web/bodyRead";
+import { bodyRefusal, BodyTimeout, BodyTooLarge, BODY_IDLE_SECONDS, EmptyBody, readBody, readJsonBody } from "../src/web/bodyRead";
 import { RateLimiter } from "../src/web/rateLimit";
 
 /** A request whose body stops mid-way, the way a closed tab or a lost phone
@@ -154,6 +154,11 @@ describe("readBody deadline", () => {
 
   test("the size cap is enforced WHILE reading, not after", async () => {
     // A lying Content-Length cannot get past the cap: the limit is checked per chunk.
+    //
+    // This test used to ACCEPT either answer — `if (value !== undefined) ...
+    // else expect(caught).toBeInstanceOf(BodyTimeout)` — and that leniency is
+    // why the E42 defect survived E40: a `BodyTimeout` for an oversize body is
+    // exactly what the assertion blessed.
     const req = json("x".repeat(4096));
     let caught: unknown;
     let value: string | undefined;
@@ -162,10 +167,120 @@ describe("readBody deadline", () => {
     } catch (error) {
       caught = error;
     }
-    // The 4096-byte body with a 100-byte cap is refused past the cap; if the
-    // platform delivered it whole instead, the assertion below still holds.
+    // Either the platform delivered it whole (then the cap is a lie we cannot
+    // enforce here), or it was refused — and refused for the RIGHT reason.
     if (value !== undefined) expect(value.length).toBeLessThanOrEqual(4096);
-    else expect(caught).toBeInstanceOf(BodyTimeout);
+    else expect(caught).toBeInstanceOf(BodyTooLarge);
+  });
+});
+
+/**
+ * E42. A body that arrived TOO FAST was reported as one that never arrived.
+ *
+ * Measured against the deployed build: a 17 MB upload on the 15 MB cap
+ * answered `408 "the request body stopped arriving for 60s"` in **0,00 s**.
+ * Three lies in one answer — the status (413, not 408), the reason (nothing
+ * stopped arriving; 17 MB landed in 20 ms) and the clock (it claims 60 s of
+ * silence about a body that arrived whole). The per-chunk cap threw
+ * `BodyTimeout` from inside the watchdog's own `try`, and the `catch` right
+ * below re-labelled it `idle`.
+ *
+ * And `BodyOutcome` already had a `"too-large"` reason with a message waiting
+ * for it in `bodyRefusal`, that no code path could produce.
+ */
+describe("a body past the cap is 413, not a stall (E42)", () => {
+  /** A body that keeps coming, in chunks, past `limit`. */
+  function flood(totalBytes: number, chunk = 64 * 1024): Request {
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent >= totalBytes) { c.close(); return; }
+        const n = Math.min(chunk, totalBytes - sent);
+        sent += n;
+        c.enqueue(new Uint8Array(n));
+      },
+    });
+    return new Request("http://127.0.0.1:4317/api/attachments", { method: "POST", headers: { "content-type": "application/octet-stream" }, body, duplex: "half" } as RequestInit);
+  }
+
+  test("an oversize body is refused with 413, NOT 408", async () => {
+    // The exact status the deployed build got wrong.
+    let caught: unknown;
+    try {
+      await readBody(flood(4 * 1024 * 1024), (r) => r.text(), 1024, 5000);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(BodyTooLarge);
+    expect((caught as BodyTooLarge).status).toBe(413);
+    // The regression, stated as an assertion: it was a BodyTimeout before.
+    expect(caught).not.toBeInstanceOf(BodyTimeout);
+  });
+
+  test("the refusal does not claim silence it never had", async () => {
+    let caught: BodyTooLarge | undefined;
+    try {
+      await readBody(flood(4 * 1024 * 1024), (r) => r.text(), 1024, 5000);
+    } catch (error) {
+      caught = error as BodyTooLarge;
+    }
+    // "the request body stopped arriving for 60s" is what E42 measured here,
+    // from a body that arrived in full. The message must name the cap instead.
+    expect(caught?.message).not.toMatch(/stopped arriving|did not finish/i);
+    expect(caught?.message).toContain("1024");
+  });
+
+  test("a body AT the cap is still read — the cap is not off by one chunk", async () => {
+    const limit = 256 * 1024;
+    const value = await readBody(flood(limit), (r) => r.text(), limit, 5000);
+    expect((value as string).length).toBe(limit);
+  });
+
+  test("a body just UNDER the cap is still read", async () => {
+    const limit = 256 * 1024;
+    const value = await readBody(flood(limit - 1), (r) => r.text(), limit, 5000);
+    expect((value as string).length).toBe(limit - 1);
+  });
+
+  test("readJsonBody names it: reason `too-large`, the branch that was dead", async () => {
+    const out = await readJsonBody(flood(4 * 1024 * 1024));
+    expect(out.ok).toBe(false);
+    // `bodyRefusal` has had a message for "too-large" since E40. Nothing could
+    // produce it until now, so it never ran.
+    if (!out.ok) {
+      expect(out.reason).toBe("too-large");
+      expect(bodyRefusal(out)).toContain("over");
+    }
+  });
+
+  test("a JSON body past JSON_MAX_BYTES is `too-large`, not `truncated`", async () => {
+    // Same route shape as the measured 2 MB body on the 1 MB cap: it answered
+    // 408 "stopped arriving for 60s" in 0,00 s.
+    const out = await readJsonBody(json("y".repeat(2 * 1024 * 1024)));
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toBe("too-large");
+  });
+
+  test("the answer does not wait for a client that keeps sending", async () => {
+    // The refusal has to settle on the chunk that crosses the cap. A client
+    // that keeps streaming for a minute must not hold the answer hostage — the
+    // old code path parked in `read()` waiting for bytes nobody would use.
+    //
+    // Measured with the real clock and a genuinely slow stream, because a fake
+    // timer would pass for the wrong reason: the claim is about WAITING.
+    const body = new ReadableStream<Uint8Array>({
+      async pull(c) {
+        await new Promise((r) => setTimeout(r, 120)); // 120 ms per chunk
+        c.enqueue(new Uint8Array(64 * 1024)); // 64 KB — the cap is 1 KB
+      },
+    });
+    const req = new Request("http://127.0.0.1:4317/api/attachments", { method: "POST", body, duplex: "half" } as RequestInit);
+    const t0 = Date.now();
+    await expect(readBody(req, (r) => r.text(), 1024, 5000)).rejects.toBeInstanceOf(BodyTooLarge);
+    const elapsed = Date.now() - t0;
+    // Two chunks is ~240 ms. Anything near the stream's own end (20+ chunks,
+    // 2.4 s) means it waited for the client to finish.
+    expect(elapsed).toBeLessThan(1500);
   });
 });
 
