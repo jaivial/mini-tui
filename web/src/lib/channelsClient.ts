@@ -7,6 +7,10 @@
  *
  * Responses are fail-closed validated: a malformed or oversized projection is
  * refused, never rendered partially.
+ *
+ * Every read takes an optional `signal`. They are polled on a timer by two surfaces that
+ * used to have no way to cancel anything: closing the panel left the reads in flight and
+ * the next tick opened another one. See `channelsLoad.ts` for the measurement.
  */
 
 export interface ChannelsAttachment {
@@ -129,32 +133,32 @@ function validView(value: unknown): value is ChannelsView {
 export class ChannelsClient {
   constructor(readonly base = "/api") {}
 
-  async inbox(): Promise<ChannelsView> {
-    const res = await fetch(`${this.base}/channels/inbox`);
+  async inbox(signal?: AbortSignal): Promise<ChannelsView> {
+    const res = await fetch(`${this.base}/channels/inbox`, { signal });
     if (!res.ok) throw new Error(`channel inbox unavailable (${res.status})`);
     const view = await res.json() as unknown;
     if (!validView(view)) throw new Error("invalid channel projection");
     return view;
   }
 
-  async evoStatus(): Promise<EvoStatus> {
-    const res = await fetch(`${this.base}/channels/evo/status`);
+  async evoStatus(signal?: AbortSignal): Promise<EvoStatus> {
+    const res = await fetch(`${this.base}/channels/evo/status`, { signal });
     if (!res.ok) throw new Error(`connection status unavailable (${res.status})`);
     const view = await res.json() as EvoStatus;
     if (typeof view?.configured !== "boolean") throw new Error("invalid connection status");
     return view;
   }
 
-  async evoQr(): Promise<EvoQr> {
-    const res = await fetch(`${this.base}/channels/evo/qr`);
+  async evoQr(signal?: AbortSignal): Promise<EvoQr> {
+    const res = await fetch(`${this.base}/channels/evo/qr`, { signal });
     const view = await res.json().catch(() => null) as EvoQr | null;
     if (!view || typeof view.configured !== "boolean") throw new Error(`QR unavailable (${res.status})`);
     return view;
   }
 
   /** Pairing by phone number: fail-closed on anything that is not a code-shaped answer. */
-  async evoPairingCode(number: string): Promise<EvoPair> {
-    const res = await fetch(`${this.base}/channels/evo/code?number=${encodeURIComponent(number)}`);
+  async evoPairingCode(number: string, signal?: AbortSignal): Promise<EvoPair> {
+    const res = await fetch(`${this.base}/channels/evo/code?number=${encodeURIComponent(number)}`, { signal });
     const view = await res.json().catch(() => null) as EvoPair | null;
     if (!view || typeof view.configured !== "boolean") throw new Error(`pairing code unavailable (${res.status})`);
     if (view.code !== undefined && !/^[A-Z0-9]{4,8}(-[A-Z0-9]{4})?$/.test(view.code)) throw new Error("invalid pairing code");

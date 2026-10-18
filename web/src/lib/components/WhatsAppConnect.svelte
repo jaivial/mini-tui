@@ -14,6 +14,7 @@
     type EvoQr,
     type EvoStatus,
   } from "../channelsClient";
+  import { cancelRead, createReadState, isCancel, isLatest, settleRead, startRead } from "../channelsLoad";
 
   let { open = false }: { open?: boolean } = $props();
 
@@ -30,12 +31,25 @@
   let remaining = $state(0);
   let ticker: ReturnType<typeof setInterval> | undefined;
   let poller: ReturnType<typeof setInterval> | undefined;
+  // Same rule as ChannelsSection: a response that arrives late must not paint, and closing
+  // the panel must cancel what is in flight. Measured: a stale failure from the first poll
+  // replaced "Conectado" with "Estado de conexion no disponible" after two newer polls had
+  // already proven the connection. See channelsLoad.ts.
+  const status = createReadState();
+  const qrReads = createReadState();
+  const pairReads = createReadState();
 
   async function loadStatus() {
+    const token = startRead(status, "evoStatus");
     try {
-      evo = await client.evoStatus();
-    } catch {
+      const next = await client.evoStatus(token.controller.signal);
+      if (!isLatest(status, token)) return;
+      evo = next;
+    } catch (e) {
+      if (isCancel(e) || !isLatest(status, token)) return;
       evo = null;
+    } finally {
+      settleRead(status, token);
     }
   }
 
@@ -43,13 +57,18 @@
     if (qrBusy) return;
     qrBusy = true;
     qrError = "";
+    const token = startRead(qrReads, "evoQr");
     try {
-      qr = await client.evoQr();
-      if (qr.error && qr.error !== "already_connected") qrError = qr.error === "qr_rate_limited" ? "Espera unos segundos y vuelve a intentarlo." : "QR no disponible ahora.";
-      else if (qr.error === "already_connected") qrError = "";
+      const next = await client.evoQr(token.controller.signal);
+      if (!isLatest(qrReads, token)) return;
+      qr = next;
+      if (next.error && next.error !== "already_connected") qrError = next.error === "qr_rate_limited" ? "Espera unos segundos y vuelve a intentarlo." : "QR no disponible ahora.";
+      else if (next.error === "already_connected") qrError = "";
     } catch (e) {
+      if (isCancel(e) || !isLatest(qrReads, token)) return;
       qrError = (e as Error).message;
     } finally {
+      settleRead(qrReads, token);
       qrBusy = false;
     }
   }
@@ -83,14 +102,19 @@
     pairBusy = true;
     pairError = "";
     stopTicker();
+    const token = startRead(pairReads, "evoPairingCode");
     try {
-      pair = await client.evoPairingCode(number.trim());
-      if (pair.code && pair.expiresAt) startTicker(pair.expiresAt);
-      else pairError = pairMessage(pair.error);
+      const next = await client.evoPairingCode(number.trim(), token.controller.signal);
+      if (!isLatest(pairReads, token)) return;
+      pair = next;
+      if (next.code && next.expiresAt) startTicker(next.expiresAt);
+      else pairError = pairMessage(next.error);
     } catch (e) {
+      if (isCancel(e) || !isLatest(pairReads, token)) return;
       pair = null;
       pairError = (e as Error).message;
     } finally {
+      settleRead(pairReads, token);
       pairBusy = false;
     }
   }
@@ -98,11 +122,17 @@
   $effect(() => {
     if (!open) return;
     void loadStatus();
-    poller = setInterval(() => { void loadStatus(); }, 10_000);
+    poller = setInterval(() => {
+      // Skip the tick while a read is in flight instead of piling another one on top.
+      if (!status.current) void loadStatus();
+    }, 10_000);
     return () => {
       if (poller) clearInterval(poller);
       poller = undefined;
       stopTicker();
+      cancelRead(status);
+      cancelRead(qrReads);
+      cancelRead(pairReads);
     };
   });
 

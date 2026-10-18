@@ -12,6 +12,7 @@
    */
   import { Radio } from "@lucide/svelte";
   import { ChannelsClient, type ChannelsView } from "../channelsClient";
+  import { cancelRead, createReadState, isCancel, isLatest, settleRead, startRead } from "../channelsLoad";
   import { senderDisplayName } from "../../../../src/channels/senderName";
   import WhatsAppConnect from "./WhatsAppConnect.svelte";
 
@@ -21,23 +22,42 @@
   let view = $state<ChannelsView | null>(null);
   let error = $state("");
   let poller: ReturnType<typeof setInterval> | undefined;
+  // Which read is allowed to paint, and how the one before it gets cancelled: without
+  // this, a response that arrives late wins on being last, and closing the panel left
+  // every poll in flight. See channelsLoad.ts for the measurement.
+  const reads = createReadState();
 
+  /** One read. Supersedes whatever is in flight and takes ownership of the panel. */
   async function load() {
+    const token = startRead(reads, "inbox");
     try {
-      view = await client.inbox();
+      const next = await client.inbox(token.controller.signal);
+      if (!isLatest(reads, token)) return;
+      view = next;
       error = "";
     } catch (e) {
+      // A superseded or cancelled read is not a failure of the ledger: painting it would
+      // show "Reintentando..." over data we already know is good.
+      if (isCancel(e) || !isLatest(reads, token)) return;
       error = (e as Error).message;
+    } finally {
+      settleRead(reads, token);
     }
   }
 
   $effect(() => {
     if (!open) return;
     void load();
-    poller = setInterval(() => { void load(); }, 10_000);
+    poller = setInterval(() => {
+      // Skip the tick while a read is in flight rather than opening a second one: against
+      // the deployed build with the endpoint silent, the old code opened one request every
+      // 10 s and none of them ever finished.
+      if (!reads.current) void load();
+    }, 10_000);
     return () => {
       if (poller) clearInterval(poller);
       poller = undefined;
+      cancelRead(reads);
     };
   });
 
