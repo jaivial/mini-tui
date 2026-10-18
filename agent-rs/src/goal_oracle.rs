@@ -196,7 +196,7 @@ impl GoalOracle for LayaOracle {
         // always came back truncated and sent every closure to the slower model judge.
         let tail = |t: &str, n: usize| -> String { let c: Vec<char> = t.chars().collect(); c[c.len().saturating_sub(n)..].iter().collect() };
         let head = |t: &str, n: usize| -> String { t.chars().take(n).collect() };
-        let compact = Evidence { goal: head(&e.goal, 3000), proposal: head(&e.proposal, 3000), observations: tail(&e.observations, 7000), diff: head(&e.diff, 4000) };
+        let compact = Evidence { goal: head(&e.goal, 1200), proposal: head(&e.proposal, 700), observations: tail(&e.observations, 1800), diff: head(&e.diff, 900) };
         let max_len = std::env::var("MINI_AGENT_LAYA_MAX_LEN").ok().and_then(|v| v.parse::<u64>().ok()).filter(|n| (512..=8192).contains(n)).unwrap_or(8192);
         let e = &compact;
         let body = json!({"max_len":max_len, "model": std::env::var("MINI_AGENT_LAYA_MODEL").unwrap_or_else(|_| "laya-multilingual".into()),
