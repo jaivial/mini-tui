@@ -41,6 +41,27 @@ export class RateLimiter {
     return { ok: true, retryAfter: 0 };
   }
 
+  /**
+   * Give one hit back.
+   *
+   * A token is taken BEFORE the work it protects (the body read, the model
+   * turn), so a request that then turns out never to have happened has spent a
+   * token on nothing: the client opened the connection and stopped. Measured
+   * (E40): 20 half-open uploads, zero bytes of body between them, and a real
+   * complete upload was refused 429 for the rest of the minute.
+   *
+   * The newest hit for the key is the one to drop — `take` appends, so that is
+   * this request's own. An unknown or already-expired key is a no-op: there is
+   * nothing of ours to give back.
+   */
+  give(key: string, now = Date.now()): void {
+    const hits = this.#hits.get(key);
+    if (!hits?.length) return;
+    hits.pop();
+    if (hits.length) this.#hits.set(key, hits);
+    else this.#hits.delete(key);
+  }
+
   /** Drop every key whose window has fully elapsed (bounded memory). */
   sweep(now = Date.now()): void {
     const windowStart = now - this.windowMs;
