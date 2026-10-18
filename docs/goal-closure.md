@@ -11,6 +11,7 @@ The closure judgement replaces the old second plain-text confirmation turn. Afte
 - `MINI_AGENT_GOAL_ORACLE=laya` with `MINI_AGENT_GOAL_ORACLE_URL` set to the SystemOne endpoint: real Laya noul decision, P(true) >= 0.85 by default. Lower probability or unavailable/truncated evidence uses the current model for concrete gaps, unless `MINI_AGENT_GOAL_ORACLE_FALLBACK=off`. `MINI_AGENT_LAYA_THRESHOLD` and `MINI_AGENT_LAYA_MODEL` are explicit overrides.
 - `MINI_AGENT_GOAL_ORACLE=model` (default): current model, provisional judge.
 - `MINI_AGENT_GOAL_ORACLE=off`: legacy closure and exact-loop abort behavior.
+- `MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS` (default 3, 0 = unlimited): after this many judge rejections in one run the closure is accepted and the report records a `stalemate`, so a judge that disagrees with finished work cannot loop forever.
 - `MINI_AGENT_GOAL_ORACLE_URL`: exact HTTP(S) endpoint for a replacement service, including a future Laya adapter. No port is guessed and no service is installed automatically.
 - `MINI_AGENT_GOAL_ORACLE_KEY`: optional bearer key for that service.
 

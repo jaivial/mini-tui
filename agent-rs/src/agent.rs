@@ -182,6 +182,8 @@ pub struct Agent {
     task_is_conversational: bool,
     goal_reports: Vec<Value>,
     oracle_errors: usize,
+    /// Rejections the judge has returned for this run (see MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS).
+    oracle_rejections: usize,
     /// Original repository baseline, captured before work so committed changes remain evidence.
     goal_baseline: Option<String>,
     /// Small codejs state belongs to this agent run, never a global process or repo.
@@ -227,6 +229,7 @@ impl Agent {
             task_is_conversational: false,
             goal_reports: Vec::new(),
             oracle_errors: 0,
+            oracle_rejections: 0,
             goal_baseline: None,
             codejs_store: Obj::new(),
         }
@@ -854,6 +857,16 @@ impl Agent {
                     self.oracle_errors = 0;
                     self.goal_reports.push(v.record());
                     if v.complete {
+                        self.messages.push(exit);
+                        return;
+                    }
+                    // A judge that keeps rejecting the same work is a stalemate, not progress:
+                    // benchmark runs spent 900 s (158 identical rejections) on a finished task.
+                    // After the cap the closure is accepted and the report says so.
+                    self.oracle_rejections += 1;
+                    let cap = std::env::var("MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS").ok().and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(3);
+                    if cap > 0 && self.oracle_rejections >= cap {
+                        self.goal_reports.push(json!({"status": "stalemate", "reason": format!("closure accepted after {} judge rejections", self.oracle_rejections)}));
                         self.messages.push(exit);
                         return;
                     }
