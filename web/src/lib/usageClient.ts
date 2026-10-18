@@ -169,8 +169,14 @@ export function parseUsage(value: unknown): UsageView {
 export class UsageClient {
   constructor(readonly base = "/api") {}
 
-  async window(id: string): Promise<UsageView> {
-    const res = await fetch(`${this.base}/usage?window=${encodeURIComponent(id)}`);
+  /**
+   * One window of the usage projection.
+   *
+   * `signal` is wired because the panel can be looking at a different window by the time
+   * this answers: see `usageLoad.ts` for the measured defect that makes it necessary.
+   */
+  async window(id: string, signal?: AbortSignal): Promise<UsageView> {
+    const res = await fetch(`${this.base}/usage?window=${encodeURIComponent(id)}`, { signal });
     if (!res.ok) throw new Error(`usage unavailable (${res.status})`);
     return parseUsage(await res.json() as unknown);
   }
