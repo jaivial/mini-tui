@@ -64,12 +64,21 @@ describe("E26 · las fuentes que la app usa, y solo esas", () => {
 
   test("solo latin y latin-ext: los otros subconjuntos no los pide nunca nadie", () => {
     // El navegador elige por unicode-range. Sin cirílico/griego/vietnamita en el
-    // texto, esos ficheros nunca se piden: soloDeadweight en el CSS.
+    // texto, esos ficheros nunca se piden: solo deadweight en el CSS.
+    //
+    // E30: la asercion mira el NOMBRE DEL SUBCONJUNTO, no el sufijo entero del
+    // fichero. Antes sujetaba `-wght-normal`, y pinear el eje (que es exactamente lo
+    // que hizo E30) renombra los ficheros a `-wght-400-700`: la asercion estaba
+    // sujetando la FORMA del nombre, no la regla que la forma exprueba.
     for (const face of faces) {
       const src = face.match(/url\(([^)]+)\)/)?.[1] ?? "";
-      expect(src).toMatch(/(latin|latin-ext)-wght-normal/);
+      expect(src).toMatch(/(latin|latin-ext)-wght-/);
       // Y el rango debe ser el del subconjunto que dice ser, no otro.
       expect(face).toMatch(/unicode-range/);
+    }
+    // Los tres subconjuntos que el paquete trae y esta app no quiere, por nombre:
+    for (const muerto of ["cyrillic", "greek", "vietnamese"]) {
+      expect(faces.some((f) => f.includes(muerto))).toBe(false);
     }
   });
 
@@ -79,10 +88,16 @@ describe("E26 · las fuentes que la app usa, y solo esas", () => {
   });
 
   test("cada familia conserva su eje de pesos variable", () => {
-    // Sin esto la app cae a una的重 canned instance: la variable pierde el peso 600
+    // Sin esto la app cae a una instancia fija: la variable pierde el peso 600
     // de los titulos o el 400 del cuerpo y el texto se ve en el grosor equivocado.
-    expect(faces.some((f) => f.includes("Geist Variable") && f.includes("font-weight: 100 900"))).toBe(true);
-    expect(faces.some((f) => f.includes("JetBrains Mono Variable") && f.includes("font-weight: 100 800"))).toBe(true);
+    //
+    // E30 cambia el ANCHO de esos ejes, no el hecho de que sean variables: geist y
+    // jetbrains llevan 400 700 porque es lo unico que la app pinta (ver E30), y el
+    // rango del CSS tiene que ser EXACTAMENTE el del fichero o una peticion por encima
+    // del maximo real se pinta en el maximo sin ningun error. Space Grotesk se queda en
+    // 300 700 porque ese es el eje que trae: pinearlo no ahorraba nada.
+    expect(faces.some((f) => f.includes("Geist Variable") && f.includes("font-weight: 400 700"))).toBe(true);
+    expect(faces.some((f) => f.includes("JetBrains Mono Variable") && f.includes("font-weight: 400 700"))).toBe(true);
     expect(faces.some((f) => f.includes("Space Grotesk Variable") && f.includes("font-weight: 300 700"))).toBe(true);
   });
 
@@ -147,13 +162,18 @@ describe("E26 · las fuentes que la app usa, y solo esas", () => {
   test("las rutas url() apuntan a los ficheros que existen de verdad", () => {
     // Una ruta mal escrita no falla al compilar: falla en el navegador, con un 404
     // silencioso y el texto cayendo a la fuente del sistema sin ningún error visible.
-    const pkg = join(import.meta.dir, "..", "web", "node_modules");
+    //
+    // E30: geist y jetbrains apuntan a `../assets/fonts/`, o sea se resuelven desde
+    // web/src; space-grotesk sigue apuntando al paquete. Las dos formas se resuelven.
+    const web = join(import.meta.dir, "..", "web");
     for (const face of faces) {
       const url = face.match(/url\("([^"]+)"\)/)?.[1];
       expect(url).toBeTruthy();
       if (!url) continue;
-      const file = join(pkg, url.replace("@fontsource-variable/", "@fontsource-variable/"));
-      expect(Bun.file(file).size).toBeGreaterThan(0);
+      const file = url.startsWith("@fontsource-variable/")
+        ? join(web, "node_modules", url)
+        : join(web, "src", url);
+      expect({ url, bytes: Bun.file(file).size > 0 }).toEqual({ url, bytes: true });
     }
   });
 });
