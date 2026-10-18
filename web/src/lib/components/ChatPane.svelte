@@ -30,6 +30,7 @@
   import { paneStatus } from "../paneStatus";
   import { sideWidthStyle } from "../sidePanel";
   import { deliverSideFocus } from "../sidePanelFocus";
+  import { followTranscript, isAtBottom } from "../threadScroll";
 
   /**
    * One pane: a chat (a session, or a new chat until its first message) with its own header, transcript,
@@ -142,25 +143,62 @@
     pane.memoryOf = id;
   });
 
-  // Keep the thread pinned to the bottom as it grows.
-  $effect(() => {
-    session?.events.length;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-  });
-
   /**
    * False once the reader has scrolled up far enough that newer messages hide under the floating
    * prompt pill: a jump-to-latest button appears above it until they are back in view.
    */
   let atBottom = $state(true);
+  /** What the pin effect remembers: whose transcript it was following. */
+  let pinnedSession: string | null = null;
+
+  // Follow the stream only while the reader is already following it (see lib/threadScroll.ts).
+  // Unconditional pinning threw anyone reading history back to the bottom on every single delta.
+  $effect(() => {
+    // The pass runs on the frame AFTER the transcript renders, and this is the load-bearing line of
+    // the whole fix. `$effect` fires when `events.length` changes — which is BEFORE the browser has
+    // laid the new rows out, so measuring here reads the OLD geometry: the reader still at the
+    // bottom, `scrollHeight` still short. Measured on the build that did that: the wheel had put the
+    // reader at 0, the pass still measured them at the bottom, and the pin dragged them back.
+    // `tick()` flushes the DOM first, so the measurement is of what is actually on screen.
+    // `hydrated` is in the dependency list on purpose: the first pass fires while the pane is still
+    // the loading skeleton (measured: it pinned to the skeleton height of 715 px at t=96 ms, a
+    // no-op, and then nothing else changed `events.length`, so the transcript stayed at its top).
+    // The transcript only has a height worth pinning once the snapshot has landed.
+    const ready = session ? store.hydrated[session.id] || session.events.length > 0 : true;
+    session?.events.length;
+    if (!ready) return;
+    void tick().then(() => pinPass());
+  });
+
+  function pinPass() {
+    const id = session?.id ?? null;
+    // Note the session change BEFORE the scroller guard, but do NOT record it here: this effect runs
+    // several times before the scroller binds, and consuming "the first pass" on a pass that could
+    // not measure anything left a restored session opening at its TOP. Recording and measuring are
+    // one decision; a pass that cannot measure must not count as one.
+    const switched = pinnedSession !== null && pinnedSession !== id;
+    if (!scroller) return;
+    // The reader's position is MEASURED, not read from the cached flag: `onScroll` writes that flag
+    // through Svelte, which applies it asynchronously, so a delta landing in the same task as the
+    // wheel would be judged against a stale `true` and pin anyway. The DOM is the truth here.
+    const geometry = { scrollHeight: scroller.scrollHeight, scrollTop: scroller.scrollTop, clientHeight: scroller.clientHeight };
+    const { follow, atBottom: next } = followTranscript(geometry, { atBottom: isAtBottom(geometry), prevSession: pinnedSession }, id, switched);
+    pinnedSession = id;
+    if (follow) scroller.scrollTop = scroller.scrollHeight;
+    // The jump lands at the end, so the button goes with it even though no scroll event fires.
+    atBottom = next;
+  }
+
   function onScroll() {
     if (!scroller) return;
-    atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+    atBottom = isAtBottom({ scrollHeight: scroller.scrollHeight, scrollTop: scroller.scrollTop, clientHeight: scroller.clientHeight });
   }
   function jumpToLatest() {
     if (!scroller) return;
     scroller.scrollTop = scroller.scrollHeight;
+    // The reader is following again: the next delta must keep following them.
     atBottom = true;
+    pinnedSession = session?.id ?? null;
   }
 
   // Where a NEW chat can run. An existing chat already runs somewhere, so it shows no choice.
