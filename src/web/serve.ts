@@ -491,10 +491,19 @@ async function revalidate(
   return { response: new Response(body, { status: response.status, statusText: response.statusText, headers }), body };
 }
 
-async function readJson(request: Request): Promise<Record<string, unknown>> {
-  const outcome = await readJsonBody(request);
-  return outcome.ok ? outcome.value : {};
-}
+// There is deliberately NO lenient reader any more. E40 fixed the eight
+// routes that had been converted by hand, and left the guard in place by
+// CUSTOM rather than by type: `readJson` still existed, so the next route to
+// call it recovered the whole defect E40 had just closed. Measured here
+// (E41): `POST /api/router/preview` was the one state-changing route left on
+// it, and a POST with no body at all answered **200 with a real routing
+// decision** and wrote a row into the operator's decision trail
+// (`decisions` with `task_len=0`), because this route also AUDITS what it
+// routes. So the phantom did not merely answer — it persisted.
+//
+// The remedy is not another call site to remember. The function that could
+// hide the failure is gone: a request that carries no usable body cannot be
+// read into a value at all. `readJsonOrRefuse` below is the only way in.
 
 /**
  * The JSON body, or the refusal. Every STATE-CHANGING route goes through here.
@@ -1284,10 +1293,21 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       // path and audits it, so the panel's "preview" is the real thing.
       if (path === "/router/preview" && request.method === "POST") {
         if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
-        const routerLimit = rateLimited("routerPreview", request, srv);
+        const { limited: routerLimit, key: routerKey } = charged("routerPreview", request, srv);
         if (routerLimit) return routerLimit;
+        // The last route still reading a body the E40 way, and the one place
+        // where the old `{}` was worse than a wrong answer: `route()` AUDITS
+        // every call, so a body that never arrived did not just answer 200,
+        // it wrote a phantom row into the operator's decision trail (measured
+        // E41: four rows with an empty task from four bodiless POSTs). The
+        // limiter is `charged` rather than `rateLimited` for the same reason
+        // as everywhere else: a request that never happened gives its token
+        // back instead of starving the next real preview (measured: 20 bodiless
+        // POSTs left a complete, valid request answered 429).
+        const previewBody = await readJsonOrRefuse(request, LIMITS.routerPreview, routerKey);
+        if (!previewBody.ok) return previewBody.response;
         try {
-          const body = await readJson(request);
+          const body = previewBody.body;
           const decision = await route({ level: "task", task: String(body.task ?? "").slice(0, 8_000) });
           return json({ model: decision.model, source: decision.source, reason: decision.reason, laya: { probability: decision.layaProbability, confidence: decision.layaConfidence, checkpoint: decision.layaCheckpoint, reason: decision.layaReason }, complexity: decision.profile, ranking: decision.candidates.slice(0, 8).map((row) => ({ model: row.candidate.id, score: row.score, terms: row.terms, why: row.why, excluded: row.excluded })) });
         } catch (error) {

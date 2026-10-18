@@ -7,6 +7,7 @@
  *  settles, not that a timer fires early.
  */
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { bodyRefusal, BodyTimeout, BODY_IDLE_SECONDS, EmptyBody, readBody, readJsonBody } from "../src/web/bodyRead";
 import { RateLimiter } from "../src/web/rateLimit";
 
@@ -228,5 +229,90 @@ describe("absence is not a stall", () => {
     const out = await readJsonBody(json(" "));
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.reason).toBe("absent");
+  });
+});
+
+/**
+ * E41. E40 closed the defect on eight routes and left the guard standing by
+ * CUSTOM: the lenient reader was still in the file, so any new state-changing
+ * route could call it and get the whole thing back. Measured against the
+ * deployed build, `POST /api/router/preview` was the one route left on it —
+ * and because `route()` audits every call, a POST with no body answered 200
+ * with a real decision AND wrote a phantom row into `decisions`.
+ *
+ * These tests pin the two things that make that unrepeatable: the lenient
+ * reader is GONE (a fact about the source, checked the only way it can be),
+ * and every body-reading route goes through the refusal path.
+ */
+describe("no route can read a body the lenient way (E41)", () => {
+  const serve = readFileSync(new URL("../src/web/serve.ts", import.meta.url), "utf8");
+  /** Strip comments so the prose explaining the removal is not read as code. */
+  const code = serve.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  test("the lenient reader does not exist: there is nothing left to call by mistake", () => {
+    // The defect was never `readJson`'s logic — it was that the function was
+    // still reachable. A test on behaviour cannot see that; only the source can.
+    expect(code).not.toMatch(/\bfunction readJson\b/);
+    expect(code).not.toMatch(/\breadJson\s*\(/);
+  });
+
+  test("every state-changing route that reads a body goes through readJsonOrRefuse", () => {
+    const callSites = [...code.matchAll(/await readJsonOrRefuse\(/g)];
+    // The eight E40 converted, plus /router/preview (E41). Each one is a route
+    // that acts on what arrived, so each one has to be able to refuse.
+    expect(callSites.length).toBe(9);
+  });
+
+  test("the 413 fast-refuse and the multipart upload still give their token back", () => {
+    // /attachments reads its body itself (multipart), so it does not go
+    // through readJsonOrRefuse — it must still refund on both refusal paths,
+    // which is the same rule by hand. Pinned so a future edit cannot drop it.
+    const attachment = code.slice(code.indexOf('"/attachments" && request.method === "POST"'));
+    const block = attachment.slice(0, attachment.indexOf("attMatch &&"));
+    expect(block).toContain("LIMITS.attachment.give(uploadKey)");
+    expect([...block.matchAll(/\.give\(/g)].length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("no route reads a request body without a deadline", () => {
+    // `readBody`/`readJsonBody` are the only sanctioned readers. A bare
+    // `request.json()`, `request.text()` or `request.formData()` in a handler
+    // is exactly the E40 hang: pending forever on a client that stops sending.
+    // Line-aware: the sanctioned shape is a reader passed AS the argument of
+    // `readBody(...)`, e.g. `readBody(request, (req) => req.formData(), limit)`.
+    // A bare read on its own line is the E40 hang.
+    const offenders = code
+      .split("\n")
+      .filter((line) => /\b(?:request|req)\.(json|text|formData|arrayBuffer)\(\)/.test(line))
+      .filter((line) => !/readBody\s*\(/.test(line));
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("the router preview route (E41)", () => {
+  test("a body that never arrived is refused, not routed and audited", async () => {
+    // The measured shape of the defect, at the unit level: what the route
+    // received for a POST with no body. It was `{}`, and `route({task: ""})`
+    // still produced a decision — and an audit row.
+    for (const body of [undefined, "", "{ task: ", "[1,2,3]"]) {
+      const req = new Request("http://127.0.0.1:4317/api/router/preview", { method: "POST", headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body }) });
+      let out;
+      try {
+        out = await readJsonBody(req);
+      } catch {
+        continue; // a timeout is an honest refusal too
+      }
+      expect(out.ok).toBe(false);
+    }
+  });
+
+  test("a bodiless request gives its rate-limit token back", async () => {
+    // 20 bodiless POSTs starved a real, complete request into a 429 (measured).
+    // The refund is the fix; this is the unit that carries it.
+    const rl = new RateLimiter(20, 60_000);
+    rl.take("k", 1_000);
+    rl.give("k", 1_000);
+    expect(rl.tracked).toBe(0);
+    for (let i = 0; i < 25; i++) { rl.take("k", 2_000); rl.give("k", 2_000); }
+    expect(rl.tracked).toBe(0);
   });
 });
