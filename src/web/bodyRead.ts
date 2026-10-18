@@ -66,6 +66,22 @@ export type BodyOutcome =
   /** Nothing arrived, or not enough to be JSON: the request never happened. */
   | { ok: false; reason: "absent" | "truncated" | "malformed" | "too-large" };
 
+/**
+ * A request that arrived with no body at all (`content-length: 0`, measured as
+ * `request.body === null` on Bun 1.4.2).
+ *
+ * Distinct from `BodyTimeout` on purpose: nothing stalled, nothing was cut. The
+ * answer is the client's own fault — 400 "expected a JSON body" — and not the
+ * server's impatience, which would be 408.
+ */
+export class EmptyBody extends Error {
+  readonly status = 400;
+  readonly absent = true;
+  constructor() {
+    super("the request carried no body");
+  }
+}
+
 /** Thrown out of a read that gave up; carries the status the route should answer. */
 export class BodyTimeout extends Error {
   readonly status = 408;
@@ -88,7 +104,11 @@ export class BodyTimeout extends Error {
  * `Content-Length` cannot get past it.
  */
 export async function readBody<T>(request: Request, read: (req: Request) => Promise<T>, limit = JSON_MAX_BYTES, idleMs = BODY_IDLE_SECONDS * 1000): Promise<T> {
-  if (!request.body) throw new BodyTimeout("idle", idleMs);
+  // No stream at all means there IS no body, not that one stopped arriving.
+  // Bun reports `content-length: 0` as `request.body === null` (measured), so
+  // answering "the request body stopped arriving for 60s" to an empty POST would
+  // be a lie about a request that arrived complete and simply had nothing in it.
+  if (!request.body) throw new EmptyBody();
 
   // The watchdog watches a CLONE. `request.clone()` tees the stream, so the
   // bytes read to learn about progress are the same bytes the real reader gets:
@@ -97,7 +117,7 @@ export async function readBody<T>(request: Request, read: (req: Request) => Prom
   // original still parsed the file intact. Reading the ORIGINAL instead locks
   // it (`ERR_BODY_ALREADY_USED`), which is how this first went wrong.
   const watch = request.clone().body;
-  if (!watch) throw new BodyTimeout("idle", idleMs);
+  if (!watch) throw new EmptyBody();
 
   // One slot, three jobs: re-armed on every chunk, and it is what ENDS the wait.
   //
@@ -163,8 +183,13 @@ export async function readJsonBody(request: Request, idleMs = BODY_IDLE_SECONDS 
   try {
     text = await readBody(request, (req) => req.text(), JSON_MAX_BYTES, idleMs);
   } catch (error) {
+    // A body of 0 bytes is ABSENCE, a fact about the request — not a socket
+    // that went away mid-body. A runtime that reports a bodiless POST as a
+    // non-null stream fails the read instead of throwing EmptyBody, so a
+    // declared length of 0 is the same fact seen from the other side, and it is
+    // a header: true before anything has been read.
+    if (error instanceof EmptyBody || request.headers.get("content-length") === "0") return { ok: false, reason: "absent" };
     if (error instanceof BodyTimeout) throw error;
-    // The stream itself failed (a socket cut mid-body): nothing usable arrived.
     return { ok: false, reason: "truncated" };
   }
   if (!text.trim()) return { ok: false, reason: "absent" };
