@@ -37,22 +37,42 @@
     if (editing?.id === id) editing = null;
     await store.load();
   }
+  /** In flight probes, so closing the panel actually cancels them. */
+  let probes = new Map<string, AbortController>();
+
   async function probe(host: RemoteHost) {
+    const controller = new AbortController();
+    probes = new Map(probes).set(host.id, controller);
     probing = host.id;
+    const rest = new Map(probeResult);
+    rest.delete(host.id);
+    probeResult = rest;
     try {
-      const res = await api.probeHost(host);
+      const res = await api.probeHost(host, controller.signal);
       probeResult = { ...probeResult, [host.id]: { ok: res.ok, message: res.message } };
       toasts.push(res.ok ? `Connected to ${host.label}` : `Failed: ${res.message}`, {
         tone: res.ok ? "ok" : "err",
       });
     } catch (error) {
+      // An abort is us cancelling, not a failed host: it must not paint an error.
+      if ((error as Error).name === "AbortError") return;
       probeResult = {
         ...probeResult,
         [host.id]: { ok: false, message: (error as Error).message },
       };
     } finally {
-      probing = null;
+      const rest = new Map(probes);
+      rest.delete(host.id);
+      probes = rest;
+      if (probing === host.id) probing = null;
     }
+  }
+
+  /** Leaving the panel stops whatever it had in flight. */
+  function cancelAll() {
+    for (const controller of probes.values()) controller.abort();
+    probes = new Map();
+    probing = null;
   }
 </script>
 
@@ -61,7 +81,10 @@
   title="Remote hosts"
   description="Run the agent headless on a server over SSH while the UI stays here. Uses your ~/.ssh/config keys."
   width="max-w-2xl"
-  onclose={() => (open = false)}
+  onclose={() => {
+    open = false;
+    cancelAll();
+  }}
 >
   {#if editing}
     <div class="grid gap-3">
@@ -130,6 +153,12 @@
             <div class="tnum mt-0.5 truncate font-mono text-[11px] text-ink-faint">
               {host.user}@{host.host}:{host.port} · {host.workdir}
             </div>
+            {#if probing === host.id}
+              <div class="mt-1 flex items-center gap-1.5 text-[11px] text-ink-muted" role="status">
+                <span class="inline-block size-1.5 animate-pulse rounded-full bg-brand" aria-hidden="true"></span>
+                <span>Connecting…</span>
+              </div>
+            {/if}
             {#if probe_}
               <div class="mt-1 flex items-center gap-1.5 text-[11px] {probe_.ok ? 'text-ok' : 'text-err'}">
                 {#if probe_.ok}<CheckCircle2 size={11} strokeWidth={2} />{:else}<XCircle size={11} strokeWidth={2} />{/if}
@@ -143,7 +172,7 @@
             icon={Plug}
             loading={probing === host.id}
             onclick={() => probe(host)}
-          >Test</Button>
+          >{probing === host.id ? "Testing" : "Test"}</Button>
           <Button variant="ghost" size="icon-sm" icon={Trash2} title="Remove" onclick={() => remove(host.id)} />
         </div>
       {/each}

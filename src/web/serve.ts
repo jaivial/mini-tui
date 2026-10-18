@@ -1140,13 +1140,18 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         const probeLimit = rateLimited("hostProbe", request, srv);
         if (probeLimit) return probeLimit;
         const body = await readJson(request);
-        const result = await probeHost({
-          host: String(body.host ?? ""),
-          port: Number(body.port ?? 22),
-          user: String(body.user ?? ""),
-          identity: body.identity ? String(body.identity) : undefined,
-          workdir: String(body.workdir ?? "~"),
-        });
+        const result = await probeHost(
+          {
+            host: String(body.host ?? ""),
+            port: Number(body.port ?? 22),
+            user: String(body.user ?? ""),
+            identity: body.identity ? String(body.identity) : undefined,
+            workdir: String(body.workdir ?? "~"),
+          },
+          // Closing the hosts panel aborts the fetch; without this the child
+          // `ssh` outlived the request that asked for it.
+          { signal: request.signal },
+        );
         return json(result);
       }
       if (path === "/hosts" && request.method === "PUT") {

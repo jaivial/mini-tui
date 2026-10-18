@@ -230,36 +230,109 @@ export function sanitizeProbeOutput(out: string): { agent: boolean; version?: st
   return { agent: true, version: looksLikeVersion ? line : undefined };
 }
 
-/** Quick reachability + agent check for the "Test" button in the hosts panel. */
+/**
+ * The probe script. One line, no shell side effects: report only the agent,
+ * never the environment (a `declare` fallback would dump every secret to the
+ * browser).
+ *
+ * It travels over **stdin**, not as a command-line argument, and that is not a
+ * style choice. `ssh` concatenates everything after the host into ONE string
+ * and hands it to the login shell, which re-parses it: a `;` in a command-line
+ * argument ends the `bash -lc` and starts a second command in the session
+ * shell. Measured, the old argv form ran `export PATH=...` in a shell that was
+ * thrown away and then looked for the agent in the session shell's PATH, where
+ * a `~/.local/bin` install does not exist unless the login profile added it.
+ * So the button reported "no mini-tui on PATH" on a host that had the agent,
+ * and on a host where it *was* on the PATH the `export` had already been
+ * silently dropped. stdin has no re-parsing layer between us and the script.
+ */
+export function buildProbeScript(): string {
+  return [
+    'export PATH="$HOME/.local/bin:$HOME/bin:$PATH"',
+    'if command -v mini-tui >/dev/null 2>&1; then mini-tui --version 2>/dev/null; ' +
+      'elif command -v mini >/dev/null 2>&1; then echo "mini (no mini-tui)"; ' +
+      'else echo none; fi',
+  ].join("; ") + "\n";
+}
+
+/** How long the dial itself may take, in seconds (`ssh`'s own connect budget). */
+export const PROBE_CONNECT_TIMEOUT_S = 8;
+/** Total budget for one probe, in ms. */
+export const PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * Quick reachability + agent check for the "Test" button in the hosts panel.
+ *
+ * The budget is not decoration. Measured against the deployed build: with no
+ * `ConnectTimeout` a host that swallows the SYN held the button for **131 s**,
+ * and a host that accepts the TCP connection but never completes the SSH
+ * handshake held it for **over 3 hours** — `ServerAliveInterval` cannot help
+ * there, because the channel it watches does not exist yet. The client giving
+ * up does not stop it either: the server keeps the child `ssh` alive, so every
+ * abandoned click left a process behind (measured: 9 of them, oldest 2.98 h).
+ */
 export async function probeHost(
   target: SshTarget,
+  options: { timeoutMs?: number; signal?: AbortSignal; env?: Record<string, string> } = {},
 ): Promise<{ ok: boolean; message: string; agent: boolean; version?: string }> {
-  // One line, no shell side effects: report only the agent, never the
-  // environment (a `declare` fallback would dump every secret to the browser).
-  const check =
-    'export PATH="$HOME/.local/bin:$HOME/bin:$PATH"; ' +
-    'if command -v mini-tui >/dev/null 2>&1; then mini-tui --version 2>/dev/null; ' +
-    'elif command -v mini >/dev/null 2>&1; then echo "mini (no mini-tui)"; ' +
-    'else echo none; fi';
-
+  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   const proc = Bun.spawn({
     cmd: [
       "ssh",
       "-T",
+      "-o", `ConnectTimeout=${PROBE_CONNECT_TIMEOUT_S}`,
       ...sshArgs(target),
       "bash",
-      "-lc",
-      check,
+      "-s",
     ],
-    stdin: "ignore",
+    stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
+    ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
   });
+  proc.stdin.write(buildProbeScript());
+  proc.stdin.end();
+
+  // Two ways out that both have to kill the child: the clock, and the caller
+  // hanging up. Without the second one, closing the hosts panel mid-probe left
+  // the process running with nobody waiting for it.
+  let timedOut = false;
+  let aborted = false;
+  const kill = () => {
+    try {
+      proc.kill();
+    } catch {
+      // already gone
+    }
+  };
+  const timer = setTimeout(() => {
+    timedOut = true;
+    kill();
+  }, timeoutMs);
+  const onAbort = () => {
+    aborted = true;
+    kill();
+  };
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+
   const [out, err, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
+  clearTimeout(timer);
+  options.signal?.removeEventListener("abort", onAbort);
+
+  if (aborted) {
+    return { ok: false, message: "cancelled", agent: false };
+  }
+  if (timedOut) {
+    return {
+      ok: false,
+      message: `the host did not answer in ${Math.round(timeoutMs / 1000)}s`,
+      agent: false,
+    };
+  }
   if (code !== 0) {
     return {
       ok: false,
@@ -281,3 +354,4 @@ export async function probeHost(
     message: version ? `connected · ${version}` : agent ? "connected · agent found" : "connected, but no mini-tui/mini on PATH",
   };
 }
+

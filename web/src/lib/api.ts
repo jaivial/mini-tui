@@ -77,10 +77,11 @@ export const api = {
   saveHost: (host: RemoteHost) =>
     call<RemoteHost>("/hosts", { method: "PUT", body: JSON.stringify(host) }),
   deleteHost: (id: string) => call<{ ok: true }>(`/hosts/${id}`, { method: "DELETE" }),
-  probeHost: (host: RemoteHost) =>
+  probeHost: (host: RemoteHost, signal?: AbortSignal) =>
     call<{ ok: boolean; message: string; agent: boolean; version?: string }>("/hosts/probe", {
       method: "POST",
       body: JSON.stringify(host),
+      signal,
     }),
   models: () => call<ModelInfo[]>("/models"),
   commands: () => call<CommandInfo[]>("/commands"),
