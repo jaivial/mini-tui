@@ -38,7 +38,7 @@ import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
-import { bodyRefusal, BodyTimeout, readBody, readJsonBody, type BodyOutcome } from "./bodyRead";
+import { bodyRefusal, BodyTimeout, EmptyBody, readBody, readJsonBody, type BodyOutcome } from "./bodyRead";
 import { syncAllSkills } from "../skills";
 import { etagFor, isFresh, mayRevalidate, revalidationHeaders } from "./etag";
 import { compressBody } from "./compress";
@@ -516,10 +516,12 @@ async function readJsonOrRefuse(
   try {
     outcome = await readJsonBody(request);
   } catch (error) {
-    // The watchdog gave up. 408 is the honest status: the client promised a
-    // body and stopped delivering it.
+    // The watchdog gave up, or there was never a body. Either way the token was
+    // charged for a request that did not happen, so it goes back. 408 is the
+    // honest status for a body that stopped arriving; 400 for one never sent.
     if (limiter && key) limiter.give(key);
     if (error instanceof BodyTimeout) return { ok: false, response: json({ error: error.message }, error.status) };
+    if (error instanceof EmptyBody) return { ok: false, response: json({ error: "expected a JSON body" }, 400) };
     return { ok: false, response: json({ error: "the request body could not be read" }, 400) };
   }
   if (outcome.ok) return { ok: true, body: outcome.value };
@@ -909,6 +911,8 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
           form = await readBody(request, (req: Request) => req.formData(), ATTACH_MAX_BYTES + 8192);
         } catch (error) {
           LIMITS.attachment.give(uploadKey);
+          // 408 is the client's socket going quiet; 400 is a request that simply
+          // is not an upload. Conflating them is the lie E40 already had.
           if (error instanceof BodyTimeout) return json({ error: error.message }, error.status);
           return json({ error: "expected multipart/form-data with a `file` field" }, 400);
         }

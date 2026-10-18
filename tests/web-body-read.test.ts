@@ -7,7 +7,7 @@
  *  settles, not that a timer fires early.
  */
 import { describe, expect, test } from "bun:test";
-import { bodyRefusal, BodyTimeout, BODY_IDLE_SECONDS, readBody, readJsonBody } from "../src/web/bodyRead";
+import { bodyRefusal, BodyTimeout, BODY_IDLE_SECONDS, EmptyBody, readBody, readJsonBody } from "../src/web/bodyRead";
 import { RateLimiter } from "../src/web/rateLimit";
 
 /** A request whose body stops mid-way, the way a closed tab or a lost phone
@@ -203,5 +203,30 @@ describe("RateLimiter.give — a token for a request that never happened", () =>
     rl.take("k", 1_000_000);
     rl.give("k", 1_000_000);
     expect(rl.tracked).toBe(0);
+  });
+});
+
+describe("absence is not a stall", () => {
+  test("a request with NO body is absent, not a 408 (E40 follow-up)", async () => {
+    // Measured live against the first E40 build: an empty POST answered 408
+    // "the request body stopped arriving for 60s". Nothing stopped arriving —
+    // the request arrived complete with `content-length: 0` and nothing in it,
+    // which Bun reports as `request.body === null`. Saying "stopped arriving"
+    // about a request that arrived whole is the same class of lie as the `{}`.
+    const out = await readJsonBody(new Request("http://127.0.0.1:4317/api/sessions", { method: "POST", headers: { "content-type": "application/json" } }));
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toBe("absent");
+    expect(bodyRefusal(out)).toBe("expected a JSON body");
+  });
+
+  test("EmptyBody is a 400, and is NOT a BodyTimeout", () => {
+    expect(new EmptyBody().status).toBe(400);
+    expect(new EmptyBody()).not.toBeInstanceOf(BodyTimeout);
+  });
+
+  test("a body that DID arrive (one space) is absent too, but by parsing", async () => {
+    const out = await readJsonBody(json(" "));
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toBe("absent");
   });
 });
