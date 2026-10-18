@@ -159,6 +159,12 @@ export function saveHosts(hosts: RemoteHostRecord[]): void {
   }
 }
 
+/** One remote run's own view of its turn: whether it has already published the exit card. */
+interface RemoteTurn {
+  settled(): boolean;
+  settle(exitStatus: string, submission: string): boolean;
+}
+
 interface Internal {
   session: LiveSession;
   run?: MiniRun;
@@ -182,6 +188,19 @@ interface Internal {
 
   /** The next trajectory snapshot rebuilds the transcript (just attached to another UI's agent). */
   rebuild?: boolean;
+  /** Every remote process still running for this session, not just the newest one. `remote`
+   * is the one a new turn replaces; this set is what `interrupt()`/`close()` walk, so a turn
+   * that a later turn displaced is still stoppable instead of becoming an orphan that spends
+   * the host's tokens with nobody holding its handle. */
+  remotes?: Set<RemoteRun>;
+  /** Runs taken down on purpose (`interrupt()`, `close()`). `#stopRemote` clears `remote`, so
+   * without this the process-exit handler could not tell "the user stopped this turn" from
+   * "a newer turn displaced this one" — and would leave a stopped turn without its exit card. */
+  stoppedRemotes?: Set<RemoteRun>;
+  /** Prompts that arrived while a remote turn was live. A remote turn is a one-shot `ssh` with
+   * no control channel, so a follow-up cannot be handed to the running agent (a local turn can,
+   * through the control file): it waits for that turn to finish and then starts. */
+  remoteQueue?: string[];
   /** Transcript counts at the last mid-run save: a running session persists at most every PERSIST_MS. */
   persistedCount?: number;
   persistedAt?: number;
@@ -1101,6 +1120,7 @@ export class SessionManager {
       this.#emit(entry);
     });
     entry.remote = remote;
+    (entry.remotes ??= new Set()).add(remote);
 
     let buffer = "";
     remote.onData((chunk) => {
@@ -1144,6 +1164,10 @@ export class SessionManager {
     });
 
     void remote.exited.then((code) => {
+      entry.remotes?.delete(remote);
+      if (!this.#ownsTurn(entry, remote)) return;
+      entry.stoppedRemotes?.delete(remote);
+      if (entry.remote === remote) entry.remote = undefined;
       const interrupted = session.status === "interrupted";
       if (!session.events.some((e) => e.type === "exit")) {
         session.events.push({
@@ -1153,6 +1177,7 @@ export class SessionManager {
         });
       }
       this.#finish(entry, interrupted ? "interrupted" : code === 0 ? "done" : "error", code);
+      this.#drainRemoteQueue(entry, interrupted);
     });
 
     return session;
@@ -1431,7 +1456,9 @@ export class SessionManager {
     if (!(entry.run && !entry.exited) && entry.session.target === "local") {
       if (!(await this.#attachExternal(entry))) this.#refreshIfStale(entry);
     }
-    const running = !!entry.run && !entry.exited;
+    // A remote turn never sets `entry.run` (it is an `ssh`, not a spawned agent), so `running`
+    // has to ask the remote handle too — otherwise this session always looks idle to itself.
+    const running = (!!entry.run && !entry.exited) || !!entry.remote;
     log("session.send", { id, len: text.length, running, target: entry.session.target });
     if (!running && entry.session.target === "local" && entry.session.messages.length === 0) {
       // Nothing was saved to continue from (the session never made a model call). Say so instead of
@@ -1736,6 +1763,20 @@ export class SessionManager {
       this.#emit(entry);
       return;
     }
+    // A remote turn is a one-shot `ssh` with no control channel, so a prompt that arrives while
+    // one is live cannot join it (a local one can, through the control file). Starting a second
+    // `ssh` used to be the answer: two agents on the same conversation, `entry.remote` overwritten
+    // so only the newest one could be stopped, the older one burning the host's tokens with nobody
+    // holding it, and the older turn's exit card swallowed by the newer turn's. Queue it instead.
+    if (entry.remote) {
+      (entry.remoteQueue ??= []).push(prompt);
+      entry.session.events.push({
+        type: "notice",
+        text: `queued: the remote host runs one turn at a time (${entry.remoteQueue.length} waiting)`,
+      });
+      this.#emit(entry);
+      return;
+    }
     entry.session.status = "running";
     entry.session.startedAt = Date.now();
     entry.session.events.push({ type: "notice", text: "starting a new turn on the remote host…" });
@@ -1753,18 +1794,81 @@ export class SessionManager {
       prompt,
     );
     entry.remote = remote;
-    this.#consumeRemote(entry, remote);
-    void remote.exited.then((code) => {
-      if (entry.session.status === "running") {
+    (entry.remotes ??= new Set()).add(remote);
+    const turn = this.#consumeRemote(entry, remote);
+    void remote.exited.then(async (code) => {
+      entry.remotes?.delete(remote);
+      // Only the turn the session is actually waiting on may finish it: a displaced run's exit
+      // belongs to the turn that replaced it, not to the one the user is looking at.
+      if (!this.#ownsTurn(entry, remote)) return;
+      entry.stoppedRemotes?.delete(remote);
+      if (entry.remote === remote) entry.remote = undefined;
+      const interrupted = entry.session.status === "interrupted";
+      // A turn that never delivered a `result` (the host dropped, the agent was killed) still has
+      // to end visibly, or the transcript just stops mid-answer.
+      if (turn.settled()) this.#emit(entry);
+      else {
+        turn.settle(interrupted ? "Interrupted" : code === 0 ? "Submitted" : "Error", "");
+        this.#emit(entry);
+      }
+      if (!interrupted && entry.session.status === "running") {
         entry.session.status = code === 0 ? "done" : "error";
       }
       this.#persist(entry);
-      this.#emit(entry);
+      this.#drainRemoteQueue(entry, interrupted);
     });
   }
 
-  #consumeRemote(entry: Internal, remote: RemoteRun): void {
+  /**
+   * Start the prompt that arrived while this turn was running, if any. Both remote exit paths
+   * call it: a follow-up queued behind the FIRST turn used to be stranded forever, because only
+   * the follow-up handler knew the queue existed.
+   */
+  #drainRemoteQueue(entry: Internal, interrupted: boolean): void {
+    if (interrupted || entry.session.status === "interrupted") return;
+    const next = entry.remoteQueue?.shift();
+    if (next === undefined) return;
+    void this.#continueRemote(entry, next);
+  }
+
+  /** Stop every remote process this session owns, and drop anything queued behind them. */
+  #stopRemote(entry: Internal): void {
+    const stopped = (entry.stoppedRemotes ??= new Set());
+    for (const remote of entry.remotes ?? []) {
+      stopped.add(remote);
+      remote.stop();
+    }
+    entry.remotes = undefined;
+    entry.remote = undefined;
+    entry.remoteQueue = undefined;
+  }
+
+  /** True while this run is the one the session is waiting on: it still holds the slot, or the
+   * user stopped it. False only for a run a later turn displaced, whose exit belongs to the
+   * turn that replaced it. */
+  #ownsTurn(entry: Internal, remote: RemoteRun): boolean {
+    return entry.remote === remote || !!entry.stoppedRemotes?.has(remote);
+  }
+
+  /**
+   * Feed one remote run's stream-json into the transcript. Returns whether that run has already
+   * published its own exit card, so the process-exit handler does not add a second one for it.
+   */
+  #consumeRemote(entry: Internal, remote: RemoteRun): RemoteTurn {
     let buffer = "";
+    // Per RUN, not per session: the guard used to be `!session.events.some(e => e.type === "exit")`,
+    // which is true after the first turn — so every follow-up turn on a remote session finished in
+    // silence, with no exit card at all, and the user could not tell it had ended.
+    let settled = false;
+    const turn: RemoteTurn = {
+      settled: () => settled,
+      settle: (exitStatus, submission) => {
+        if (settled) return false;
+        settled = true;
+        entry.session.events.push({ type: "exit", exitStatus, submission });
+        return true;
+      },
+    };
     remote.onData((chunk) => {
       buffer += chunk;
       const lines = buffer.split("\n");
@@ -1786,19 +1890,29 @@ export class SessionManager {
           }
         }
         if (payload.type === "result") {
-          const result = payload as { subtype?: string; exit_status?: string; result?: string };
+          const result = payload as {
+            subtype?: string;
+            exit_status?: string;
+            result?: string;
+            api_calls?: number;
+            cost_usd?: number;
+          };
           entry.session.exitStatus = result.exit_status ?? entry.session.exitStatus;
-          if (!entry.session.events.some((e) => e.type === "exit")) {
-            entry.session.events.push({
-              type: "exit",
-              exitStatus: entry.session.exitStatus || (result.subtype === "success" ? "Submitted" : "error"),
-              submission: String(result.result ?? ""),
-            });
-          }
+          // Each remote turn is its own agent process with its own cost, so the session's totals
+          // are the sum of its turns. `#createRemote` already recorded the first one this way;
+          // a follow-up used to be added on top without its `result` ever being read, so a remote
+          // session's cost was frozen at whatever its first turn had spent.
+          if (typeof result.api_calls === "number") entry.session.apiCalls += result.api_calls;
+          if (typeof result.cost_usd === "number") entry.session.cost += result.cost_usd;
+          turn.settle(
+            entry.session.exitStatus || (result.subtype === "success" ? "Submitted" : "error"),
+            String(result.result ?? ""),
+          );
           this.#emit(entry);
         }
       }
     });
+    return turn;
   }
 
   interrupt(id: string): void {
@@ -1808,7 +1922,7 @@ export class SessionManager {
     entry.session.status = "interrupted";
     entry.session.exitStatus = "Interrupted";
     if (entry.run) entry.run.interrupt();
-    else entry.remote?.stop();
+    else this.#stopRemote(entry);
     this.#emit(entry);
   }
 
@@ -1823,7 +1937,7 @@ export class SessionManager {
     log("session.close", { id });
     entry.watch?.stop();
     entry.run?.kill();
-    entry.remote?.stop();
+    this.#stopRemote(entry);
     if (entry.session.status === "running") entry.session.status = "interrupted";
     this.#persist(entry);
     this.#live.delete(id);
@@ -1840,7 +1954,7 @@ export class SessionManager {
     if (entry) {
       entry.watch?.stop();
       entry.run?.kill();
-      entry.remote?.stop();
+      this.#stopRemote(entry);
       this.#live.delete(id);
     }
     try {
