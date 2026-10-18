@@ -38,7 +38,7 @@ import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
-import { bodyRefusal, BodyTimeout, EmptyBody, readBody, readJsonBody, type BodyOutcome } from "./bodyRead";
+import { bodyRefusal, BodyTimeout, BodyTooLarge, EmptyBody, readBody, readJsonBody, type BodyOutcome } from "./bodyRead";
 import { syncAllSkills } from "../skills";
 import { etagFor, isFresh, mayRevalidate, revalidationHeaders } from "./etag";
 import { compressBody } from "./compress";
@@ -529,7 +529,7 @@ async function readJsonOrRefuse(
     // charged for a request that did not happen, so it goes back. 408 is the
     // honest status for a body that stopped arriving; 400 for one never sent.
     if (limiter && key) limiter.give(key);
-    if (error instanceof BodyTimeout) return { ok: false, response: json({ error: error.message }, error.status) };
+    if (error instanceof BodyTimeout || error instanceof BodyTooLarge) return { ok: false, response: json({ error: error.message }, error.status) };
     if (error instanceof EmptyBody) return { ok: false, response: json({ error: "expected a JSON body" }, 400) };
     return { ok: false, response: json({ error: "the request body could not be read" }, 400) };
   }
@@ -538,7 +538,12 @@ async function readJsonOrRefuse(
   // token goes back (it was charged for a request that did not happen) and the
   // answer is a 400 that says which.
   if (limiter && key) limiter.give(key);
-  return { ok: false, response: json({ error: bodyRefusal(outcome) }, 400) };
+  // A body past the cap is 413 (measured, E42) — the same answer the fast
+  // `content-length` refuse on /attachments gives. It used to answer 408 "the
+  // request body stopped arriving for 60s" after 0,00 s, for a body that
+  // arrived whole.
+  const status = outcome.reason === "too-large" ? 413 : 400;
+  return { ok: false, response: json({ error: bodyRefusal(outcome) }, status) };
 }
 
 function hostToApi(host: RemoteHostRecord): RemoteHost {
@@ -922,7 +927,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
           LIMITS.attachment.give(uploadKey);
           // 408 is the client's socket going quiet; 400 is a request that simply
           // is not an upload. Conflating them is the lie E40 already had.
-          if (error instanceof BodyTimeout) return json({ error: error.message }, error.status);
+          if (error instanceof BodyTimeout || error instanceof BodyTooLarge) return json({ error: error.message }, error.status);
           return json({ error: "expected multipart/form-data with a `file` field" }, 400);
         }
         const file = form.get("file");

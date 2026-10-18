@@ -28,6 +28,27 @@
  * "the client gave up", and the code cannot tell that apart from "the client
  * finished".
  *
+ * THE THIRD DEFECT (measured against the deployed build, E42): **a body that
+ * arrived TOO FAST was reported as one that never arrived.** The per-chunk size
+ * cap raised `BodyTimeout("total")` from INSIDE the watchdog's own `try`, so
+ * the `catch` right below caught it and re-labelled it `BodyTimeout("idle")`.
+ * A 17 MB upload — over the 15 MB cap — answered:
+ *
+ *     HTTP/1.1 408 Request Timeout
+ *     {"error":"the request body stopped arriving for 60s"}
+ *
+ * in **0,00 s**. Three lies in one answer: the status (a client that sent too
+ * much is a 413, not a 408), the reason (nothing stopped arriving; the client
+ * sent 17 MB in 20 ms), and the clock (it claims 60 s of silence about a body
+ * that arrived whole). It hit every route with a cap, JSON included — a 2 MB
+ * JSON body on a 1 MB cap answered the same way. And the truth was already in
+ * the file, unreachable: `BodyOutcome` had a `"too-large"` reason and
+ * `bodyRefusal` had a message for it, but nothing could ever produce it.
+ *
+ * So the cap now raises `BodyTooLarge` (413) from OUTSIDE the guarded loop,
+ * and the watchdog's `catch` goes back to meaning what it says: the socket
+ * died mid-stream.
+ *
  * The rules:
  *
  *   - **A deadline is progress-based, not wall-clock.** A 15 MB upload on a
@@ -59,6 +80,18 @@ export const BODY_END_GRACE_MS = 5_000;
  *  orders of magnitude past anything the app sends, and it means a truncated
  *  stream cannot grow without bound while we wait to notice. */
 export const JSON_MAX_BYTES = 1024 * 1024;
+
+/** Thrown out of a read that passed the size cap. NOT a timeout: the body
+ *  arrived, fast and complete, and it was simply too much of it. Carries 413 so
+ *  a route can answer the truth instead of blaming a silence that never
+ *  happened (measured, E42: 17 MB over a 15 MB cap answered 408 "stopped
+ *  arriving for 60s" in 0,00 s). */
+export class BodyTooLarge extends Error {
+  readonly status = 413;
+  constructor(readonly limit: number) {
+    super(`the request body is over ${limit} bytes`);
+  }
+}
 
 export type BodyOutcome =
   /** The client sent everything it declared and it parsed. */
@@ -141,13 +174,22 @@ export async function readBody<T>(request: Request, read: (req: Request) => Prom
 
   const reader = watch.getReader();
   let seen = 0;
+  // The cap settles the race ITSELF, and it does NOT throw (E42). Thrown from
+  // inside the guarded loop, `BodyTimeout` was caught by the `catch` right
+  // below and re-labelled `idle`: a 17 MB body on a 15 MB cap answered 408
+  // "the request body stopped arriving for 60s" after 0,00 s — three lies in
+  // one answer. The `catch` is for ONE thing, the socket dying mid-stream; how
+  // much arrived is not that. Settling here also means the answer does not wait
+  // for the client to finish sending what we already know we will refuse.
+  let settleOversize!: (error: Error) => void;
+  const oversize = new Promise<never>((_, reject) => { settleOversize = reject; });
   const watchdog = (async () => {
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) return; // the body arrived COMPLETE: `real` settles on its own
         seen += value?.byteLength ?? 0;
-        if (seen > limit) throw new BodyTimeout("total", idleMs);
+        if (seen > limit) return settleOversize(new BodyTooLarge(limit));
         arm(); // progress: the deadline moves, because only SILENCE is a hang
       }
     } catch {
@@ -163,7 +205,7 @@ export async function readBody<T>(request: Request, read: (req: Request) => Prom
   (total as unknown as { unref?: () => void }).unref?.();
 
   try {
-    return await Promise.race([read(request), idle, ceiling]);
+    return await Promise.race([read(request), idle, ceiling, oversize]);
   } finally {
     if (armed) clearTimeout(armed);
     clearTimeout(total);
@@ -189,6 +231,10 @@ export async function readJsonBody(request: Request, idleMs = BODY_IDLE_SECONDS 
     // declared length of 0 is the same fact seen from the other side, and it is
     // a header: true before anything has been read.
     if (error instanceof EmptyBody || request.headers.get("content-length") === "0") return { ok: false, reason: "absent" };
+    // The body did not stop arriving — too much of it arrived. Before this,
+    // `BodyTooLarge` did not exist and the cap came back as a `BodyTimeout`,
+    // which every route answered 408 (E42).
+    if (error instanceof BodyTooLarge) return { ok: false, reason: "too-large" };
     if (error instanceof BodyTimeout) throw error;
     return { ok: false, reason: "truncated" };
   }
@@ -209,6 +255,8 @@ export async function readJsonBody(request: Request, idleMs = BODY_IDLE_SECONDS 
 export function bodyRefusal(outcome: BodyOutcome): string | null {
   if (outcome.ok) return null;
   if (outcome.reason === "absent") return "expected a JSON body";
-  if (outcome.reason === "too-large") return `the request body passes of ${JSON_MAX_BYTES} bytes`;
+  // Reachable only since E42. Before it, nothing could produce "too-large", so
+  // this line never ran and the cap was reported as a stall by another path.
+  if (outcome.reason === "too-large") return `the request body is over ${JSON_MAX_BYTES} bytes`;
   return "the request body is not valid JSON";
 }
