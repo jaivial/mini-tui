@@ -143,7 +143,15 @@ describe("where a chat starts", async () => {
   test("the remote script really starts in the folder (run through bash, as ssh would)", () => {
     const dir = mkdtempSync(join(tmpdir(), "minitui-remote-cwd-"));
     mkdirSync(join(dir, "odd name"));
-    const script = buildRemoteScript("hi", join(dir, "odd name")).replace(/exec mini-tui /, 'echo "STARTED_IN=$(pwd -P)"; exit 0; : ');
+    // The agent line is no longer `exec mini-tui ...` — the script supervises the agent so it
+    // can stop it when the channel dies (see src/web/ssh.ts) — and the `exec` was optional even
+    // before. Anchoring on `mini-tui` alone means the substitution cannot silently stop
+    // matching and launch the REAL agent from the developer's box: that is not a slow test,
+    // it is a test that talks to a provider.
+    const script = buildRemoteScript("hi", join(dir, "odd name")).replace(
+      /^(exec )?mini-tui /m,
+      'echo "STARTED_IN=$(pwd -P)"; exit 0; # ',
+    );
     const out = Bun.spawnSync({ cmd: ["bash", "-s"], stdin: Buffer.from(script) }).stdout.toString();
     expect(out.trim()).toBe(`STARTED_IN=${listLocal(join(dir, "odd name")).path}`);
     rmSync(dir, { recursive: true, force: true });
