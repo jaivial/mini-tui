@@ -105,8 +105,10 @@
   // re-runs the effect, until Svelte throws `effect_update_depth_exceeded`. The list of ids is all
   // this effect actually needs, so that is all it may read.
   $effect(() => {
-    const ids = untrack(() => bots.map((s) => s.id));
-    agentTree.sync(ids);
+    // The ids are READ tracked (a new bot must re-run this: the team map and the nested rows came up
+    // empty for any session opened after mount); only the store write is untracked.
+    const ids = bots.map((s) => s.id);
+    untrack(() => agentTree.sync(ids));
   });
 
   const BOT_DOT: Record<BotRow["tone"], string> = {
