@@ -4,11 +4,11 @@
  */
 export const SITE_URL: string = (import.meta.env.VITE_SITE_URL ?? "https://jaivial.github.io/mini-tui").replace(/\/$/, "");
 export const REPO = "https://github.com/jaivial/mini-tui";
-export const RELEASE = "0.41.0";
+export const RELEASE = "0.43.0";
 export const NAME = "mini-tui";
-export const TAGLINE = "A terminal and web UI for the mini-swe-agent coding agent";
+export const TAGLINE = "Bots that run your kanban, from the web or WhatsApp";
 export const DESCRIPTION =
-  "mini-tui is a terminal and web UI for the mini-swe-agent coding agent: many sessions at once, live in both, subagents, and a Rust agent with no Python.";
+  "mini-tui is a team of bots that organize work as a kanban: you talk in the web app or a WhatsApp group, workers ship the cards, and a card closes only with evidence.";
 export const OG_IMAGE = "/og.png";
 export const OG_SIZE = { width: 1200, height: 630 } as const;
 export const AUTHOR = { name: "Jaime Villanueva Alcon", url: "https://github.com/jaivial" };

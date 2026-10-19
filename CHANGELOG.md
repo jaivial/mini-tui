@@ -2,6 +2,58 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.43.0 — 2026-10-19
+
+mini-tui is now a team of bots that organize work as a kanban, with workers that carry the cards out,
+WhatsApp groups synced with the web app, a real browser through cu, and a closure check that makes
+"done" mean "the evidence is on the card". This release covers everything since 0.42.0, with a new
+README and a new landing page.
+
+### Measured
+
+- **Closure check on, against pi: 112.9 s vs 145.6 s, 30/30 PASS on both sides.** Ten tasks, three
+  interleaved repetitions (pi and mini alternate per task, so API drift hits both alike),
+  `MiniMax-M3.1-Flash-Preview` on both sides, mini on the deployed binary and config with Laya as the
+  judge. That is 0.78x of pi's time as the sum of per-task medians, and mini is at least as fast on 9
+  of 10 tasks. Ten tasks, three repetitions, one model, one machine; earlier rounds were a tie and
+  [the report](docs/pi-vs-mini-benchmark.md) keeps them.
+- **Where it came from.** Baseline with the model judge: 7 of 27 runs hit the 900 s timeout, because
+  the judge rejected finished work up to 158 times (#300 caps rejections at 3). Laya had always
+  answered "evidence truncated" and sent every closure to the slow model judge (#302 gives it a
+  compact window). Its latency grows steeply with input, about 5 s per closure at 17k characters
+  (#303 shrinks the window, and a closure now costs about 0.1 to 0.5 s).
+
+### Added
+
+- **Bots and a board.** Windows hold bots and each bot holds the delegates it started: a nested
+  sidebar, a team map drawn as a live graph, and a read-only view of other bots' cards through a
+  shared graph layer. The durable task graph keeps leases, so a card in flight is not lost when a lane
+  stops.
+- **WhatsApp groups, synced both ways** (WA-2 to WA-7, v4 to v6). One group per bot, group photos from
+  the bot avatars, a no-echo mirror between the group and the web app, bounded media with local voice
+  transcription, a 👀 acknowledgement, typing state, semantic reactions, `/newsession` and `/rename`,
+  and pairing with a phone code or a QR.
+- **cu in the agent.** The `computer_use` tool drives a reusable pool of cu daemons and posts
+  screenshots to the chat.
+- **Closure oracle.** `MINI_AGENT_GOAL_ORACLE=laya` with `MINI_AGENT_GOAL_ORACLE_URL` points the
+  closure check at a self-hosted classifier. The model judge stays the default and the fallback.
+- **Web app.** A silver-metal palette, an Apple-style 18 px shape language, a floating prompt pill,
+  compact tool cards, generative UI in the chat, voice-note recorder and player, inline images and
+  attachments, AI session titles, a model router with three tiers, usage metering per model, and a
+  PWA with cookie login.
+
+### Fixed
+
+- Around fifty fixes from QA rounds E1 to E51, among them: a stale save no longer overwrites a newer
+  one, a stopped consumer tears its turn down, a bodiless upload is no longer read as an empty one,
+  a remote folder listing is bounded in work as well as in size, and the web server compares origins
+  against headers an attacker cannot choose.
+
+### Security
+
+- Per-IP rate limits on the expensive routes, loopback-only CORS with no wildcard on private reads,
+  attachment sniffing before storage, and a host guard for the web server.
+
 ## 0.41.0 — 2026-10-10
 
 Quality is perfect on the pi benchmark — 10/10 PASS on both sides, on every one of the four complete

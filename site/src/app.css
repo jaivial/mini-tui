@@ -6,48 +6,58 @@
 
 /* shadcn semantic tokens, filled with the same warm palette the web app uses (Cursor's voice: warm
    cream / warm charcoal, one orange accent, hairline depth). Every text/surface pair was measured. */
+/* Silver-metal palette, shared with the web app: cool graphite surfaces, brushed-silver text and one
+   restrained accent. The status hues (lime, amber, sky, rose) are used only for kanban state. */
 :root {
-  --background: #f7f7f4;
-  --foreground: #26251e;
+  --background: #f4f5f7;
+  --foreground: #14161a;
   --card: #ffffff;
-  --card-foreground: #26251e;
+  --card-foreground: #14161a;
   --popover: #ffffff;
-  --popover-foreground: #26251e;
-  --primary: #c93d00;
-  --primary-foreground: #ffffff;
-  --secondary: #efeee8;
-  --secondary-foreground: #26251e;
-  --muted: #efeee8;
-  --muted-foreground: #5a5852;
-  --accent: #efeee8;
-  --accent-foreground: #26251e;
+  --popover-foreground: #14161a;
+  --primary: #14161a;
+  --primary-foreground: #f4f5f7;
+  --secondary: #e9ebef;
+  --secondary-foreground: #14161a;
+  --muted: #e9ebef;
+  --muted-foreground: #4e535c;
+  --accent: #e9ebef;
+  --accent-foreground: #14161a;
   --destructive: #b8244c;
-  --border: #e6e5e0;
-  --input: #cfcdc4;
-  --ring: #c93d00;
-  --radius: 0.75rem;
-  --faint: #66645a;
+  --border: #dcdfe5;
+  --input: #c4c8d0;
+  --ring: #4a6cf7;
+  --faint: #5d626b;
+  --lime: #2f9e55;
+  --amber: #b7791f;
+  --sky: #2b6fd6;
+  --rose: #c2385a;
+  --radius: 1.125rem;
 }
 .dark {
-  --background: #161612;
-  --foreground: #f2f1ec;
-  --card: #1c1c17;
-  --card-foreground: #f2f1ec;
-  --popover: #2c2b24;
-  --popover-foreground: #f2f1ec;
-  --primary: #ff7a3d;
-  --primary-foreground: #1a0f08;
-  --secondary: #26251f;
-  --secondary-foreground: #f2f1ec;
-  --muted: #26251f;
-  --muted-foreground: #a8a59a;
-  --accent: #26251f;
-  --accent-foreground: #f2f1ec;
+  --background: #0b0c0f;
+  --foreground: #eceef2;
+  --card: #121419;
+  --card-foreground: #eceef2;
+  --popover: #1a1d23;
+  --popover-foreground: #eceef2;
+  --primary: #e8eaee;
+  --primary-foreground: #0b0c0f;
+  --secondary: #181b21;
+  --secondary-foreground: #eceef2;
+  --muted: #181b21;
+  --muted-foreground: #a3a8b2;
+  --accent: #1d2027;
+  --accent-foreground: #eceef2;
   --destructive: #ff6b8a;
-  --border: #2f2e27;
-  --input: #46443b;
-  --ring: #ff7a3d;
-  --faint: #96927f;
+  --border: #23262e;
+  --input: #3a3e49;
+  --ring: #8fa4ff;
+  --faint: #8d929d;
+  --lime: #7ddc8a;
+  --amber: #f5c05c;
+  --sky: #6cb8ff;
+  --rose: #ff8aa0;
 }
 
 @theme inline {

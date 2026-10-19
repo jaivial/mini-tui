@@ -1,8 +1,120 @@
-# mini-tui
+<h1 align="center">mini-tui</h1>
+<p align="center"><b>Talk to a bot. It runs the board.</b></p>
+<p align="center">
+  A team of bots that organize your work as a kanban, from the web app, the terminal or a WhatsApp group.<br>
+  Workers carry the cards out. A card closes only when the evidence is on it.
+</p>
+<p align="center">
+  <a href="https://jaivial.github.io/mini-tui/">Landing page</a> ·
+  <a href="https://jaivial.github.io/mini-tui/docs/install/">Install guide</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="https://github.com/jaivial/mini-tui/releases/latest">Latest release</a>
+</p>
+
+---
+
+## What mini-tui is now
+
+mini-tui started as a terminal UI for the [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
+coding agent. It is now a different thing: **a team of bots that plan and organize, with workers that
+do**. The bot does not write all the code itself. It turns what you ask into cards on a durable
+task graph, hands them to workers, checks the evidence, and reports back in the thread you started.
+
+| | Before | Now |
+| --- | --- | --- |
+| Who works | One agent that types code | Bots that write a board, and workers that take cards |
+| Where you talk | A terminal prompt | The web app, the terminal, or a WhatsApp group per bot |
+| What "done" means | The agent says it is done | A closure check reads the goal against the diff and the logs |
+| How it looks | Panes of transcripts | Silver-metal web app: bots in the sidebar, a kanban, a team map |
+| Can it look at a page | No | Yes, through [cu](https://github.com/jaivial/cu): a real browser, with screenshots in the chat |
+
+### The board
+
+- Every request becomes **cards with dependencies** on a durable task graph. Workers take a lease on
+  a card, a card in flight is not lost when a lane stops, and an expired lease freezes its project
+  instead of dropping work. See [`docs/task-graph.md`](docs/task-graph.md).
+- Cards from other bots are visible read-only, through a shared graph layer
+  ([`docs/bot-graph-rag.md`](docs/bot-graph-rag.md)).
+- The sidebar is a tree: window, bots, and the delegates each bot started. The **team map** draws
+  the same tree as a live graph.
+
+### WhatsApp groups, synced with the web
+
+- Each bot can have **its own WhatsApp group**. It answers there without a mention, and its avatar
+  becomes the group photo.
+- The thread is **mirrored both ways** between WhatsApp and the web app, with no echo and an origin
+  marker on each bubble. Images and attachments travel too.
+- **Voice notes** are transcribed on your machine, and the state is honest when a transcript fails.
+- The bot reacts with 👀 the moment it hears you, shows a typing indicator, and uses semantic
+  reactions when a card closes. `/newsession` starts a fresh session, and `/rename` renames the
+  session and the group subject.
+- Pair with a phone code or a QR from Settings, Channels.
+  Details: [`docs/channel-multichat.md`](docs/channel-multichat.md),
+  [`docs/channel-mirror.md`](docs/channel-mirror.md), [`docs/channel-consumers.md`](docs/channel-consumers.md).
+
+### Bots that use a browser (cu)
+
+The `computer_use` tool drives a real browser through a reusable pool of [cu](https://github.com/jaivial/cu)
+daemons and posts screenshots to the chat. A bot can open the page it just changed, look at it, and
+file what it found as evidence on the card. Logins live in cu's vault, and the bot never sees a
+password.
+
+### Done means proven
+
+A card moves to Done only after a **closure check** reads the goal against the diff and the logs.
+The default judge is a model. Point it at **Laya**, a small self-hosted classifier, and a clean run
+closes in about a tenth of a second; anything unclear goes to the model judge. A run that the judge
+keeps rejecting for the same reason ends as a stalemate instead of looping.
+
+```bash
+export MINI_AGENT_GOAL_ORACLE=laya
+export MINI_AGENT_GOAL_ORACLE_URL=http://127.0.0.1:8102/v1/systemone
+```
+
+How it works: [`docs/goal-closure.md`](docs/goal-closure.md).
+
+### Also new
+
+Model router with three tiers and a persistent fallback breaker, usage metering per model and
+provider, generative UI in the chat (forms, tables and charts), a voice-note recorder and player,
+inline images and attachments, AI session titles, a PWA with cookie login, and a long list of
+hardening passes on the web server (per-IP rate limits, loopback-only CORS, upload sniffing).
+Everything is in the [changelog](CHANGELOG.md).
+
+## Quick start
+
+```bash
+git clone https://github.com/jaivial/mini-tui && cd mini-tui
+bun install
+(cd agent-rs && cargo build --release)       # one binary, no Python
+mkdir -p ~/.local/lib/mini-tui && cp agent-rs/target/release/mini-agent-rs ~/.local/lib/mini-tui/
+bun run web                                   # http://127.0.0.1:4317
+```
+
+Then open Settings, Providers, and paste a model key. It is tested with one real request before it
+is saved. The [install guide](https://jaivial.github.io/mini-tui/docs/install/) has the rest, and
+the terminal UI is still there: run `bin/mini-tui`.
 
 ## Benchmarks
 
-Terminal-Bench 2.0 dev suite (16 tasks, GLM-5.3-Flash, Rust agent). mini-tui vs the public harness leaderboard: pass rate vs median cost per task, with the Pareto frontier of public harnesses.
+**Closure check on, against pi.** Ten tasks, three repetitions, `MiniMax-M3.1-Flash-Preview` on both
+sides, pi and mini interleaved task by task so that API drift hits both alike, mini on the deployed
+binary and config with Laya as the judge.
+
+| | pi | mini-tui |
+| --- | --- | --- |
+| Tasks passed | 30/30 | 30/30 |
+| Sum of per-task medians | 145.6 s | **112.9 s** (0.78x) |
+| Tasks where mini is at least as fast | 1/10 | 9/10 |
+| Timeouts | 0 | 0 |
+
+Limits: ten tasks, three repetitions, one model, one machine. The gain comes from a judge that
+closes a clean run in a tenth of a second instead of a model call, and from a cap on judge
+rejections. Before that, 7 of 27 runs with the model judge hit the 900 s timeout. Earlier rounds
+were a tie and the report keeps them: [`docs/pi-vs-mini-benchmark.md`](docs/pi-vs-mini-benchmark.md).
+
+Terminal-Bench 2.0 dev suite (16 tasks, GLM-5.3-Flash, Rust agent). mini-tui vs the public harness
+leaderboard: pass rate vs median cost per task, with the Pareto frontier of public harnesses.
 
 ![Pass rate vs median cost per task](docs/img/benchmark.png)
 
@@ -11,6 +123,13 @@ Average agent wall time per task vs public coding agents (Artificial Analysis):
 ![Time per task](docs/img/time-per-task.png)
 
 ![Agent submit-checklist release](docs/img/update.png)
+
+---
+
+# Reference
+
+Everything below is the detailed reference for the terminal UI, the web app, the agents and the
+configuration.
 
 ## Features
 
