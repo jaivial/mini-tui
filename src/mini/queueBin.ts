@@ -23,7 +23,17 @@ import { rustAgentBin } from "./spawn";
 /** How long the probe may take before the candidate counts as "does not answer". */
 const PROBE_TIMEOUT_MS = 4_000;
 
-/** Candidates in the order they are trusted: the declared one first, then the agent chain. */
+/**
+ * Candidates in the order they are trusted: the declared one first, then the agent chain.
+ *
+ * The homedir fallbacks read `env.HOME` before the real home (E47): the caller's env is the world
+ * it runs in — the same rule `runQueueRead` applies to the child — and a test must be able to close
+ * that world instead of inheriting whatever this machine has installed. The last candidate is the
+ * installed QUEUE build (`mini-agent-rs-taskgraph`, where A3/A3c/E46 deploy it): without it the
+ * chain only finds a queue binary when `MINITUI_QUEUE_BIN` is set, which is exactly the habit
+ * E47 removed — the capability is a fact of the binary, so the chain has to reach every binary
+ * that could have it.
+ */
 function candidates(env: NodeJS.ProcessEnv): string[] {
   const out: string[] = [];
   const declared = env.MINITUI_QUEUE_BIN;
@@ -32,8 +42,12 @@ function candidates(env: NodeJS.ProcessEnv): string[] {
   if (agent) out.push(agent);
   const built = new URL("../../agent-rs/target/release/mini-agent-rs", import.meta.url).pathname;
   if (existsSync(built)) out.push(built);
-  const installed = join(homedir(), ".local", "lib", "mini-tui", "mini-agent-rs");
+  const home = env.HOME ?? homedir();
+  const lib = join(home, ".local", "lib", "mini-tui");
+  const installed = join(lib, "mini-agent-rs");
   if (existsSync(installed)) out.push(installed);
+  const installedQueue = join(lib, "mini-agent-rs-taskgraph");
+  if (existsSync(installedQueue)) out.push(installedQueue);
   return [...new Set(out)];
 }
 

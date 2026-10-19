@@ -10,7 +10,7 @@
  * These tests use real child processes (a shell script standing in for the binary), because the
  * defect IS the process interaction: a fake timer cannot tell a SIGTERM from a SIGKILL.
  */
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -41,7 +41,9 @@ describe("queueBin", () => {
   test("a binary without the queue subcommand is not a queue binary", async () => {
     resetQueueBinCache();
     const agent = script("agent-only.sh", 'echo "error: unknown option: --db" >&2\nexit 2');
-    expect(await queueBin({ MINITUI_QUEUE_BIN: agent, MINITUI_AGENT_BIN: agent })).toBeUndefined();
+    // HOME closes the world (E47): without it, the chain falls through to whatever THIS machine
+    // has installed and the assertion becomes a property of the box, not of the resolver.
+    expect(await queueBin({ MINITUI_QUEUE_BIN: agent, MINITUI_AGENT_BIN: agent, HOME: dir })).toBeUndefined();
   });
 
   test("a binary that answers queue help is accepted", async () => {
@@ -55,6 +57,23 @@ describe("queueBin", () => {
     const queue = script("declared.sh", 'if [ "$1" = queue ] && [ "$2" = help ]; then exit 0; fi\nexit 2');
     const agent = script("agent-chain.sh", 'exit 2');
     expect(await queueBin({ MINITUI_QUEUE_BIN: queue, MINITUI_AGENT_BIN: agent })).toBe(queue);
+  });
+
+  test("the chain reaches the installed queue build that sits beside the agent binary", async () => {
+    // E47: `mini-agent-rs-taskgraph` is where the queue build is deployed (A3/A3c/E46). If the
+    // chain cannot reach it, finding a queue binary depends on MINITUI_QUEUE_BIN being set — the
+    // habit E47 removed.
+    resetQueueBinCache();
+    const home = join(dir, "home-installed");
+    const lib = join(home, ".local", "lib", "mini-tui");
+    mkdirSync(lib, { recursive: true });
+    const agent = join(lib, "mini-agent-rs");
+    writeFileSync(agent, '#!/bin/sh\necho "error: unknown option: --db" >&2\nexit 2\n');
+    chmodSync(agent, 0o755);
+    const queue = join(lib, "mini-agent-rs-taskgraph");
+    writeFileSync(queue, '#!/bin/sh\nif [ "$1" = queue ] && [ "$2" = help ]; then exit 0; fi\necho "{}"\n');
+    chmodSync(queue, 0o755);
+    expect(await queueBin({ HOME: home, MINITUI_AGENT_BIN: agent })).toBe(queue);
   });
 
   test("the verdict is cached, so a failing binary is probed once and not once per request", async () => {
@@ -121,7 +140,7 @@ describe("runQueueRead", () => {
   test("no binary at all is its own reason", async () => {
     resetQueueBinCache();
     const missing = join(dir, "not-there");
-    const read = await runQueueRead(["queue", "graph-read"], { env: { MINITUI_QUEUE_BIN: missing, MINITUI_AGENT_BIN: missing } });
+    const read = await runQueueRead(["queue", "graph-read"], { env: { MINITUI_QUEUE_BIN: missing, MINITUI_AGENT_BIN: missing, HOME: dir } });
     expect(read.reason).toBe("no-binary");
   });
 
