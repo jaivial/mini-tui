@@ -27,7 +27,10 @@ export function statusText(state: SaveState, now = Date.now()): string {
     case "saving":
       return "Saving";
     case "error":
-      return "Not saved";
+      // The message names what happened, and only one of those verdicts is final: a save that never
+      // left this device is "not saved", one whose answer never came may still be in the database
+      // (E50 measured it landing). The panel shows this line, so it is the honest one.
+      return state.message || "Not saved";
     case "conflict":
       return "Changed somewhere else";
     case "saved": {

@@ -155,6 +155,30 @@ describe("notes client", () => {
     await expect(p).rejects.toThrow(/at most 10/);
     await expect(n.save("s-1", "x", 0, 20)).rejects.toThrow(/no answer/);
   });
+  test("an answer for a save the app gave up on is announced, and says which way it went", async () => {
+    // The deadline fired while the save was out. The write moved the note on server-side either
+    // way, and whoever holds the version book has to learn it — landed or refused — or the next
+    // save is refused for a change that is its own (E50/E51).
+    const conn = make();
+    const n = new NotesClient(conn);
+    const ws = connect(n);
+    const heard: [string, string][] = [];
+    n.onLateSave((note, outcome) => heard.push([outcome, note.body]));
+    const p1 = n.save("s-1", "mine", 0, 20);
+    const r1 = ws.sent.at(-1).req;
+    await expect(p1).rejects.toThrow(/may still be applied/);
+    ws.push({ t: "note.saved", req: r1, note: { id: "s-1", body: "mine", updatedAt: 4 } });
+    expect(heard).toEqual([["saved", "mine"]]);
+
+    const p2 = n.save("s-1", "again", 0, 20);
+    const r2 = ws.sent.at(-1).req;
+    await expect(p2).rejects.toThrow(/may still be applied/);
+    ws.push({ t: "note.conflict", req: r2, current: { id: "s-1", body: "from another tab", updatedAt: 5 } });
+    // A refusal is a late answer too: its version is what the caller's next save must name (the
+    // book lives with the editor — `web-notes-flush.test.ts` pins the naming).
+    expect(heard).toEqual([["saved", "mine"], ["conflict", "from another tab"]]);
+  });
+
   test("your own save is not echoed back to your listeners as if it came from elsewhere", () => {
     const conn = make();
     const n = new NotesClient(conn);
