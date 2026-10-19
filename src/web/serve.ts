@@ -194,9 +194,6 @@ const sessions = new SessionManager((session) => {
   broadcast({ type: "session", session: summarize(session) });
   feed.publish(session);
 }, { mirror: mirrorLoader });
-// Put the sidebar's open list back the way the last run left it (it lives in the manager's memory,
-// so a restart used to empty it). In the background: boot does not wait on saved transcripts.
-void sessions.rehydrate().catch((error) => log("session.rehydrate", { error: String(error) }));
 
 // Terminals start where the session works: its folder on this machine, or an ssh shell on its host.
 const terminals = new Terminals();
@@ -1432,3 +1429,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
 
 console.log(`mini-tui web server on http://${server.hostname}:${server.port}`);
 console.log(existsSync(STATIC_DIR) ? `serving the web app from ${STATIC_DIR}` : "web/dist not built - run `bun run build` in web/ (API only for now)");
+
+// After module initialization: openHistory reads mirrorCtx and broadcasts through the live hub.
+// Running this beside the manager declaration hit uninitialized bindings and discarded markers.
+void sessions.rehydrate().catch((error) => log("session.rehydrate", { error: String(error) }));
