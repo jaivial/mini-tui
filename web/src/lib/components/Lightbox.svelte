@@ -133,6 +133,7 @@
         }
       }}
     >
+      {#if lightbox.src}
       {#key lightbox.src}
         <img
           src={lightbox.src}
@@ -142,6 +143,7 @@
           draggable="false"
         />
       {/key}
+      {/if}
     </div>
   </div>
 </dialog>
