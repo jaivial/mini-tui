@@ -1271,7 +1271,7 @@ impl Hub {
         if max_depth != 0 && self.depth >= max_depth {
             return Err(format!("subagents may not start subagents beyond depth {max_depth}: do this task yourself"));
         }
-        let max_live: usize = env_num("MINI_AGENT_MAX_SUBAGENTS", 100).min(100);
+        let max_live: usize = env_num("MINI_AGENT_MAX_SUBAGENTS", usize::MAX);
         let live = self.children.iter().filter(|c| c.proc.is_some()).count();
         if live >= max_live {
             return Err(format!("{live} subagents are already alive (limit {max_live}): `agent stop` one you no longer need"));
@@ -2194,7 +2194,7 @@ impl Hub {
             if self.children.iter().any(|c| c.name == id && c.running()) {
                 break; // a child of that name is still working on a turn; retry next tick
             }
-            let max_live = env_num("MINI_AGENT_MAX_SUBAGENTS", 100).min(100);
+            let max_live = env_num("MINI_AGENT_MAX_SUBAGENTS", usize::MAX);
             let live = self.children.iter().filter(|c| c.proc.is_some()).count();
             if live >= max_live || self.fanout_left() == 0 {
                 break; // no room now: the ready queue keeps them, retried on the next tick

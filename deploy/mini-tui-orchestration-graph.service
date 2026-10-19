@@ -1,0 +1,10 @@
+[Unit]
+Description=mini-tui durable orchestration projection to neo4j-rust
+After=neo4j-rust.service mini-tui-web.service
+[Service]
+User=jaime
+ExecStart=/usr/bin/python3 /home/jaime/mini-tui-wa/scripts/orchestration_graph_sync.py
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

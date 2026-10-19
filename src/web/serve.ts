@@ -1009,7 +1009,11 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         return json({ error: "websocket upgrade failed" }, 400);
       }
 
-      if (path === "/kanban" && request.method === "GET") return json(allCards(sessions.db()));
+      if (path === "/kanban" && request.method === "GET") return json(allCards(sessions.db(), 2000));
+      if (path === "/orchestration/graph" && request.method === "GET") {
+        try { return json(JSON.parse(readFileSync(join(homedir(), ".config/mini-tui/orchestration-graph-status.json"), "utf8"))); }
+        catch { return json({ ok: false, error: "Graph sync has not completed" }); }
+      }
       if (path === "/sessions" && request.method === "GET") return json(sessions.list().map(summarize));
       if (path === "/sessions" && request.method === "POST") {
         const { limited: spawnLimit, key: spawnKey } = charged("sessionCreate", request, srv);

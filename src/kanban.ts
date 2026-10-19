@@ -44,6 +44,7 @@ export function ensureKanban(db: Database): void {
       updated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS kanban_cards_session ON kanban_cards(session_id, col);
+    CREATE TABLE IF NOT EXISTS orchestration_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, entity_id TEXT NOT NULL, kind TEXT NOT NULL, snapshot TEXT NOT NULL, created_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS kanban_links (
       a TEXT NOT NULL, b TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'related',
       PRIMARY KEY (a, b)
@@ -67,7 +68,9 @@ export function addCard(db: Database, session: string, f: { title: string; descr
   const id = newId(); const now = Date.now();
   db.query("INSERT INTO kanban_cards (id, session_id, title, description, col, created_at, updated_at) VALUES (?,?,?,?,?,?,?)")
     .run(id, session, f.title.slice(0, 200), (f.description ?? "").slice(0, 4000), f.column ?? "backlog", now, now);
-  return getCard(db, id)!;
+  const card = getCard(db, id)!;
+  db.query("INSERT INTO orchestration_events(entity_id,kind,snapshot,created_at) VALUES (?,?,?,?)").run(id,"card.created",JSON.stringify(card),Date.now());
+  return card;
 }
 
 /** Every card of every bot, newest first (the web board; bounded). */
@@ -97,12 +100,15 @@ export function updateCard(db: Database, id: string, f: { column?: Column; assig
   db.query("UPDATE kanban_cards SET title=?, description=?, col=?, assignee=?, result=?, notes=?, updated_at=? WHERE id=?")
     .run(f.title ?? c.title, f.description ?? c.description, f.column ?? c.column, f.assignee ?? c.assignee,
       (f.result ?? c.result).slice(0, 8000), JSON.stringify(notes), Date.now(), id);
-  return getCard(db, id);
+  const card = getCard(db, id);
+  db.query("INSERT INTO orchestration_events(entity_id,kind,snapshot,created_at) VALUES (?,?,?,?)").run(id,"card.updated",JSON.stringify(card),Date.now());
+  return card;
 }
 
 export function linkCards(db: Database, a: string, b: string, kind = "related"): void {
   ensureKanban(db);
   db.query("INSERT OR REPLACE INTO kanban_links (a, b, kind) VALUES (?,?,?)").run(a, b, kind);
+  db.query("INSERT INTO orchestration_events(entity_id,kind,snapshot,created_at) VALUES (?,?,?,?)").run(a,"card.linked",JSON.stringify({a,b,kind}),Date.now());
 }
 
 const words = (s: string) => new Set(s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter((w) => w.length > 2));
@@ -248,7 +254,7 @@ export function parseKanban(rest: string[], takeValue: (a: string[], i: number, 
  * to review; a clean stop is done; any other end is blocked with the exit status as its note.
  */
 export function settleFromSubagent(db: Database, parentId: string, name: string, state: string, exitStatus: string, steps = 1): Card | null {
-  const c = getCard(db, name);
+  const c = getCard(db, name) ?? listCards(db, parentId).find((c) => c.assignee === name) ?? null;
   if (!c || c.session !== parentId) return null;
   if (c.column !== "doing" && c.column !== "review") return null;
   let column: Column | null = null;
@@ -258,14 +264,9 @@ export function settleFromSubagent(db: Database, parentId: string, name: string,
   return updateCard(db, c.id, { column, result: c.result || (exitStatus ? `subagent ${state}: ${exitStatus}` : steps === 0 ? `subagent ${state} before taking a step` : `subagent ${state}`), note: `auto: subagent ${state}${exitStatus ? ` (${exitStatus})` : ""}` });
 }
 
-/** A subagent's board is temporary: it goes with the subagent once it has stopped. */
+/** Compatibility hook: completed subagent boards are retained as durable history. */
 export function dropBoard(db: Database, scope: string): number {
   ensureKanban(db);
-  // The subagent's own board plus the boards of helpers nested under it (scope`~name`...): they all
-  // go once the subagent has stopped.
-  const like = scope.replace(/[\\%_]/g, "\\$&") + "~%";
-  const ids = (db.query("SELECT id FROM kanban_cards WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'").all(scope, like) as { id: string }[]).map((r) => r.id);
-  for (const id of ids) db.query("DELETE FROM kanban_links WHERE a = ? OR b = ?").run(id, id);
-  db.query("DELETE FROM kanban_cards WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'").run(scope, like);
-  return ids.length;
+  // Boards are durable evidence, including after their worker exits.
+  return 0;
 }

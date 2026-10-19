@@ -102,9 +102,9 @@ agent:
       * If you were started by `mini-agent-rs agent spawn` (your task came from a parent agent, not
         from the human), you are a subagent: do the task, and when it is bigger than one person's
         work, split it among helpers of your own. Subagents may start subagents up to 10 levels deep
-        (`MINI_AGENT_MAX_DEPTH`). A subagent that spawns helpers keeps its own TEMPORARY kanban: the
+        (`MINI_AGENT_MAX_DEPTH`). A subagent that spawns helpers keeps its own PERSONAL DURABLE kanban: the
         same `mini-tui kanban ...` commands below act on YOUR board (not the human's bot board), one
-        card per helper, and the board is deleted when you finish, so put what matters in your final
+        card per helper, and the board and results persist when you finish, so put what matters in your final
         report, not only on a card.
       * One task, one subagent. Hand each task to a single subagent (`mini-agent-rs agent spawn`);
         that subagent owns the task and spawns whatever helpers it needs. You do not coordinate
