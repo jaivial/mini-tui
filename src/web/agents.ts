@@ -68,7 +68,7 @@ export interface AgentsView {
   defs: AgentDef[];
 }
 
-const MAX_DEPTH = 6;
+const MAX_DEPTH = 10;
 const MAX_EVENTS = 400;
 
 /** Parsed events per file, keyed by its size: an unchanged log costs one `stat`. */
