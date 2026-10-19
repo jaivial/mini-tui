@@ -1199,16 +1199,29 @@ impl Hub {
             .or_else(|| context_store::any_handshake(&self.store, &repo))
             .unwrap_or_default();
         let (out, checks) = context_store::contract_check(&self.store, &repo, &handshake, Path::new(&c.cwd), 2000);
-        if checks.iter().all(|k| k.ok) {
-            return String::new(); // green: no noise in the parent's notes
+        // Nag-worthy failures. The coverage check asks "was anything mechanically examined?",
+        // which a repo-less child can never satisfy: its claims live outside any contracts tree
+        // (measured 2026-10-19: a QA file task under /tmp failed coverage no matter how the child
+        // phrased its handshake, the parent kept resuming it to "fix it", and the session never
+        // closed out). For repo children coverage stays a failure - that is the 2026-10-07
+        // green-over-nothing protection. Other failures (missing claimed files, contradicted
+        // clauses) still nag for every child.
+        let failed: Vec<&context_store::Check> = checks
+            .iter()
+            .filter(|k| !k.ok)
+            .filter(|k| !(c.repos.is_empty() && k.name == "coverage"))
+            .collect();
+        if failed.is_empty() {
+            return String::new(); // green, or nothing checkable: no noise in the parent's notes
         }
         let _ = out;
-        let failed: Vec<String> = checks.iter().filter(|k| !k.ok).map(|k| format!("{} ({})", k.name, k.detail)).collect();
+        let total = checks.len();
+        let failed: Vec<String> = failed.iter().map(|k| format!("{} ({})", k.name, k.detail)).collect();
         format!(
             "[contract-check {}] {} of {} checks FAILED: {}\nThe claim of this child does not hold against the tree: fix it (`agent send {} \"...\"`) or run `agent contract-check --repo {}` yourself to see it all.\n",
             c.name,
             failed.len(),
-            checks.len(),
+            total,
             failed.join("; "),
             c.name,
             repo
@@ -2717,7 +2730,7 @@ fn wait(hub: &Arc<Mutex<Hub>>, req: &Value) -> Value {
                     "done".to_string()
                 } else if clamped {
                     format!(
-                        "still running after {:.0}s (you asked for {:.0}s; the bash tool kills a command at ~30 s, so the wait is capped at {:.0}s. TO WAIT LONGER, POLL IN A LOOP, it is one step instead of N:\n  while mini-agent-rs agent ls --json | grep -q '\"state\":\"running\"'; do sleep 25; done)",
+                        "still running after {:.0}s (you asked for {:.0}s; the bash tool kills a command at ~30 s, so the wait is capped at {:.0}s. Do NOT poll in a bash loop: it burns your steps, and a child that gets resumed can stay `running` forever. End your turn instead - a message wakes you the moment each subagent finishes, and `agent ls` then shows every final state at once.",
                         timeout, asked, cap
                     )
                 } else {
