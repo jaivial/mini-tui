@@ -2,14 +2,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { queueBin } from "./queueBin";
+import { spawnQueue } from "./queueSpawn";
 
 export function taskGraphPath(): string {
   return process.env.MINITUI_TASK_GRAPH_DB ?? join(homedir(), ".local/share/mini-tui/task-graph.sqlite");
 }
 const ACTIONS = new Set(["put","amend","cancel","cancel-reconcile","graph","graph-read","events","events-read","search","claim","heartbeat","finish","retry","run","help"]);
-
-/** SIGTERM -> SIGKILL after this. The queue binary's SIGTERM handler only sets a flag (E46). */
-const KILL_GRACE_MS = 250;
 
 /**
  * A mutation is intentionally one attempt: retrying after an uncertain response can duplicate work.
@@ -30,9 +28,12 @@ const KILL_GRACE_MS = 250;
  * 2. **The deadline could not kill, and the readers could hang past it.** `child.kill()` is
  *    SIGTERM and that handler does not exit, so a child that ignores TERM kept this promise
  *    pending forever (measured: still pending at 15 s on a 1 s deadline); and breaking out of the
- *    4 MB cap left the pipe unread, where a child blocked on write cannot exit at all. Same two
- *    halves as E46's reader: TERM -> KILL after a grace, and cancel the readers — a SIGKILL does
- *    not close a pipe whose write end a grandchild still holds.
+ *    4 MB cap left the pipe unread, where a child blocked on write cannot exit at all.
+ *
+ * Both halves now live in `spawnQueue` (E48): this adapter owns the vocabulary of the bridge
+ * (which subcommands exist, how big the arguments may be, what a failure is CALLED) and nothing
+ * about processes. The web reader and this bridge were the same launcher copied twice and had
+ * already drifted apart in ways that were defects — one launcher, one set of bounds.
  */
 export async function queueCommand(args: string[], signal?: AbortSignal, opts?: { bin?: string; timeoutMs?: number }): Promise<{ code: number; output: string; error: string }> {
   const action = args[0] ?? "help";
@@ -43,56 +44,14 @@ export async function queueCommand(args: string[], signal?: AbortSignal, opts?: 
   if (signal?.aborted) throw new Error("queue command cancelled before launch");
   const argv = [bin,"queue",...args];
   if (!args.includes("--db")) argv.push("--db",taskGraphPath());
-  const child = Bun.spawn(argv,{ stdout: "pipe", stderr: "pipe" });
-  let exceeded = false;
-  let timedOut = false;
-  const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
-  /**
-   * Stop the child AND stop waiting on its pipes. The second half is what actually ends the wait:
-   * with the readers left open, `await child.exited` is not the only thing being waited on, and a
-   * grandchild holding the write end makes the EOF unreachable even after a SIGKILL.
-   */
-  const stop = () => {
-    try { child.kill("SIGTERM"); } catch { /* already gone */ }
-    setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch { /* already gone */ }
-      for (const reader of readers) {
-        try { void reader.cancel(); } catch { /* already closed */ }
-      }
-    }, KILL_GRACE_MS);
-  };
-  const read = async (stream: ReadableStream<Uint8Array>): Promise<string> => {
-    const chunks: Uint8Array[] = [];
-    let bytes = 0;
-    const reader = stream.getReader();
-    readers.push(reader);
-    try {
-      for (;;) {
-        const item = await reader.read();
-        if (item.done) break;
-        bytes += item.value.byteLength;
-        if (bytes > 4 * 1024 * 1024) {
-          exceeded = true;
-          try { child.kill("SIGKILL"); } catch { /* already gone */ }
-          for (const open of readers) {
-            try { void open.cancel(); } catch { /* already closed */ }
-          }
-          break;
-        }
-        chunks.push(item.value);
-      }
-    } catch { /* a cancelled pipe is the normal way this ends */ }
-    finally { try { reader.releaseLock(); } catch { /* cancelled above */ } }
-    return Buffer.concat(chunks).toString("utf8");
-  };
-  signal?.addEventListener("abort",stop,{ once: true });
-  // run owns its worker lifecycle and can be long; other calls are bounded local operations.
-  const timer = action === "run" ? undefined : setTimeout(() => { timedOut = true; stop(); }, opts?.timeoutMs ?? 10_000);
-  try {
-    const [output,error,code] = await Promise.all([read(child.stdout),read(child.stderr),child.exited]);
-    if (exceeded) throw new Error("queue output exceeded 4MB; narrow events/search rather than retry a mutation");
-    if (timedOut) throw new Error("queue command timed out; state may have changed, inspect before retrying");
-    if (signal?.aborted) return { code: 130, output, error: error || "queue interrupted; inspect state before retrying\n" };
-    return {code,output,error};
-  } finally { if (timer) clearTimeout(timer); signal?.removeEventListener("abort",stop); }
+  // `run` owns its worker lifecycle and can be long; other calls are bounded local operations.
+  const run = await spawnQueue(argv, {
+    timeoutMs: action === "run" ? undefined : (opts?.timeoutMs ?? 10_000),
+    signal,
+  });
+  if (run.reason === "too-large") throw new Error("queue output exceeded 4MB; narrow events/search rather than retry a mutation");
+  if (run.reason === "timeout") throw new Error("queue command timed out; state may have changed, inspect before retrying");
+  if (run.reason === "spawn-failed") throw new Error("queue command failed to launch; inspect the binary and its path");
+  if (signal?.aborted) return { code: 130, output: run.stdout, error: run.stderr || "queue interrupted; inspect state before retrying\n" };
+  return { code: run.code ?? -1, output: run.stdout, error: run.stderr };
 }

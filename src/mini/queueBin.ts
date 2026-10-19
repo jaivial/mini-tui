@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { rustAgentBin } from "./spawn";
+import { spawnQueue } from "./queueSpawn";
 
 /** How long the probe may take before the candidate counts as "does not answer". */
 const PROBE_TIMEOUT_MS = 4_000;
@@ -52,25 +53,18 @@ function candidates(env: NodeJS.ProcessEnv): string[] {
 }
 
 /**
- * Ask one binary whether it speaks `queue`. Spawned for its exit code only: a usage error is the
- * answer we are looking for, so stdout and stderr are discarded. The probe is killed with
- * SIGKILL, never a bare TERM — a candidate that hangs must not become the answer.
+ * Ask one binary whether it speaks `queue`, for its exit code only: a usage error is the answer we
+ * are looking for, so stdout and stderr go to the null device (`discardOutput`) and nothing is
+ * buffered. The probe runs through the shared launcher (E48) so it inherits the same escalation —
+ * a candidate that hangs is killed and cannot become the answer.
  */
 async function speaksQueue(bin: string, env: NodeJS.ProcessEnv): Promise<boolean> {
-  let child: ReturnType<typeof Bun.spawn>;
-  try {
-    child = Bun.spawn([bin, "queue", "help"], { stdout: "ignore", stderr: "ignore", env });
-  } catch {
-    return false;
-  }
-  const killer = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, PROBE_TIMEOUT_MS);
-  try {
-    return (await child.exited) === 0;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(killer);
-  }
+  const probe = await spawnQueue([bin, "queue", "help"], {
+    discardOutput: true,
+    timeoutMs: PROBE_TIMEOUT_MS,
+    env,
+  });
+  return probe.reason === undefined && probe.code === 0;
 }
 
 /**
