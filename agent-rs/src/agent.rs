@@ -1319,7 +1319,7 @@ impl Agent {
                 })
             });
             if !allowed {
-                return Ok(actions.iter().map(|_| json!({"returncode": 1, "output": "Orchestrator boundary: this action was not executed. Only kanban/tasks bookkeeping and agent delegation/messaging/results are available. Pass an inline brief to a worker. Do not write brief files, inspect work, poll, or execute it yourself."})).collect());
+                return Ok(actions.iter().map(|_| json!({"raw_output": "Action refused by the web orchestrator boundary. Delegate with an inline brief.", "exception_info": "", "returncode": 1, "output": "Orchestrator boundary: this action was not executed. Only kanban/tasks bookkeeping and agent delegation/messaging/results are available. Pass an inline brief to a worker. Do not write brief files, inspect work, poll, or execute it yourself."})).collect());
             }
         }
         // A single action, or concurrency disabled: the plain serial loop, unchanged.
