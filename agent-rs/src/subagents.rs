@@ -2000,7 +2000,7 @@ impl Hub {
 
 /// Is `m` the new-task message for `task` (the agent prefixes it)?
 fn line_is_last_task(m: &Value, task: &str) -> bool {
-    content_text(m).ends_with(task.trim_end()) || task.is_empty()
+    content_text(m).trim_end().ends_with(task.trim_end()) || task.is_empty()
 }
 
 fn nested_work_pending(traj: &Path, depth: usize) -> bool {
