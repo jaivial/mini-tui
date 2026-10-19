@@ -176,9 +176,9 @@ export function kanbanCommand(
         const patch: Parameters<typeof updateCard>[2] = {};
         if (args.action === "move") { if (!col) { out.stderr("error: move needs --column\n"); return 2; } patch.column = col; }
         if (args.action === "assign") {
-          if (!args.assignee) { out.stderr("error: assign needs --assignee <subagent name>\n"); return 2; }
-          if (c.assignee && c.assignee !== args.assignee && c.column === "doing") { out.stderr(`error: card already belongs to @${c.assignee}: one task, one subagent\n`); return 2; }
-          patch.assignee = args.assignee; patch.column = "doing";
+          const who = args.assignee || c.id; // by convention the subagent is named after its card
+          if (c.assignee && c.assignee !== who && c.column === "doing") { out.stderr(`error: card already belongs to @${c.assignee}: one task, one subagent\n`); return 2; }
+          patch.assignee = who; patch.column = "doing";
         }
         if (args.action === "done") { patch.column = col ?? "done"; if (args.text) patch.result = args.text; }
         if (args.action === "note") { if (!args.text) { out.stderr("error: note needs --text\n"); return 2; } patch.note = args.text; }
