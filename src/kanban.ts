@@ -70,6 +70,12 @@ export function addCard(db: Database, session: string, f: { title: string; descr
   return getCard(db, id)!;
 }
 
+/** Every card of every bot, newest first (the web board; bounded). */
+export function allCards(db: Database, limit = 400): Card[] {
+  ensureKanban(db);
+  return (db.query("SELECT * FROM kanban_cards ORDER BY updated_at DESC LIMIT ?").all(limit) as Row[]).map(toCard);
+}
+
 export function getCard(db: Database, id: string): Card | null {
   ensureKanban(db);
   const r = db.query("SELECT * FROM kanban_cards WHERE id = ?").get(id) as Row | null;
