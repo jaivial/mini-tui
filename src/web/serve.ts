@@ -16,6 +16,7 @@ import { resolveAttachments } from "./sessions";
 import { allowedCorsOrigin, SessionFeed, summarize, toWire } from "./feed";
 import { hostAllowed, hostRules, parseAllowedHosts, sameOrigin } from "./hostGuard";
 import { NOTE_MAX, getNote, listTasks, saveNote } from "../sessions";
+import { allCards } from "../kanban";
 import { FolderError, listLocal, listRemote } from "./folders";
 import { Hub, type HubClient } from "./hub";
 import { Terminals } from "./terminals";
@@ -995,6 +996,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         return json({ error: "websocket upgrade failed" }, 400);
       }
 
+      if (path === "/kanban" && request.method === "GET") return json(allCards(sessions.db()));
       if (path === "/sessions" && request.method === "GET") return json(sessions.list().map(summarize));
       if (path === "/sessions" && request.method === "POST") {
         const { limited: spawnLimit, key: spawnKey } = charged("sessionCreate", request, srv);
