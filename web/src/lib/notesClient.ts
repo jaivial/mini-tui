@@ -9,7 +9,7 @@
  *
  * Plain TypeScript so it is testable outside Svelte; `stores/notes.svelte.ts` adds the reactivity.
  */
-import type { HubConnection } from "./hub";
+import type { HubConnection, SendToken } from "./hub";
 import type { Note } from "./types";
 
 export type NoteSave = { ok: true; note: Note } | { ok: false; conflict: Note };
@@ -21,15 +21,23 @@ export class NotesClient {
   live = false;
   #refs = new Map<string, number>();
   #listeners = new Map<string, Set<(n: Note) => void>>();
-  #pending = new Map<number, { resolve: (r: NoteSave) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  #pending = new Map<number, { resolve: (r: NoteSave) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; token: SendToken }>();
   #req = 0;
   noteMax = 200_000;
+  /**
+   * Who wants to hear about a save the app had already given up on (its deadline fired after it
+   * went out). Such a save still moves the note on server-side, and whoever holds the version book
+   * must learn that or the next save is refused as a conflict for a change that is its own. The
+   * book stays with the caller — a second ledger here would be the very thing E50 is about (a
+   * ledger nobody reconciles locked a cleared note out of saving for ever: review finding R1).
+   */
+  #late = new Set<(note: Note) => void>();
 
   constructor(connection: HubConnection) {
     this.#hub = connection;
     this.#hub.onState((s) => (this.live = s === "live"));
     this.#hub.onConnect(() => {
-      for (const id of this.#refs.keys()) this.#hub.send({ t: "note.watch", id });
+      for (const id of this.#refs.keys()) this.#hub.send({ t: "note.watch", id }, { subscription: true });
     });
     this.#hub.on((msg) => {
       if (msg.t === "hello") this.noteMax = (msg.limits as { noteMax: number }).noteMax;
@@ -52,7 +60,7 @@ export class NotesClient {
     set.add(onchange);
     const n = (this.#refs.get(id) ?? 0) + 1;
     this.#refs.set(id, n);
-    if (n === 1) this.#hub.send({ t: "note.watch", id });
+    if (n === 1) this.#hub.send({ t: "note.watch", id }, { subscription: true });
     else if (this.values[id]) onchange(this.values[id]!);
     return () => {
       set!.delete(onchange);
@@ -61,17 +69,41 @@ export class NotesClient {
       this.#refs.delete(id);
       this.#listeners.delete(id);
       delete this.values[id];
-      this.#hub.send({ t: "note.unwatch", id });
+      this.#hub.send({ t: "note.unwatch", id }, { subscription: true });
     };
   }
 
-  /** Save over the socket. Resolves with the saved note or the newer one it conflicted with. */
-  save(id: string, body: string, base: number, timeoutMs = 15_000): Promise<NoteSave> {
+  /**
+   * Save over the socket. Resolves with the saved note or the newer one it conflicted with.
+   *
+   * The deadline has two verdicts and only one of them is final (E50). A message still **queued**
+   * is withdrawn, so a save reported as failed can never land afterwards — measured before the fix:
+   * the promise was rejected at 600 ms with "no answer from the server" and the `note.save` went out
+   * right after, so the panel said *error* while the server took the write. A message already **out**
+   * cannot be taken back, and the app says that instead of claiming a failure it cannot prove.
+   */
+  /** Hear about saves the app gave up on and that landed anyway. Returns the unsubscribe. */
+  onLateSave(fn: (note: Note) => void): () => void {
+    this.#late.add(fn);
+    return () => this.#late.delete(fn);
+  }
+
+  save(id: string, body: string, base: number, timeoutMs = saveDeadlineMs(body.length)): Promise<NoteSave> {
     const req = ++this.#req;
     return new Promise<NoteSave>((resolve, reject) => {
-      const timer = setTimeout(() => this.#fail(req, "no answer from the server"), timeoutMs);
-      this.#pending.set(req, { resolve, reject, timer });
-      this.#hub.send({ t: "note.save", id, body, base, req });
+      const timer = setTimeout(() => {
+        const p = this.#pending.get(req);
+        if (!p) return;
+        if (p.token.cancel()) {
+          this.#pending.delete(req);
+          reject(new Error("never sent: the app is not connected to the server"));
+          return;
+        }
+        this.#pending.delete(req);
+        reject(new Error("no answer from the server (the save may still be applied)"));
+      }, timeoutMs);
+      const token = this.#hub.send({ t: "note.save", id, body, base, req });
+      this.#pending.set(req, { resolve, reject, timer, token });
     });
   }
 
@@ -83,7 +115,12 @@ export class NotesClient {
   }
   #settle(req: number, result: NoteSave) {
     const p = this.#pending.get(req);
-    if (!p) return;
+    if (!p) {
+      // An answer for a save the app already gave up on (its deadline fired after it went out).
+      // The write landed: tell whoever holds the version book, or the next save is refused for it.
+      if (result.ok) for (const fn of this.#late) fn(result.note);
+      return;
+    }
     clearTimeout(p.timer);
     this.#pending.delete(req);
     p.resolve(result);
@@ -97,3 +134,16 @@ export class NotesClient {
   }
 }
 
+
+/**
+ * How long a save may take, from the size it carries: a deadline must outlast the work it measures
+ * (the rule E43 wrote for uploads, applied here). The flat 15 s could fire while a big note was
+ * still leaving this machine — `noteMax` is 200 000 characters, and pushed over the slowest link
+ * that still counts as work (12.5 KiB/s, E43) that is ~62 s of send alone — reporting "no answer"
+ * for a save that then landed. Worst-case UTF-8 is 4 bytes a character.
+ */
+export function saveDeadlineMs(chars: number, roundTripMs = 15_000): number {
+  const SLOWEST_BYTES_PER_S = 12_800;
+  const BYTES_PER_CHAR = 4;
+  return roundTripMs + Math.ceil((Math.max(0, chars) * BYTES_PER_CHAR * 1000) / SLOWEST_BYTES_PER_S);
+}

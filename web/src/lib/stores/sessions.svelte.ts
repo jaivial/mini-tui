@@ -11,6 +11,7 @@
  * background shows a transcript that is already current.
  */
 import { api } from "../api";
+import { Reconnect } from "../reconnect";
 import { SessionSocket, type SocketState } from "../session-socket";
 import { shallowEqual } from "../equal";
 import { markArrival, markCallEnd, markCallStart } from "../toolTimings";
@@ -33,7 +34,8 @@ class SessionStore {
   hydrated = $state<Record<string, boolean>>({});
 
   #source: EventSource | null = null;
-  #retry = 0;
+  /** The one backoff policy (E50), shared with the sockets: a stream that merely OPENED is not proof. */
+  #r = new Reconnect({ baseDelay: 1_000, maxDelay: 15_000 });
   #sockets = new Map<string, SessionSocket>();
   #timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -82,8 +84,8 @@ class SessionStore {
     this.#source = source;
 
     source.onopen = () => {
+      // Not proof of life (see `Reconnect`): the server greets with `hello`, and that message is.
       this.connected = true;
-      this.#retry = 0;
       this.error = null;
     };
     source.onerror = () => {
@@ -92,10 +94,10 @@ class SessionStore {
       // back off so a dead server does not spin the network.
       source.close();
       this.#source = null;
-      const delay = Math.min(1000 * 2 ** this.#retry++, 15000);
-      setTimeout(() => this.connect(), delay);
+      setTimeout(() => this.connect(), this.#r.nextDelay());
     };
     source.onmessage = (message) => {
+      this.#r.delivered();
       let payload: { type: string; session?: SessionMeta; id?: string; hosts?: RemoteHost[] };
       try {
         payload = JSON.parse(message.data);

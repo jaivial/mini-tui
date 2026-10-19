@@ -124,6 +124,9 @@
     base = 0;
     // Only the note on screen is tracked: a pane that visits many sessions keeps no versions.
     landed.clear();
+    // A save this pane had given up on landed anyway: the note moved on server-side and this book
+    // must know, or the next save is refused as a conflict for a change that is this editor's own.
+    const releaseLate = notes.onLateSave((note) => landed.set(note.id, note.updatedAt));
     // Watch it through the hub: its value arrives now, and again whenever it changes anywhere.
     const release = notes.watch(id, (note) => {
       if (id !== noteId) return;
@@ -149,6 +152,7 @@
       }
     });
     return () => {
+      releaseLate();
       void flush(id, true).finally(release);
     };
   });
@@ -204,7 +208,10 @@
     const text = current ? body : snap.text;
     const saved = current ? savedBody : snap.saved;
     const kind = current ? save.kind : snap.kind;
-    // An older save of this same note moved the version on while we waited: start from where it landed.
+    // An older save of this same note moved the version on while we waited: start from where it
+    // landed — including a save whose answer arrived after the deadline gave up on it, which the
+    // late-save hook below writes into this same book (one ledger, not two: a second one that is
+    // never reconciled locked a cleared note out of saving for ever — review finding R1).
     const from = landed.get(id) ?? snap.base;
     if (text === saved || kind === "conflict" || kind === "loading") return;
     if (current) save = { kind: "saving" };
