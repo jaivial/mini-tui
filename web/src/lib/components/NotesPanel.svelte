@@ -3,7 +3,8 @@
   import Button from "./Button.svelte";
   import Skeleton from "./Skeleton.svelte";
   import { notes } from "../stores/notes.svelte";
-  import { SAVE_DELAY, counts, statusText, type SaveState } from "../notes";
+  import { counts, statusText, type SaveState } from "../notes";
+  import { NoteEditor } from "../noteEditor";
   import { sideWidthAt, SIDE_MAX, SIDE_MIN } from "../sidePanel";
 
   /**
@@ -38,20 +39,18 @@
 
   const uid = $props.id();
   let body = $state("");
-  /** Version of the note this editor is based on. */
-  let base = 0;
-  /** What the server holds (as far as we know): nothing to save while `body` equals it. */
-  let savedBody = "";
-  let save = $state<SaveState>({ kind: "loading" });
   let area = $state<HTMLTextAreaElement | null>(null);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let inFlight: Promise<void> | null = null;
   /**
-   * The version each note of this pane is at, as the server last confirmed it. A save names the
-   * version it starts from; this is what a save made while another is in flight must start from,
-   * or the server refuses it as a conflict and the text it carried is lost.
+   * The save machine — what a flush sends, which version it names, and what the words on screen may
+   * claim (`lib/noteEditor.ts`, driven by the tests; this file wires it and shows what it says).
+   * `sync` mirrors its state into reactive land after every decision.
    */
-  const landed = new Map<string, number>();
+  const ed = new NoteEditor(notes, sync);
+  let save = $state<SaveState>(ed.save);
+  function sync() {
+    body = ed.body;
+    save = ed.save;
+  }
   let now = $state(Date.now());
   const c = $derived(counts(body));
 
@@ -115,45 +114,22 @@
   // flushed first, against that note's id, so switching never drops text.
   $effect(() => {
     const id = noteId;
-    if (!id) {
-      save = { kind: "saved", at: 0 };
-      return;
-    }
-    save = { kind: "loading" };
-    body = savedBody = "";
-    base = 0;
-    // Only the note on screen is tracked: a pane that visits many sessions keeps no versions.
-    landed.clear();
-    // A save this pane had given up on landed anyway: the note moved on server-side and this book
-    // must know, or the next save is refused as a conflict for a change that is this editor's own.
-    const releaseLate = notes.onLateSave((note) => landed.set(note.id, note.updatedAt));
+    ed.enter(id);
+    if (!id) return;
+    // A save this pane had given up on turned out to land (or to be refused): the machine corrects
+    // both the version book and the verdict the panel has already shown.
+    const releaseLate = notes.onLateSave((note, outcome) => ed.applyLate(note, outcome));
     // Watch it through the hub: its value arrives now, and again whenever it changes anywhere.
     const release = notes.watch(id, (note) => {
-      if (id !== noteId) return;
-      if (save.kind === "loading") {
-        body = savedBody = note.body;
-        base = note.updatedAt;
-        landed.set(id, note.updatedAt);
-        save = { kind: "saved", at: note.updatedAt };
-        return;
-      }
-      if (note.updatedAt === base) return; // the version we already have
-      if (body === savedBody && save.kind !== "saving") {
-        // Nothing typed here since the last save: take theirs at once, keeping the caret where it was.
-        const at = area?.selectionStart ?? 0;
-        body = savedBody = note.body;
-        base = note.updatedAt;
-        landed.set(id, note.updatedAt);
-        save = { kind: "saved", at: note.updatedAt };
-        queueMicrotask(() => area?.setSelectionRange(Math.min(at, body.length), Math.min(at, body.length)));
-      } else {
-        // You are typing: never overwrite what you wrote. Say so now, and let you choose.
-        save = { kind: "conflict", theirs: note.body, theirsAt: note.updatedAt };
+      const at = area?.selectionStart ?? 0;
+      if (ed.applyRemote(id, note) === "took") {
+        // The text moved under the caret (the other value was taken as ours): put it back.
+        queueMicrotask(() => area?.setSelectionRange(Math.min(at, ed.body.length), Math.min(at, ed.body.length)));
       }
     });
     return () => {
       releaseLate();
-      void flush(id, true).finally(release);
+      void ed.leave(id).finally(release);
     };
   });
 
@@ -178,87 +154,21 @@
   });
 
   function oninput() {
-    if (save.kind === "conflict" || save.kind === "loading") return;
-    save = body === savedBody ? { kind: "saved", at: base } : { kind: "dirty" };
-    clearTimeout(timer);
-    timer = setTimeout(() => noteId && void flush(noteId), SAVE_DELAY);
+    ed.type(body);
   }
 
-  /**
-   * Save now, one save at a time.
-   *
-   * What to save is captured before the first `await`: when the pane switches sessions, the effect's
-   * cleanup calls this and the next run resets `body` straight after, so reading it later would save
-   * the wrong note's text (or nothing). A save for a note that is no longer on screen uses the values
-   * captured here; one for the current note re-reads them after waiting its turn, so a save that was
-   * in flight has already moved the version on.
-   *
-   * The version it names is the one the *last* save of this note established (`landed`), never the
-   * one captured above: typing while a save is in flight leaves the snapshot a version behind, and a
-   * save sent from it is refused as a conflict, silently dropping the text it carried. `leaving`
-   * says the pane has already moved on, so `body` no longer belongs to this note and only the
-   * snapshot can be sent.
-   */
+  /** Save now: what to send and which version it names are the machine's (`noteEditor`). */
   async function flush(id: string, leaving = false): Promise<void> {
-    clearTimeout(timer);
-    const snap = { text: body, saved: savedBody, base, kind: save.kind };
-    const wanted = snap.text;
-    if (inFlight) await inFlight;
-    const current = id === noteId && !leaving;
-    const text = current ? body : snap.text;
-    const saved = current ? savedBody : snap.saved;
-    const kind = current ? save.kind : snap.kind;
-    // An older save of this same note moved the version on while we waited: start from where it
-    // landed — including a save whose answer arrived after the deadline gave up on it, which the
-    // late-save hook below writes into this same book (one ledger, not two: a second one that is
-    // never reconciled locked a cleared note out of saving for ever — review finding R1).
-    const from = landed.get(id) ?? snap.base;
-    if (text === saved || kind === "conflict" || kind === "loading") return;
-    if (current) save = { kind: "saving" };
-    const run = (async () => {
-      try {
-        const result = await notes.save(id, text, from);
-        // The note is saved on the server either way; remember its new version for the next save.
-        if (result.ok) landed.set(id, result.note.updatedAt);
-        if (id !== noteId) return; // switched away while it was saving: it landed, nothing to show
-        if (result.ok) {
-          base = result.note.updatedAt;
-          savedBody = text;
-          save = body === text ? { kind: "saved", at: result.note.updatedAt || Date.now() } : { kind: "dirty" };
-          if (body !== text) timer = setTimeout(() => void flush(id), SAVE_DELAY); // typed during the save
-        } else {
-          save = { kind: "conflict", theirs: result.conflict.body, theirsAt: result.conflict.updatedAt };
-        }
-      } catch (error) {
-        if (id === noteId && !leaving) save = { kind: "error", message: (error as Error).message };
-      }
-    })();
-    inFlight = run;
-    await run;
-    if (inFlight === run) inFlight = null;
-    // Still showing this note, and it moved on while this flush waited its turn: save it again.
-    if (current && !leaving && id === noteId && body !== wanted && body !== savedBody) timer = setTimeout(() => void flush(id), 0);
+    await ed.flush(id, leaving);
   }
 
   /** Conflict: keep mine (overwrite theirs, deliberately) or take theirs (mine is copied first). */
   async function keepMine() {
-    if (save.kind !== "conflict" || !noteId) return;
-    const id = noteId;
-    base = save.theirsAt;
-    savedBody = save.theirs;
-    // Theirs is now the version this note is at: the overwrite below must start from it, or it is
-    // refused as a conflict again and the text is never saved.
-    landed.set(id, save.theirsAt);
-    save = { kind: "dirty" };
-    await flush(id);
+    await ed.keepMine();
   }
   async function takeTheirs() {
-    if (save.kind !== "conflict" || !noteId) return;
-    await copy(body); // what was typed here is on the clipboard, not gone
-    body = savedBody = save.theirs;
-    base = save.theirsAt;
-    landed.set(noteId, save.theirsAt);
-    save = { kind: "saved", at: save.theirsAt };
+    await copy(ed.body); // what was typed here is on the clipboard, not gone
+    ed.takeTheirs();
   }
 
   let copied = $state(false);

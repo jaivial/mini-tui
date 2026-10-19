@@ -14,6 +14,9 @@ import type { Note } from "./types";
 
 export type NoteSave = { ok: true; note: Note } | { ok: false; conflict: Note };
 
+/** What a save whose answer arrived after the app gave up on it turned out to be. */
+export type LateOutcome = "saved" | "conflict";
+
 export class NotesClient {
   #hub: HubConnection;
   /** The latest value the server told us, per watched note. */
@@ -31,7 +34,7 @@ export class NotesClient {
    * book stays with the caller — a second ledger here would be the very thing E50 is about (a
    * ledger nobody reconciles locked a cleared note out of saving for ever: review finding R1).
    */
-  #late = new Set<(note: Note) => void>();
+  #late = new Set<(note: Note, outcome: LateOutcome) => void>();
 
   constructor(connection: HubConnection) {
     this.#hub = connection;
@@ -82,8 +85,12 @@ export class NotesClient {
    * right after, so the panel said *error* while the server took the write. A message already **out**
    * cannot be taken back, and the app says that instead of claiming a failure it cannot prove.
    */
-  /** Hear about saves the app gave up on and that landed anyway. Returns the unsubscribe. */
-  onLateSave(fn: (note: Note) => void): () => void {
+  /**
+   * Hear about a save the app gave up on and whose answer arrived anyway. The write moved the note
+   * on server-side either way (it landed, or it was refused in favour of another version), and the
+   * outcome says which. Returns the unsubscribe.
+   */
+  onLateSave(fn: (note: Note, outcome: LateOutcome) => void): () => void {
     this.#late.add(fn);
     return () => this.#late.delete(fn);
   }
@@ -117,8 +124,9 @@ export class NotesClient {
     const p = this.#pending.get(req);
     if (!p) {
       // An answer for a save the app already gave up on (its deadline fired after it went out).
-      // The write landed: tell whoever holds the version book, or the next save is refused for it.
-      if (result.ok) for (const fn of this.#late) fn(result.note);
+      // The note moved either way: tell whoever holds the version book — and the verdict — or the
+      // next save is refused for a change that is its own.
+      for (const fn of this.#late) fn(result.ok ? result.note : result.conflict, result.ok ? "saved" : "conflict");
       return;
     }
     clearTimeout(p.timer);

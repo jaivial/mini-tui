@@ -51,7 +51,7 @@ class Store {
 
 /** Wire the real machine to the fake server, the way `NotesPanel.svelte` wires it. */
 function editor(store: Store, noteId: string | null, save: SaveFn = store.save): NoteEditor {
-  const ed = new NoteEditor(save);
+  const ed = new NoteEditor({ save });
   ed.enter(noteId);
   return ed;
 }
@@ -400,7 +400,7 @@ describe("one copy of these rules (E50's pattern)", () => {
     // nothing said so. The rule that keeps a copy from coming back: the panel wires the machine and
     // shows what it says, and every scheduling rule is `noteEditor`'s.
     const withDelay = files.filter((f) => readFileSync(f, "utf8").includes("SAVE_DELAY"));
-    expect(withDelay.map((f) => f.split("/lib/")[1]).sort()).toEqual(["notes.ts", "noteEditor.ts"]);
+    expect(withDelay.map((f) => f.split("/lib/")[1]).sort()).toEqual(["noteEditor.ts", "notes.ts"]);
     const panel = readFileSync(join(lib, "components", "NotesPanel.svelte"), "utf8");
     for (const forbidden of ["SAVE_DELAY", "notes.save", "saveDeadlineMs", 'kind: "', "landed"]) {
       expect(panel).not.toContain(forbidden);
