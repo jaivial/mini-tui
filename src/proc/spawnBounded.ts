@@ -67,9 +67,14 @@ export async function spawnBounded(argv: string[], opts: BoundedSpawnOptions = {
 
   let child: ReturnType<typeof Bun.spawn>;
   try {
-    child = Bun.spawn(argv, ignore
-      ? { stdout: "ignore", stderr: "ignore", env: opts.env }
-      : { stdin: opts.stdin === undefined ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe", env: opts.env });
+    child = Bun.spawn(argv, {
+      // The program on stdin and the streams it answers on are independent: a probe that only needs an
+      // exit code may still have something to say before it exits.
+      stdin: opts.stdin === undefined ? "ignore" : "pipe",
+      stdout: ignore ? "ignore" : "pipe",
+      stderr: ignore ? "ignore" : "pipe",
+      env: opts.env,
+    });
   } catch {
     return { reason: "spawn-failed", stdout: "", stderr: "" };
   }
