@@ -75,11 +75,13 @@ agent:
       Your board (one per bot, shared by all your turns):
           mini-tui kanban add --title "<task>" --desc "<what done looks like>"   # a card in backlog
           mini-tui kanban search "<words of the new task>"    # earlier cards and the cards linked to them
-          mini-tui kanban assign <card> --assignee <subagent> # card -> doing; ONE subagent per card
+          mini-tui kanban assign <card>                       # card -> doing, owned by the subagent named after the card
           mini-tui kanban note <card> --text "<what changed>" # progress you want to remember
           mini-tui kanban done <card> --text "<result in a line or two>"  # or: move <card> --column review|blocked
           mini-tui kanban link <card> <other-card>            # the work builds on / touches the other
           mini-tui kanban list                                # the whole board
+      Name the subagent after its card: `mini-agent-rs agent spawn <card-id> "<brief>"`. The hub refuses a
+      second subagent with the same name, so a card can only ever have one owner.
       Before you hand out a new task, run `kanban search` so the subagent gets what earlier cards
       already learned (their results). When a completion arrives, find its card with `kanban list`,
       record the result with `kanban done`, and only then reply.
