@@ -44,6 +44,21 @@
   </div>
 </div>
 
+<!-- The real app on demo data: a 16:9 shot on wide screens, a 9:16 phone shot below 768px. -->
+<div class="border-b">
+  <div class="mx-auto max-w-5xl px-4 py-16 text-center sm:px-6 sm:py-20">
+    <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Your bots, in the app</h2>
+    <p class="mx-auto mt-3 max-w-xl text-muted-foreground">Each bot is a chat with its own task card. The sidebar shows who is working, who is finished and how far each card has got.</p>
+    <figure class="mx-auto mt-10 max-w-md overflow-hidden rounded-2xl border shadow-2xl shadow-black/30 md:max-w-none">
+      <picture>
+        <source media="(min-width: 768px)" srcset="/screens/app-bots-desktop.webp" width="1440" height="810" />
+        <img src="/screens/app-bots-mobile.webp" width="390" height="693" loading="lazy" decoding="async" class="block h-auto w-full" alt="The mini-tui web app: a sidebar of four bots with progress counts, and the Release bot's chat showing the board it wrote for v0.43" />
+      </picture>
+      <figcaption class="sr-only">The mini-tui web app on demo data.</figcaption>
+    </figure>
+  </div>
+</div>
+
 <!-- The number that matters, up front and with its limits stated below. -->
 <div class="border-b bg-card/40">
   <dl class="mx-auto grid max-w-5xl gap-px px-4 py-10 text-center sm:grid-cols-3 sm:px-6">
