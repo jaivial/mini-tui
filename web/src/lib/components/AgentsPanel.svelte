@@ -2,7 +2,7 @@
   import { Bot, X, GitFork, Forward, MessageSquare, Reply, Flame, CircleCheck, CircleAlert, Split, Sparkles, ArrowRight, DatabaseZap, Hourglass, Network } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import Spinner from "./Spinner.svelte";
-  import { api } from "../api";
+  import { AgentsFeed } from "../agentsFeed";
   import { cost } from "../format";
   import { ageSeconds, ageWords, nextChangeAt } from "../ago";
   import { clock } from "../stores/clock.svelte";
@@ -12,7 +12,8 @@
    * The agents of a session: the tree of agent sessions it started (each a session of its own,
    * a copy of the one that started it), live state and measured cache reuse per agent, and the
    * timeline of what they said to each other (delegations, handoffs, corrections, replies,
-   * fan-outs). Polled while open; the server reads the hubs' own files.
+   * fan-outs). Live while open — the stream's own rules live in `../agentsFeed` (E55: the private
+   * poll that ran here never went back to the stream after one drop).
    */
   let {
     sessionId,
@@ -59,39 +60,24 @@
     error = "";
     selected = null;
     if (!id) return;
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout>;
-    let es: EventSource | null = null;
-    // Live first: the SSE stream pushes every change as it happens; polling only if it drops.
-    const poll = () => {
-      if (!alive || es) return;
-      timer = setTimeout(async () => {
-        try {
-          const v = await api.agents(id);
-          if (!alive) return;
-          view = v;
-          error = "";
-        } catch (e) {
-          if (alive) error = (e as Error).message;
-        }
-        poll();
-      }, document.hidden ? 4000 : 1500);
+    // Live first; when the stream cannot, the bridge is the sidebar's own poll loop with the
+    // sidebar's own rules (deadline per read, hidden tabs suspended) — and it stands down the
+    // moment the stream is back (E55; see ../agentsFeed).
+    const feed = new AgentsFeed({
+      apply: (v) => (view = v as AgentsView),
+      onError: (m) => (error = m),
+      hasLive: () => (view ? flatten(view.nodes).some((r) => isLive(r.node)) : false),
+    });
+    // The one place this module touches the page's visibility (the sidebar store's own rule):
+    // a tab that becomes seen polls at once instead of waiting out the suspension.
+    const seen = () => {
+      if (!document.hidden) feed.resync();
     };
-    es = new EventSource(`/api/sessions/${encodeURIComponent(id)}/agents/stream`);
-    es.onmessage = (m) => {
-      if (!alive) return;
-      view = JSON.parse(m.data);
-      error = "";
-    };
-    es.onerror = () => {
-      es?.close();
-      es = null;
-      if (alive) poll();
-    };
+    document.addEventListener("visibilitychange", seen);
+    feed.start(id);
     return () => {
-      alive = false;
-      clearTimeout(timer);
-      es?.close();
+      document.removeEventListener("visibilitychange", seen);
+      feed.stop();
     };
   });
 

@@ -338,12 +338,15 @@ describe("the loop lives in one file (source guard)", () => {
     expect({ promiseAll: c.includes("Promise.all("), loop: /\bwhile\s*\(/.test(c), interval: c.includes("setInterval("), pace: c.includes("3000") || c.includes("5000") }).toEqual({ promiseAll: false, loop: false, interval: false, pace: false });
   });
 
-  test("only the store wires the poll", () => {
+  test("the loop has exactly two wiring points (sidebar store, panel feed) — no third copy", () => {
+    // The panel's feed REUSES this loop for its bridge (E55: its private poll was a third copy of
+    // "poll the agents tree", with every rule this one had learned missing). Wiring points may
+    // grow by name here; a third module mentioning the loop is still the copy this guards against.
     const users = walk(web)
       .filter((f) => /\.(ts|svelte)$/.test(f))
       .filter((f) => code(f).includes("AgentTreePoll"))
       .map(rel)
       .sort();
-    expect(users).toEqual(["agentTreePoll.ts", "stores/agentTree.svelte.ts"]);
+    expect(users).toEqual(["agentTreePoll.ts", "agentsFeed.ts", "stores/agentTree.svelte.ts"]);
   });
 });

@@ -20,7 +20,7 @@ class AgentTreeStore {
   /** Per open session: its bots, or EMPTY before the first read lands. */
   trees = $state<Record<string, SessionBots>>({});
   #poll: AgentTreePoll = new AgentTreePoll({
-    read: async (id, signal) => viewOf(await api.agents(id, { signal })),
+    read: async (id, signal) => viewOf(await api.agentsBrief(id, { signal })),
     apply: (id, view) => {
       this.trees[id] = view as SessionBots;
     },

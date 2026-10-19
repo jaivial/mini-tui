@@ -20,6 +20,7 @@ import type {
   SkillInfo,
   WireSession,
   AgentsView,
+  AgentsBrief,
   AgentDef,
 } from "./types";
 
@@ -71,6 +72,9 @@ export const api = {
   /** A session's agent tree, the messages between its agents, and the agent definitions. */
   /** `init` lets a caller carry its own deadline: a poll that is abandoned must be abortable. */
   agents: (id: string, init?: RequestInit) => call<AgentsView>(`/sessions/${encodeURIComponent(id)}/agents`, init),
+  /** The tree alone (`?brief=1`): the sidebar renders the rows and drops `events` + `defs` — on
+   *  the deployed surface the full answer was 34 407 B for 2 rows, 93% of it `defs` (E55). */
+  agentsBrief: (id: string, init?: RequestInit) => call<AgentsBrief>(`/sessions/${encodeURIComponent(id)}/agents?brief=1`, init),
   agentDefs: () => call<AgentDef[]>("/agents"),
   /** Subfolders of `path` on this machine (`hostId` empty or "local") or on a saved remote host. */
   folders: (path: string, hostId = "local") =>
