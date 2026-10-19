@@ -107,6 +107,10 @@ export function openDb(path: string = DEFAULT_DB_PATH): Database {
       owner TEXT NOT NULL DEFAULT '',
       started_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS web_open_sessions (
+      session_id TEXT PRIMARY KEY,
+      opened_at INTEGER NOT NULL
+    );
   `);
   return db;
 }
@@ -227,6 +231,25 @@ export function agentRuns(db: Database, sessionId: string): string[] {
 /** Forget a session's live run, only if it is still this one (a newer run may have replaced it). */
 export function clearLiveRun(db: Database, sessionId: string, trajPath: string): void {
   db.query("DELETE FROM live_runs WHERE session_id = ? AND traj_path = ?").run(sessionId, trajPath);
+}
+
+/**
+ * The web server's open-session list lives in its memory, so a restart empties the sidebar even
+ * though every session is still saved. This table is the durable copy of that set: marked when the
+ * server starts holding a session, unmarked when the user puts it away, read once at boot to put
+ * the list back.
+ */
+export function markSessionOpen(db: Database, sessionId: string): void {
+  db.query("INSERT OR REPLACE INTO web_open_sessions (session_id, opened_at) VALUES (?, ?)").run(sessionId, Date.now());
+}
+
+export function unmarkSessionOpen(db: Database, sessionId: string): void {
+  db.query("DELETE FROM web_open_sessions WHERE session_id = ?").run(sessionId);
+}
+
+/** Open-session markers, most recently opened first. */
+export function openSessionIds(db: Database, limit = 50): string[] {
+  return (db.query("SELECT session_id FROM web_open_sessions ORDER BY opened_at DESC LIMIT ?").all(limit) as Array<{ session_id: string }>).map((r) => r.session_id);
 }
 
 export function getLiveRun(db: Database, sessionId: string): LiveRunRecord | null {

@@ -33,6 +33,9 @@ import {
   agentRuns,
   getSession,
   registerLiveRun,
+  markSessionOpen,
+  unmarkSessionOpen,
+  openSessionIds,
   sessionStamps,
   type SessionRecord,
   openDb,
@@ -388,6 +391,45 @@ export class SessionManager {
     this.#syncEvery = options.syncMs ?? SYNC_MS;
     this.#mirror = options.mirror;
     this.#scheduleSync();
+  }
+
+  /** Remember that this server holds the session, so a restart can put the open list back. */
+  #markOpen(id: string): void {
+    try {
+      markSessionOpen(this.db(), id);
+    } catch {
+      // best-effort: the list is rebuilt from what is live, a stale marker is cleaned at boot
+    }
+  }
+
+  #unmarkOpen(id: string): void {
+    try {
+      unmarkSessionOpen(this.db(), id);
+    } catch {
+      // best-effort
+    }
+  }
+
+  /**
+   * Put back the sessions that were open when this server stopped. Reopening goes through
+   * openHistory: the saved transcript comes back and a still-running terminal agent is attached,
+   * but no agent is spawned. A marker whose session no longer opens is dropped.
+   */
+  async rehydrate(): Promise<void> {
+    let ids: string[] = [];
+    try {
+      ids = openSessionIds(this.db());
+    } catch {
+      return;
+    }
+    for (const id of ids) {
+      if (this.#live.has(id)) continue;
+      try {
+        await this.openHistory(id);
+      } catch {
+        this.#unmarkOpen(id);
+      }
+    }
   }
 
   /** The mirror events a session shows (loaded once per entry from the durable
@@ -1013,6 +1055,7 @@ export class SessionManager {
       parseState: createParseState(),
     };
     this.#live.set(id, entry);
+    this.#markOpen(id);
     // Attached files show as download links under the first prompt; the agent's own
     // echo of it (collapsed to the prompt as typed) is dropped via pendingTasks.
     if (atts.length) {
@@ -1098,6 +1141,7 @@ export class SessionManager {
     };
     const entry: Internal = { session, consumed: 0, parseState: createParseState() };
     this.#live.set(id, entry);
+    this.#markOpen(id);
     log("session.created", { id, host: host.id, model, cwd: workdir, target: "remote", task: prompt.slice(0, 120) });
     // A remote chat is saved like a local one. Every later save is an UPDATE of this row; without it they
     // all updated nothing, so remote chats never reached the history (nor the sidebar's folders).
@@ -1946,6 +1990,7 @@ export class SessionManager {
     if (entry.session.status === "running") entry.session.status = "interrupted";
     this.#persist(entry);
     this.#live.delete(id);
+    this.#unmarkOpen(id);
   }
 
   /**
@@ -1961,6 +2006,7 @@ export class SessionManager {
       entry.run?.kill();
       this.#stopRemote(entry);
       this.#live.delete(id);
+      this.#unmarkOpen(id);
     }
     dropGroupForSession(id); // leave + unbind its WhatsApp group, if this feature made one
     try {
@@ -2013,6 +2059,7 @@ export class SessionManager {
       syncedAt: row.updated_at,
     };
     this.#live.set(row.id, entry);
+    this.#markOpen(row.id);
     // The mirror rides along on a restored session (deduped against what the
     // saved transcript already shows).
     this.#withMirror(entry);
