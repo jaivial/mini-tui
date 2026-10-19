@@ -1,266 +1,131 @@
 <script lang="ts">
-  import { asset, resolve } from "$app/paths";
-  import { ArrowRight, Check, Play } from "@lucide/svelte";
+  import { resolve } from "$app/paths";
+  import { ArrowRight } from "@lucide/svelte";
   import { Github } from "$lib/icons";
   import Seo from "$lib/components/Seo.svelte";
   import Section from "$lib/components/Section.svelte";
   import CodeBlock from "$lib/components/CodeBlock.svelte";
   import FeatureIcon from "$lib/components/FeatureIcon.svelte";
-  import BenchmarkBars from "$lib/components/BenchmarkBars.svelte";
-  import BenchmarkRounds from "$lib/components/BenchmarkRounds.svelte";
-  import BenchmarkAb from "$lib/components/BenchmarkAb.svelte";
+  import BoardMock from "$lib/components/home/BoardMock.svelte";
+  import PhoneMock from "$lib/components/home/PhoneMock.svelte";
+  import BrowserMock from "$lib/components/home/BrowserMock.svelte";
   import { Button } from "$lib/components/ui/button";
-  import { Badge } from "$lib/components/ui/badge";
-  import * as Card from "$lib/components/ui/card";
   import * as Accordion from "$lib/components/ui/accordion";
-  import { agents, benchmark, faq, features, hero, RUST_INSTALL, screens, steps, workspacePoints, workspaceShots } from "$lib/content/home";
+  import { cuPoints, faq, features, flow, hero, oracleBench, steps, whatsappPoints } from "$lib/content/home";
   import { reveal } from "$lib/motion";
   import { DESCRIPTION, REPO, RELEASE } from "$lib/site";
 </script>
 
-<Seo page={{ path: "/", title: "mini-tui: terminal and web UI for the mini-swe-agent", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-10-10" }} />
+<Seo page={{ path: "/", title: "mini-tui: bots that run your kanban, from the web or WhatsApp", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-10-19" }} />
 
 <!-- Hero: the one <h1>, the primary action, and the product in the first viewport. -->
 <div class="relative overflow-hidden border-b">
-  <div class="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] bg-[radial-gradient(60%_60%_at_50%_0%,color-mix(in_oklab,var(--primary)_16%,transparent),transparent)]" aria-hidden="true"></div>
-  <div class="mx-auto max-w-7xl 2xl:max-w-[90rem] px-4 pt-16 pb-10 text-center sm:px-6 sm:pt-24">
-    <Badge variant="secondary" class="mb-6 font-mono">v{RELEASE}: 40/40 quality, tied with pi on speed</Badge>
-    <h1 class="mx-auto max-w-3xl text-4xl font-semibold tracking-tight sm:text-6xl">{hero.title}</h1>
-    <p class="mx-auto mt-5 max-w-2xl text-base text-muted-foreground sm:text-lg">{hero.sub}</p>
-    <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
-      <Button size="lg" href={resolve("/docs/install/")}>Get started <ArrowRight data-icon="inline-end" aria-hidden="true" /></Button>
-      <Button size="lg" variant="outline" href={REPO}><Github data-icon="inline-start" aria-hidden="true" /> Star on GitHub</Button>
+  <div class="pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
+    <div class="absolute inset-x-0 top-0 h-[640px] bg-[radial-gradient(55%_60%_at_50%_0%,color-mix(in_oklab,var(--ring)_22%,transparent),transparent)]"></div>
+    <div class="absolute inset-0 opacity-[0.35] [background-image:linear-gradient(var(--border)_1px,transparent_1px),linear-gradient(90deg,var(--border)_1px,transparent_1px)] [background-size:56px_56px] [mask-image:radial-gradient(70%_55%_at_50%_0%,#000,transparent)]"></div>
+  </div>
+  <div class="mx-auto max-w-7xl 2xl:max-w-[90rem] px-4 pt-16 pb-32 text-center sm:px-6 sm:pt-24">
+    <a href={resolve("/changelog/")} class="mb-7 inline-flex items-center gap-2 rounded-full border bg-card/60 px-3.5 py-1.5 font-mono text-xs text-muted-foreground backdrop-blur transition-colors hover:text-foreground">
+      <span class="size-1.5 rounded-full bg-[var(--lime)]"></span> v{RELEASE} · bots, a board, WhatsApp <ArrowRight class="size-3" aria-hidden="true" />
+    </a>
+    <h1 class="mx-auto max-w-4xl bg-gradient-to-b from-foreground to-foreground/55 bg-clip-text text-5xl font-semibold tracking-[-0.035em] text-transparent sm:text-7xl">{hero.title}</h1>
+    <p class="mx-auto mt-6 max-w-2xl text-base text-muted-foreground sm:text-lg">{hero.sub}</p>
+    <div class="mt-9 flex flex-wrap items-center justify-center gap-3">
+      <Button size="lg" href={resolve("/docs/install/")} class="rounded-full px-6">Get started <ArrowRight data-icon="inline-end" aria-hidden="true" /></Button>
+      <Button size="lg" variant="outline" href={REPO} class="rounded-full px-6"><Github data-icon="inline-start" aria-hidden="true" /> Star on GitHub</Button>
     </div>
     <p class="mt-4 font-mono text-xs text-faint">bun run web</p>
 
-    <figure class="mx-auto mt-12 max-w-5xl">
-      <div class="overflow-hidden rounded-xl border bg-card shadow-[0_0_0_1px_var(--border),0_24px_60px_-24px_rgb(0_0_0/0.35)]">
-        <img src={asset(`/${workspaceShots.main.src}`)} alt={workspaceShots.main.alt} width={workspaceShots.main.w} height={workspaceShots.main.h} fetchpriority="high" decoding="async" class="block h-auto w-full" />
-      </div>
+    <figure class="relative mx-auto mt-14 max-w-5xl">
+      <BoardMock />
+      <div class="pointer-events-none absolute -right-4 -bottom-24 hidden w-56 lg:block xl:-right-20 xl:w-60"><div class="origin-bottom-right scale-[0.82] [filter:drop-shadow(0_30px_40px_rgb(0_0_0/0.4))]"><PhoneMock /></div></div>
+      <figcaption class="sr-only">The mini-tui web app: a sidebar of bots, a kanban board the bot keeps, and the same project mirrored in a WhatsApp group.</figcaption>
     </figure>
   </div>
 </div>
 
-<Section id="features" title="Everything the agent does, in the open" lede="A UI that stays out of the way of the work, and gets out of the way faster than you can read a transcript.">
-  <ul use:reveal={{ children: true }} class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+<!-- The number that matters, up front and with its limits stated below. -->
+<div class="border-b bg-card/40">
+  <dl class="mx-auto grid max-w-5xl gap-px px-4 py-10 text-center sm:grid-cols-3 sm:px-6">
+    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Benchmark tasks passed, mini and pi</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">30 / 30</dd></div>
+    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Time vs pi, closure check on</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">{oracleBench.ratio}</dd></div>
+    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Agent runtime</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">1 binary</dd></div>
+  </dl>
+</div>
+
+<Section id="how" title="You talk. The bot plans. Workers ship." lede="mini-tui moves the thinking from the agent that types code to a bot that organizes the work.">
+  <ol use:reveal={{ children: true }} class="grid gap-4 md:grid-cols-3">
+    {#each flow as f (f.n)}
+      <li class="group relative overflow-hidden rounded-3xl border bg-card p-7 transition-colors hover:bg-accent/40">
+        <span class="font-mono text-sm text-faint">{f.n}</span>
+        <h3 class="mt-6 text-xl font-semibold tracking-tight">{f.title}</h3>
+        <p class="mt-2 text-muted-foreground">{f.body}</p>
+        <div class="pointer-events-none absolute -right-10 -bottom-10 size-36 rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--ring)_25%,transparent),transparent_70%)] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true"></div>
+      </li>
+    {/each}
+  </ol>
+</Section>
+
+<Section id="whatsapp" title="Your WhatsApp groups, in sync with the web" lede="Start a job from the couch, check the board from your desk. It is the same thread.">
+  <div use:reveal class="grid min-w-0 items-center gap-12 lg:grid-cols-2">
+    <div class="order-2 lg:order-1"><PhoneMock /></div>
+    <ul class="order-1 grid gap-4 lg:order-2">
+      {#each whatsappPoints as p (p.title)}
+        <li class="rounded-2xl border bg-card p-5">
+          <h3 class="font-semibold">{p.title}</h3>
+          <p class="mt-1 text-sm text-muted-foreground">{p.body}</p>
+        </li>
+      {/each}
+    </ul>
+  </div>
+</Section>
+
+<Section id="cu" title="Bots that can look at the page" lede="The computer-use tool lets a bot open a real browser, click through your app and show you what it found.">
+  <div use:reveal class="grid min-w-0 items-center gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+    <ul class="grid gap-4">
+      {#each cuPoints as p (p.title)}
+        <li class="rounded-2xl border bg-card p-5">
+          <h3 class="font-semibold">{p.title}</h3>
+          <p class="mt-1 text-sm text-muted-foreground">{p.body}</p>
+        </li>
+      {/each}
+    </ul>
+    <BrowserMock />
+  </div>
+</Section>
+
+<Section id="proof" title="Done means proven" lede="A card closes when a check reads the goal against the diff and the logs. Pointed at Laya, a small self-hosted classifier, that check takes about a tenth of a second.">
+  <div use:reveal class="mx-auto max-w-3xl overflow-hidden rounded-3xl border bg-card">
+    <div class="border-b bg-gradient-to-b from-accent/60 to-transparent p-8 text-center">
+      <p class="text-sm text-muted-foreground">Same ten tasks, same model, pi and mini interleaved</p>
+      <p class="mt-2 font-mono text-4xl font-semibold tracking-tight sm:text-5xl">{oracleBench.headline}</p>
+      <p class="mt-1 text-sm text-muted-foreground">sum of per-task medians, mini first: <span class="font-mono text-foreground">{oracleBench.ratio}</span> of pi's time</p>
+    </div>
+    <table class="w-full text-sm">
+      <caption class="sr-only">Benchmark results for pi and mini with the closure check on</caption>
+      <thead><tr class="text-left text-muted-foreground"><th class="px-6 py-3 font-medium" scope="col">Measure</th><th class="px-4 py-3 font-medium" scope="col">pi</th><th class="px-6 py-3 font-medium" scope="col">mini-tui</th></tr></thead>
+      <tbody>
+        {#each oracleBench.rows as r (r.label)}
+          <tr class="border-t"><th class="px-6 py-3 text-left font-normal" scope="row">{r.label}</th><td class="px-4 py-3 font-mono">{r.pi}</td><td class="px-6 py-3 font-mono font-semibold">{r.mini}</td></tr>
+        {/each}
+      </tbody>
+    </table>
+    <p class="border-t px-6 py-4 text-xs text-muted-foreground">{oracleBench.caveats} <a class="text-foreground underline underline-offset-4" href="{REPO}/blob/main/docs/pi-vs-mini-benchmark.md">Read the full report</a>.</p>
+  </div>
+</Section>
+
+<Section id="features" title="And the rest of the workshop" lede="Everything a team of bots needs to be usable every day.">
+  <ul use:reveal={{ children: true }} class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
     {#each features as f (f.id)}
       <li>
-        <Card.Root class="h-full">
-          <Card.Header>
-            <div class="mb-2 grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><FeatureIcon name={f.icon} /></div>
-            <Card.Title><h3 class="text-base font-semibold">{f.title}</h3></Card.Title>
-            <Card.Description>{f.body}</Card.Description>
-          </Card.Header>
-        </Card.Root>
+        <div class="h-full rounded-2xl border bg-card p-5 transition-colors hover:bg-accent/40">
+          <div class="mb-3 grid size-9 place-items-center rounded-xl border bg-gradient-to-b from-accent to-card text-foreground"><FeatureIcon name={f.icon} /></div>
+          <h3 class="text-base font-semibold tracking-tight">{f.title}</h3>
+          <p class="mt-1.5 text-sm text-muted-foreground">{f.body}</p>
+        </div>
       </li>
     {/each}
   </ul>
-</Section>
-
-<Section id="panes" title="Every session at once, in panes and windows" lede="Split the screen like tmux, group the panes into windows, and keep an eye on all of them from the sidebar. It is the same layout on every device you open it on.">
-  <div use:reveal class="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,2fr)] lg:items-center">
-    <figure class="min-w-0 overflow-hidden rounded-xl border bg-card">
-      <img src={asset(`/${workspaceShots.move.src}`)} alt={workspaceShots.move.alt} width={workspaceShots.move.w} height={workspaceShots.move.h} loading="lazy" decoding="async" class="block h-auto w-full" />
-      <figcaption class="border-t px-4 py-3 text-sm font-medium">Move a pane to another window, or to a new one</figcaption>
-    </figure>
-    <figure class="mx-auto w-full max-w-[16rem] min-w-0 overflow-hidden rounded-[1.75rem] border bg-card lg:max-w-none">
-      <img src={asset(`/${workspaceShots.phone.src}`)} alt={workspaceShots.phone.alt} width={workspaceShots.phone.w} height={workspaceShots.phone.h} loading="lazy" decoding="async" class="block h-auto w-full" />
-      <figcaption class="border-t px-4 py-3 text-center text-sm font-medium">Same windows on a phone</figcaption>
-    </figure>
-  </div>
-  <ul use:reveal={{ children: true }} class="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-    {#each workspacePoints as p (p.title)}
-      <li class="min-w-0 rounded-xl border bg-card p-5">
-        <h3 class="font-semibold">{p.title}</h3>
-        <p class="mt-1.5 text-sm text-muted-foreground">{p.body}</p>
-      </li>
-    {/each}
-  </ul>
-  <p class="mt-8 text-center text-sm">
-    <a class="inline-flex min-h-11 items-center gap-1 text-primary underline underline-offset-4" href={resolve("/docs/web-app/" as "/")}>How panes and windows work <ArrowRight class="size-3.5" aria-hidden="true" /></a>
-  </p>
-</Section>
-
-<Section id="see-it" title="See it in motion" lede="A 24-second tour: a live session, commands and chips, the model switcher, and the phone layout.">
-  <div use:reveal class="mx-auto max-w-4xl overflow-hidden rounded-xl border bg-card">
-    <!-- preload="none" keeps the video off the critical path; the poster is the only thing fetched until play. -->
-    <video controls preload="none" playsinline poster={asset("/media/promo-poster.webp")} width="1280" height="720" class="block h-auto w-full" aria-describedby="video-desc">
-      <source src={asset("/media/promo.webm")} type="video/webm" />
-      <source src={asset("/media/promo.mp4")} type="video/mp4" />
-      <track kind="descriptions" srclang="en" label="Description" src={asset("/media/promo-description.vtt")} />
-      Your browser cannot play this video. <a href={asset("/media/promo.mp4")}>Download the MP4</a>.
-    </video>
-  </div>
-  <p id="video-desc" class="mx-auto mt-4 max-w-2xl text-center text-sm text-muted-foreground"><Play class="mr-1 inline size-3.5" aria-hidden="true" />The video has no sound. It shows a session streaming, the / and $ menus turning into chips, the searchable model switcher, and the layout on a phone.</p>
-</Section>
-
-<Section id="tour" title="Designed to be used, not just looked at">
-  <ul use:reveal={{ children: true, gap: 0.1 }} class="grid gap-6 md:grid-cols-2">
-    {#each screens as s (s.src)}
-      <li>
-        <figure class="overflow-hidden rounded-xl border bg-card">
-          <img src={asset(`/${s.src}`)} alt={s.alt} width={s.w} height={s.h} loading="lazy" decoding="async" class="block h-auto w-full" />
-          <figcaption class="border-t px-4 py-3 text-sm font-medium">{s.caption}</figcaption>
-        </figure>
-      </li>
-    {/each}
-  </ul>
-</Section>
-
-<Section id="agents" title="Python or Rust, your choice" lede="The same agent behind the UI, in two builds. The Rust one is a single binary: it starts in under a millisecond and holds a fraction of the memory.">
-  <div use:reveal class="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start">
-    <div class="min-w-0">
-      <!-- A real table where there is room; stacked, labelled rows on a phone (no sideways scroll). -->
-      <table class="hidden w-full border-separate border-spacing-0 overflow-hidden rounded-xl border text-sm sm:table">
-        <caption class="sr-only">Python agent and Rust agent compared</caption>
-        <thead>
-          <tr class="bg-card">
-            <th scope="col" class="w-[38%] border-b px-4 py-3 text-left font-medium text-muted-foreground"><span class="sr-only">Measure</span></th>
-            <th scope="col" class="border-b px-4 py-3 text-left font-semibold">Python agent</th>
-            <th scope="col" class="border-b bg-primary/5 px-4 py-3 text-left font-semibold text-primary">Rust agent</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each agents.rows as r, i (r.label)}
-            <tr>
-              <th scope="row" class="px-4 py-3 text-left font-medium {i < agents.rows.length - 1 ? 'border-b' : ''}">{r.label}</th>
-              <td class="px-4 py-3 tabular-nums text-muted-foreground {i < agents.rows.length - 1 ? 'border-b' : ''}">{r.python}</td>
-              <td class="bg-primary/5 px-4 py-3 font-medium tabular-nums {i < agents.rows.length - 1 ? 'border-b' : ''}">{r.rust}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      <dl class="grid gap-3 sm:hidden">
-        {#each agents.rows as r (r.label)}
-          <div class="rounded-xl border bg-card p-4">
-            <dt class="text-sm font-medium">{r.label}</dt>
-            <dd class="mt-2 grid grid-cols-2 gap-3 text-sm">
-              <span class="min-w-0"><span class="block text-xs text-faint">Python</span><span class="tabular-nums text-muted-foreground">{r.python}</span></span>
-              <span class="min-w-0"><span class="block text-xs text-primary">Rust</span><span class="font-medium tabular-nums">{r.rust}</span></span>
-            </dd>
-          </div>
-        {/each}
-      </dl>
-      <p class="mt-3 text-xs text-faint">Same scripted task on one Linux box, median of five runs. A real turn spends most of its time waiting for the model, which is the same with both.</p>
-      <ul class="mt-6 grid gap-2.5 text-sm text-muted-foreground">
-        {#each agents.points as p (p)}
-          <li class="flex gap-2.5"><Check class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" /><span class="min-w-0">{p}</span></li>
-        {/each}
-      </ul>
-    </div>
-    <div class="min-w-0">
-      <h3 class="mb-2 font-semibold">Install the Rust agent</h3>
-      <p class="mb-3 text-sm text-muted-foreground">One static binary for any x86-64 Linux. mini-tui finds it there and uses it.</p>
-      <CodeBlock code={RUST_INSTALL} label="Copy the install command" />
-      <p class="mt-2 text-sm">
-        <a class="inline-flex min-h-11 items-center gap-1 text-primary underline underline-offset-4" href={resolve("/docs/rust-agent/" as "/")}>Python or Rust: the full comparison <ArrowRight class="size-3.5" aria-hidden="true" /></a>
-      </p>
-    </div>
-  </div>
-</Section>
-
-<Section id="benchmark" title="Same speed as the pi harness, and never worse quality" lede="mini-tui's Rust agent against pi on the same ten tasks, the same model on both sides, sequential, no orchestration, repeated four times end to end. Quality is perfect on every run. Speed is a tie, and we say so rather than quote the best run.">
-  <div use:reveal class="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start">
-    <div class="min-w-0">
-      <!-- A real table where there is room; stacked, labelled rows on a phone (no sideways scroll). -->
-      <table class="hidden w-full border-separate border-spacing-0 overflow-hidden rounded-xl border text-sm sm:table">
-        <caption class="sr-only">Quality and speed across four full repetitions of the pi benchmark, pi harness against mini-tui</caption>
-        <thead>
-          <tr class="bg-card">
-            <th scope="col" class="w-[38%] border-b px-4 py-3 text-left font-medium text-muted-foreground"><span class="sr-only">Measure</span></th>
-            <th scope="col" class="border-b px-4 py-3 text-left font-semibold">pi harness</th>
-            <th scope="col" class="border-b bg-primary/5 px-4 py-3 text-left font-semibold text-primary">mini-tui</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each benchmark.rows as r, i (r.label)}
-            <tr>
-              <th scope="row" class="px-4 py-3 text-left font-medium {i < benchmark.rows.length - 1 ? 'border-b' : ''}">{r.label}</th>
-              <td class="px-4 py-3 tabular-nums text-muted-foreground {i < benchmark.rows.length - 1 ? 'border-b' : ''}">{r.pi}</td>
-              <td class="bg-primary/5 px-4 py-3 font-medium tabular-nums {i < benchmark.rows.length - 1 ? 'border-b' : ''}">{r.mini}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      <dl class="grid gap-3 sm:hidden">
-        {#each benchmark.rows as r (r.label)}
-          <div class="rounded-xl border bg-card p-4">
-            <dt class="text-sm font-medium">{r.label}</dt>
-            <dd class="mt-2 grid grid-cols-2 gap-3 text-sm">
-              <span class="min-w-0"><span class="block text-xs text-faint">pi</span><span class="tabular-nums text-muted-foreground">{r.pi}</span></span>
-              <span class="min-w-0"><span class="block text-xs text-primary">mini</span><span class="font-medium tabular-nums">{r.mini}</span></span>
-            </dd>
-          </div>
-        {/each}
-      </dl>
-      <p class="mt-3 text-xs text-faint">Speed median <strong class="text-primary">0.98x</strong> over four complete reps (0.93x, 0.98x, 1.13x, 0.69x), against 40 of 40 quality checks passing on each side. The 0.69x in round 5 was a single run inside that range; the three fresh reps came in at 1.13x, 0.98x and 0.93x.</p>
-      <ul class="mt-6 grid gap-2.5 text-sm text-muted-foreground">
-        {#each benchmark.points as p (p)}
-          <li class="flex gap-2.5"><Check class="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" /><span class="min-w-0">{p}</span></li>
-        {/each}
-      </ul>
-    </div>
-    <div class="min-w-0">
-      <h3 class="mb-2 font-semibold">Six rounds, side by side</h3>
-      <p class="mb-3 text-sm text-muted-foreground">The aggregate ratio each round, with the tasks won. mini went from 3.65x slower to level. The 0.69x that looked like a win in round 5 was variance: three fresh repetitions of the whole corpus averaged it out to 0.98x.</p>
-      <ul class="grid gap-2.5">
-        {#each benchmark.rounds as r (r.round)}
-          <li class="flex items-baseline gap-3 rounded-lg border bg-card px-4 py-3 text-sm">
-            <span class="w-8 shrink-0 font-mono text-muted-foreground">{r.round}</span>
-            <span class="w-16 shrink-0 font-semibold tabular-nums {r.round === 'R6' ? 'text-primary' : ''}">{r.ratio}</span>
-            <span class="w-14 shrink-0 tabular-nums text-muted-foreground">{r.won}</span>
-            <span class="min-w-0 text-muted-foreground">{r.note}</span>
-          </li>
-        {/each}
-      </ul>
-      <p class="mt-4 text-sm">
-        <a class="inline-flex min-h-11 items-center gap-1 text-primary underline underline-offset-4" href={REPO}>The full benchmark report <ArrowRight class="size-3.5" aria-hidden="true" /></a>
-      </p>
-    </div>
-  </div>
-
-  <!-- The same numbers as graphs. Drawn in the section's own language: shadcn tokens, hairline grid,
-       mono labels, and every figure traceable to a table in docs/pi-vs-mini-benchmark.md. -->
-  <div class="mt-10 grid min-w-0 gap-8 lg:grid-cols-2">
-    <Card.Root class="min-w-0 sm:col-span-2">
-      <Card.Header>
-        <Card.Title><h3 class="text-base font-semibold">Every task, all four runs</h3></Card.Title>
-        <Card.Description>
-          Median wall time per task over the four complete runs of the corpus: round 5 plus the three round-6 reps.
-          Shorter is faster. Five tasks each way, which is the tie the table above reports.
-        </Card.Description>
-      </Card.Header>
-      <Card.Content class="min-w-0">
-        <BenchmarkBars />
-      </Card.Content>
-    </Card.Root>
-
-    <Card.Root class="min-w-0">
-      <Card.Header>
-        <Card.Title><h3 class="text-base font-semibold">Six rounds of the same race</h3></Card.Title>
-        <Card.Description>
-          The aggregate ratio each round, from 3.65x slower at the start to level. Round 5's 0.69x is drawn in full,
-          hollow and dashed, because it was one run and the three fresh repetitions did not repeat it.
-        </Card.Description>
-      </Card.Header>
-      <Card.Content class="min-w-0">
-        <BenchmarkRounds />
-      </Card.Content>
-    </Card.Root>
-
-    <Card.Root class="min-w-0">
-      <Card.Header>
-        <Card.Title><h3 class="text-base font-semibold">The prompt clause, measured both ways</h3></Card.Title>
-        <Card.Description>
-          Back-to-back A/B of the one-clause change that did ship, same binary and same checks on both arms.
-          It pays big on the derivation tasks and about two seconds on the trivial ones, with quality unmoved at 48/48.
-        </Card.Description>
-      </Card.Header>
-      <Card.Content class="min-w-0">
-        <BenchmarkAb />
-      </Card.Content>
-    </Card.Root>
-  </div>
 </Section>
 
 <Section id="start" title="Running in four steps" lede="Bun and one binary. No account, no cloud, no Python needed.">
@@ -275,7 +140,7 @@
       </li>
     {/each}
   </ol>
-  <p class="mt-8 text-center text-sm text-muted-foreground">Full guide in the <a class="text-primary underline underline-offset-4" href={resolve("/docs/install/")}>install docs</a>.</p>
+  <p class="mt-8 text-center text-sm text-muted-foreground">Full guide in the <a class="text-foreground underline underline-offset-4" href={resolve("/docs/install/")}>install docs</a>.</p>
 </Section>
 
 <Section id="faq" title="Questions" class="max-w-4xl">
@@ -289,13 +154,14 @@
   </Accordion.Root>
 </Section>
 
-<div class="border-t bg-card/40">
-  <div class="mx-auto max-w-3xl px-4 py-20 text-center sm:px-6">
-    <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Try it in a minute.</h2>
+<div class="relative overflow-hidden border-t">
+  <div class="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(50%_90%_at_50%_100%,color-mix(in_oklab,var(--ring)_20%,transparent),transparent)]" aria-hidden="true"></div>
+  <div class="mx-auto max-w-3xl px-4 py-24 text-center sm:px-6">
+    <h2 class="text-4xl font-semibold tracking-tight sm:text-5xl">Give the board to a bot.</h2>
     <p class="mt-3 text-muted-foreground">No account, no subscription. Bring your own model key.</p>
     <div class="mt-8 flex flex-wrap justify-center gap-3">
-      <Button size="lg" href={resolve("/docs/install/")}>Install mini-tui</Button>
-      <Button size="lg" variant="outline" href={resolve("/web-app/")}>See the web app</Button>
+      <Button size="lg" href={resolve("/docs/install/")} class="rounded-full px-6">Install mini-tui</Button>
+      <Button size="lg" variant="outline" href={resolve("/web-app/")} class="rounded-full px-6">See the web app</Button>
     </div>
   </div>
 </div>

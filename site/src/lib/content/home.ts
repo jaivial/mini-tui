@@ -1,72 +1,22 @@
 /** Copy for the landing page. Kept as data so the visible text, the FAQ markup and the tests share one source. */
 
 export const hero = {
-  kicker: "Terminal and browser.",
-  title: "The coding agent that runs where you work.",
-  sub: "mini-tui is a fast terminal and web UI for the mini-swe-agent coding agent. Split the screen into panes, group them into windows, and watch every session work at once, on any device. Bring your own model keys.",
+  kicker: "Bots, a board, WhatsApp.",
+  title: "Talk to a bot. It runs the board.",
+  sub: "mini-tui is a team of bots that organize your work as a kanban instead of coding it all themselves. You say what you want in the web app or a WhatsApp group. The bot writes the cards, workers pick them up, and nothing counts as done until the evidence is on the card.",
 };
 
 export const features = [
-  {
-    id: "sessions",
-    icon: "layout-grid",
-    title: "Panes and windows",
-    body: "Up to 12 panes in a window, each its own session, all running at once. As many windows as you like, a status dot per pane.",
-  },
-  {
-    id: "live",
-    icon: "monitor-smartphone",
-    title: "Terminal and browser, one session",
-    body: "Open a session a terminal is running and the browser follows the same agent live. Type in either one; nothing forks.",
-  },
-  {
-    id: "subagents",
-    icon: "workflow",
-    title: "Subagents that report back",
-    body: "A session splits its work across agents it owns. Each one keeps its context, takes messages mid-run and reports when it is done.",
-  },
-  {
-    id: "sockets",
-    icon: "plug",
-    title: "One WebSocket per session",
-    body: "A snapshot, then small deltas. A busy session never spends another session's bandwidth, and a dropped connection resyncs itself.",
-  },
-  {
-    id: "ssh",
-    icon: "server",
-    title: "Headless over SSH",
-    body: "Keep the agent on a beefy box near the code while the UI stays on your laptop. The prompt travels as a quoted literal and cannot run as a command.",
-  },
-  {
-    id: "commands",
-    icon: "square-slash",
-    title: "Commands and skill chips",
-    body: "Type / for commands and $ for skills. A pick becomes a chip and joins your text only when you send. Enter never runs a command by accident.",
-  },
-  {
-    id: "models",
-    icon: "cpu",
-    title: "Switch models mid-run",
-    body: "A searchable, provider-grouped switcher in the prompt bar. Bring keys for DeepSeek, Anthropic, OpenAI, Groq, OpenRouter and more.",
-  },
-  {
-    id: "keys",
-    icon: "key-round",
-    title: "Keys that stay put",
-    body: "A key is tested with one real request before it is saved, stored with 0600 permissions, and never returned by the API.",
-  },
-  {
-    id: "phone",
-    icon: "smartphone",
-    title: "Built for a phone too",
-    body: "44px touch targets, bottom-sheet dialogs, safe-area insets and a prompt bar that grows a line at a time.",
-  },
-  {
-    id: "headless",
-    icon: "terminal",
-    title: "Scriptable",
-    body: "mini-tui -p runs one turn with no UI and prints text, JSON or a JSON stream. Exit codes and guard rails are built for CI.",
-  },
+  { id: "board", icon: "layout-grid", title: "A board the bot keeps", body: "Every request becomes cards with dependencies on a durable task graph. Workers take a lease on a card, and a card in flight is never lost when a lane stops." },
+  { id: "bots", icon: "workflow", title: "Bots with delegates", body: "A window holds bots, and each bot holds the delegates it started. The sidebar shows the tree live, and the team map draws it as a graph." },
+  { id: "whatsapp", icon: "smartphone", title: "WhatsApp groups, synced", body: "A bot answers in its own group. What you type there shows in the web app and the other way round, with voice notes, images and a typing indicator." },
+  { id: "cu", icon: "monitor-smartphone", title: "Bots that use a browser", body: "The computer-use tool drives a real browser through cu and posts screenshots to the chat, so a bot can check its own work on the page." },
+  { id: "closure", icon: "check", title: "Done means proven", body: "A closure check reads the diff and the logs against the goal before a card moves to Done. The judge is a small self-hosted model that answers in under a second." },
+  { id: "models", icon: "cpu", title: "Your keys, your models", body: "Connect DeepSeek, Anthropic, OpenAI, MiniMax, Groq, OpenRouter and more. A router sends easy turns to cheap models and falls back when a provider fails." },
+  { id: "sessions", icon: "square-slash", title: "Terminal and browser, one session", body: "Open a session a terminal is running and the web app follows the same agent live. Type in either one; nothing forks." },
+  { id: "voice", icon: "plug", title: "Voice notes and generative UI", body: "Record a note in the chat or on WhatsApp and it is transcribed locally. Bots can answer with forms, tables and charts drawn in the thread." },
+  { id: "phone", icon: "server", title: "On a phone, over SSH", body: "An installable web app with touch-sized controls, and an agent that can run headless on a bigger box while the UI stays on your laptop." },
+  { id: "headless", icon: "terminal", title: "Scriptable", body: "mini-tui -p runs one turn with no UI and prints text, JSON or a JSON stream. Exit codes and guard rails are built for CI." },
 ] as const;
 
 export const RUST_INSTALL =
@@ -74,7 +24,7 @@ export const RUST_INSTALL =
 
 export const steps = [
   { n: 1, title: "Get mini-tui", code: "git clone https://github.com/jaivial/mini-tui && cd mini-tui\nbun install" },
-  { n: 2, title: "Add the Rust agent (one binary, no Python)", code: RUST_INSTALL },
+  { n: 2, title: "Build the Rust agent (one binary, no Python)", code: "cd agent-rs && cargo build --release && cd ..\nmkdir -p ~/.local/lib/mini-tui\ncp agent-rs/target/release/mini-agent-rs ~/.local/lib/mini-tui/" },
   { n: 3, title: "Start the web app", code: "bun run web   # http://127.0.0.1:4317" },
   { n: 4, title: "Connect a model", code: "# Settings, Providers: paste a key.\n# It is tested with a real request first." },
 ] as const;
@@ -145,16 +95,16 @@ export const workspacePoints = [
 ] as const;
 
 export const faq = [
-  { q: "What is mini-tui?", a: "mini-tui is a terminal and browser interface for the mini-swe-agent coding agent. It shows the agent's thinking, commands and results as they happen, and lets you run several sessions side by side." },
-  { q: "Does mini-tui cost anything?", a: "There is no account and no subscription. The source is public on GitHub. You pay only the model provider whose key you connect, if that provider charges for usage." },
-  { q: "Which models and providers can I use?", a: "Xiaomi MiMo, DeepSeek, OpenCode Go, Z.AI, MiniMax, OpenAI, Anthropic, Moonshot, Zhipu, Groq and OpenRouter, plus any OpenAI-compatible endpoint. You bring your own key." },
+  { q: "What is mini-tui?", a: "mini-tui is a team of bots that organize work as a kanban board. You talk to a bot in the web app, the terminal or a WhatsApp group, it turns the request into cards, and workers carry them out and report back in the same thread." },
+  { q: "How is it different from a coding agent?", a: "A coding agent is one model that writes the code itself. In mini-tui the bot plans: it writes cards with dependencies, hands them to workers, and checks the evidence before a card closes. The agent underneath is still the mini-swe-agent runner, as a single Rust binary." },
+  { q: "How do the WhatsApp groups work?", a: "Each bot can have its own WhatsApp group. Messages there reach the bot, and the bot's replies, reactions and voice-note transcripts come back to the group. The web app mirrors the thread both ways, so you can start on your phone and finish at your desk." },
+  { q: "What does the cu integration do?", a: "A bot can drive a real browser through cu, the computer-use tool. It opens pages, clicks, fills forms and sends screenshots to the chat, which is how a bot checks a page it just changed." },
+  { q: "What does done mean?", a: "A card moves to Done only after a closure check reads the goal against the diff and the logs. The default judge is a model. You can point it at Laya, a small self-hosted classifier, which closes a clean run in well under a second and hands unclear ones to the model judge." },
+  { q: "Does mini-tui cost anything?", a: "There is no account and no subscription. The source is public on GitHub. You pay only the model providers whose keys you connect." },
+  { q: "Which models and providers can I use?", a: "DeepSeek, Anthropic, OpenAI, MiniMax, Z.AI, Moonshot, Groq and OpenRouter among others, plus any OpenAI-compatible endpoint. You bring your own key. A router can send simple turns to cheaper models." },
   { q: "Where do my API keys go?", a: "Keys are stored on the machine running mini-tui, in a file only your user can read. The web API never sends a key back to the browser; it returns a masked hint such as sk-…a1b2." },
-  { q: "Can the agent run on a remote server?", a: "Yes. In remote mode the agent runs headless on a server over SSH while the interface stays on your machine. The prompt is passed as a single-quoted literal, so it cannot execute as a command on the server." },
-  { q: "Does the web app work on a phone?", a: "Yes. It uses 44px touch targets, bottom-sheet dialogs, safe-area insets and a keyboard-aware prompt bar. Put it behind a reverse proxy with authentication to reach it from other devices." },
-  { q: "Can I run several sessions side by side?", a: "Yes. Split the web app into panes like tmux, up to 12 in a window, each running its own session at the same time. Group panes into as many windows as you like, see a working, done or idle dot for every pane in the sidebar, and move a pane to another window from its menu. The layout is kept on the server, so every device shows the same windows." },
-  { q: "Python or Rust: which agent should I use?", a: "The Rust agent, unless you need a Python-only extension. It is a port of the same runner as one static binary: it starts in under a millisecond instead of about 65 ms and holds about 4.5 MB per waiting session instead of about 36 MB. It needs no Python. Both read the same configs and write the same trajectories, and a parity suite checks that they behave the same." },
-  { q: "How is it different from the terminal UI?", a: "They are the same agent and share the same session history. A session running in a terminal opens live in the browser: both follow the same agent, and a message typed in either one reaches it. The web app adds panes, windows and remote hosts; the terminal UI is lighter and needs no browser." },
-  { q: "Can one session start other agents?", a: "Yes, with the Rust agent. A session can start subagents to split its work. Each one is a full agent that keeps its context between turns and takes messages while it runs. It reports back by itself when it finishes, fails or has a question, so the main agent never wastes steps checking on it. Subagents stop with their session and count toward its cost limit. Each is saved as a session of its own, so you can open any of them and watch it live." },
+  { q: "Can the agent run on a remote server?", a: "Yes. In remote mode the agent runs headless on a server over SSH while the interface stays on your machine. The prompt is passed as a single-quoted literal, so it cannot execute as a command." },
+  { q: "Does the web app work on a phone?", a: "Yes. It installs as an app and uses touch-sized controls, bottom-sheet dialogs and a keyboard-aware prompt bar. Put it behind a reverse proxy with authentication to reach it from other devices." },
 ] as const;
 
 export const screens = [
@@ -163,3 +113,41 @@ export const screens = [
   { src: "screens/web-model-picker.webp", alt: "The searchable model switcher grouped by provider", w: 2880, h: 1800, caption: "Switch models" },
   { src: "screens/web-settings-providers.webp", alt: "The providers tab of settings, with connected providers and a masked key", w: 2880, h: 1800, caption: "Connect providers" },
 ] as const;
+
+/** The new pitch, in three steps. Shown under the hero. */
+export const flow = [
+  { n: "01", title: "Say it", body: "Write or record it in the web app, the terminal, or the bot's WhatsApp group. One sentence is enough." },
+  { n: "02", title: "The bot writes the board", body: "It splits the request into cards with dependencies on a durable task graph, and tells you what it will do before workers start." },
+  { n: "03", title: "Workers ship, evidence closes", body: "Workers take cards one at a time. A card closes only when the diff and the logs back the goal, and the result lands in your thread." },
+] as const;
+
+export const whatsappPoints = [
+  { title: "One group per bot", body: "A bot answers in its own group without a mention. The bot's avatar becomes the group photo." },
+  { title: "Mirrored both ways", body: "A message in the group appears in the web app, and one typed in the web app appears in the group. No second conversation, no echo." },
+  { title: "Voice notes in", body: "Send a note and it is transcribed on your machine, with an honest state if the transcript fails." },
+  { title: "Feels alive", body: "A 👀 reaction the moment it hears you, a typing indicator while it works, and semantic reactions when a card closes." },
+  { title: "Control from the chat", body: "/newsession starts a fresh session and /rename renames the session and the group subject." },
+] as const;
+
+export const cuPoints = [
+  { title: "A real browser, not a mock", body: "cu keeps a pool of browser daemons that bots reuse. Logins stay in a vault; a bot never sees a password." },
+  { title: "Screenshots go to the chat", body: "The bot posts what it saw, so you check the page without opening it." },
+  { title: "Checks its own work", body: "After a UI change the bot opens the page, looks, and files what it found as evidence on the card." },
+] as const;
+
+/**
+ * The oracle-on benchmark, as measured. Same ten tasks and model as every round (MiniMax-M3.1-Flash-Preview),
+ * three repetitions with pi and mini interleaved task by task so that API drift hits both alike, mini with
+ * Laya as the closure judge, on the deployed binary and config. The full report is docs/pi-vs-mini-benchmark.md.
+ */
+export const oracleBench = {
+  headline: "112.9 s vs 145.6 s",
+  ratio: "0.78x",
+  rows: [
+    { label: "Tasks passed", pi: "30/30", mini: "30/30" },
+    { label: "Sum of per-task medians", pi: "145.6 s", mini: "112.9 s" },
+    { label: "Tasks where mini is at least as fast", pi: "1/10", mini: "9/10" },
+    { label: "Timeouts", pi: "0", mini: "0" },
+  ],
+  caveats: "Ten tasks, three repetitions, one model, one machine. The gain comes from a judge that closes a clean run in about a tenth of a second instead of a model call. Earlier rounds on this page were a tie; the report keeps them.",
+} as const;
