@@ -7,6 +7,7 @@
  * and the TUI show it under its parent and can open it, follow it live and message it (the same
  * attach path a session running in another UI uses).
  */
+import { settleFromSubagent } from "../kanban";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -177,6 +178,7 @@ export class SubagentSync {
     for (const entry of entries) {
       const id = subagentSessionId(parentId, entry.name);
       views.push(toView(parentId, entry));
+      try { settleFromSubagent(this.db(), parentId, entry.name, entry.state, entry.exit_status); } catch { /* best-effort */ }
       try {
         // The session row only changes when the roster entry itself does: a child that is only
         // ticking its cost or state changes the transcript below, not this row. At 100 children

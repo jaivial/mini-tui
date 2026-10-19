@@ -241,3 +241,19 @@ export function parseKanban(rest: string[], takeValue: (a: string[], i: number, 
   else { if (id) a.id = id; if (other) a.other = other; }
   return a;
 }
+
+/**
+ * A subagent named after its card reports back through the hub's roster: when it finishes, the
+ * card follows without the parent having to poll. Waiting (turn over, can still be messaged) goes
+ * to review; a clean stop is done; any other end is blocked with the exit status as its note.
+ */
+export function settleFromSubagent(db: Database, parentId: string, name: string, state: string, exitStatus: string): Card | null {
+  const c = getCard(db, name);
+  if (!c || c.session !== parentId) return null;
+  if (c.column !== "doing" && c.column !== "review") return null;
+  let column: Column | null = null;
+  if (state === "waiting") column = "review";
+  else if (state === "stopped" || state === "exited") column = !exitStatus || exitStatus === "Submitted" ? "done" : "blocked";
+  if (!column || column === c.column) return null;
+  return updateCard(db, c.id, { column, result: c.result || (exitStatus ? `subagent ${state}: ${exitStatus}` : `subagent ${state}`), note: `auto: subagent ${state}${exitStatus ? ` (${exitStatus})` : ""}` });
+}
