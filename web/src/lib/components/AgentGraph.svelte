@@ -38,6 +38,7 @@
     if (n.state === "dead") return { label: "dead", tone: "err" };
     if (n.state === "waiting") return n.exitStatus && n.exitStatus !== "Submitted" ? { label: n.exitStatus, tone: "warn" } : { label: "done", tone: "ok" };
     if (n.state === "exited" && n.exitStatus && n.exitStatus !== "Submitted") return { label: "failed", tone: "err" };
+    if (n.state === "stopped" && n.steps > 0 && !n.exitStatus) return { label: "done", tone: "ok" };
     if (n.state === "stopped") return { label: "stopped", tone: "idle" };
     return { label: n.exitStatus === "Submitted" ? "done" : n.state, tone: n.exitStatus === "Submitted" ? "ok" : "idle" };
   }
