@@ -232,6 +232,11 @@ export function buildRunEnv(
     // Commits made by the agent are authored by the user's gh/git identity, never "claude".
     ...gitIdentityEnv({ ...process.env, ...extra }),
     ...extra,
+    // Web agents must use this deployment's scripting commands, not a stale ~/mini-tui checkout.
+    ...(process.env.MINITUI_WEB === "1" ? {
+      MINITUI_HOME: new URL("../../", import.meta.url).pathname.replace(/\/$/, ""),
+      PATH: `${join(homedir(), ".local", "bin")}:${join(homedir(), ".bun", "bin")}:${extra.PATH ?? process.env.PATH ?? ""}`,
+    } : {}),
     // The Rust binary may live outside this checkout (~/.local/lib/mini-tui): point it at the YAML
     // configs shipped with the bundled agent, unless the caller already chose a directory.
     ...(process.env.MINI_AGENT_CONFIG_DIR || extra.MINI_AGENT_CONFIG_DIR ? {} : { MINI_AGENT_CONFIG_DIR: BUNDLED_CONFIG_DIR }),
