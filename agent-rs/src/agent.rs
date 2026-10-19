@@ -634,7 +634,8 @@ impl Agent {
         // envelope answers "Task" for a greeting.
         self.task_is_conversational =
             crate::intent::classify(&crate::intent::channel_subject(task)) == crate::intent::Intent::Conversational;
-        if crate::goal_oracle::enabled() && !self.task_is_conversational {
+        if crate::goal_oracle::enabled() && !self.task_is_conversational
+            && !(Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none()) {
             if let Outcome::Output(v) = self.env.execute("git rev-parse --verify HEAD 2>/dev/null") {
                 if v.get("returncode").and_then(Value::as_i64) == Some(0) {
                     let hash = v.get("output").and_then(Value::as_str).unwrap_or("").trim();
@@ -672,6 +673,12 @@ impl Agent {
                     "[turn] resumed session held {dropped} unfinished cop{} of this task; collapsed into one",
                     if dropped == 1 { "y" } else { "ies" }
                 );
+            }
+            // Forked workers inherit history, not the main orchestrator role.
+            if std::env::var_os("MINI_AGENT_DEPTH").is_some() {
+                let system = render(&self.config.system_template, &self.template_vars()).map_err(template_error)?;
+                history.retain(|m| role(m) != "system");
+                history.insert(0, self.model.format_message("system", &system, None));
             }
             self.messages = Self::repair_tool_call_history(history);
             if compact_only {
@@ -768,6 +775,9 @@ impl Agent {
             if self.messages.last().and_then(|m| m.pointer("/extra/exit_status")).and_then(Value::as_str) == Some("Submitted")
                 && crate::goal_oracle::enabled()
                 && !self.task_is_conversational
+                // A handoff is not a completion claim. Judging it before workers finish
+                // forces the orchestrator back into polling instead of its idle hold.
+                && !(Self::control_file().is_some() && crate::subagents::live_children() > 0)
             {
                 self.check_goal_closure();
             }
@@ -825,7 +835,8 @@ impl Agent {
         // a coincidentally named host path. No tests, no mutation, no broad filesystem scan.
         let reference = self.goal_baseline.as_deref().unwrap_or("HEAD");
         let evidence_command = format!("{{ if git rev-parse --verify '{reference}^{{commit}}' >/dev/null 2>&1; then git diff --no-ext-diff --no-textconv {reference} 2>/dev/null || printf '\n[Change evidence unavailable: git diff failed.]\n'; else printf '\n[Change evidence unavailable: original baseline no longer resolves. Do not treat this as an empty diff.]\n'; fi; printf '\nUntracked paths (contents not read automatically):\n'; git ls-files --others --exclude-standard 2>/dev/null | head -100; }} | head -c 24000");
-        let diff = if crate::intent::classify(&goals[0]) == crate::intent::Intent::Conversational { String::new() } else { match self.env.execute(&evidence_command) {
+        let diff = if (Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none())
+            || crate::intent::classify(&goals[0]) == crate::intent::Intent::Conversational { String::new() } else { match self.env.execute(&evidence_command) {
             Outcome::Output(v) => v.get("output").and_then(Value::as_str).unwrap_or_default().to_string(),
             _ => String::new(),
         } };
@@ -1059,7 +1070,7 @@ impl Agent {
             self.record_timings(&mut t, at);
             // With a closure judge, the redundant second plain-text confirmation is replaced
             // by an actual evidence-based judgement, saving one full worker turn.
-            if self.submission_pending || crate::goal_oracle::enabled() {
+            if self.submission_pending || crate::goal_oracle::enabled() || (Self::control_file().is_some() && crate::subagents::live_children() > 0) {
                 return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", sub, sub)]));
             }
             self.submission_pending = true;
@@ -1290,6 +1301,43 @@ impl Agent {
     fn execute_actions(&mut self, message: &Value) -> Result<Vec<Value>, Flow> {
         let actions: Vec<Value> = message.pointer("/extra/actions").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut outputs = Vec::new();
+        if std::env::var("MINITUI_WEB").as_deref() == Ok("1") && Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none() {
+            let allowed = actions.iter().all(|action| {
+                if let Some(tool) = action.get("tool").and_then(Value::as_str) {
+                    return matches!(tool, "agent_delegate" | "agent_message" | "agent_handoff" | "agent_route" | "agent_define");
+                }
+                let command = action.get("command").and_then(Value::as_str).unwrap_or("");
+                // Inspect shell syntax, not quoted task prose passed as one argument.
+                let mut clean = String::new();
+                let mut quote = None;
+                let mut escaped = false;
+                for ch in command.chars() {
+                    if escaped { escaped = false; continue; }
+                    if quote == Some('\'') { if ch == '\'' { quote = None; } continue; }
+                    if ch == '\\' { escaped = true; continue; }
+                    if quote == Some('"') {
+                        if ch == '"' { quote = None; }
+                        else if ch == '$' || ch == '`' { return false; }
+                        continue;
+                    }
+                    if ch == '\'' || ch == '"' { quote = Some(ch); clean.push('x'); }
+                    else { clean.push(ch); }
+                }
+                let clean = clean.replace("2>&1", "");
+                if quote.is_some() || clean.contains(['>', '<', '`', '$']) { return false; }
+                clean.split([';', '\n']).all(|statement| {
+                    statement.split('|').enumerate().all(|(index, part)| {
+                    let part = part.trim().trim_start_matches('&').trim();
+                    part.is_empty() || part.starts_with("mini-tui kanban ") || part.starts_with("mini-tui tasks set ")
+                        || ["spawn", "delegate", "send", "message", "result", "stop"].iter().any(|cmd| part.starts_with(&format!("mini-agent-rs agent {cmd} ")))
+                        || (index > 0 && (part.starts_with("tail ") || part.starts_with("head ")))
+                    })
+                })
+            });
+            if !allowed {
+                return Ok(actions.iter().map(|_| json!({"raw_output": "Action refused by the web orchestrator boundary. Delegate with an inline brief.", "exception_info": "", "returncode": 1, "output": "Orchestrator boundary: this action was not executed. Only kanban/tasks bookkeeping and agent delegation/messaging/results are available. Pass an inline brief to a worker. Do not write brief files, inspect work, poll, or execute it yourself."})).collect());
+            }
+        }
         // A single action, or concurrency disabled: the plain serial loop, unchanged.
         if actions.len() < 2 || action_concurrency(actions.len()) < 2 {
             for action in &actions {

@@ -1069,7 +1069,11 @@ impl Hub {
                                 let was_stop = c.stop_requested;
                                 c.state = if was_stop { "stopped".into() } else { "waiting".into() };
                                 c.stop_requested = false;
-                                if !was_stop {
+                                // A child that yielded to its own workers is not a completed task.
+                                // Its eventual final exit will carry the result after descendants finish.
+                                let delegated_pending = nested_work_pending(&c.traj, 0);
+                                if delegated_pending && !was_stop { c.state = "running".into(); }
+                                if !was_stop && !delegated_pending {
                                     match c.chain.on_turn_end() {
                                         chain::TurnEnd::Notify => {
                                             notes.push((c.name.clone(), c.turns, finished_note(c)));
@@ -1209,7 +1213,9 @@ impl Hub {
         let failed: Vec<&context_store::Check> = checks
             .iter()
             .filter(|k| !k.ok)
-            .filter(|k| !(c.repos.is_empty() && k.name == "coverage"))
+            .filter(|k| !(k.name == "coverage"
+                && !Path::new(&c.cwd).ancestors().any(|p| p.join(".git").exists())
+                && self.store.get("contracts.md").map(|s| s.trim().is_empty()).unwrap_or(true)))
             .collect();
         if failed.is_empty() {
             return String::new(); // green, or nothing checkable: no noise in the parent's notes
@@ -1425,7 +1431,7 @@ impl Hub {
         if raw_task.chars().count() > context_max {
             return Err(format!("the task is {} chars, over the {} char cap: put the detail in --context-file or the shared context/ folder, or `agent send` it in parts", raw_task.chars().count(), context_max));
         }
-        let shared_note = shared_context_note(&self.context_dir);
+        let shared_note = if Path::new(&cwd).ancestors().any(|p| p.join(".git").exists()) || self.store.get("contracts.md").map(|s| !s.trim().is_empty()).unwrap_or(false) { shared_context_note(&self.context_dir) } else { String::new() };
         let skills: Vec<String> = req.get("skills").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
         let (task, used, missing) = expand_skills(&raw_task, &skills, &[]);
         if !missing.is_empty() {
@@ -1994,7 +2000,18 @@ impl Hub {
 
 /// Is `m` the new-task message for `task` (the agent prefixes it)?
 fn line_is_last_task(m: &Value, task: &str) -> bool {
-    content_text(m).ends_with(task.trim_end()) || task.is_empty()
+    content_text(m).trim_end().ends_with(task.trim_end()) || task.is_empty()
+}
+
+fn nested_work_pending(traj: &Path, depth: usize) -> bool {
+    if depth >= 10 { return false; }
+    let Some(dir) = traj.parent() else { return false };
+    let Ok(raw) = std::fs::read_to_string(dir.join("subagents/index.json")) else { return false };
+    let Ok(index) = serde_json::from_str::<Value>(&raw) else { return false };
+    index.get("children").and_then(Value::as_array).map(|children| children.iter().any(|child| {
+        matches!(child.get("state").and_then(Value::as_str), Some("running" | "starting"))
+            || child.get("traj_path").and_then(Value::as_str).map(|p| nested_work_pending(Path::new(p), depth + 1)).unwrap_or(false)
+    })).unwrap_or(false)
 }
 
 fn finished_note(c: &Child) -> String {
