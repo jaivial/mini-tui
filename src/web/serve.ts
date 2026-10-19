@@ -1046,7 +1046,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         const view = agentsCache.get(id, sessions.trajsOf(id)).view;
         // `?brief=1` is what the sidebar polls: it renders the rows and throws `events` + `defs`
         // away (34 407 B per answer for 2 rows on the deployed surface, 93% of them `defs`).
-        return json(new URL(request.url).searchParams.get("brief") ? briefOf(view) : view);
+        return json(new URL(request.url).searchParams.get("brief") === "1" ? briefOf(view) : view);
       }
       if (path === "/agents" && request.method === "GET") return json(listAgentDefs());
       // Live agents view: snapshot, then a push whenever the tree or its events change. The

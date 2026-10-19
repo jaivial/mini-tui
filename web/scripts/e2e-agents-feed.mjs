@@ -222,6 +222,8 @@ check("c7b: a tree changed on disk reaches the panel after the hung read is aban
 // c8 (informational): what the two answers cost on this fixture, and what the sidebar asks for.
 const full = await (await fetch(`${base}/api/sessions/${ID}/agents`)).text();
 const brief = await (await fetch(`${base}/api/sessions/${ID}/agents?brief=1`)).text();
+const briefZero = await (await fetch(`${base}/api/sessions/${ID}/agents?brief=0`)).text();
+check("c8: only ?brief=1 is the brief (?brief=0 stays the full answer)", briefZero === full, `brief=0 -> ${briefZero.length}B vs full ${full.length}B`);
 const sidebarReads = await briefReadsSince(0);
 console.log(`PAYLOAD  full=${full.length}B  brief=${brief.length}B  sidebar-brief-reads=${sidebarReads.length} (the sidebar polls the small answer)`);
 console.log(`errors=${errors.length ? errors.slice(0, 3).join(" | ") : 0}`);

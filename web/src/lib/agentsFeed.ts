@@ -164,7 +164,11 @@ export class AgentsFeed {
     const id = this.#id;
     this.#closeStream?.();
     this.#openedAt = this.#now();
-    this.#closeStream = (this.#deps.openStream ?? openEventSourceStream)(id, {
+    // An openStream that THROWS synchronously (a refused constructor) is a drop like any other —
+    // not an exception in a timer callback nobody watches (E49: that is a crash).
+    let close: () => void;
+    try {
+      close = (this.#deps.openStream ?? openEventSourceStream)(id, {
       onOpen: () => {
         if (!this.#stopped) this.#openedAt = this.#now();
       },
@@ -189,7 +193,14 @@ export class AgentsFeed {
         this.#poll.sync([id]); // the bridge covers the gap, on the sidebar's loop and rules
         this.#retryLater(this.#r.nextDelay());
       },
-    });
+      });
+    } catch {
+      this.#streamDown = true;
+      this.#poll.sync([id]);
+      this.#retryLater(this.#r.nextDelay());
+      return;
+    }
+    this.#closeStream = close;
   }
 
   #retryLater(delay: number | null): void {

@@ -253,6 +253,29 @@ describe("the panel's agents feed", () => {
     expect(h.fetches.slice(fetchesBefore).every((f) => f.id === "s2")).toBe(true);
   });
 
+  test("an openStream that THROWS synchronously is a drop, not a crash in a timer callback", async () => {
+    const h = harness();
+    let calls = 0;
+    const feed = new AgentsFeed({
+      fetchView: () => new Promise(() => {}),
+      openStream: () => {
+        calls++;
+        if (calls === 1) throw new Error("refused at construction");
+        return () => {};
+      },
+      apply: () => {},
+      now: () => 0,
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (x) => clearTimeout(x as ReturnType<typeof setTimeout>),
+      reconnect: { random: () => 1 },
+    });
+    feed.start("s1"); // must not throw
+    expect(calls).toBe(1);
+    await new Promise((r) => setTimeout(r, 1200)); // the backoff opens it again (real timers here)
+    expect(calls).toBeGreaterThanOrEqual(2);
+    feed.stop();
+  });
+
   test("a dead stream that keeps dying backs off instead of hammering", async () => {
     const h = harness();
     h.feed.start("s1");
