@@ -45,7 +45,7 @@ import { etagFor, isFresh, mayRevalidate, revalidationHeaders } from "./etag";
 import { compressBody } from "./compress";
 import {
   COMMANDS,
-  connectProvider,
+  connectProvider, refetchProviderModels,
   connectedProviders,
   disconnectProvider,
   modelCatalog,
@@ -1345,6 +1345,20 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         try {
           const result = await connectProvider({ providerId, key: String(body.key ?? ""), model: body.model ? String(body.model) : undefined });
           return json(result, result.ok ? 200 : 400);
+        } finally {
+          connecting.delete(providerId);
+        }
+      }
+      const refetchMatch = path.match(/^\/providers\/([\w-]+)\/refetch$/);
+      if (refetchMatch && request.method === "POST") {
+        const providerId = refetchMatch[1] as string;
+        const { limited: refetchLimit } = charged("providerConnect", request, srv);
+        if (refetchLimit) return refetchLimit;
+        if (connecting.has(providerId)) return json({ error: "already updating this provider" }, 409);
+        connecting.add(providerId);
+        try {
+          const result = await refetchProviderModels(providerId);
+          return json(result, result.ok ? 200 : "notFound" in result ? 404 : 502);
         } finally {
           connecting.delete(providerId);
         }

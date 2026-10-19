@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { Eye, EyeOff, KeyRound, Plug, Trash2, Minus, Plus, RotateCcw } from "@lucide/svelte";
+  import { Eye, EyeOff, KeyRound, Plug, Trash2, Minus, Plus, RotateCcw, ChevronDown, RefreshCw } from "@lucide/svelte";
   import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "../scale";
   import Modal from "./Modal.svelte";
   import Tabs from "./Tabs.svelte";
@@ -103,6 +103,26 @@
       formError = (error as Error).message;
     } finally {
       testing = false;
+    }
+  }
+
+  // One accordion per connected provider; the list is what its endpoint served at the last refetch.
+  let expanded = $state<Record<string, boolean>>({});
+  let refetching = $state("");
+  async function refetch(id: string, name: string) {
+    refetching = id;
+    try {
+      const result = await api.refetchModels(id);
+      if (!result.ok) {
+        toasts.push(`Could not refresh ${name}`, { detail: result.error, tone: "err" });
+        return;
+      }
+      toasts.push(`${name}: ${result.provider.models.length} models`, { tone: "ok" });
+      await catalog.loadProviders(true);
+    } catch (error) {
+      toasts.push(`Could not refresh ${name}`, { detail: (error as Error).message, tone: "err" });
+    } finally {
+      refetching = "";
     }
   }
 
@@ -311,26 +331,57 @@
           {:else}
             <ul class="flex flex-col gap-2">
               {#each catalog.connected as p (p.id)}
-                <li class="flex items-center gap-3 rounded-lg border border-line bg-surface px-3 py-2.5">
-                  <span class="grid size-8 shrink-0 place-items-center rounded-md bg-raised" aria-hidden="true"><KeyRound size={15} strokeWidth={1.75} class="text-ink-muted" /></span>
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <span class="truncate text-[13px] font-medium text-ink">{p.name}</span>
-                      <Badge tone="ok" dot>connected</Badge>
-                    </div>
-                    <div class="tnum mt-0.5 truncate text-[12px] text-ink-muted">
-                      <span class="font-mono">{p.keyHint}</span> · {p.models.length} models · added <Age at={p.addedAt} />
-                    </div>
+                <li class="rounded-lg border border-line bg-surface">
+                  <div class="flex items-center gap-3 px-3 py-2.5">
+                    <button
+                      type="button"
+                      class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+                      aria-expanded={!!expanded[p.id]}
+                      aria-controls="{uid}-models-{p.id}"
+                      onclick={() => (expanded[p.id] = !expanded[p.id])}
+                    >
+                      <span class="grid size-8 shrink-0 place-items-center rounded-md bg-raised" aria-hidden="true"><KeyRound size={15} strokeWidth={1.75} class="text-ink-muted" /></span>
+                      <span class="min-w-0 flex-1">
+                        <span class="flex flex-wrap items-center gap-2">
+                          <span class="truncate text-[13px] font-medium text-ink">{p.name}</span>
+                          <Badge tone="ok" dot>connected</Badge>
+                        </span>
+                        <span class="tnum mt-0.5 block truncate text-[12px] text-ink-muted">
+                          <span class="font-mono">{p.keyHint}</span> · {p.models.length} models · added <Age at={p.addedAt} />
+                        </span>
+                      </span>
+                      <ChevronDown size={16} strokeWidth={1.75} class="shrink-0 text-ink-muted transition-transform {expanded[p.id] ? 'rotate-180' : ''}" aria-hidden="true" />
+                    </button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      icon={Trash2}
+                      aria-label="Disconnect {p.name}"
+                      title="Disconnect {p.name}"
+                      loading={removing === p.id}
+                      onclick={() => disconnect(p.id, p.name)}
+                    />
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    icon={Trash2}
-                    aria-label="Disconnect {p.name}"
-                    title="Disconnect {p.name}"
-                    loading={removing === p.id}
-                    onclick={() => disconnect(p.id, p.name)}
-                  />
+                  {#if expanded[p.id]}
+                    <div id="{uid}-models-{p.id}" class="flex flex-col gap-2 border-t border-line px-3 py-2.5">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="min-w-0 truncate font-mono text-[11.5px] text-ink-muted" title={p.baseUrl}>{p.baseUrl}</span>
+                        <Button size="sm" variant="ghost" icon={RefreshCw} loading={refetching === p.id} onclick={() => refetch(p.id, p.name)}>Refetch model list</Button>
+                      </div>
+                      {#if p.models.length}
+                        <ul class="flex max-h-56 flex-col gap-0.5 overflow-y-auto" aria-label="{p.name} models">
+                          {#each p.models as m (m)}
+                            <li class="flex items-center justify-between gap-2 rounded px-2 py-1 font-mono text-[12px] text-ink">
+                              <span class="truncate">{m}</span>
+                              {#if m === p.defaultModel}<Badge tone="brand">default</Badge>{/if}
+                            </li>
+                          {/each}
+                        </ul>
+                      {:else}
+                        <p class="text-[12.5px] text-ink-muted">No models listed. Refetch to ask the provider.</p>
+                      {/if}
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ul>

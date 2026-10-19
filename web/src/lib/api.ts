@@ -130,5 +130,12 @@ export const api = {
     if (body && "ok" in body && body.ok !== undefined) return body as ConnectResult;
     return { ok: false, error: body.error ?? `${res.status} ${res.statusText}` };
   },
+  // Re-ask the provider's /models with the saved base URL and key. Failures come back as { ok: false }.
+  refetchModels: async (id: string): Promise<ConnectResult> => {
+    const res = await fetch(`/api/providers/${encodeURIComponent(id)}/refetch`, { method: "POST" });
+    const body = (await res.json().catch(() => ({}))) as Partial<ConnectResult> & { error?: string };
+    if (body && "ok" in body && body.ok !== undefined) return body as ConnectResult;
+    return { ok: false, error: body.error ?? `${res.status} ${res.statusText}` };
+  },
   disconnectProvider: (id: string) => call<{ ok: true }>(`/providers/${id}`, { method: "DELETE" }),
 };
