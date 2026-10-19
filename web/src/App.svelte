@@ -140,7 +140,10 @@
       .then(() => askUnknown())
       .then(() => {
         // First visit (no saved layout): open the latest session, as the app always has.
-        if (!panes.restored && !panes.focused.sessionId && store.list[0]) panes.show(panes.focusedId, store.list[0].id);
+        if (!panes.restored && !panes.focused.sessionId) {
+          const first = store.list.find((s) => !s.parentId && !s.id.includes("~"));
+          if (first) panes.show(panes.focusedId, first.id);
+        }
       })
       .catch((error) => toasts.push("Could not reach the mini-tui server", { detail: (error as Error).message, tone: "err" }))
       .finally(() => (loading = false));

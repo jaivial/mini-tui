@@ -120,7 +120,7 @@
     // Subtree width (leaves one card wide, parents at least as wide as their row of children).
     const width = (n: number, kids: number[]) => (kids.length ? Math.max(kids.reduce((a, b) => a + b, 0) + (kids.length - 1) * (GAP_X + 8), n) : n);
     let cursor = 0;
-    const sessions = store.list;
+    const sessions = store.list.filter((s) => !s.parentId && !s.id.includes("~"));
     for (const s of sessions) {
       const bots = agentTree.trees[s.id] ?? { rows: [], live: 0, total: 0 };
       const byPath = byPathOf(bots.rows);
