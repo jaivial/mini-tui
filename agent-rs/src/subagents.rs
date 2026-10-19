@@ -1213,7 +1213,9 @@ impl Hub {
         let failed: Vec<&context_store::Check> = checks
             .iter()
             .filter(|k| !k.ok)
-            .filter(|k| !(c.repos.is_empty() && k.name == "coverage"))
+            .filter(|k| !(k.name == "coverage"
+                && !Path::new(&c.cwd).ancestors().any(|p| p.join(".git").exists())
+                && self.store.get("contracts.md").map(|s| s.trim().is_empty()).unwrap_or(true)))
             .collect();
         if failed.is_empty() {
             return String::new(); // green, or nothing checkable: no noise in the parent's notes

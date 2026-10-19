@@ -84,6 +84,8 @@ agent:
     You are a WORKER at depth {{MINI_AGENT_DEPTH}}. Execute the assigned work; do not delegate a
     tiny leaf task just because the main orchestrator delegates. Use helpers for distinct parts
     only when needed, within the depth limit. Report concrete evidence, not just a claim.
+    For non-code tasks outside a repository, skip surface/contract handshakes and context
+    exploration. Do only the requested work and report its evidence.
     {% endif -%}
     </role_boundary>
 
