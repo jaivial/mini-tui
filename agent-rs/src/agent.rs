@@ -1307,13 +1307,29 @@ impl Agent {
                     return matches!(tool, "agent_delegate" | "agent_message" | "agent_handoff" | "agent_route" | "agent_define");
                 }
                 let command = action.get("command").and_then(Value::as_str).unwrap_or("");
-                let clean = command.replace("2>&1", "");
-                if clean.contains(['>', '<', '`']) || clean.contains("$(") { return false; }
+                // Inspect shell syntax, not quoted task prose passed as one argument.
+                let mut clean = String::new();
+                let mut quote = None;
+                let mut escaped = false;
+                for ch in command.chars() {
+                    if escaped { escaped = false; continue; }
+                    if quote == Some('\'') { if ch == '\'' { quote = None; } continue; }
+                    if ch == '\\' { escaped = true; continue; }
+                    if quote == Some('"') {
+                        if ch == '"' { quote = None; }
+                        else if ch == '$' || ch == '`' { return false; }
+                        continue;
+                    }
+                    if ch == '\'' || ch == '"' { quote = Some(ch); clean.push('x'); }
+                    else { clean.push(ch); }
+                }
+                let clean = clean.replace("2>&1", "");
+                if quote.is_some() || clean.contains(['>', '<', '`', '$']) { return false; }
                 clean.split([';', '\n']).all(|statement| {
                     statement.split('|').enumerate().all(|(index, part)| {
                     let part = part.trim().trim_start_matches('&').trim();
                     part.is_empty() || part.starts_with("mini-tui kanban ") || part.starts_with("mini-tui tasks set ")
-                        || ["spawn", "send", "result", "stop"].iter().any(|cmd| part.starts_with(&format!("mini-agent-rs agent {cmd} ")))
+                        || ["spawn", "delegate", "send", "message", "result", "stop"].iter().any(|cmd| part.starts_with(&format!("mini-agent-rs agent {cmd} ")))
                         || (index > 0 && (part.starts_with("tail ") || part.starts_with("head ")))
                     })
                 })
