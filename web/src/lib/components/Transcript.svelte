@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { Check, CheckCircle2, AlertTriangle, Copy, Sparkles, MessageCircle } from "@lucide/svelte";
   import type { RunEvent } from "../types";
   import Markdown from "./Markdown.svelte";
@@ -95,6 +96,20 @@
     return out;
   });
 
+  // Keep long saved conversations cheap to open. Earlier rows remain available in explicit
+  // batches instead of mounting thousands of components before the latest answer can be read.
+  const PAGE = 200;
+  let shown = $state(PAGE);
+  const start = $derived(Math.max(0, rows.length - shown));
+  async function showEarlier(event: MouseEvent) {
+    const scroller = (event.currentTarget as HTMLElement).closest("main");
+    const height = scroller?.scrollHeight ?? 0;
+    const top = scroller?.scrollTop ?? 0;
+    shown += PAGE;
+    await tick();
+    if (scroller) scroller.scrollTop = top + scroller.scrollHeight - height;
+  }
+
   /**
    * Consecutive messages of the same author group together (the chat-app
    * rule): the first of a run keeps the full gap and a quiet timestamp, the
@@ -153,8 +168,14 @@
 </script>
 
 <div class="flex flex-col {klass}">
-  {#each rows as row, i (i)}
-    {@const prev = rows[i - 1]}
+  {#if start > 0}
+    <button type="button" class="mx-auto my-3 rounded-lg border border-line px-4 py-2 text-[13px] text-ink-muted hover:bg-raised" onclick={showEarlier}>
+      Show earlier messages ({start} more)
+    </button>
+  {/if}
+  {#each rows.slice(start) as row, offset (start + offset)}
+    {@const i = start + offset}
+    {@const prev = i > start ? rows[i - 1] : undefined}
     {@const isGrouped = grouped(prev, row)}
     {@const gap = i === 0 ? "" : isGrouped ? TUCK : GAP}
     {#if row.kind === "task"}

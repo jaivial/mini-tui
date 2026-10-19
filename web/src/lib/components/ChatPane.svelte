@@ -549,7 +549,9 @@
                 <Skeleton class="h-10 w-full" />
               </div>
             {:else}
-              <Transcript events={session.events} partial={session.partial} onsubmit={(message) => send(message)} />
+              {#key session.id}
+                <Transcript events={session.events} partial={session.partial} onsubmit={(message) => send(message)} />
+              {/key}
               {#if !session.events.length}
                 <div class="py-16 text-center">
                   <p class="text-[13px] text-ink-muted">Nothing here yet.</p>
