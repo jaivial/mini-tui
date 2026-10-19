@@ -260,24 +260,7 @@
         <div
           class="group/botrow relative flex items-center rounded-[18px] {focusedSession === session.id ? 'bg-raised' : 'hover:bg-raised/70'}"
         >
-          {#if tree.total || card}
-            <!-- Fold the bot's work open/closed. -->
-            <button
-              type="button"
-              class="interactive grid size-8 shrink-0 cursor-pointer place-items-center rounded-full text-ink-faint hover:text-ink pointer-coarse:-ml-3 pointer-coarse:size-11"
-              aria-expanded={openRow}
-              aria-label={openRow ? `Hide ${session.title || "Untitled"}'s work` : `Show ${session.title || "Untitled"}'s work`}
-              title={openRow ? "Hide its work" : "Show its work"}
-              onclick={() => toggle(session.id)}
-            >
-              <ChevronRight size={15} strokeWidth={2.25} class="transition-[rotate] duration-150 {openRow ? 'rotate-90' : ''}" aria-hidden="true" />
-            </button>
-          {:else}
-            <!-- The same slot, empty: every row's avatar (and its presence dot) starts at the SAME x,
-                 so the state indicators line up down the list instead of stepping in and out. -->
-            <span class="size-8 shrink-0" aria-hidden="true"></span>
-          {/if}
-
+          <!-- No leading slot: the card uses the full width. The fold chevron lives in the hover actions. -->
           {#if editing === session.id}
             <!--
               v5-A: the title becomes a one-line input; Enter renames, Escape backs out.
@@ -400,11 +383,22 @@
           {/if}
 
           <!-- Per-row actions fade in on hover/focus, and are always there under a finger. -->
-          <div class="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 group-hover/botrow:opacity-100 group-focus-within/botrow:opacity-100 max-md:top-1 max-md:right-1.5 max-md:translate-y-0 max-md:opacity-100">
+          <div class="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 rounded-full bg-raised p-0.5 opacity-0 shadow-sm ring-1 ring-line group-hover/botrow:opacity-100 group-focus-within/botrow:opacity-100 max-md:top-1 max-md:right-1.5 max-md:translate-y-0 max-md:opacity-100">
+            {#if tree.total || card}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                icon={ChevronRight}
+                class="[&_svg]:transition-[rotate] [&_svg]:duration-150 {openRow ? '[&_svg]:rotate-90' : ''}"
+                title={openRow ? "Hide its work" : "Show its work"}
+                aria-expanded={openRow}
+                aria-label={openRow ? `Hide ${session.title || 'Untitled'}'s work` : `Show ${session.title || 'Untitled'}'s work`}
+                onclick={() => toggle(session.id)}
+              />
+            {/if}
             <Button
               variant="ghost"
               size="icon-sm"
-              class="max-md:hidden"
               icon={Square}
               title={session.status === "running" ? "Interrupt" : "Close bot"}
               onclick={() => onclosesession(session.id)}
@@ -422,7 +416,7 @@
 
         {#if openRow}
           <!-- Its work, indented under the name: the task card, then the delegates it is running. -->
-          <div class="mb-1 ml-6 flex flex-col items-stretch gap-px" role="group" aria-label="{session.title || 'Untitled'}'s work">
+          <div class="mb-1 ml-2 flex flex-col items-stretch gap-px" role="group" aria-label="{session.title || 'Untitled'}'s work">
             {#if card}
               <div class="flex min-h-8 items-center gap-1.5 rounded-xl px-2 py-1.5" title={card.description || card.title}>
                 <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-4 text-ink-muted">{card.title}</span>
