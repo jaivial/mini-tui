@@ -162,6 +162,7 @@ export const PROVIDERS: ProviderDef[] = [
     probe: "openai",
     prefix: "minimax",
     staticModels: [
+      "MiniMax-M3.1-Flash",
       "MiniMax-M3.1-Flash-Preview",
       "MiniMax-M3.1",
       "MiniMax-M3",
