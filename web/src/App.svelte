@@ -51,7 +51,9 @@
   function startResize(e: PointerEvent) {
     e.preventDefault();
     const startX = e.clientX, startW = sidebarW;
-    const move = (m: PointerEvent) => { sidebarW = Math.max(200, Math.min(window.innerWidth - 60, startW + m.clientX - startX)); };
+    // Pointer deltas are screen pixels; the width is CSS pixels, which the interface size setting scales.
+    const k = ui.appliedUiScale || 1;
+    const move = (m: PointerEvent) => { sidebarW = Math.max(200, Math.min(window.innerWidth / k - 60, startW + (m.clientX - startX) / k)); };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
@@ -576,7 +578,7 @@
   {#if sidebarOpen}
     <div
       bind:this={drawer}
-      class="enter-1 {narrow ? 'absolute inset-0 z-50' : 'relative shrink-0'}"
+      class="enter-1 {narrow ? 'absolute inset-0 z-50' : 'relative z-10 shrink-0'}"
       style={narrow ? undefined : `width:${sidebarW}px`}
       role={narrow ? "dialog" : undefined}
       aria-modal={narrow ? "true" : undefined}
