@@ -12,6 +12,7 @@
   import { catalog } from "./lib/stores/catalog.svelte";
   import { store } from "./lib/stores/sessions.svelte";
   import { panes } from "./lib/stores/panes.svelte";
+  import { UnknownSessions } from "./lib/unknownSessions";
   import { agentTree } from "./lib/stores/agentTree.svelte";
   import { paneStatus } from "./lib/paneStatus";
   import { ui } from "./lib/stores/ui.svelte";
@@ -136,9 +137,8 @@
     store.connect();
     store
       .load()
-      .then(() => store.restore(panes.shown))
+      .then(() => askUnknown())
       .then(() => {
-        panes.forgetMissing((id) => !!store.sessions[id]);
         // First visit (no saved layout): open the latest session, as the app always has.
         if (!panes.restored && !panes.focused.sessionId && store.list[0]) panes.show(panes.focusedId, store.list[0].id);
       })
@@ -159,12 +159,34 @@
     store.setActive(panes.focused.sessionId);
   });
 
-  // A session that disappears (deleted, or closed from another tab) leaves its pane as a new chat.
+  /**
+   * The sessions a pane shows that this tab has not loaded, asked about instead of guessed (E52).
+   * "Not in my list" is not "it is gone": the workspace is shared with every tab and device, and
+   * another one can open a saved session from the Resume panel that this tab has never heard of.
+   * Only the server's "I do not hold it" (404) turns a pane into a new chat — an idle tab used to
+   * clear the pane and write that back ~20 ms later, undoing the click in the tab that made it.
+   */
+  const unknown = new UnknownSessions();
+  function askUnknown(): Promise<string[]> {
+    const ask = unknown.pick(panes.shown, (id) => !!store.sessions[id]);
+    const done = (gone: string[]): string[] => {
+      unknown.answer(ask, gone);
+      // The sweep runs every time, not only when this question found something: a pane can start
+      // showing an id this tab already learned is gone (a window coming back from the shelf, another
+      // tab's click), and then there is no question left to ask — only the verdict to apply.
+      panes.forgetMissing((id) => !unknown.isGone(id));
+      return gone;
+    };
+    return ask.length ? store.restore(ask).then(done) : Promise.resolve(done([]));
+  }
+
+  // A session the server no longer holds (deleted, or closed from another tab) leaves its pane as a
+  // new chat; one this tab merely has not loaded is asked about, above.
   $effect(() => {
     const ids = panes.shown;
     if (loading) return;
-    const gone = ids.filter((id) => !store.sessions[id]);
-    if (gone.length) untrack(() => panes.forgetMissing((id) => !!store.sessions[id]));
+    if (!ids.some((id) => !store.sessions[id])) return;
+    untrack(() => void askUnknown());
   });
 
   // ---- "Session finished" toasts, with View to open it.

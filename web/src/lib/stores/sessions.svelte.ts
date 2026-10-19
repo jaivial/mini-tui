@@ -14,6 +14,7 @@ import { api } from "../api";
 import { Reconnect } from "../reconnect";
 import { SessionSocket, type SocketState } from "../session-socket";
 import { shallowEqual } from "../equal";
+import { isNowhere } from "../unknownSessions";
 import { markArrival, markCallEnd, markCallStart } from "../toolTimings";
 import type { Frame, RemoteHost, SessionMeta, SessionState, WireSession } from "../types";
 
@@ -121,20 +122,27 @@ class SessionStore {
   }
 
   /**
-   * Bring back sessions the panes still show but the server no longer holds (it restarted, and open
-   * sessions live in its memory): reopen each from the saved history. Ids that are nowhere stay missing,
-   * and their panes become new chats as before.
+   * Bring back the sessions the panes show but this client has not loaded (the server restarted and
+   * open sessions live in its memory; a saved one is reopened from the history; another tab may have
+   * just opened one this tab had never heard of). Returns the ids the server says it does NOT hold:
+   * the only verdict that may turn a pane into a new chat (E52). A call that merely failed (the
+   * network, the database busy: 503) is not an answer and forgets nothing — the server's own `held()`
+   * draws the same line.
    */
-  async restore(ids: string[]) {
+  async restore(ids: string[]): Promise<string[]> {
     const missing = [...new Set(ids)].filter((id) => !this.sessions[id]);
+    const gone: string[] = [];
     await Promise.all(
       missing.map((id) =>
         api.openHistory(id).then(
           (session) => this.adopt(session),
-          () => {},
+          (error: unknown) => {
+            if (isNowhere(error)) gone.push(id);
+          },
         ),
       ),
     );
+    return gone;
   }
 
   /** Adopt a session the UI just created or opened (its transcript is included). */

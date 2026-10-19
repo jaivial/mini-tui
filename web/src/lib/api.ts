@@ -22,6 +22,19 @@ import type {
   AgentDef,
 } from "./types";
 
+/**
+ * A failed call, with the status it failed with. The message is unchanged (it is what the UI
+ * shows); the status is what code must READ to tell an answer from a failure to get one — the
+ * difference between "the server does not hold this session" (404) and "the server could not look"
+ * (503), which `web/src/lib/unknownSessions.ts` acts on (E52).
+ */
+export class HttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   for (let attempt = 0; ; attempt++) {
@@ -43,7 +56,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       if (text.trim()) message = text.trim().slice(0, 200);
     }
-    throw new Error(message);
+    throw new HttpError(message, res.status);
   }
   return (await res.json()) as T;
 }
