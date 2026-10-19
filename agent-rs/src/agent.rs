@@ -526,7 +526,12 @@ impl Agent {
         // `--exit-immediately`: this run ends with its turn. Children still at work are killed
         // by the hub guard on the way out, not waited for -- a headless caller is not going to
         // read their reports, and holding here is what left 55 processes alive after round 3.
-        if !self.config.confirm_exit {
+        // A web/TUI run (it has a control file) that still has subagents at work does not end with
+        // its turn: it goes idle but alive, so a finishing child's report wakes it (even while the
+        // user talks to it about something else, through the same control file) instead of dying
+        // with the children it started. Headless runs keep ending at once.
+        let hold_for_children = Self::control_file().is_some() && (crate::subagents::live_children() > 0 || crate::subagents::has_notes());
+        if !self.config.confirm_exit && !hold_for_children {
             return Ok(false);
         }
         if Self::control_file().is_none() {
@@ -565,6 +570,15 @@ impl Agent {
             if crate::subagents::has_notes() && self.add_subagent_notes() {
                 self.save(false);
                 return Ok(true);
+            }
+            // Held only for the children (exit-immediately run): once none is left and nothing is
+            // pending, the turn ends as it always did.
+            if !self.config.confirm_exit && crate::subagents::live_children() == 0 {
+                if self.add_subagent_notes() {
+                    self.save(false);
+                    return Ok(true);
+                }
+                return Ok(false);
             }
             self.warm_cache();
             interruptible_sleep(std::time::Duration::from_millis(200));
