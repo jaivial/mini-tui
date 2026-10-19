@@ -1,4 +1,9 @@
-/** Read-only queue subscription shared by board/main clients, with durable cursor dedup. */
+/**
+ * Read-only queue subscription shared by board/main clients, with durable cursor dedup.
+ * The stream's reconnect takes its backoff from `Reconnect` (E50): the flat 5 s it used to retry on
+ * was the fourth copy of the same machinery in this client surface, and the one with no backoff.
+ */
+import { Reconnect, type ReconnectOptions } from "./reconnect";
 export interface QueueEvent { seq: number; task: string; kind: string; goal_version: number; fence: number; status: string; created: number }
 export interface QueueNode { id: string; project: string; goal: string; status: string; goal_version: number; fence: number; result: string | null; owner?: string | null; lease_until?: number | null; priority?: number; cwd?: string }
 export interface QueueView { nodes: QueueNode[]; edges: Array<{ task: string; dependency: string }> }
@@ -29,6 +34,8 @@ function validView(value: unknown): value is QueueView {
 
 export class QueueEventsClient {
   #source: EventSource | null = null;
+  #r: Reconnect;
+  #openedAt = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #listeners = new Set<(view: QueueView, event?: QueueEvent) => void>();
   #cursor = 0;
@@ -41,7 +48,9 @@ export class QueueEventsClient {
   #streamError = "";
   get error(): string { return [this.#snapshotError, this.#streamError].filter(Boolean).join("; "); }
   loaded = false;
-  constructor(readonly base = "/api") {}
+  constructor(readonly base = "/api", reconnect: ReconnectOptions = {}) {
+    this.#r = new Reconnect({ baseDelay: 5_000, maxDelay: 15_000, ...reconnect });
+  }
   watch(listener: (view: QueueView,event?: QueueEvent) => void): () => void {
     this.#listeners.add(listener);
     try { listener(this.view); } catch { /* consumer owns its rendering error */ }
@@ -67,6 +76,7 @@ export class QueueEventsClient {
     if (this.#source || !this.#listeners.size) return;
     const source = new EventSource(`${this.base}/task-events/stream?after=${this.#cursor}`);
     this.#source = source;
+    this.#openedAt = Date.now();
     source.onopen = () => {
       if (this.#source !== source || !this.#listeners.size) return;
       this.#streamError = ""; this.#notify();
@@ -76,6 +86,7 @@ export class QueueEventsClient {
       try {
         const event = JSON.parse((raw as MessageEvent).data) as QueueEvent;
         if (!Number.isSafeInteger(event.seq) || event.seq <= this.#cursor || typeof event.task !== "string" || typeof event.status !== "string") return;
+        this.#r.delivered();
         this.#streamError = "";
         this.#cursor = event.seq;
         this.#pending = event;
@@ -85,8 +96,9 @@ export class QueueEventsClient {
     const failed = () => {
       if (this.#source !== source) return;
       source.close(); this.#source = null;
+      this.#r.closing(Date.now() - this.#openedAt);
       this.#streamError = "queue stream unavailable"; this.#notify();
-      if (this.#listeners.size) this.#timer = setTimeout(() => { void this.#refresh(); this.#connect(); },5000);
+      if (this.#listeners.size) this.#timer = setTimeout(() => { void this.#refresh(); this.#connect(); }, this.#r.nextDelay());
     };
     source.addEventListener("queue-error",failed);
     source.onerror = failed;

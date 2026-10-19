@@ -46,6 +46,12 @@ function editor(store: Store, noteId: string | null) {
   let inFlight: Promise<void> | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const landed = new Map<string, number>();
+  /** Versions OUR saves established, including answers that arrived after the app gave up. */
+  const ourVersions: Record<string, number> = {};
+  /** What `NotesClient` does with an answer that arrives after the deadline: it still counts. */
+  const late = (id: string, version: number) => {
+    ourVersions[id] = version;
+  };
 
   /** Load the note's current value, as the watch does when the panel opens. */
   const load = (id: string) => {
@@ -73,7 +79,7 @@ function editor(store: Store, noteId: string | null) {
     const text = current ? body : snap.text;
     const saved = current ? savedBody : snap.saved;
     const kind = current ? save.kind : snap.kind;
-    const from = landed.get(id) ?? snap.base;
+    const from = Math.max(landed.get(id) ?? snap.base, ourVersions[id] ?? 0);
     if (text === saved || kind === "conflict" || kind === "loading") return;
     if (current) save = { kind: "saving" };
     const run = (async () => {
@@ -140,7 +146,7 @@ function editor(store: Store, noteId: string | null) {
     await leaving;
     clearTimeout(timer);
   };
-  return { type, load, flush, leave, switchNote, setNote, keepMine, takeTheirs, tracked, get noteId() { return noteId; }, get body() { return body; }, get save() { return save; } };
+  return { type, load, flush, leave, switchNote, setNote, keepMine, takeTheirs, tracked, late, get noteId() { return noteId; }, get body() { return body; }, get save() { return save; } };
 }
 
 describe("the notes editor's save queue", () => {
@@ -292,5 +298,26 @@ describe("the notes editor's save queue", () => {
     await e.flush("s-1");
     expect(store.body("s-1")).toBe("from another tab");
     expect(e.save.kind).toBe("conflict");
+  });
+});
+
+describe("a save the app never saw", () => {
+  test("a save that landed after the app gave up must not poison the next one with a false conflict", async () => {
+    // The deadline fired while the save was out (its verdict: "may still be applied"). It landed as
+    // v1 and the editor never got the answer, so the next save must name v1 or the server refuses it
+    // as a conflict for a change that is the editor's own — measured before the fix: `conflict`, and
+    // the typed text was dropped on the floor.
+    const store = new Store();
+    const e = editor(store, "s-1");
+    e.load("s-1");
+    e.type("typed before the deadline");
+    void store.save("s-1", "typed before the deadline", 0); // lands as v1, out of band
+    e.late("s-1", 1);
+    e.type("typed after the error");
+    await e.flush("s-1");
+    expect(e.save.kind).toBe("saved");
+    expect(store.saves.at(-1)!.base).toBe(1);
+    expect(store.body("s-1")).toBe("typed after the error");
+    expect(store.version("s-1")).toBe(2);
   });
 });

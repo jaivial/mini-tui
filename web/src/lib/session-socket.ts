@@ -14,6 +14,7 @@
  * It knows nothing about Svelte; the socket implementation is injectable.
  */
 /// <reference lib="dom" />
+import { Reconnect } from "./reconnect";
 import type { Frame } from "./types";
 
 export type SocketState = "idle" | "connecting" | "live" | "reconnecting" | "gone";
@@ -43,6 +44,8 @@ export interface SocketOptions {
    * still exists: `false` = gone (stop), `true`/`null` = keep trying (`null` = could not tell).
    */
   exists?: (id: string) => Promise<boolean | null>;
+  /** Injectable clock noise for the backoff, see `Reconnect`. */
+  random?: () => number;
 }
 
 export interface SocketHandlers {
@@ -61,13 +64,15 @@ export function defaultUrl(id: string): string {
 export class SessionSocket {
   readonly id: string;
   #h: SocketHandlers;
-  #o: Required<SocketOptions>;
+  #o: Required<Omit<SocketOptions, "random">>;
   #ws: SocketLike | null = null;
   #wanted = false;
-  #attempts = 0;
+  /** The one backoff policy (E50): shared with the hub and the two SSE streams. */
+  #r: Reconnect;
   #retry: ReturnType<typeof setTimeout> | undefined;
   #beat: ReturnType<typeof setInterval> | undefined;
   #lastSeen = 0;
+  #openedAt = 0;
   #gotSnapshot = false;
   #state: SocketState = "idle";
   /** The tab-wide wake hooks, shared by every socket: identical listeners, added at most once. */
@@ -92,6 +97,11 @@ export class SessionSocket {
       stale: options.stale ?? 50_000,
       exists: options.exists ?? (async () => null),
     };
+    this.#r = new Reconnect({
+      baseDelay: this.#o.baseDelay,
+      maxDelay: this.#o.maxDelay,
+      random: options.random,
+    });
   }
 
   get state(): SocketState {
@@ -149,14 +159,14 @@ export class SessionSocket {
 
   #set(state: SocketState): void {
     this.#state = state;
-    this.#h.state(state, this.#attempts);
+    this.#h.state(state, this.#r.attempts);
   }
 
   #connect(): void {
     if (!this.#wanted) return;
     clearTimeout(this.#retry);
     this.#teardown();
-    this.#set(this.#attempts ? "reconnecting" : "connecting");
+    this.#set(this.#r.attempts ? "reconnecting" : "connecting");
     let ws: SocketLike;
     try {
       ws = this.#o.make(this.#o.url(this.id));
@@ -167,6 +177,7 @@ export class SessionSocket {
     this.#ws = ws;
     this.#gotSnapshot = false;
     this.#lastSeen = Date.now();
+    this.#openedAt = Date.now();
     ws.onopen = () => {
       this.#lastSeen = Date.now();
       this.#beat = setInterval(() => this.#tick(), this.#o.heartbeat);
@@ -183,7 +194,7 @@ export class SessionSocket {
       if (frame.t === "snapshot") {
         // Only a real snapshot proves the connection works: an accepted-then-dropped
         // socket must keep backing off rather than reset the delay every time.
-        this.#attempts = 0;
+        this.#r.delivered();
         this.#gotSnapshot = true;
         if (this.#state !== "live") this.#set("live");
       }
@@ -196,6 +207,7 @@ export class SessionSocket {
     };
     ws.onclose = (ev) => {
       if (this.#ws !== ws) return; // a socket we already replaced
+      this.#r.closing(Date.now() - this.#openedAt);
       this.#teardown();
       if (!this.#wanted) return;
       if (ev.code === 4404) {
@@ -226,8 +238,10 @@ export class SessionSocket {
     if (Date.now() - this.#lastSeen > this.#o.stale) {
       // Half-open: the OS thinks it is connected but nothing is arriving.
       const ws = this.#ws;
+      const lived = Date.now() - this.#openedAt;
       this.#teardown();
       ws?.close();
+      this.#r.closing(lived);
       this.#scheduleRetry();
       return;
     }
@@ -236,10 +250,8 @@ export class SessionSocket {
 
   #scheduleRetry(): void {
     if (!this.#wanted) return;
-    this.#attempts++;
+    const delay = this.#r.nextDelay();
     this.#set("reconnecting");
-    const cap = Math.min(this.#o.maxDelay, this.#o.baseDelay * 2 ** (this.#attempts - 1));
-    const delay = cap * (0.5 + Math.random() * 0.5);
     clearTimeout(this.#retry);
     this.#retry = setTimeout(() => this.#connect(), delay);
   }

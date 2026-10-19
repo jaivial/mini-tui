@@ -204,8 +204,11 @@
     const text = current ? body : snap.text;
     const saved = current ? savedBody : snap.saved;
     const kind = current ? save.kind : snap.kind;
-    // An older save of this same note moved the version on while we waited: start from where it landed.
-    const from = landed.get(id) ?? snap.base;
+    // An older save of this same note moved the version on while we waited: start from where it
+    // landed — including a save whose answer arrived after the deadline gave up on it (E50): the
+    // write landed server-side, and naming the older version would have the server refuse the next
+    // save as a conflict for a change that is this editor's own (measured: `conflict`, text dropped).
+    const from = Math.max(landed.get(id) ?? snap.base, notes.ourVersions[id] ?? 0);
     if (text === saved || kind === "conflict" || kind === "loading") return;
     if (current) save = { kind: "saving" };
     const run = (async () => {

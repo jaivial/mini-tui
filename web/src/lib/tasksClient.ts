@@ -25,7 +25,7 @@ export class TasksClient {
     this.#hub = connection;
     this.#hub.onState((s) => (this.live = s === "live"));
     this.#hub.onConnect(() => {
-      if (this.#refs > 0) this.#hub.send({ t: "tasks.watch" });
+      if (this.#refs > 0) this.#hub.send({ t: "tasks.watch" }, { rewatch: true });
     });
     this.#hub.on((msg) => {
       if (msg.t !== "tasks") return;
@@ -40,7 +40,7 @@ export class TasksClient {
    */
   watch(onchange: (tasks: SessionTask[]) => void): () => void {
     this.#listeners.add(onchange);
-    if (++this.#refs === 1) this.#hub.send({ t: "tasks.watch" });
+    if (++this.#refs === 1) this.#hub.send({ t: "tasks.watch" }, { rewatch: true });
     else onchange(this.list);
     return () => {
       this.#listeners.delete(onchange);

@@ -36,7 +36,7 @@ export class TermSession {
       }),
       // A dropped socket: reopen on reconnect (the server re-attaches and replays).
       hub.onConnect(() => {
-        if (this.#open) hub.send({ t: "term.open", id, session: session ?? undefined, ...this.#size });
+        if (this.#open) hub.send({ t: "term.open", id, session: session ?? undefined, ...this.#size }, { rewatch: true });
       }),
     );
   }
@@ -44,7 +44,9 @@ export class TermSession {
   open(cols: number, rows: number) {
     this.#size = { cols, rows };
     this.#open = true;
-    this.#hub.send({ t: "term.open", id: this.id, session: this.session ?? undefined, cols, rows });
+    // Re-sent by the connect hook, so a queued copy must not also go out at flush (one `term.open`
+    // per socket, or the server opens the shell twice).
+    this.#hub.send({ t: "term.open", id: this.id, session: this.session ?? undefined, cols, rows }, { rewatch: true });
   }
   input(data: string) {
     if (this.#open) this.#hub.send({ t: "term.input", id: this.id, data });
