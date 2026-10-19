@@ -1069,7 +1069,11 @@ impl Hub {
                                 let was_stop = c.stop_requested;
                                 c.state = if was_stop { "stopped".into() } else { "waiting".into() };
                                 c.stop_requested = false;
-                                if !was_stop {
+                                // A child that yielded to its own workers is not a completed task.
+                                // Its eventual final exit will carry the result after descendants finish.
+                                let delegated_pending = nested_work_pending(&c.traj, 0);
+                                if delegated_pending && !was_stop { c.state = "running".into(); }
+                                if !was_stop && !delegated_pending {
                                     match c.chain.on_turn_end() {
                                         chain::TurnEnd::Notify => {
                                             notes.push((c.name.clone(), c.turns, finished_note(c)));
@@ -1995,6 +1999,17 @@ impl Hub {
 /// Is `m` the new-task message for `task` (the agent prefixes it)?
 fn line_is_last_task(m: &Value, task: &str) -> bool {
     content_text(m).ends_with(task.trim_end()) || task.is_empty()
+}
+
+fn nested_work_pending(traj: &Path, depth: usize) -> bool {
+    if depth >= 10 { return false; }
+    let Some(dir) = traj.parent() else { return false };
+    let Ok(raw) = std::fs::read_to_string(dir.join("subagents/index.json")) else { return false };
+    let Ok(index) = serde_json::from_str::<Value>(&raw) else { return false };
+    index.get("children").and_then(Value::as_array).map(|children| children.iter().any(|child| {
+        matches!(child.get("state").and_then(Value::as_str), Some("running" | "starting"))
+            || child.get("traj_path").and_then(Value::as_str).map(|p| nested_work_pending(Path::new(p), depth + 1)).unwrap_or(false)
+    })).unwrap_or(false)
 }
 
 fn finished_note(c: &Child) -> String {
