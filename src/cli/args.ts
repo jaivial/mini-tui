@@ -1,3 +1,4 @@
+import { parseKanban, type KanbanArgs } from "../kanban";
 /**
  * Command-line parsing for every mini-tui entry point: the interactive TUI (`run`/`view`),
  * headless runs (`-p`/`--print`) and the scripting subcommands (`sessions`, `models`, …).
@@ -154,6 +155,7 @@ export type CliArgs =
   | ModelArgs
   | SkillsArgs
   | TasksArgs
+  | KanbanArgs
   | DoctorArgs
   | SettingsArgs
   | JevArgs
@@ -162,7 +164,7 @@ export type CliArgs =
 
 export class UsageError extends Error {}
 
-const SUBCOMMANDS = new Set(["run", "view", "sessions", "session", "models", "model", "skills", "tasks", "settings", "jev", "doctor", "help", "version"]);
+const SUBCOMMANDS = new Set(["run", "view", "sessions", "session", "models", "model", "skills", "tasks", "kanban", "settings", "jev", "doctor", "help", "version"]);
 
 function takeValue(argv: string[], i: number, flag: string): string {
   const value = argv[i + 1];
@@ -225,6 +227,9 @@ export function parseArgs(rawArgv: string[]): CliArgs {
     return { command: "doctor", model, json: rest.includes("--json") };
   }
   if (command === "tasks") return parseTasks(rest);
+  if (command === "kanban") {
+    try { return parseKanban(rest, takeValue); } catch (e) { throw e instanceof UsageError ? e : new UsageError((e as Error).message); }
+  }
   if (command === "settings") return parseSettings(rest);
   if (command === "jev") return parseJev(rest);
   if (command === "run" || command === "view") return parseTui(command, rest);
