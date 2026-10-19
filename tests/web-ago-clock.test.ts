@@ -288,6 +288,7 @@ describe("the copies stay gone (source guard)", () => {
     const withInterval = files.filter((f) => code(f).includes("setInterval(")).map(rel).sort();
     expect(withInterval).toEqual([
       "components/ChannelsSection.svelte",
+      "components/KanbanSection.svelte",
       "components/UsageSection.svelte",
       "components/WhatsAppConnect.svelte",
       "hub.ts",
