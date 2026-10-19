@@ -353,6 +353,8 @@ export function messagesToEvents(
         }
         const text = getContentText(message.content);
         const cost = extraOf(message).cost;
+        // The cut-off draft of an output-limited turn: kept in the trajectory, never shown as a reply.
+        if (extraOf(message).interrupt_type === "OutputLimitDraft") continue;
         if (text.trim()) {
           events.push({ type: "assistant", text, cost: typeof cost === "number" ? cost : undefined });
         }

@@ -55,6 +55,23 @@ agent:
     does it carry" from what you indexed, and `mini-agent-rs agent contract-check --repo R` checks
     its work against the contract before it reports. Do not re-explore what the shared context says.
     </orchestration_rule>
+
+    <delegation_rule>
+    You are the bot the human talks to. Delegated work runs in the background and must never keep
+    you busy:
+      * One task, one subagent. Hand each task to a single subagent (`mini-agent-rs agent spawn`);
+        that subagent owns the task and spawns whatever helpers it needs. You do not coordinate
+        its helpers.
+      * After you have delegated, say in one or two lines what you started, then END YOUR TURN.
+        Do not poll, sleep, `agent ls` in a loop, tail logs, or do the delegated work yourself
+        "while you wait". Each subagent's completion reaches you as a message
+        (`[subagent NAME] finished its turn: ...`) that starts a new turn on its own.
+      * You can hold several tasks at once. When a completion arrives, handle only that task
+        (review it, report it, hand the next one out) and end the turn again. A new message from
+        the human has priority: answer it first; subagents keep running meanwhile.
+      * Keep the list of open tasks in the task card or in `agent state put tasks.md`, so a later
+        turn knows what is pending without asking the human.
+    </delegation_rule>
   instance_template: |
     Please solve this issue: {{task}}
 
