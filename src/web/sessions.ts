@@ -50,6 +50,7 @@ import { attachmentAgentBlock, attachmentLinksLine, transcriptAttachment, getAtt
 import { extractUiComponents } from "./uiComponents";
 import { readPlan, type SessionPlan } from "../mini/plans";
 import { aiTitle } from "../title";
+import { ensureGroupForSession, dropGroupForSession, renameGroupForSession } from "./waGroups";
 import { SubagentSync, readSubagentIndex, subagentIndexFresh, type SubagentView } from "../mini/subagents";
 
 /** One saved session in the history list: metadata only, no transcript. */
@@ -1025,6 +1026,7 @@ export class SessionManager {
     } catch {
       // the /resume history is best-effort
     }
+    ensureGroupForSession(id, title); // WhatsApp group for this chat (best effort, no-op when not connected)
     // v5-A: the fallback title is already stored; a better one is generated
     // with the model, best-effort, and replaces it while the session runs.
     this.#scheduleAiTitle(id, title, prompt, effective);
@@ -1104,6 +1106,7 @@ export class SessionManager {
     } catch {
       // persistence is best-effort
     }
+    ensureGroupForSession(id, title);
     // v5-A: the same AI title a local session gets (generation runs here, not on the host).
     this.#scheduleAiTitle(id, title, prompt, model);
 
@@ -1648,6 +1651,7 @@ export class SessionManager {
         // best-effort: the live row already carries it
       }
       log("session.title", { id, title, ai: true });
+      renameGroupForSession(id, title);
     });
   }
 
@@ -1670,6 +1674,7 @@ export class SessionManager {
       // best-effort: the live row already carries it
     }
     log("session.title", { id, title: clean, ai: false });
+    renameGroupForSession(id, clean);
   }
 
   /**
@@ -1957,6 +1962,7 @@ export class SessionManager {
       this.#stopRemote(entry);
       this.#live.delete(id);
     }
+    dropGroupForSession(id); // leave + unbind its WhatsApp group, if this feature made one
     try {
       return deleteSession(this.db(), id);
     } catch {
