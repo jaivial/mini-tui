@@ -1865,6 +1865,8 @@ impl Launcher {
             .env("MSWEA_SILENT_STARTUP", "1")
             .env("MINI_AGENT_PARENT_SOCKET", &self.socket)
             .env("MINI_AGENT_NAME", &c.name)
+            // The child's own temporary kanban: `<parent board scope>~<name>`, the id of its session row.
+            .env("MINITUI_AGENT_SESSION_ID", agent_board_scope(&c.name))
             .env("MINI_AGENT_DEPTH", self.depth.saturating_add(1).to_string())
             .env("MINI_AGENT_CONTEXT_DIR", &self.context_dir)
             .env("PATH", path)
@@ -3163,4 +3165,13 @@ impl TapChain for Value {
         }
         self
     }
+}
+
+/// Where a subagent's personal kanban lives: its parent's scope (`MINITUI_AGENT_SESSION_ID`, else the
+/// session id the spawner set) joined to its own name, the same shape as the child's session row.
+fn agent_board_scope(name: &str) -> String {
+    let parent = ["MINITUI_AGENT_SESSION_ID", "MINITUI_SESSION_ID"].iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
+        .unwrap_or_default();
+    if parent.is_empty() { name.to_string() } else { format!("{parent}~{name}") }
 }
