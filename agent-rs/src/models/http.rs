@@ -329,8 +329,28 @@ fn post_chat_stream_blocking(base: &str, body: &Value, headers: &[(String, Strin
     let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let mut body = body.clone();
     body["stream"] = json!(true);
-    let payload = serde_json::to_string(&body).unwrap();
-    let resp = match request(&url, headers, timeout, "text/event-stream").send_string(&payload) {
+    // An OpenAI-compatible stream carries no usage block unless it is asked for. Gateways such as
+    // OpenCode Go send it anyway; MiniMax and Kimi do not, so every call they served was journalled
+    // with zero tokens and no cache figures (measured: 346 MiniMax calls, input_tokens = 0).
+    let asked_usage = body.get("stream_options").is_none();
+    if asked_usage {
+        body["stream_options"] = json!({"include_usage": true});
+    }
+    let send = |body: &Value| request(&url, headers, timeout, "text/event-stream").send_string(&serde_json::to_string(body).unwrap());
+    let mut sent = send(&body);
+    // A gateway that rejects the option gets the plain request: usage is a measurement, never a reason to fail a call.
+    if asked_usage {
+        if let Err(ureq::Error::Status(code, resp)) = sent {
+            let text = resp.into_string().unwrap_or_default();
+            if matches!(code, 400 | 422) && (text.contains("stream_options") || text.contains("include_usage")) {
+                body.as_object_mut().map(|o| o.remove("stream_options"));
+                sent = send(&body);
+            } else {
+                return Err(http_error_with_retry_after(code, &text, base, |_| None));
+            }
+        }
+    }
+    let resp = match sent {
         Ok(r) => r,
         Err(ureq::Error::Status(code, resp)) => {
             let captured = retry_headers(&resp);
