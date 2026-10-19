@@ -212,7 +212,11 @@ export function tasksCommand(args: TasksArgs, out: Out, dbPath: string = DEFAULT
 
 /** `mini-tui kanban ...`: the bot's board (see ../kanban.ts). */
 export function kanbanCommand(args: KanbanArgs, out: Out): number {
-  return runKanban(args, out, (explicit, byControl) => resolveTaskSession(explicit, process.env, byControl));
+  // A subagent that spawns helpers keeps its own temporary board (MINITUI_AGENT_SESSION_ID, set by the hub);
+  // the main bot has none and keeps the bot's board.
+  const own = process.env.MINITUI_AGENT_SESSION_ID?.trim();
+  const env = own ? { ...process.env, MINITUI_SESSION_ID: own } : process.env;
+  return runKanban(args, out, (explicit, byControl) => resolveTaskSession(explicit, env, byControl));
 }
 
 export function settingsCommand(args: SettingsArgs, out: Out): number {

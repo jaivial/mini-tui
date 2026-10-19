@@ -77,7 +77,7 @@ export interface AgentsView {
   defs: AgentDef[];
 }
 
-const MAX_DEPTH = 6;
+const MAX_DEPTH = 10;
 const MAX_EVENTS = 400;
 
 /**
