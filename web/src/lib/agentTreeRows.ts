@@ -52,6 +52,10 @@ function rowOf(n: AgentNode, depth: number): BotRow {
   } else if (n.state === "exited" && n.exitStatus && n.exitStatus !== "Submitted") {
     label = "failed";
     tone = "err";
+  } else if (n.state === "stopped" && n.steps > 0 && !n.exitStatus) {
+    // A child that took its steps and ended cleanly when the session closed: finished, not cut off.
+    label = "done";
+    tone = "ok";
   } else if (n.state === "stopped") {
     label = "stopped";
     tone = "idle";
