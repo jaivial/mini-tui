@@ -217,11 +217,33 @@
   }
 </script>
 
+<style>
+  /* The rail sizes itself (drag handle), so its rows react to its width, not the window's. */
+  .rail {
+    container: rail / inline-size;
+  }
+
+  /* A narrow rail still gets the row actions, but small ones: three 32px buttons would
+     cover the whole card title at the 200px floor. */
+  @container rail (width < 240px) {
+    .bot-actions {
+      gap: 0;
+      padding: 1px;
+    }
+    .bot-actions :global(button) {
+      height: 1.5rem;
+      width: 1.5rem;
+      min-height: 1.5rem;
+    }
+  }
+</style>
+
+
 <svelte:window onkeydown={roving} />
 
 <aside
   bind:this={railEl}
-  class="flex h-full min-h-0 w-full flex-col bg-canvas pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] {klass}"
+  class="rail flex h-full min-h-0 w-full flex-col bg-canvas pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] {klass}"
   aria-label="Bots"
 >
   <!-- The rail's own header: what it is, the connection, and the way out. -->
@@ -389,7 +411,7 @@
           {/if}
 
           <!-- Per-row actions fade in on hover/focus, and are always there under a finger. -->
-          <div class="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 rounded-full bg-raised p-0.5 opacity-0 shadow-sm ring-1 ring-line group-hover/botrow:opacity-100 group-focus-within/botrow:opacity-100 max-md:top-1 max-md:right-1.5 max-md:translate-y-0 max-md:opacity-100">
+          <div class="bot-actions absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 rounded-full bg-raised p-0.5 opacity-0 shadow-sm ring-1 ring-line group-hover/botrow:opacity-100 group-focus-within/botrow:opacity-100 max-md:top-1 max-md:right-1.5 max-md:translate-y-0 max-md:opacity-100">
             {#if tree.total || card}
               <Button
                 variant="ghost"
