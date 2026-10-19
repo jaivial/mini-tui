@@ -1301,6 +1301,25 @@ impl Agent {
     fn execute_actions(&mut self, message: &Value) -> Result<Vec<Value>, Flow> {
         let actions: Vec<Value> = message.pointer("/extra/actions").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut outputs = Vec::new();
+        if Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none() {
+            let allowed = actions.iter().all(|action| {
+                if let Some(tool) = action.get("tool").and_then(Value::as_str) {
+                    return matches!(tool, "agent_delegate" | "agent_message" | "agent_handoff" | "agent_route" | "agent_define");
+                }
+                let command = action.get("command").and_then(Value::as_str).unwrap_or("");
+                let clean = command.replace("2>&1", "");
+                if clean.contains(['>', '<', '`']) || clean.contains("$(") { return false; }
+                clean.split([';', '\n', '|']).all(|part| {
+                    let part = part.trim().trim_start_matches('&').trim();
+                    part.is_empty() || part.starts_with("mini-tui kanban ") || part.starts_with("mini-tui tasks set ")
+                        || ["spawn", "send", "result", "stop"].iter().any(|cmd| part.starts_with(&format!("mini-agent-rs agent {cmd} ")))
+                        || part.starts_with("tail ") || part.starts_with("head ") || part.starts_with("echo ")
+                })
+            });
+            if !allowed {
+                return Ok(actions.iter().map(|_| json!({"returncode": 1, "output": "Orchestrator boundary: this action was not executed. Only kanban/tasks bookkeeping and agent delegation/messaging/results are available. Pass an inline brief to a worker. Do not write brief files, inspect work, poll, or execute it yourself."})).collect());
+            }
+        }
         // A single action, or concurrency disabled: the plain serial loop, unchanged.
         if actions.len() < 2 || action_concurrency(actions.len()) < 2 {
             for action in &actions {
