@@ -11,7 +11,7 @@
  * Messages sent while offline wait in a queue and go out, in order, once connected. A queued message
  * can be **withdrawn** (`send` returns a token), so a caller that reports a failure can guarantee the
  * message never lands afterwards — and a message the reconnect re-sends is marked as such in the
- * queue (`rewatch`) instead of being recognised by its text on the way out.
+ * queue (`subscription`) instead of being recognised by its text on the way out.
  *
  * It knows nothing about Svelte; the socket is injectable for tests.
  */
@@ -41,7 +41,7 @@ export interface SendToken {
 
 type Out = { t: string; [k: string]: unknown };
 type In = { t: string; [k: string]: unknown };
-type Queued = { raw: string; rewatch: boolean; sent: boolean; cancelled: boolean };
+type Queued = { raw: string; subscription: boolean; sent: boolean; cancelled: boolean };
 
 const OPEN = 1;
 
@@ -61,7 +61,6 @@ export class HubConnection {
   #retry: ReturnType<typeof setTimeout> | undefined;
   #beat: ReturnType<typeof setInterval> | undefined;
   #lastSeen = 0;
-  #openedAt = 0;
   #started = false;
   state: HubState = "connecting";
   #wake = () => {
@@ -99,13 +98,15 @@ export class HubConnection {
   }
 
   /**
-   * Queue or send one message. `rewatch` says "the connect hook re-sends this one", so a message
-   * queued before the connection is dropped at flush rather than arriving twice (the old code
-   * recognised these by sniffing the JSON text, and had already missed one of the three kinds).
+   * Queue or send one message. `subscription` says "this message DECLARES state that the connect
+   * hooks re-declare on every (re)connect" — a watch, an unwatch, an open. A queued copy must not
+   * also go out at flush: the hooks already said the current state, and the old code recognised
+   * these by sniffing the JSON text (and had already missed two of the five kinds: a queued
+   * `ws.watch` and a `term.open` went out twice — two `term.open` is two shells).
    */
-  send(msg: Out, opts: { rewatch?: boolean } = {}): SendToken {
+  send(msg: Out, opts: { subscription?: boolean } = {}): SendToken {
     this.#ensure();
-    const entry: Queued = { raw: JSON.stringify(msg), rewatch: opts.rewatch === true, sent: false, cancelled: false };
+    const entry: Queued = { raw: JSON.stringify(msg), subscription: opts.subscription === true, sent: false, cancelled: false };
     const token: SendToken = {
       get sent() {
         return entry.sent;
@@ -169,7 +170,6 @@ export class HubConnection {
       return this.#scheduleRetry();
     }
     this.#ws = ws;
-    this.#openedAt = Date.now();
     this.#lastSeen = Date.now();
     ws.onopen = () => {
       this.#lastSeen = Date.now();
@@ -178,13 +178,24 @@ export class HubConnection {
       // with `hello`, and that message is the proof.
       this.#set("live");
       // Subscriptions first (the server answers each watch with the current value), then what queued.
+      // One throwing hook or one failing send must not take the rest of the batch down with it.
       const queued = this.#queue;
       this.#queue = [];
-      for (const fn of this.#onOpen) fn();
+      for (const fn of this.#onOpen) {
+        try {
+          fn();
+        } catch {
+          /* the hook owns its error; the others still run */
+        }
+      }
       for (const entry of queued) {
-        if (entry.cancelled || entry.rewatch) continue;
+        if (entry.cancelled || entry.subscription) continue;
         entry.sent = true;
-        ws.send(entry.raw);
+        try {
+          ws.send(entry.raw);
+        } catch {
+          /* a socket already closing: the message is lost, the next reconnect re-sends what it can */
+        }
       }
       this.#beat = setInterval(() => this.#tick(), this.#o.heartbeat);
     };
@@ -202,7 +213,6 @@ export class HubConnection {
     };
     ws.onclose = () => {
       if (this.#ws !== ws) return;
-      this.#r.closing(Date.now() - this.#openedAt);
       this.#teardown();
       this.#scheduleRetry();
     };
@@ -214,10 +224,8 @@ export class HubConnection {
   #tick() {
     if (Date.now() - this.#lastSeen > this.#o.stale) {
       const ws = this.#ws;
-      const lived = Date.now() - this.#openedAt;
       this.#teardown();
       ws?.close();
-      this.#r.closing(lived);
       return this.#scheduleRetry();
     }
     if (this.#ws?.readyState === OPEN) this.#ws.send(JSON.stringify({ t: "ping" }));

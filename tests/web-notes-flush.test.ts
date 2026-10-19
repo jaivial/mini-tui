@@ -46,11 +46,13 @@ function editor(store: Store, noteId: string | null) {
   let inFlight: Promise<void> | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const landed = new Map<string, number>();
-  /** Versions OUR saves established, including answers that arrived after the app gave up. */
-  const ourVersions: Record<string, number> = {};
-  /** What `NotesClient` does with an answer that arrives after the deadline: it still counts. */
+  /**
+   * What the panel's `onLateSave` hook does with an answer that arrived after the deadline gave up
+   * on the save: the write landed server-side, so the one book of versions is told (E50/R1: there
+   * is no second ledger — one nobody reconciled locked a cleared note out of saving for ever).
+   */
   const late = (id: string, version: number) => {
-    ourVersions[id] = version;
+    landed.set(id, version);
   };
 
   /** Load the note's current value, as the watch does when the panel opens. */
@@ -79,7 +81,7 @@ function editor(store: Store, noteId: string | null) {
     const text = current ? body : snap.text;
     const saved = current ? savedBody : snap.saved;
     const kind = current ? save.kind : snap.kind;
-    const from = Math.max(landed.get(id) ?? snap.base, ourVersions[id] ?? 0);
+    const from = landed.get(id) ?? snap.base;
     if (text === saved || kind === "conflict" || kind === "loading") return;
     if (current) save = { kind: "saving" };
     const run = (async () => {
@@ -89,7 +91,7 @@ function editor(store: Store, noteId: string | null) {
       if (result.ok) {
         base = result.note.updatedAt;
         savedBody = text;
-        save = { kind: "saved" };
+            save = { kind: "saved" };
       } else {
         save = { kind: "conflict", theirs: (result as any).conflict.body, theirsAt: (result as any).conflict.updatedAt };
       }
@@ -319,5 +321,28 @@ describe("a save the app never saw", () => {
     expect(store.saves.at(-1)!.base).toBe(1);
     expect(store.body("s-1")).toBe("typed after the error");
     expect(store.version("s-1")).toBe(2);
+  });
+});
+
+describe("a note cleared from somewhere else", () => {
+  test("keep mine must be able to save it — no conflict loop", async () => {
+    // An empty body DELETES the note and the server's version goes back to 0 (src/sessions.ts).
+    // The editor's ledger still remembers the version its own save established (1000): if the
+    // version the next save names is taken as max(landed, ledger), it names 1000 against a server
+    // at 0 and every 'keep mine' conflicts again forever (review finding R1).
+    const store = new Store();
+    const e = editor(store, "s-1");
+    e.load("s-1");
+    e.type("mine");
+    await e.flush("s-1");                    // v1 ... made v1000 below out of band
+    e.late("s-1", 1000);
+    store.notes.set("s-1", { body: "", updatedAt: 0 }); // cleared elsewhere: the version fell to 0
+    e.type("mine again");
+    await e.flush("s-1");                    // refused: the editor names 1000, the server is at 0
+    expect(e.save.kind).toBe("conflict");
+    await e.keepMine();                      // the user chooses their text
+    expect(e.save.kind).toBe("saved");
+    expect(store.body("s-1")).toBe("mine again");
+    expect(store.saves.at(-1)!.base).toBe(0);
   });
 });

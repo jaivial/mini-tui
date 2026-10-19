@@ -36,7 +36,6 @@ class SessionStore {
   #source: EventSource | null = null;
   /** The one backoff policy (E50), shared with the sockets: a stream that merely OPENED is not proof. */
   #r = new Reconnect({ baseDelay: 1_000, maxDelay: 15_000 });
-  #openedAt = 0;
   #sockets = new Map<string, SessionSocket>();
   #timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -83,7 +82,6 @@ class SessionStore {
     if (this.#source) return;
     const source = new EventSource("/api/stream");
     this.#source = source;
-    this.#openedAt = Date.now();
 
     source.onopen = () => {
       // Not proof of life (see `Reconnect`): the server greets with `hello`, and that message is.
@@ -96,7 +94,6 @@ class SessionStore {
       // back off so a dead server does not spin the network.
       source.close();
       this.#source = null;
-      this.#r.closing(Date.now() - this.#openedAt);
       setTimeout(() => this.connect(), this.#r.nextDelay());
     };
     source.onmessage = (message) => {

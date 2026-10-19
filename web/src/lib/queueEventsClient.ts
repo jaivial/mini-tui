@@ -76,9 +76,10 @@ export class QueueEventsClient {
     if (this.#source || !this.#listeners.size) return;
     const source = new EventSource(`${this.base}/task-events/stream?after=${this.#cursor}`);
     this.#source = source;
-    this.#openedAt = Date.now();
+    this.#openedAt = 0;
     source.onopen = () => {
       if (this.#source !== source || !this.#listeners.size) return;
+      this.#openedAt = Date.now();
       this.#streamError = ""; this.#notify();
     };
     source.addEventListener("task",raw => {
@@ -96,7 +97,8 @@ export class QueueEventsClient {
     const failed = () => {
       if (this.#source !== source) return;
       source.close(); this.#source = null;
-      this.#r.closing(Date.now() - this.#openedAt);
+      // This stream can be silent for hours with nothing to announce: a long life is the proof.
+      if (this.#openedAt) this.#r.closing(Date.now() - this.#openedAt);
       this.#streamError = "queue stream unavailable"; this.#notify();
       if (this.#listeners.size) this.#timer = setTimeout(() => { void this.#refresh(); this.#connect(); }, this.#r.nextDelay());
     };

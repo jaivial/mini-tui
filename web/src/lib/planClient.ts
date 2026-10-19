@@ -22,7 +22,7 @@ export class PlanClient {
     this.#hub = connection;
     this.#hub.onState((s) => (this.live = s === "live"));
     this.#hub.onConnect(() => {
-      if (this.#refs > 0) this.#hub.send({ t: "plan.watch" });
+      if (this.#refs > 0) this.#hub.send({ t: "plan.watch" }, { subscription: true });
     });
     this.#hub.on((msg) => {
       if (msg.t !== "plan") return;
@@ -37,13 +37,14 @@ export class PlanClient {
    */
   watch(onchange: (plans: SessionPlan[]) => void): () => void {
     this.#listeners.add(onchange);
-    if (++this.#refs === 1) this.#hub.send({ t: "plan.watch" });
+    if (++this.#refs === 1) this.#hub.send({ t: "plan.watch" }, { subscription: true });
     else onchange(this.plans);
     return () => {
       this.#listeners.delete(onchange);
       if (--this.#refs > 0) return;
       this.plans = [];
-      this.#hub.send({ t: "plan.unwatch" });
+      this.#hub.send({ t: "plan.unwatch" }, { subscription: true });
     };
   }
+
 }

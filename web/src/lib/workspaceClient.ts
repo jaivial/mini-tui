@@ -17,8 +17,8 @@ export interface WorkspaceDoc {
 }
 
 interface HubLike {
-  /** `rewatch`: the connect hook re-sends this one, so a queued copy is dropped at flush. */
-  send(msg: { t: string; [k: string]: unknown }, opts?: { rewatch?: boolean }): void;
+  /** `subscription`: the connect hook re-declares this state, so a queued copy is dropped at flush. */
+  send(msg: { t: string; [k: string]: unknown }, opts?: { subscription?: boolean }): void;
   on(listener: (msg: { t: string; [k: string]: unknown }) => void): () => void;
   onConnect(fn: () => void): () => void;
 }
@@ -40,7 +40,7 @@ export class WorkspaceClient {
 
   constructor(hub: HubLike) {
     this.#hub = hub;
-    this.#hub.onConnect(() => this.#hub.send({ t: "ws.watch" }, { rewatch: true }));
+    this.#hub.onConnect(() => this.#hub.send({ t: "ws.watch" }, { subscription: true }));
     this.#hub.on((msg) => {
       if (msg.t === "ws") this.#adopt(msg.workspace as { version: number; doc: unknown });
       else if (msg.t === "ws.saved" && msg.req === this.#inflight) {
@@ -58,7 +58,7 @@ export class WorkspaceClient {
         this.#flush();
       }
     });
-    this.#hub.send({ t: "ws.watch" }, { rewatch: true });
+    this.#hub.send({ t: "ws.watch" }, { subscription: true });
   }
 
   get ready(): boolean {

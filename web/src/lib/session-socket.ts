@@ -72,7 +72,6 @@ export class SessionSocket {
   #retry: ReturnType<typeof setTimeout> | undefined;
   #beat: ReturnType<typeof setInterval> | undefined;
   #lastSeen = 0;
-  #openedAt = 0;
   #gotSnapshot = false;
   #state: SocketState = "idle";
   /** The tab-wide wake hooks, shared by every socket: identical listeners, added at most once. */
@@ -177,7 +176,6 @@ export class SessionSocket {
     this.#ws = ws;
     this.#gotSnapshot = false;
     this.#lastSeen = Date.now();
-    this.#openedAt = Date.now();
     ws.onopen = () => {
       this.#lastSeen = Date.now();
       this.#beat = setInterval(() => this.#tick(), this.#o.heartbeat);
@@ -207,7 +205,6 @@ export class SessionSocket {
     };
     ws.onclose = (ev) => {
       if (this.#ws !== ws) return; // a socket we already replaced
-      this.#r.closing(Date.now() - this.#openedAt);
       this.#teardown();
       if (!this.#wanted) return;
       if (ev.code === 4404) {
@@ -238,10 +235,8 @@ export class SessionSocket {
     if (Date.now() - this.#lastSeen > this.#o.stale) {
       // Half-open: the OS thinks it is connected but nothing is arriving.
       const ws = this.#ws;
-      const lived = Date.now() - this.#openedAt;
       this.#teardown();
       ws?.close();
-      this.#r.closing(lived);
       this.#scheduleRetry();
       return;
     }

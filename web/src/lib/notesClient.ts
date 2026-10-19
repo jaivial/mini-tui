@@ -25,25 +25,25 @@ export class NotesClient {
   #req = 0;
   noteMax = 200_000;
   /**
-   * The versions OUR saves established, including the ones whose answer arrived after the app had
-   * given up on them. A save the app never observed still moves the note on server-side, and the
-   * next save must name that version or it is refused as a conflict for a change that is its own.
+   * Who wants to hear about a save the app had already given up on (its deadline fired after it
+   * went out). Such a save still moves the note on server-side, and whoever holds the version book
+   * must learn that or the next save is refused as a conflict for a change that is its own. The
+   * book stays with the caller — a second ledger here would be the very thing E50 is about (a
+   * ledger nobody reconciles locked a cleared note out of saving for ever: review finding R1).
    */
-  ourVersions: Record<string, number> = {};
+  #late = new Set<(note: Note) => void>();
 
   constructor(connection: HubConnection) {
     this.#hub = connection;
     this.#hub.onState((s) => (this.live = s === "live"));
     this.#hub.onConnect(() => {
-      for (const id of this.#refs.keys()) this.#hub.send({ t: "note.watch", id }, { rewatch: true });
+      for (const id of this.#refs.keys()) this.#hub.send({ t: "note.watch", id }, { subscription: true });
     });
     this.#hub.on((msg) => {
       if (msg.t === "hello") this.noteMax = (msg.limits as { noteMax: number }).noteMax;
       else if (msg.t === "note") this.#value(msg.note as Note);
       else if (msg.t === "note.saved") {
         this.#value(msg.note as Note, true);
-        // An answer for a save the app already gave up on still establishes a version (see
-        // `ourVersions`): the write landed, and the next save must not be refused for it.
         this.#settle(msg.req as number, { ok: true, note: msg.note as Note });
       } else if (msg.t === "note.conflict") this.#settle(msg.req as number, { ok: false, conflict: msg.current as Note });
       else if (msg.t === "error" && typeof msg.req === "number") this.#fail(msg.req, String(msg.error));
@@ -60,7 +60,7 @@ export class NotesClient {
     set.add(onchange);
     const n = (this.#refs.get(id) ?? 0) + 1;
     this.#refs.set(id, n);
-    if (n === 1) this.#hub.send({ t: "note.watch", id }, { rewatch: true });
+    if (n === 1) this.#hub.send({ t: "note.watch", id }, { subscription: true });
     else if (this.values[id]) onchange(this.values[id]!);
     return () => {
       set!.delete(onchange);
@@ -69,7 +69,7 @@ export class NotesClient {
       this.#refs.delete(id);
       this.#listeners.delete(id);
       delete this.values[id];
-      this.#hub.send({ t: "note.unwatch", id });
+      this.#hub.send({ t: "note.unwatch", id }, { subscription: true });
     };
   }
 
@@ -82,6 +82,12 @@ export class NotesClient {
    * right after, so the panel said *error* while the server took the write. A message already **out**
    * cannot be taken back, and the app says that instead of claiming a failure it cannot prove.
    */
+  /** Hear about saves the app gave up on and that landed anyway. Returns the unsubscribe. */
+  onLateSave(fn: (note: Note) => void): () => void {
+    this.#late.add(fn);
+    return () => this.#late.delete(fn);
+  }
+
   save(id: string, body: string, base: number, timeoutMs = saveDeadlineMs(body.length)): Promise<NoteSave> {
     const req = ++this.#req;
     return new Promise<NoteSave>((resolve, reject) => {
@@ -108,9 +114,13 @@ export class NotesClient {
     for (const l of this.#listeners.get(note.id) ?? []) l(note);
   }
   #settle(req: number, result: NoteSave) {
-    if (result.ok) this.ourVersions[result.note.id] = result.note.updatedAt;
     const p = this.#pending.get(req);
-    if (!p) return;
+    if (!p) {
+      // An answer for a save the app already gave up on (its deadline fired after it went out).
+      // The write landed: tell whoever holds the version book, or the next save is refused for it.
+      if (result.ok) for (const fn of this.#late) fn(result.note);
+      return;
+    }
     clearTimeout(p.timer);
     this.#pending.delete(req);
     p.resolve(result);

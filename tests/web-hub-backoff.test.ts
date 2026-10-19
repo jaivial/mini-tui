@@ -13,6 +13,7 @@ import type { SocketLike } from "../web/src/lib/session-socket";
 import { TasksClient } from "../web/src/lib/tasksClient";
 import { WorkspaceClient } from "../web/src/lib/workspaceClient";
 import { TermSession } from "../web/src/lib/termClient";
+import { PlanClient } from "../web/src/lib/planClient";
 
 /** A socket the server accepts and drops without saying anything. */
 class AcceptThenDrop implements SocketLike {
@@ -171,29 +172,34 @@ describe("a save the app reports on must match what happens to it", () => {
     expect(saveDeadlineMs(200_000)).toBe(saveDeadlineMs(200_000, 15_000));
   });
 
-  test("a save that answered before the deadline settles normally and records its version", async () => {
+  test("a save that answered before the deadline settles normally and nobody hears it twice", async () => {
     const { hub, notes } = setup();
+    const late: number[] = [];
+    notes.onLateSave((note) => late.push(note.updatedAt));
     const p = notes.save("n-1", "text", 0);
     const ws = Held.all.at(-1)!;
     ws.open();
     const req = JSON.parse(ws.sent.at(-1)!) as { req: number };
     ws.onmessage?.({ data: JSON.stringify({ t: "note.saved", req: req.req, note: { id: "n-1", body: "text", updatedAt: 7 } }) });
     expect(await p).toEqual({ ok: true, note: { id: "n-1", body: "text", updatedAt: 7 } });
-    expect(notes.ourVersions["n-1"]).toBe(7);
+    expect(late).toEqual([]); // an answer the app saw is not a late one
     hub.stop();
   });
 
-  test("a late answer for a save the app gave up on still records the version it established", async () => {
+  test("a late answer for a save the app gave up on reaches whoever holds the version book", async () => {
     const { hub, notes } = setup();
+    const late: { id: string; version: number }[] = [];
+    notes.onLateSave((note) => late.push({ id: note.id, version: note.updatedAt }));
     const outcome = notes.save("n-1", "text", 0, 30).catch((e: Error) => e.message);
     const ws = Held.all.at(-1)!;
     ws.open();
     const req = JSON.parse(ws.sent.at(-1)!) as { req: number };
     await Bun.sleep(60); // the app gave up
     expect(await outcome).toContain("may still be applied");
-    // ...and only then the server answers. The write landed: the next save must name its version.
+    // ...and only then the server answers. The write landed: the book that names the version for
+    // the next save must learn it, or that save is refused as a conflict for its own change.
     ws.onmessage?.({ data: JSON.stringify({ t: "note.saved", req: req.req, note: { id: "n-1", body: "text", updatedAt: 4 } }) });
-    expect(notes.ourVersions["n-1"]).toBe(4);
+    expect(late).toEqual([{ id: "n-1", version: 4 }]);
     hub.stop();
   });
 });
@@ -233,12 +239,73 @@ describe("every kind the connect hook re-sends", () => {
     new TasksClient(conn).watch(() => {});
     new WorkspaceClient(conn);
     new TermSession(conn, "t-1", null, { opened() {}, data() {}, exit() {}, error() {} }).open(80, 24);
+    new PlanClient(conn).watch(() => {});
     const ws = Queued.all[0]!;
     expect(ws.sent).toEqual([]); // all four are waiting for the connection
     ws.open();
-    for (const t of ["note.watch", "tasks.watch", "ws.watch", "term.open"]) {
+    for (const t of ["note.watch", "tasks.watch", "ws.watch", "term.open", "plan.watch"]) {
       expect(ws.sent.filter((m) => m.t === t).map((m) => m.t), `${t} must go out exactly once`).toHaveLength(1);
     }
+    conn.stop();
+  });
+});
+
+describe("a subscription message queued offline", () => {
+  class Q implements SocketLike {
+    static all: Q[] = [];
+    readyState = 0;
+    sent: any[] = [];
+    onopen: SocketLike["onopen"] = null;
+    onmessage: SocketLike["onmessage"] = null;
+    onclose: SocketLike["onclose"] = null;
+    onerror: SocketLike["onerror"] = null;
+    constructor(readonly url: string) {
+      Q.all.push(this);
+    }
+    send(data: string) {
+      this.sent.push(JSON.parse(data));
+    }
+    close() {
+      this.readyState = 3;
+    }
+    open() {
+      this.readyState = 1;
+      this.onopen?.({});
+    }
+  }
+
+  test("is superseded by the one that replaces it, so a re-open is not unwatched after re-sending", () => {
+    // Close and re-open a tasks sidebar while offline: the queue holds [unwatch, watch]. The
+    // connect hook re-sends the watch, the flush then sends the queued unwatch, and the board is
+    // frozen until the next reconnect (review finding R2; the old text-sniffing flush had it too).
+    Q.all = [];
+    const conn = new HubConnection({ url: () => "ws://fake", make: (u) => new Q(u) as never, baseDelay: 5, maxDelay: 10, heartbeat: 1e9 });
+    const tasks = new TasksClient(conn);
+    const off = tasks.watch(() => {});
+    off();                    // closed while offline: unwatch queued
+    tasks.watch(() => {});    // re-opened while offline: watch queued
+    const ws = Q.all[0]!;
+    expect(ws.sent).toEqual([]);
+    ws.open();
+    expect(ws.sent.filter((m) => m.t === "tasks.unwatch")).toEqual([]); // superseded, never sent
+    expect(ws.sent.filter((m) => m.t === "tasks.watch")).toHaveLength(1);
+    conn.stop();
+  });
+
+  test("a note watched and released while offline leaves no trace at all", () => {
+    // Subscription messages DECLARE state, and the connect hooks declare the current state on
+    // every (re)connect — against a fresh server-side connection there is nothing to unwatch.
+    Q.all = [];
+    const conn = new HubConnection({ url: () => "ws://fake", make: (u) => new Q(u) as never, baseDelay: 5, maxDelay: 10, heartbeat: 1e9 });
+    const notes = new NotesClient(conn);
+    const a = notes.watch("n-1", () => {});
+    a(); // watched and released while offline
+    const b = notes.watch("n-2", () => {});
+    b();
+    const ws = Q.all[0]!;
+    ws.open();
+    expect(ws.sent.filter((m) => m.t === "note.watch")).toEqual([]);
+    expect(ws.sent.filter((m) => m.t === "note.unwatch")).toEqual([]);
     conn.stop();
   });
 });

@@ -102,6 +102,20 @@ describe("SessionSocket", () => {
     h.sock.close();
   });
 
+  test("a connection that lived long without a snapshot is still a failure (E50: only the snapshot resets)", async () => {
+    // The shared `Reconnect` also knows a "lived long enough" proof, for streams that can be
+    // legitimately silent. This client is not one: its server answers with a snapshot at once, so
+    // a connection that lived long without one was broken and must keep the backoff growing.
+    const h = harness({ baseDelay: 10, maxDelay: 20 });
+    h.sock.open();
+    h.last().accept();
+    await wait(60); // lived well past maxDelay: time is not proof here
+    h.last().drop();
+    await wait(5);
+    expect(h.states.at(-1)![1]).toBe(1);
+    h.sock.close();
+  });
+
   test("close code 4404 (unknown session) stops for good", async () => {
     const h = harness();
     h.sock.open();
