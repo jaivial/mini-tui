@@ -22,8 +22,11 @@
     position: absolute;
     right: 0.75rem;
     /* Above the floating prompt pill, lounging between it and the content — never over the input. */
-    bottom: calc(7rem + env(safe-area-inset-bottom));
-    z-index: 20;
+    bottom: calc(7.5rem + env(safe-area-inset-bottom));
+    /* The prompt pill is wrapped in a `z-25` floating container, so anything below that is painted
+       under it no matter what its own z-index says relative to the pill itself. Sitting at 30 puts
+       the pet genuinely on top of the prompt bar instead of clipped by it. */
+    z-index: 30;
     width: 64px;
     height: 64px;
     object-fit: contain;
@@ -38,12 +41,6 @@
       right: 0.625rem;
       width: 48px;
       height: 48px;
-    }
-  }
-  /* A very wide pane keeps the pill centered with room to spare: the pet drops back to the corner. */
-  @container pane (width >= 60rem) {
-    .mascot {
-      bottom: calc(1rem + env(safe-area-inset-bottom));
     }
   }
   @keyframes mascot-bob {
