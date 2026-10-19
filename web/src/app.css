@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@source "./lib/components/vendor/**/*.tsx";
 /*
  * Fonts: latin + latin-ext ONLY, declared here instead of `@import "@fontsource-variable/<family>"`.
  *

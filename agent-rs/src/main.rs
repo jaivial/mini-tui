@@ -29,6 +29,7 @@ mod goal_oracle;
 mod graph_embed;
 #[cfg(feature = "task-graph")]
 mod graph_queue;
+mod graph_retrieval;
 mod subagents;
 mod templates;
 mod cache_warmer;

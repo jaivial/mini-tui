@@ -1504,7 +1504,17 @@ impl Hub {
             mem_avg: 0,
             mem_peak: 0,
         };
-        let full_task = format!("{context_blocks}{brief_block}{task}\n\n{shared_note}");
+        // Central launch covers spawn, dispatch, DAG plans, agent_delegate and handoff,
+        // including grandchildren. Never let background evidence displace explicit context.
+        let mut rag_block = String::new();
+        if let Some((body, audit)) = crate::graph_retrieval::context(&raw_task, &cwd) {
+            let base_chars = context_blocks.chars().count() + brief_block.chars().count() + task.chars().count() + shared_note.chars().count() + 2;
+            let available = (2 * context_max).saturating_sub(base_chars);
+            let delivered = body.chars().count() <= available;
+            if delivered { rag_block = body; }
+            self.event("graph_retrieval", "hub", &name, if delivered {"graph context supplied"} else {"graph context omitted: context budget full"}, json!({"retrieval":audit,"delivered":delivered}));
+        }
+        let full_task = format!("{context_blocks}{rag_block}{brief_block}{task}\n\n{shared_note}");
         // The assembled message has a cap of its own: pieces capped one by one could still add up.
         if full_task.chars().count() > 2 * context_max {
             return Err(format!(
