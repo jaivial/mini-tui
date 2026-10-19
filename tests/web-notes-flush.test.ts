@@ -1,15 +1,23 @@
 /**
- * The notes editor's save queue, extracted from the panel: the rules that decide *what* a flush
- * sends and *which version* it names. Modelled here in plain TypeScript, with a fake note store and
- * a save that takes a turn to answer, because the bugs it guards against are all about what happens
- * between two saves — a timing the browser test can only hit by luck.
+ * The notes editor's save machine, as it really is: these tests drive `web/src/lib/noteEditor.ts`,
+ * the code `NotesPanel.svelte` runs in the browser. They used to drive a hand-written **model** of
+ * that panel ("when that function changes, this model must change with it"), and the model had
+ * already drifted: it had no error state at all (a save that failed threw in the test and set an
+ * error in the panel) and it reported "saved" while the user was still typing. A copy that nobody
+ * forces to agree is E50's pattern — so there is no copy now, and the rules that decide what a save
+ * sends are exercised where they live.
  *
- * This mirrors `flush()` in web/src/lib/components/NotesPanel.svelte: when that function changes,
- * this model and its tests must change with it, or they go on passing a version of the code that is
- * no longer there.
+ * The verdicts under test all follow one rule: the panel may never claim something it cannot make
+ * true. "Not saved" for a write that is in the database, and "changed somewhere else" for the
+ * editor's own text coming back, are both claims about the world — measured wrong on the deployed
+ * build (2026-10-19, `evidencia/2026-10-19_E51/ANTES-e2e.txt`).
  */
 import { describe, expect, test } from "bun:test";
-import { SAVE_DELAY } from "../web/src/lib/notes";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { NoteEditor, type SaveFn } from "../web/src/lib/noteEditor";
+import type { NoteSave } from "../web/src/lib/notesClient";
+import type { Note } from "../web/src/lib/types";
 
 /** The server side: a note per id, saved only from the version it is actually at. */
 class Store {
@@ -20,142 +28,54 @@ class Store {
   version(id: string) {
     return this.notes.get(id)?.updatedAt ?? 0;
   }
-  save(id: string, body: string, base: number): Promise<{ ok: true; note: { id: string; body: string; updatedAt: number } } | { ok: false; conflict: { id: string; body: string; updatedAt: number } }> {
+  save: SaveFn = (id, body, base) => {
     this.saves.push({ id, body, base });
-    const apply = () => {
-      if (base !== this.version(id)) return { ok: false as const, conflict: { id, body: this.notes.get(id)?.body ?? "", updatedAt: this.version(id) } };
+    const apply = (): NoteSave => {
+      if (base !== this.version(id)) return { ok: false, conflict: this.at(id) };
       // Every save is a new version, even two in the same millisecond.
       const updatedAt = this.version(id) + 1;
       this.notes.set(id, { body, updatedAt });
-      return { ok: true as const, note: { id, body, updatedAt } };
+      return { ok: true, note: this.at(id) };
     };
     if (!this.delay) return Promise.resolve(apply());
     return new Promise((res) => setTimeout(() => res(apply()), this.delay));
+  };
+  /** What the server would answer a watch with, right now. */
+  at(id: string): Note {
+    return { id, body: this.notes.get(id)?.body ?? "", updatedAt: this.version(id) };
   }
   body(id: string) {
     return this.notes.get(id)?.body ?? "";
   }
 }
 
-/** The editor state the panel keeps, with the same fields `flush()` reads. */
-function editor(store: Store, noteId: string | null) {
-  let body = "";
-  let savedBody = "";
-  let base = 0;
-  let save: { kind: string; theirs?: string; theirsAt?: number } = { kind: "loading" };
-  let inFlight: Promise<void> | null = null;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const landed = new Map<string, number>();
-  /**
-   * What the panel's `onLateSave` hook does with an answer that arrived after the deadline gave up
-   * on the save: the write landed server-side, so the one book of versions is told (E50/R1: there
-   * is no second ledger — one nobody reconciled locked a cleared note out of saving for ever).
-   */
-  const late = (id: string, version: number) => {
-    landed.set(id, version);
-  };
+/** Wire the real machine to the fake server, the way `NotesPanel.svelte` wires it. */
+function editor(store: Store, noteId: string | null, save: SaveFn = store.save): NoteEditor {
+  const ed = new NoteEditor(save);
+  ed.enter(noteId);
+  return ed;
+}
 
-  /** Load the note's current value, as the watch does when the panel opens. */
-  const load = (id: string) => {
-    landed.clear(); // the pane now watches this note only
-    body = savedBody = store.body(id);
-    base = store.version(id);
-    landed.set(id, base);
-    save = { kind: "saved" };
-  };
-  const type = (text: string) => {
-    if (!noteId) throw new Error("a pane with no session has nowhere to keep notes");
-    body = text;
-    save = { kind: "dirty" };
-    clearTimeout(timer);
-    timer = setTimeout(() => void flush(noteId!), SAVE_DELAY);
-  };
-  const setNote = (id: string | null) => (noteId = id);
+/** The panel's watch: the server hands the note over as its current value. */
+const load = (ed: NoteEditor, store: Store, id: string) => ed.applyRemote(id, store.at(id));
 
-  async function flush(id: string, leaving = false): Promise<void> {
-    clearTimeout(timer);
-    const snap = { text: body, saved: savedBody, base, kind: save.kind };
-    const wanted = snap.text;
-    if (inFlight) await inFlight;
-    const current = id === noteId && !leaving;
-    const text = current ? body : snap.text;
-    const saved = current ? savedBody : snap.saved;
-    const kind = current ? save.kind : snap.kind;
-    const from = landed.get(id) ?? snap.base;
-    if (text === saved || kind === "conflict" || kind === "loading") return;
-    if (current) save = { kind: "saving" };
-    const run = (async () => {
-      const result = await store.save(id, text, from);
-      if (result.ok) landed.set(id, result.note.updatedAt);
-      if (id !== noteId) return;
-      if (result.ok) {
-        base = result.note.updatedAt;
-        savedBody = text;
-            save = { kind: "saved" };
-      } else {
-        save = { kind: "conflict", theirs: (result as any).conflict.body, theirsAt: (result as any).conflict.updatedAt };
-      }
-    })();
-    inFlight = run;
-    await run;
-    if (inFlight === run) inFlight = null;
-    // Still showing this note, and it moved on while this flush waited its turn: save it again.
-    if (current && !leaving && id === noteId && body !== wanted && body !== savedBody) timer = setTimeout(() => void flush(id), 0);
-  }
-
-  /** Conflict: keep mine (overwrite theirs, deliberately). */
-  const keepMine = async () => {
-    if (save.kind !== "conflict" || !noteId) return;
-    const id = noteId;
-    base = save.theirsAt!;
-    savedBody = save.theirs ?? "";
-    landed.set(id, save.theirsAt!);
-    save = { kind: "dirty" };
-    await flush(id);
-  };
-  /** Conflict: take theirs. */
-  const takeTheirs = () => {
-    if (save.kind !== "conflict" || !noteId) return;
-    body = savedBody = save.theirs ?? "";
-    base = save.theirsAt!;
-    landed.set(noteId, save.theirsAt!);
-    save = { kind: "saved" };
-  };
-  /** How many notes this editor holds a version for. */
-  const tracked = () => landed.size;
-
-  /** What the panel's effect does: flush what is pending, then the next run resets the editor. */
-  const leave = async (id: string, to: string | null) => {
-    const pending = flush(id, true);
-    noteId = to;
-    await pending;
-    clearTimeout(timer); // the new effect run replaces the editor; the old debounce is gone
-  };
-
-  /**
-   * A pane switching notes the way a Svelte $effect does: the previous run's cleanup (the leaving
-   * flush) runs *first*, then the new run's body resets the editor for the note on screen. The
-   * leaving flush therefore reads the tracked version before it is cleared for the new note — this
-   * test pins that order, because the other one (body first) would drop the version underneath it.
-   */
-  const switchNote = async (from: string, to: string) => {
-    const leaving = flush(from, true);  // the cleanup: flush the note being left
-    noteId = to;                        // the new run's body
-    save = { kind: "loading" };
-    body = savedBody = "";
-    base = 0;
-    landed.clear();                     // ...drops the old note's version, after the flush read it
-    await leaving;
-    clearTimeout(timer);
-  };
-  return { type, load, flush, leave, switchNote, setNote, keepMine, takeTheirs, tracked, late, get noteId() { return noteId; }, get body() { return body; }, get save() { return save; } };
+/**
+ * A pane switching notes the way a Svelte `$effect` does: the previous run's cleanup (the leaving
+ * flush) starts *first*, then the new run's body resets the editor for the note on screen. The
+ * leaving flush therefore reads the tracked version before `enter` clears it — this order is what
+ * keeps the old note's text alive across the switch.
+ */
+async function switchNote(ed: NoteEditor, from: string, to: string | null) {
+  const leaving = ed.leave(from);
+  ed.enter(to);
+  await leaving;
 }
 
 describe("the notes editor's save queue", () => {
   test("a note is saved under the version it was loaded at", async () => {
     const store = new Store();
     const e = editor(store, "s-1");
-    e.load("s-1");
+    load(e, store, "s-1");
     e.type("first version");
     await e.flush("s-1");
     expect(store.body("s-1")).toBe("first version");
@@ -165,7 +85,7 @@ describe("the notes editor's save queue", () => {
   test("nothing to save means nothing is sent", async () => {
     const store = new Store();
     const e = editor(store, "s-1");
-    e.load("s-1");
+    load(e, store, "s-1");
     await e.flush("s-1");
     expect(store.saves).toHaveLength(0);
   });
@@ -176,12 +96,13 @@ describe("the notes editor's save queue", () => {
     const store = new Store();
     store.delay = 5;
     const e = editor(store, "s-alpha");
-    e.load("s-alpha");
+    load(e, store, "s-alpha");
 
-    e.type("v1");                              // the autosave goes out and is in flight
+    e.type("v1"); // the autosave goes out and is in flight
     const first = e.flush("s-alpha");
-    e.type("v2 typed during the save");        // typed before the answer came back
-    const leaving = e.leave("s-alpha", "s-beta"); // the pane switches to another session
+    e.type("v2 typed during the save"); // typed before the answer came back
+    const leaving = e.leave("s-alpha"); // the pane switches to another session
+    e.enter("s-beta");
     await Promise.all([first, leaving]);
 
     expect(store.body("s-alpha")).toBe("v2 typed during the save");
@@ -192,16 +113,14 @@ describe("the notes editor's save queue", () => {
   });
 
   test("switching notes the way a Svelte effect does keeps the old note's text", async () => {
-    // A save is in flight for s-alpha; the pane switches to s-beta. The new effect run clears the
-    // tracked version before the old note's leaving flush runs, so the flush must not depend on it.
     const store = new Store();
     store.delay = 5;
     const e = editor(store, "s-alpha");
-    e.load("s-alpha");
+    load(e, store, "s-alpha");
     e.type("alpha in flight");
     const first = e.flush("s-alpha");
     e.type("alpha typed during the save");
-    await e.switchNote("s-alpha", "s-beta");
+    await switchNote(e, "s-alpha", "s-beta");
     await first;
     expect(store.body("s-alpha")).toBe("alpha typed during the save");
   });
@@ -210,9 +129,9 @@ describe("the notes editor's save queue", () => {
     const store = new Store();
     store.delay = 3;
     const e = editor(store, "s-1");
-    e.load("s-1");
+    load(e, store, "s-1");
     e.type("never saved by the debounce");
-    await e.leave("s-1", null); // the pane is gone entirely
+    await switchNote(e, "s-1", null); // the pane is gone entirely
     expect(store.body("s-1")).toBe("never saved by the debounce");
   });
 
@@ -220,7 +139,7 @@ describe("the notes editor's save queue", () => {
     const store = new Store();
     store.delay = 2;
     const e = editor(store, "s-1");
-    e.load("s-1");
+    load(e, store, "s-1");
     for (const text of ["one", "two", "three"]) {
       e.type(text);
       await e.flush("s-1");
@@ -232,16 +151,15 @@ describe("the notes editor's save queue", () => {
   test("two notes in one pane each keep their own version", async () => {
     const store = new Store();
     const e = editor(store, "s-a");
-    e.load("s-a");
+    load(e, store, "s-a");
     e.type("alpha words");
     await e.flush("s-a");
     // The pane switches to another session and back; each note starts from its own version.
-    e.setNote("s-b");
-    e.load("s-b");
+    await switchNote(e, "s-a", "s-b");
+    load(e, store, "s-b");
     e.type("beta words");
     await e.flush("s-b");
-    e.setNote("s-a");
-    await e.leave("s-a", "s-b");
+    await switchNote(e, "s-b", "s-a");
     expect(store.body("s-a")).toBe("alpha words");
     expect(store.body("s-b")).toBe("beta words");
   });
@@ -252,7 +170,7 @@ describe("the notes editor's save queue", () => {
     // refused again and the text would never land.
     const store = new Store();
     const e = editor(store, "s-1");
-    e.load("s-1");
+    load(e, store, "s-1");
     store.save("s-1", "from another tab", 0);
     e.type("mine");
     await e.flush("s-1");
@@ -265,7 +183,7 @@ describe("the notes editor's save queue", () => {
   test("resolving a conflict by taking theirs needs no save at all", async () => {
     const store = new Store();
     const e = editor(store, "s-1");
-    e.load("s-1");
+    load(e, store, "s-1");
     store.save("s-1", "from another tab", 0);
     e.type("mine");
     await e.flush("s-1");
@@ -281,8 +199,8 @@ describe("the notes editor's save queue", () => {
     const e = editor(store, "s-1");
     for (let i = 0; i < 40; i++) {
       const id = `s-${i}`;
-      e.setNote(id);
-      e.load(id);
+      await switchNote(e, e.noteId!, id);
+      load(e, store, id);
       e.type(`words for ${id}`);
       await e.flush(id);
     }
@@ -294,7 +212,7 @@ describe("the notes editor's save queue", () => {
     // and the editor says so instead of overwriting their text.
     const store = new Store();
     const e = editor(store, "s-1");
-    e.load("s-1");
+    load(e, store, "s-1");
     store.save("s-1", "from another tab", 0); // another tab gets there first
     e.type("mine");
     await e.flush("s-1");
@@ -303,7 +221,61 @@ describe("the notes editor's save queue", () => {
   });
 });
 
-describe("a save the app never saw", () => {
+describe("a save the app never saw land", () => {
+  /** A save the deadline gives up on: the promise rejects while the write lands anyway. */
+  function deadlineGivesUp(store: Store, landed: { note?: Note }): SaveFn {
+    return (id, body, base) => {
+      void store.save(id, body, base).then((r) => {
+        if (r.ok) landed.note = r.note;
+      });
+      return Promise.reject(new Error("no answer from the server (the save may still be applied)"));
+    };
+  }
+
+  test("the panel stops saying 'not saved' when the save it gave up on lands", async () => {
+    // The whole lie, measured on the deployed build: the answer arrived 18 s after the 15 s
+    // deadline, the write was in the database, and the panel still said "Not saved" — for ever.
+    const store = new Store();
+    const landed: { note?: Note } = {};
+    const e = editor(store, "s-1", deadlineGivesUp(store, landed));
+    load(e, store, "s-1");
+    e.type("the answer arrives after the panel gave up");
+    await e.flush("s-1");
+    expect(e.save.kind).toBe("error"); // what the deadline could honestly say at that moment
+    // ...and then the answer lands (what `NotesClient` does with it: `onLateSave`).
+    e.applyLate(landed.note!, "saved");
+    expect(e.save.kind).toBe("saved");
+    expect(store.body("s-1")).toBe("the answer arrives after the panel gave up");
+  });
+
+  test("a late save that landed while the editor had typed on leaves the new text unsaved", async () => {
+    const store = new Store();
+    const landed: { note?: Note } = {};
+    const e = editor(store, "s-1", deadlineGivesUp(store, landed));
+    load(e, store, "s-1");
+    e.type("what the late save carried");
+    await e.flush("s-1");
+    e.type("typed after the deadline");
+    e.applyLate(landed.note!, "saved");
+    expect(e.save.kind).toBe("dirty"); // the server has the old text; this one is still unsaved
+    expect(e.savedBody).toBe("what the late save carried");
+  });
+
+  test("a late answer that was refused is a conflict, and the next save names its version", async () => {
+    // Not only 'saved' answers arrive late. A refusal moves the note on too: the book must learn its
+    // version or the next save is refused again for a change nobody made.
+    const store = new Store();
+    store.save("s-1", "from another tab", 0); // v1 there first
+    const e = editor(store, "s-1", () => Promise.reject(new Error("no answer from the server (the save may still be applied)")));
+    load(e, store, "s-1");
+    e.type("mine");
+    await e.flush("s-1");
+    expect(e.save.kind).toBe("error");
+    e.applyLate(store.at("s-1"), "conflict");
+    expect(e.save.kind).toBe("conflict");
+    expect(e.save).toMatchObject({ theirs: "from another tab", theirsAt: 1 });
+  });
+
   test("a save that landed after the app gave up must not poison the next one with a false conflict", async () => {
     // The deadline fired while the save was out (its verdict: "may still be applied"). It landed as
     // v1 and the editor never got the answer, so the next save must name v1 or the server refuses it
@@ -311,10 +283,10 @@ describe("a save the app never saw", () => {
     // the typed text was dropped on the floor.
     const store = new Store();
     const e = editor(store, "s-1");
-    e.load("s-1");
+    load(e, store, "s-1");
     e.type("typed before the deadline");
     void store.save("s-1", "typed before the deadline", 0); // lands as v1, out of band
-    e.late("s-1", 1);
+    e.applyLate(store.at("s-1"), "saved");
     e.type("typed after the error");
     await e.flush("s-1");
     expect(e.save.kind).toBe("saved");
@@ -322,27 +294,118 @@ describe("a save the app never saw", () => {
     expect(store.body("s-1")).toBe("typed after the error");
     expect(store.version("s-1")).toBe(2);
   });
+
+  test("a failed save whose text is already on the server does not say 'not saved'", async () => {
+    // The reconnect catch-up (below) already told the editor the server holds its text; the save's
+    // own answer never came. Saying "Not saved" here is refuted by the database.
+    const store = new Store();
+    const e = editor(store, "s-1", () => Promise.reject(new Error("no answer from the server (the save may still be applied)")));
+    load(e, store, "s-1");
+    e.type("landed while the answer was lost");
+    const run = e.flush("s-1");
+    // The catch-up after a reconnect: the server hands the note back with the editor's own text.
+    store.notes.set("s-1", { body: "landed while the answer was lost", updatedAt: 1 });
+    e.applyRemote("s-1", store.at("s-1"));
+    await run;
+    expect(e.save.kind).toBe("saved");
+  });
+});
+
+describe("the editor's own text coming back", () => {
+  test("a catch-up with the editor's own text is not 'changed somewhere else'", async () => {
+    // The measured lie, in full (the e2e replays it against the deployed build): the save goes out,
+    // its answer is lost with the socket, the hub reconnects and the server hands the note back as
+    // the catch-up it does for every watch — with the editor's OWN text, at a version the editor
+    // never heard of. The panel called that "These notes were saved from another tab or device while
+    // you were typing" and asked the reader to choose between two identical texts.
+    const store = new Store();
+    const e = editor(store, "s-1", () => Promise.reject(new Error("no answer from the server (the save may still be applied)")));
+    load(e, store, "s-1"); // empty, v0
+    e.type("saved here, seen from there");
+    const run = e.flush("s-1"); // goes out; its answer never comes
+    store.notes.set("s-1", { body: "saved here, seen from there", updatedAt: 1 }); // it landed
+    const what = e.applyRemote("s-1", store.at("s-1")); // the hub's catch-up after the reconnect
+    expect(what).not.toBe("conflict");
+    expect(e.save.kind).not.toBe("conflict"); // no banner between the catch-up and the verdict below
+    await run;
+    expect(e.save.kind).toBe("saved");
+  });
+
+  test("a push of the editor's own text while it is still marked unsaved is not a conflict either", async () => {
+    const store = new Store();
+    const e = editor(store, "s-1");
+    load(e, store, "s-1");
+    e.type("exactly this");
+    store.notes.set("s-1", { body: "exactly this", updatedAt: 1 }); // it landed, somewhere
+    const what = e.applyRemote("s-1", store.at("s-1"));
+    expect(what).not.toBe("conflict");
+    expect(e.save.kind).toBe("saved");
+    expect(e.base).toBe(1); // and the next save starts from what the server is at
+  });
+
+  test("a refusal that carries the text it refused is not a conflict", async () => {
+    // What a late answer of our own save looks like from the outside: the server refuses the save
+    // because it already holds exactly that text at another version.
+    const store = new Store();
+    const e = editor(store, "s-1", () => Promise.resolve({ ok: false, conflict: { id: "s-1", body: "mine", updatedAt: 1 } }));
+    load(e, store, "s-1"); // the note is empty here, v0
+    e.type("mine");
+    await e.flush("s-1"); // refused — but the refusal carries the very text it refused
+    expect(e.save.kind).toBe("saved");
+    expect(e.base).toBe(1);
+  });
+
+  test("a real conflict is still a conflict", async () => {
+    const store = new Store();
+    const e = editor(store, "s-1");
+    load(e, store, "s-1");
+    store.save("s-1", "from another tab", 0);
+    e.type("mine");
+    expect(e.applyRemote("s-1", store.at("s-1"))).toBe("conflict");
+    expect(e.save).toMatchObject({ kind: "conflict", theirs: "from another tab" });
+  });
 });
 
 describe("a note cleared from somewhere else", () => {
   test("keep mine must be able to save it — no conflict loop", async () => {
     // An empty body DELETES the note and the server's version goes back to 0 (src/sessions.ts).
-    // The editor's ledger still remembers the version its own save established (1000): if the
-    // version the next save names is taken as max(landed, ledger), it names 1000 against a server
+    // The editor's book still remembers the version its own save established (1000): if the
+    // version the next save names is taken as max(landed, book), it names 1000 against a server
     // at 0 and every 'keep mine' conflicts again forever (review finding R1).
     const store = new Store();
     const e = editor(store, "s-1");
-    e.load("s-1");
+    load(e, store, "s-1");
     e.type("mine");
-    await e.flush("s-1");                    // v1 ... made v1000 below out of band
-    e.late("s-1", 1000);
+    await e.flush("s-1"); // v1 ... made v1000 below out of band
+    e.applyLate({ id: "s-1", body: "mine", updatedAt: 1000 }, "saved");
     store.notes.set("s-1", { body: "", updatedAt: 0 }); // cleared elsewhere: the version fell to 0
     e.type("mine again");
-    await e.flush("s-1");                    // refused: the editor names 1000, the server is at 0
+    await e.flush("s-1"); // refused: the editor names 1000, the server is at 0
     expect(e.save.kind).toBe("conflict");
-    await e.keepMine();                      // the user chooses their text
+    await e.keepMine(); // the user chooses their text
     expect(e.save.kind).toBe("saved");
     expect(store.body("s-1")).toBe("mine again");
     expect(store.saves.at(-1)!.base).toBe(0);
+  });
+});
+
+describe("one copy of these rules (E50's pattern)", () => {
+  const lib = join(import.meta.dir, "..", "web", "src", "lib");
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
+  const files = walk(lib).filter((f) => /\.(ts|svelte)$/.test(f));
+
+  test("the autosave timer lives in one place, and the panel owns no save logic", () => {
+    // The tests used to hold a hand-written copy of `flush()` — it drifted from the panel and
+    // nothing said so. The rule that keeps a copy from coming back: the panel wires the machine and
+    // shows what it says, and every scheduling rule is `noteEditor`'s.
+    const withDelay = files.filter((f) => readFileSync(f, "utf8").includes("SAVE_DELAY"));
+    expect(withDelay.map((f) => f.split("/lib/")[1]).sort()).toEqual(["notes.ts", "noteEditor.ts"]);
+    const panel = readFileSync(join(lib, "components", "NotesPanel.svelte"), "utf8");
+    for (const forbidden of ["SAVE_DELAY", "notes.save", "saveDeadlineMs", 'kind: "', "landed"]) {
+      expect(panel).not.toContain(forbidden);
+    }
+    expect(panel).toContain("NoteEditor");
+    expect(panel).toContain("onLateSave"); // the verdict is corrected when a save it gave up on lands
   });
 });
