@@ -130,6 +130,36 @@ describe("the deadline and the kill still work through the shared launcher", () 
   });
 });
 
+describe("the launcher survives a child that dies badly", () => {
+  // Both of these killed the PROCESS, not just the child (E49): a reader that was already released
+  // rejects its `cancel()`, and a child that never reads the program breaks the pipe on the write. Bun
+  // treats an unhandled rejection as fatal, so the web server went down with exit 1.
+  // They run in a child process: a crash like that takes the test runner with it.
+  const inChild = async (body: string): Promise<{ code: number | null; out: string; err: string }> => {
+    const dir = mkdtempSync(join(tmpdir(), "launcher-"));
+    const script = join(dir, "probe.ts");
+    writeFileSync(script, `import { spawnBounded } from ${JSON.stringify(join(import.meta.dir, "..", "src", "proc", "spawnBounded.ts"))};
+${body}
+`);
+    const run = Bun.spawnSync({ cmd: ["bun", "run", script], stdout: "pipe", stderr: "pipe" });
+    return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString() };
+  };
+
+  test("a child that dies on the TERM does not take the process with it", async () => {
+    const run = await inChild(`const r = await spawnBounded(["bash", "-c", "exec sleep 30"], { timeoutMs: 200 });
+console.log("OK " + JSON.stringify(r));`);
+    expect(run.code).toBe(0);
+    expect(run.out).toContain('"reason":"timeout"');
+  });
+
+  test("a child that never reads the program does not take the process with it", async () => {
+    const run = await inChild(`const r = await spawnBounded(["bash", "-c", "exec true"], { stdin: "x".repeat(300_000) });
+console.log("OK " + JSON.stringify(r));`);
+    expect(run.code).toBe(0);
+    expect(run.out).toContain("OK ");
+  });
+});
+
 describe("there is only one place that spawns a queue command", () => {
   /** Every .ts file under src/ that calls `Bun.spawn(` — allowlisted on purpose, one by one. */
   function spawnSites(): string[] {
@@ -154,9 +184,8 @@ describe("there is only one place that spawns a queue command", () => {
     // (channels/queueBridge.ts is `systemctl is-active`, asserted below; it is not a queue launch.)
     expect(spawnSites()).toEqual([
       "channels/queueBridge.ts",
-      "mini/queueSpawn.ts",
       "mini/spawn.ts",
-      "web/folders.ts",
+      "proc/spawnBounded.ts",
       "web/ssh.ts",
       "web/terminals.ts",
     ]);
@@ -176,5 +205,17 @@ describe("there is only one place that spawns a queue command", () => {
       expect(code).not.toContain("Bun.spawn");
       expect(code).toContain("spawnQueue(");
     }
+  });
+
+  test("the remote folder listing is an adapter too (E49): same launcher, same bounds", () => {
+    // `web/folders.ts` was the LAST launcher with its own copy of "deadline + kill + read", and measured
+    // against the deployed code it had none of them: 200 MiB of remote output became 628 MiB of RSS in
+    // the web process, and a child that ignored SIGTERM left the call pending forever.
+    const source = readFileSync(join(import.meta.dir, "..", "src", "web", "folders.ts"), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toContain("Bun.spawn");
+    expect(code).toContain("spawnBounded(");
+    // And it must not have reintroduced the older read-whole-pipe shape on the way.
+    expect(code).not.toContain("new Response(proc.");
   });
 });

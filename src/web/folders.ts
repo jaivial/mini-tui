@@ -6,14 +6,59 @@
  * entries cannot stall the server or the page -- the cap bounds the work as well as the answer, and
  * the listing hands the thread back while it reads (E45). The path a listing returns is the resolved, absolute one,
  * so `~`, `..` and symlinks all end up as a real folder the agent will actually start in.
+ *
+ * The REMOTE half runs the same shape on somebody else's machine, where the rules are stiffer (E49):
+ * the answer is bounded on the way back (a remote host is another server, so its bytes are untrusted),
+ * the walk is bounded by an entry budget of its own, and it runs under a clock ON THE HOST that does the
+ * work -- because killing the local `ssh` does not kill the walk. Measured against the deployed code:
+ * killing the local `ssh` left the remote script running to the end of its loop, and a host that ignored
+ * SIGTERM left the call pending forever.
  */
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
+import { spawnBounded } from "../proc/spawnBounded";
 import { sshArgs, type SshTarget } from "./ssh";
 
 export const FOLDER_LIMIT = 500;
+
+/**
+ * Entries the remote walk will LOOK AT before it stops and says so. The folder cap above bounds the
+ * ANSWER; this one bounds the per-entry work, which grows with the size of the folder and not with the
+ * number of folders in it: measured on 60 000 entries, the per-entry `[ -d ]`/`case` pass cost 334 ms
+ * while the shell had already paid 176 ms materialising the names. The glob is the part that still
+ * scales with the folder -- the remote `timeout` below is the backstop for that, and for a filesystem
+ * where each of these stats is slow.
+ */
+export const FOLDER_SCAN_LIMIT = 100_000;
+
+/**
+ * The listing answer is at most `FOLDER_LIMIT + 1` lines plus a two-line header, and a single name is at
+ * most 255 bytes: 256 KiB is twice the largest answer a real folder can produce. Anything past it is a
+ * remote host answering with something that is not a folder listing (measured before E49: 200 MiB of
+ * either stream grew this process to 628 MiB RSS and then said 502).
+ */
+export const FOLDER_SPAWN_MAX_BYTES = 256 * 1024;
+
+/** How long the whole remote listing may take, connect included. The backstop, not the plan. */
+export const REMOTE_LIST_TIMEOUT_MS = 12_000;
+/**
+ * The remote walk gets its OWN clock, `timeout(1)` around `bash -s`, and it must OUTLAST the local
+ * deadline (the rule E44 wrote down: a limit has to outlast the call that spends it). Otherwise the host
+ * would cut the walk before this side could pass a slow but honest answer through.
+ *
+ * Killing the local `ssh` does not touch the remote shell (measured: the walk ran to the end of its loop
+ * after both SIGTERM and SIGKILL of the client), so without this clock the work nobody is waiting for is
+ * unbounded. The bound it buys is honest but not as tight as it looks: the remote clock starts when the
+ * remote command starts, which is AFTER the connect, so a walk we gave up on ends at most
+ * `REMOTE_WALK_SLACK_MS` after our deadline PLUS the time the connect took.
+ */
+export const REMOTE_WALK_SLACK_MS = 2_000;
+/** `ssh`'s own connect budget, in seconds. Must fit inside {@link REMOTE_LIST_TIMEOUT_MS}. */
+export const SSH_CONNECT_TIMEOUT_SECONDS = 8;
+/** The longest path the remote listing will carry. A real path is under 4096 bytes on every system. */
+export const MAX_REMOTE_PATH = 4_096;
 
 export interface FolderEntry {
   name: string;
@@ -30,8 +75,14 @@ export interface FolderListing {
   parent: string | null;
   home: string;
   entries: FolderEntry[];
-  /** More subfolders than FOLDER_LIMIT: the rest are not shown (type a path to reach them). */
+  /**
+   * The listing may not show every subfolder of this folder (type a path to reach them). `truncatedReason`
+   * says which of the two it is: `more-folders` when we KNOW there are more than the cap, and
+   * `scan-limit` when the scan stopped before it could find out. Before E49 the remote listing said
+   * "truncated" for both, which is a claim it could not back up.
+   */
   truncated: boolean;
+  truncatedReason?: "more-folders" | "scan-limit";
 }
 
 export class FolderError extends Error {
@@ -196,10 +247,17 @@ export async function listLocal(input: string, home = homedir()): Promise<Folder
 const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
 
 /**
- * The remote listing: one `ssh … bash -s` with a short script on stdin (the path travels quoted, never
- * interpolated raw). It prints a header (resolved path, home) and one line per subfolder:
+ * The remote listing: one `ssh … timeout bash -s` with a short script on stdin (the path travels quoted,
+ * never interpolated raw). It prints a header (resolved path, home) and one line per subfolder:
  * `<git 0|1>\t<name>`. Names with a newline or a tab cannot be told apart from the protocol and are
  * skipped, which is safer than guessing.
+ *
+ * Two counters, and they bound different things: `n` is how many FOLDERS we have printed (the answer's
+ * cap) and `i` is how many ENTRIES we have looked at (the work's cap, E49). They stop the walk in two
+ * different ways and the parser has to be able to tell them apart: `MORE` means we KNOW there are more
+ * folders than we printed, and `SCAN` means the scan stopped before it could find out (there may be
+ * folders below the ones shown -- type a path to reach them). The old code answered "truncated" for both,
+ * which is a claim the second one cannot back up.
  */
 export function remoteListScript(input: string): string {
   const raw = input.trim();
@@ -213,7 +271,10 @@ if ! cd "$t" 2>/dev/null; then echo "ERR 403 no permission to open $t"; exit 0; 
 printf 'PATH\\t%s\\n' "$(pwd -P)"
 printf 'HOME\\t%s\\n' "$HOME"
 n=0
+i=0
 for d in * .[!.]* ..?*; do
+  i=$((i+1))
+  if [ "$i" -gt ${FOLDER_SCAN_LIMIT} ]; then echo "SCAN"; break; fi
   [ -d "$d" ] || continue
   case "$d" in *'
 '*|*'	'*) continue;; esac
@@ -246,29 +307,89 @@ export function parseRemoteListing(out: string): FolderListing {
   }
   sortEntries(entries);
   const parent = path === "/" ? null : path.slice(0, path.lastIndexOf("/")) || "/";
-  return { path, parent, home, entries, truncated: lines.includes("MORE") };
+  // `MORE` = we know there are more folders than we printed. `SCAN` = the scan stopped early, so we do
+  // not know: the listing is still incomplete, but it does not claim more than it can prove.
+  const more = lines.includes("MORE");
+  const scan = lines.includes("SCAN");
+  return {
+    path,
+    parent,
+    home,
+    entries,
+    truncated: more || scan,
+    truncatedReason: more ? "more-folders" : scan ? "scan-limit" : undefined,
+  };
 }
 
-export async function listRemote(target: Omit<SshTarget, "workdir" | "model">, input: string, timeoutMs = 12_000): Promise<FolderListing> {
-  const proc = Bun.spawn({
-    cmd: ["ssh", "-T", "-o", "ConnectTimeout=8", ...sshArgs({ ...target, workdir: "" }), "bash", "-s"],
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
+/**
+ * The exact command the remote listing runs: `ssh … timeout bash -s`. Exported because what matters
+ * about it is the ORDER of its clocks, and a clock you cannot look at is a clock nobody reviews (E49).
+ */
+export function remoteListCommand(
+  target: Omit<SshTarget, "workdir" | "model">,
+  timeoutMs: number,
+): string[] {
+  return [
+    "ssh", "-T", "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT_SECONDS}`,
+    ...sshArgs({ ...target, workdir: "" }),
+    // `timeout` on the far side: this side killing its `ssh` does NOT stop the walk (measured over real
+    // sshd: the remote loop ran to the end of itself after both SIGTERM and SIGKILL of the client), so the
+    // walk carries a clock of its own and dies by itself even when nobody is listening any more. `-k 1`
+    // escalates a shell that swallows the TERM, and it is coreutils `timeout` rather than a shell
+    // builtin, because the remote command arrives as one line for the login shell.
+    "timeout", "-k", "1", String(remoteWalkSeconds(timeoutMs)), "bash", "-s",
+  ];
+}
+
+/** Whole seconds for the host's own clock: the local budget plus the slack, never less than a second. */
+export function remoteWalkSeconds(timeoutMs: number): number {
+  return Math.max(1, Math.ceil((timeoutMs + REMOTE_WALK_SLACK_MS) / 1000));
+}
+
+/**
+ * The subfolders of a folder on a saved remote host, over one ssh channel.
+ *
+ * Everything about this call is bounded, and each bound is on the right side of the cable (E49): the
+ * answer by bytes as it comes back (the host is another server), the wait by the local deadline, and the
+ * WALK by a clock on the host itself, because the local deadline cannot reach it.
+ */
+export async function listRemote(
+  target: Omit<SshTarget, "workdir" | "model">,
+  input: string,
+  timeoutMs = REMOTE_LIST_TIMEOUT_MS,
+): Promise<FolderListing> {
+  // The path travels to the host inside the program on stdin. A path of half a megabyte is not a path,
+  // and writing one to a host that is not there is how a broken pipe reaches this process (E49).
+  if (input.length > MAX_REMOTE_PATH) {
+    throw new FolderError(`that path is too long to send to the host (${input.length} characters)`, 400);
+  }
+  const walkSeconds = remoteWalkSeconds(timeoutMs);
+  const run = await spawnBounded(remoteListCommand(target, timeoutMs), {
+    stdin: remoteListScript(input),
+    timeoutMs,
+    maxBytes: FOLDER_SPAWN_MAX_BYTES,
   });
-  proc.stdin.write(remoteListScript(input));
-  proc.stdin.end();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    proc.kill();
-  }, timeoutMs);
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  clearTimeout(timer);
-  if (timedOut) throw new FolderError("the host did not answer in time", 504);
-  if (code !== 0) {
-    const reason = err.trim().split("\n").filter(Boolean).pop()?.slice(0, 200) || `ssh exited with code ${code}`;
+  // Every way this can end is named: which bound stopped it is the only thing the operator can act on.
+  if (run.reason === "too-large") {
+    throw new FolderError(`the host sent more than ${FOLDER_SPAWN_MAX_BYTES} bytes for a folder listing`, 502);
+  }
+  if (run.reason === "timeout" || run.reason === "aborted") {
+    throw new FolderError(
+      `the host was still walking folders after ${Math.round(timeoutMs / 1000)} s and was stopped there`,
+      504,
+    );
+  }
+  if (run.reason === "spawn-failed") throw new FolderError("could not start ssh", 502);
+  // `timeout` says it stopped the walk in two ways: 124 when the command died on the TERM it sent, and
+  // 137 when it had to escalate to the KILL (`-k`) because the command swallowed the TERM. Both mean the
+  // HOST cut the walk, which is not the same thing as "ssh failed", and both are the remote clock doing
+  // its job.
+  if (run.code === 124 || run.code === 137) {
+    throw new FolderError(`the host stopped the walk itself after ${walkSeconds} s`, 504);
+  }
+  if (run.code !== 0) {
+    const reason = run.stderr.trim().split("\n").filter(Boolean).pop()?.slice(0, 200) || `ssh exited with code ${run.code}`;
     throw new FolderError(`could not reach the host: ${reason}`, 502);
   }
-  return parseRemoteListing(out);
+  return parseRemoteListing(run.stdout);
 }
