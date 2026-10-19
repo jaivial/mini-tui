@@ -194,6 +194,9 @@ const sessions = new SessionManager((session) => {
   broadcast({ type: "session", session: summarize(session) });
   feed.publish(session);
 }, { mirror: mirrorLoader });
+// Put the sidebar's open list back the way the last run left it (it lives in the manager's memory,
+// so a restart used to empty it). In the background: boot does not wait on saved transcripts.
+void sessions.rehydrate().catch((error) => log("session.rehydrate", { error: String(error) }));
 
 // Terminals start where the session works: its folder on this machine, or an ssh shell on its host.
 const terminals = new Terminals();
