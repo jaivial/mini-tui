@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Server, Folder, PanelLeftOpen } from "@lucide/svelte";
+  import { Server, PanelLeftOpen } from "@lucide/svelte";
   import type { Snippet } from "svelte";
   import Button from "./Button.svelte";
   import Badge from "./Badge.svelte";
@@ -100,10 +100,6 @@
       {/if}
     </div>
     <div class="col-start-2 row-start-2 mt-px flex min-w-0 items-center gap-2 self-start text-[11px] text-ink-faint pane-sm:col-span-2 pane-sm:mt-0.5 pane-sm:pb-0.5">
-      <span class="flex min-w-0 items-center gap-1 pane-sm:hidden">
-        <Folder size={11} strokeWidth={1.75} class="shrink-0" />
-        <span class="truncate font-mono">{session.cwd}</span>
-      </span>
       {#if elapsed > 0}
         <span class="tnum shrink-0 whitespace-nowrap">{duration(elapsed)}</span>
       {/if}

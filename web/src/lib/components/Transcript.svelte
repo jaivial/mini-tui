@@ -38,6 +38,18 @@
   /** Its index in `out`, so pairing is O(1) instead of a scan per observation. */
   let lastCallIdx = -1;
 
+  /** WhatsApp-style receipt per task bubble: one grey tick = sent; two ticks once the run ended (ok = accent, else warn). */
+  const ticks = $derived.by(() => {
+    const m = new Map<number, { two: boolean; ok: boolean; label: string }>();
+    let task = -1;
+    for (let k = 0; k < rows.length; k++) {
+      const r = rows[k]!;
+      if (r.kind === "task") { task = k; m.set(k, { two: false, ok: true, label: "Enviado" }); }
+      else if (r.kind === "exit" && task >= 0) m.set(task, { two: true, ok: r.event.exitStatus === "Submitted", label: r.event.exitStatus });
+    }
+    return m;
+  });
+
   const rows = $derived.by(() => {
     const out: Row[] = [];
     const byCall = new Map<string, Extract<RunEvent, { type: "tool_call" }>>();
@@ -158,6 +170,15 @@
             {#each (row.event.attachments ?? []).filter((a) => a.kind === "audio" && a.url) as att (att.id)}
               <VoiceNote url={att.url!} name={att.name} />
             {/each}
+            {#if ticks.get(i)}
+              {@const t = ticks.get(i)!}
+              <span class="ticks {t.two ? (t.ok ? 'ticks-ok' : 'ticks-warn') : ''}" role="img" aria-label={t.label} title={t.label}>
+                <svg viewBox="0 0 18 11" width="16" height="10" fill="none" aria-hidden="true">
+                  <path d="M1 5.8l3 3L10.2 1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                  {#if t.two}<path class="t2" d="M7.2 8.2l.8.8L16 1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>{/if}
+                </svg>
+              </span>
+            {/if}
           </div>
           <button
             type="button"
@@ -282,12 +303,7 @@
     {:else if row.kind === "notice"}
       <div class="cv-row px-2.5 read-[11.5px] text-ink-faint {gap}">{row.event.text}</div>
     {:else if row.kind === "exit"}
-      {@const okExit = row.event.exitStatus === "Submitted"}
-      <div class="cv-row {gap} rounded-2xl px-3 py-2 read-[12.5px] {okExit ? 'bg-ok/10 text-ok' : 'bg-warn/10 text-warn'}">
-        <div class="mb-0.5 flex items-center gap-1.5 font-medium">
-          <CheckCircle2 size={12} strokeWidth={2} /> {row.event.exitStatus}
-        </div>
-      </div>
+      <!-- The run result is shown as the receipt ticks inside the task bubble. -->
     {:else if row.kind === "error"}
       <div class="cv-row flex items-start gap-2 rounded-2xl bg-err/10 px-3 py-2 read-[12.5px] text-err {gap}">
         <AlertTriangle size={14} class="mt-px shrink-0" strokeWidth={2} />
@@ -367,6 +383,12 @@
    * until a row renders, then remembers its real height. Tool cards (the tall
    * rows) sit near the 64px estimate's error only in scrollbar-thumb terms.
    */
+  .ticks { display: flex; justify-content: flex-end; margin-top: 2px; color: var(--color-bubble-user-ink); opacity: .5; }
+  .ticks-ok { color: #53bdeb; opacity: 1; }
+  .ticks-warn { color: var(--color-warn, #d9a441); opacity: 1; }
+  .ticks .t2 { animation: tick2 .35s ease-out both; }
+  @keyframes tick2 { from { opacity: 0; transform: translateX(-3px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .ticks .t2 { animation: none; } }
   .cv-row {
     content-visibility: auto;
     contain-intrinsic-size: auto 64px;
