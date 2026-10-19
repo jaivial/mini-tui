@@ -69,7 +69,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   /** A session's agent tree, the messages between its agents, and the agent definitions. */
-  agents: (id: string) => call<AgentsView>(`/sessions/${encodeURIComponent(id)}/agents`),
+  /** `init` lets a caller carry its own deadline: a poll that is abandoned must be abortable. */
+  agents: (id: string, init?: RequestInit) => call<AgentsView>(`/sessions/${encodeURIComponent(id)}/agents`, init),
   agentDefs: () => call<AgentDef[]>("/agents"),
   /** Subfolders of `path` on this machine (`hostId` empty or "local") or on a saved remote host. */
   folders: (path: string, hostId = "local") =>
