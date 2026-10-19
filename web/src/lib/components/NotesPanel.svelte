@@ -5,6 +5,7 @@
   import { notes } from "../stores/notes.svelte";
   import { counts, statusText, type SaveState } from "../notes";
   import { NoteEditor } from "../noteEditor";
+  import { clock } from "../stores/clock.svelte";
   import { sideWidthAt, SIDE_MAX, SIDE_MIN } from "../sidePanel";
 
   /**
@@ -45,13 +46,12 @@
    * claim (`lib/noteEditor.ts`, driven by the tests; this file wires it and shows what it says).
    * `sync` mirrors its state into reactive land after every decision.
    */
-  const ed = new NoteEditor(notes, sync);
+  const ed = new NoteEditor(notes, sync, () => clock.now);
   let save = $state<SaveState>(ed.save);
   function sync() {
     body = ed.body;
     save = ed.save;
   }
-  let now = $state(Date.now());
   const c = $derived(counts(body));
 
   // ---- free resize: the divider on the panel's left edge
@@ -133,9 +133,13 @@
     };
   });
 
+  // The "Saved Ns ago" line is a claim about the clock (E53): this panel is woken exactly at the
+  // moments those words can change. The old `setInterval(() => now = Date.now(), 15_000)` ran for
+  // ever (open or not) and left the line up to 15 s behind what it claimed.
   $effect(() => {
-    const t = setInterval(() => (now = Date.now()), 15_000);
-    return () => clearInterval(t);
+    const s = save;
+    if (s.kind !== "saved" || !s.at) return;
+    return clock.watchAge("saved", s.at);
   });
 
   // Save as the page hides (tab switch, phone lock): the socket is still open at that moment, so the
@@ -287,7 +291,7 @@
   <footer class="flex min-h-9 shrink-0 items-center gap-2 border-t border-line/80 px-3.5 pb-[env(safe-area-inset-bottom)] text-[11.5px]">
     <span id="{uid}-status" class="flex items-center gap-1.5 {tone}" role="status" aria-live="polite">
       <span class="size-1.5 rounded-full {save.kind === 'error' || save.kind === 'conflict' ? 'bg-err' : save.kind === 'saved' ? 'bg-ok' : 'bg-warn'}" aria-hidden="true"></span>
-      {statusText(save, now)}
+      {statusText(save, clock.now)}
       {#if save.kind === "error"}
         <button type="button" class="interactive cursor-pointer rounded-sm px-1 font-medium text-ink underline underline-offset-2 pointer-coarse:min-h-11" onclick={() => noteId && void flush(noteId)}>Retry</button>
       {/if}

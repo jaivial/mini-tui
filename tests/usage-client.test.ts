@@ -139,11 +139,12 @@ describe("formatLatency", () => {
 
 describe("formatWhen", () => {
   test("relative for recent, absolute for old, and 'never' for nothing", () => {
-    expect(formatWhen(null)).toBe("nunca");
-    expect(formatWhen(NOW - 5_000)).toBe("hace un momento");
-    expect(formatWhen(NOW - 5 * 60_000)).toBe("hace 5 min");
-    expect(formatWhen(NOW - 3 * 3_600_000)).toBe("hace 3 h");
-    expect(formatWhen(NOW - 5 * 86_400_000)).toContain("/");
+    // `formatWhen` takes the clock now (E53): the words are the same, the "now" is not its own.
+    expect(formatWhen(null, NOW)).toBe("nunca");
+    expect(formatWhen(NOW - 5_000, NOW)).toBe("hace un momento");
+    expect(formatWhen(NOW - 5 * 60_000, NOW)).toBe("hace 5 min");
+    expect(formatWhen(NOW - 3 * 3_600_000, NOW)).toBe("hace 3 h");
+    expect(formatWhen(NOW - 5 * 86_400_000, NOW)).toContain("/");
   });
 });
 

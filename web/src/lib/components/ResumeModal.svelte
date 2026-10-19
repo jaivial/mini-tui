@@ -8,6 +8,9 @@
   import Badge from "./Badge.svelte";
   import { history } from "../stores/history.svelte";
   import { groupByRecency, shortFolder, shortModel, unresumableReason } from "../resume";
+  import { nextMidnight } from "../ago";
+  import { clock } from "../stores/clock.svelte";
+  import Age from "./Age.svelte";
   import { relativeTime, cost as money } from "../format";
   import { step } from "../models";
   import type { HistoryItem } from "../types";
@@ -40,7 +43,10 @@
   let search = $state<HTMLInputElement | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const groups = $derived(groupByRecency(history.items));
+  const groups = $derived(groupByRecency(history.items, clock.now));
+  // "Today" is a claim about the clock too (E53): the groups move at local midnight, and this modal
+  // is woken exactly then (and never otherwise).
+  $effect(() => clock.watch((now) => nextMidnight(now)));
   const flat = $derived(groups.flatMap((g) => g.items));
   const rowId = (i: number) => `${uid}-row-${i}`;
   const indexOf = (id: string) => flat.findIndex((r) => r.id === id);
@@ -177,7 +183,7 @@
                         role="option"
                         tabindex="-1"
                         aria-selected={i === active}
-                        aria-label="{item.title}. {shortFolder(item.cwd)}. {relativeTime(item.updatedAt)}.{item.open ? ' Already open.' : ''}{reason ? ' Read only.' : ''}"
+                        aria-label="{item.title}. {shortFolder(item.cwd)}. {relativeTime(item.updatedAt, clock.now)}.{item.open ? ' Already open.' : ''}{reason ? ' Read only.' : ''}"
                         class="interactive flex min-h-14 cursor-pointer items-center gap-3 rounded-lg border border-transparent px-3 py-2 pr-14 pointer-coarse:min-h-16 {i === active ? 'border-line bg-raised' : 'hover:bg-raised/60'}"
                         onpointermove={() => (active = i)}
                         onclick={() => !opening && onopen(item)}
@@ -196,7 +202,7 @@
                             <span aria-hidden="true">·</span>
                             <span class="shrink-0 truncate">{shortModel(item.model)}</span>
                             <span aria-hidden="true">·</span>
-                            <span class="tnum shrink-0">{relativeTime(item.updatedAt)}</span>
+                            <Age at={item.updatedAt} class="shrink-0" />
                             {#if item.cost > 0}<span aria-hidden="true">·</span><span class="tnum shrink-0">{money(item.cost)}</span>{/if}
                           </div>
                         </div>

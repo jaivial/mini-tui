@@ -6,16 +6,19 @@
    * reconciliation), never a live heartbeat.
    */
   import { QueueEventsClient, type QueueNode, type QueueView } from "../queueEventsClient";
+  import { nextSecond } from "../ago";
+  import { clock } from "../stores/clock.svelte";
   let { open = false }: { open?: boolean } = $props();
   const client = new QueueEventsClient();
   let view = $state<QueueView>({ nodes: [], edges: [] });
   let error = $state("");
   let loaded = $state(false);
-  // Freshness is time-sensitive: re-render the lease lines even when no event arrives.
-  let now = $state(Date.now());
+  // Freshness is time-sensitive: the lease lines ("renews for 45s", "expired 2m ago") are claims
+  // about the clock (E53). They read the shared one and register the second they count — the panel
+  // used to run its own `setInterval(…, 15_000)` and showed a countdown up to 15 s stale.
   $effect(() => {
-    const tick = setInterval(() => { now = Date.now(); }, 15_000);
-    return () => clearInterval(tick);
+    if (!view.nodes.some((n) => n.status === "running")) return;
+    return clock.watch((now) => nextSecond(now));
   });
   const counts = $derived(view.nodes.reduce((out,node) => {
     out[node.status] = (out[node.status] ?? 0) + 1; return out;
@@ -35,7 +38,7 @@
     const raw = typeof node.lease_until === "number" && node.lease_until > 1_000_000_000 ? node.lease_until : null;
     const until = raw === null ? null : raw > 1_000_000_000_000 ? raw : raw * 1000;
     if (until === null) return { fresh: false, text: node.owner ? `Registry says running · owner ${node.owner} · no lease recorded` : "Registry says running · no worker lease recorded" };
-    const seconds = Math.round((until - now) / 1000);
+    const seconds = Math.round((until - clock.now) / 1000);
     if (seconds > 0) return { fresh: true, text: `Worker lease fresh${node.owner ? ` · ${node.owner}` : ""} · renews for ${formatDuration(seconds)}` };
     return { fresh: false, text: `Registry says running, but the worker lease expired ${formatDuration(-seconds)} ago — no live worker is proven; needs reconciliation` };
   }

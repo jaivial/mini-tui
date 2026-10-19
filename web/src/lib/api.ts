@@ -1,5 +1,6 @@
 /** Thin fetch wrapper around the mini-tui web server. */
 import type { AttachmentRef } from "./attachments";
+import { ageClock } from "./clock";
 import type {
   CommandInfo,
   ConnectResult,
@@ -47,6 +48,11 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     if (res.status !== 503 || attempt >= 4) break;
     await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
   }
+  // The answer's `Date` header is the server's own clock: the one every timestamp in the payloads
+  // belongs to. The shared clock learns the offset so a device clock that is wrong cannot turn
+  // into an age that is wrong (E53).
+  const date = res.headers.get("date");
+  if (date) ageClock.learnServerTime(Date.parse(date));
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let message = `${res.status} ${res.statusText}`;

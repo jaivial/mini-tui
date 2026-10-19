@@ -1,12 +1,12 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { Search, Server, Square, ChevronRight, PanelLeftClose, X, Pencil, Plus } from "@lucide/svelte";
+  import Age from "./Age.svelte";
   import Button from "./Button.svelte";
   import Skeleton from "./Skeleton.svelte";
   import Mascot from "./Mascot.svelte";
   import Avatar from "./Avatar.svelte";
   import { store } from "../stores/sessions.svelte";
-  import { relativeTime } from "../format";
   import { statusLine } from "../mascot";
   import { partitionBots } from "../botGroups";
   import { botProgress, progressLabel, runningLabel } from "../botRows";
@@ -366,7 +366,7 @@
                       title="{progress.done} of {progress.total} tasks done"
                     >{progressLabel(progress)}</span>
                   {/if}
-                  <span class="tnum ml-auto shrink-0 text-[11.5px] leading-4 text-ink-faint">{relativeTime(session.updatedAt)}</span>
+                  <Age at={session.updatedAt} class="ml-auto shrink-0 text-[11.5px] leading-4 text-ink-faint" />
                 </span>
               </span>
               {#if runningLabel(progress)}
@@ -420,13 +420,13 @@
             {#if card}
               <div class="flex min-h-8 items-center gap-1.5 rounded-xl px-2 py-1.5" title={card.description || card.title}>
                 <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-4 text-ink-muted">{card.title}</span>
-                <span class="tnum shrink-0 text-[10.5px] text-ink-faint">{relativeTime(card.updatedAt || session.updatedAt)}</span>
+                <Age at={card.updatedAt || session.updatedAt} class="shrink-0 text-[10.5px] text-ink-faint" />
                 <span class="size-1.5 shrink-0 rounded-full {session.status === 'running' ? 'pulse-live bg-live' : session.status === 'error' ? 'bg-err' : 'bg-line-strong'}" aria-hidden="true"></span>
               </div>
             {:else if session.task}
               <div class="flex min-h-8 items-center gap-1.5 rounded-xl px-2 py-1.5" title={session.task}>
                 <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-4 text-ink-muted">{session.task}</span>
-                <span class="tnum shrink-0 text-[10.5px] text-ink-faint">{relativeTime(session.updatedAt)}</span>
+                <Age at={session.updatedAt} class="shrink-0 text-[10.5px] text-ink-faint" />
               </div>
             {/if}
             {#each tree.rows as r (r.path)}

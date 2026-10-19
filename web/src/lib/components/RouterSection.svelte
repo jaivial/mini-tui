@@ -13,6 +13,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { RotateCcw } from "@lucide/svelte";
+  import Age from "./Age.svelte";
   import Button from "./Button.svelte";
   import Badge from "./Badge.svelte";
   import Skeleton from "./Skeleton.svelte";
@@ -180,7 +181,7 @@
             <Badge tone="warn">{b.state}</Badge>
             <span class="text-ink-muted">{b.reason}</span>
             {#if b.retryAt}
-              <span class="text-ink-muted">retry {relativeTime(b.retryAt)}</span>
+              <span class="text-ink-muted">retry <Age at={b.retryAt} /></span>
             {/if}
             <span class="ml-auto">
               <Button
@@ -279,7 +280,7 @@
               <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span class="font-mono text-ink">{d.chosen}</span>
                 <Badge tone={d.source === "fallback" ? "warn" : "neutral"}>{d.level} · {d.source}</Badge>
-                <span class="text-ink-faint">{relativeTime(d.at)}</span>
+                <Age at={d.at} class="text-ink-faint" />
                 {#if d.from}
                   <span class="text-ink-muted">from {d.from}</span>
                 {/if}

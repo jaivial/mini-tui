@@ -7,6 +7,7 @@
   import HeaderMenu, { type MenuRow } from "./HeaderMenu.svelte";
   import { store } from "../stores/sessions.svelte";
   import { duration } from "../format";
+  import { clock } from "../stores/clock.svelte";
   import type { SessionState } from "../types";
 
   /**
@@ -39,7 +40,15 @@
 
   // Resolve the label from the session's own hostId, not the first host.
   const host = $derived(store.hosts.find((h) => h.id === session.hostId) ?? null);
-  const elapsed = $derived(session.status === "running" ? Date.now() - session.startedAt : 0);
+  /**
+   * The running turn's counter is a claim about the clock too (E53): woken exactly when the seconds
+   * (then minutes) it names can change. It used to be a `$derived` that recomputed only when the
+   * store touched the session — measured frozen at "1s" for 12 s of a running turn.
+   */
+  const started = $derived(session.status === "running" ? session.startedAt : 0);
+  $effect(() => {
+    if (started) return clock.watchAge("elapsed", started);
+  });
 </script>
 
 <!--
@@ -100,8 +109,8 @@
       {/if}
     </div>
     <div class="col-start-2 row-start-2 mt-px flex min-w-0 items-center gap-2 self-start text-[11px] text-ink-faint pane-sm:col-span-2 pane-sm:mt-0.5 pane-sm:pb-0.5">
-      {#if elapsed > 0}
-        <span class="tnum shrink-0 whitespace-nowrap">{duration(elapsed)}</span>
+      {#if started > 0}
+        <span class="tnum shrink-0 whitespace-nowrap">{duration(Math.max(0, clock.now - started))}</span>
       {/if}
     </div>
   </div>

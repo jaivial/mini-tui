@@ -5,6 +5,7 @@
   import Modal from "./Modal.svelte";
   import Tabs from "./Tabs.svelte";
   import Button from "./Button.svelte";
+  import Age from "./Age.svelte";
   import Badge from "./Badge.svelte";
   import Skeleton from "./Skeleton.svelte";
   import WhatsAppConnect from "./WhatsAppConnect.svelte";
@@ -318,7 +319,7 @@
                       <Badge tone="ok" dot>connected</Badge>
                     </div>
                     <div class="tnum mt-0.5 truncate text-[12px] text-ink-muted">
-                      <span class="font-mono">{p.keyHint}</span> · {p.models.length} models · added {relativeTime(p.addedAt)}
+                      <span class="font-mono">{p.keyHint}</span> · {p.models.length} models · added <Age at={p.addedAt} />
                     </div>
                   </div>
                   <Button

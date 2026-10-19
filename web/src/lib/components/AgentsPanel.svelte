@@ -4,6 +4,8 @@
   import Spinner from "./Spinner.svelte";
   import { api } from "../api";
   import { cost } from "../format";
+  import { ageSeconds, ageWords, nextChangeAt } from "../ago";
+  import { clock } from "../stores/clock.svelte";
   import type { AgentEvent, AgentNode, AgentsView } from "../types";
 
   /**
@@ -27,7 +29,6 @@
   let error = $state("");
   let selected = $state<string | null>(null);
   let tab = $state<"agents" | "graph" | "activity" | "defs">("graph");
-  let now = $state(Date.now() / 1000);
   let panel = $state<HTMLElement | null>(null);
 
   /**
@@ -73,7 +74,6 @@
         } catch (e) {
           if (alive) error = (e as Error).message;
         }
-        now = Date.now() / 1000;
         poll();
       }, document.hidden ? 4000 : 1500);
     };
@@ -82,7 +82,6 @@
       if (!alive) return;
       view = JSON.parse(m.data);
       error = "";
-      now = Date.now() / 1000;
     };
     es.onerror = () => {
       es?.close();
@@ -165,13 +164,19 @@
   function shortModel(m: string) {
     return m.split("/").pop() ?? m;
   }
+  /**
+   * An agent's activity age, in the compact words of `ago.ts` (E53 — this panel had its own copy,
+   * and its `now` only moved when new data arrived). The panel shows seconds, so it registers the
+   * second: it is woken every moment the words can change while it is open, and never otherwise.
+   */
   function ago(t: number) {
-    const s = Math.max(0, Math.round(now - t));
-    if (s < 60) return `${s}s`;
-    if (s < 3600) return `${Math.floor(s / 60)}m`;
-    return `${Math.floor(s / 3600)}h`;
+    return ageWords("compact", ageSeconds(t * 1000, clock.now), t * 1000);
   }
-  function clock(t: number) {
+  $effect(() => {
+    if (!view) return;
+    return clock.watch((now) => nextChangeAt("compact", 0, now));
+  });
+  function hhmmss(t: number) {
     return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
@@ -321,7 +326,7 @@
             <dt class="text-ink-faint">agent</dt><dd class="text-ink">{sel.agent || "—"}</dd>
             <dt class="text-ink-faint">started by</dt><dd class="text-ink">{sel.origin === "handoff" ? `handoff from ${sel.from}` : sel.origin === "delegate" ? `delegated by ${sel.path.includes("/") ? sel.path.split("/").slice(-2, -1)[0] : "this session"}` : "spawn"}</dd>
             <dt class="text-ink-faint">model</dt><dd class="truncate text-ink">{sel.model}</dd>
-            <dt class="text-ink-faint">activity</dt><dd class="tnum text-ink">{sel.steps} steps · {cost(sel.cost)} · {ago(sel.lastActivity)} ago</dd>
+            <dt class="text-ink-faint">activity</dt><dd class="tnum text-ink">{sel.steps} steps · {cost(sel.cost)} · {ago(sel.lastActivity)}</dd>
             {#if sel.cache}
               <dt class="text-ink-faint">inherited</dt>
               <dd class="text-ink">{sel.cache.inherited_messages} messages, byte-for-byte</dd>
@@ -362,7 +367,7 @@
                   {#if e.model && (e.kind === "delegate" || e.kind === "handoff")}<span class="text-[10.5px] text-ink-faint">{shortModel(e.model)}</span>{/if}
                   {#if e.kind === "warmup" && e.seconds !== undefined}<span class="tnum text-[10.5px] text-ink-faint">{e.seconds}s</span>{/if}
                   <span class="flex-1"></span>
-                  <time class="tnum text-[10.5px] text-ink-faint">{clock(e.at)}</time>
+                  <time class="tnum text-[10.5px] text-ink-faint">{hhmmss(e.at)}</time>
                 </div>
                 {#if e.chain?.length}
                   <div class="mt-1 flex flex-wrap items-center gap-1 text-[10.5px] text-silver">

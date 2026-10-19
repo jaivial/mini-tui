@@ -31,14 +31,14 @@ describe("scale", () => {
 describe("notes status", () => {
   const now = 1_000_000;
   test("every state has words", () => {
-    expect(statusText({ kind: "loading" })).toBe("Loading");
-    expect(statusText({ kind: "dirty" })).toBe("Unsaved changes");
-    expect(statusText({ kind: "saving" })).toBe("Saving");
+    expect(statusText({ kind: "loading" }, now)).toBe("Loading");
+    expect(statusText({ kind: "dirty" }, now)).toBe("Unsaved changes");
+    expect(statusText({ kind: "saving" }, now)).toBe("Saving");
     // The status names what happened: "Not saved" would claim a verdict the panel cannot prove
     // (a save whose answer never came may still have landed — E50/E51).
-    expect(statusText({ kind: "error", message: "offline" })).toBe("offline");
-    expect(statusText({ kind: "error", message: "" })).toBe("Not saved");
-    expect(statusText({ kind: "conflict", theirs: "x", theirsAt: 1 })).toBe("Changed somewhere else");
+    expect(statusText({ kind: "error", message: "offline" }, now)).toBe("offline");
+    expect(statusText({ kind: "error", message: "" }, now)).toBe("Not saved");
+    expect(statusText({ kind: "conflict", theirs: "x", theirsAt: 1 }, now)).toBe("Changed somewhere else");
     expect(statusText({ kind: "saved", at: 0 }, now)).toBe("Nothing saved yet");
   });
   test("saved says how long ago, coarsely", () => {
