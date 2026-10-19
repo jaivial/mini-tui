@@ -425,9 +425,11 @@ export class SessionManager {
     for (const id of ids) {
       if (this.#live.has(id)) continue;
       try {
-        await this.openHistory(id);
-      } catch {
-        this.#unmarkOpen(id);
+        const session = await this.openHistory(id);
+        this.#onChange(session);
+      } catch (error) {
+        // A transient database or attachment failure is not proof that the session is gone.
+        if ((error as Error).message === "unknown session") this.#unmarkOpen(id);
       }
     }
   }
