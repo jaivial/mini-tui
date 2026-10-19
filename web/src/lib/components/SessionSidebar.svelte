@@ -90,7 +90,14 @@
 
   // ---- What each row shows under the title. The card gives the task numbers, the agent tree
   // gives the delegates working under this bot right now.
-  const cardOf = (id: string) => taskCards.find((t) => t.id === id) ?? null;
+  // Index once when the board changes instead of scanning it twice for every visible bot.
+  // Keep the first card for an id, matching the former find() behavior.
+  const cardsById = $derived.by(() => {
+    const index = new Map<string, SessionTask>();
+    for (const card of taskCards) if (!index.has(card.id)) index.set(card.id, card);
+    return index;
+  });
+  const cardOf = (id: string) => cardsById.get(id) ?? null;
   const treeOf = (id: string): { rows: BotRow[]; live: number; total: number } => agentTree.trees[id] ?? { rows: [], live: 0, total: 0 };
   const progressOf = (id: string) => botProgress(cardOf(id), treeOf(id).live);
   /** Delegates working anywhere in the team, for the header's Team map badge. */
