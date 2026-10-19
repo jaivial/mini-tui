@@ -261,8 +261,11 @@ export function settleFromSubagent(db: Database, parentId: string, name: string,
 /** A subagent's board is temporary: it goes with the subagent once it has stopped. */
 export function dropBoard(db: Database, scope: string): number {
   ensureKanban(db);
-  const ids = (db.query("SELECT id FROM kanban_cards WHERE session_id = ?").all(scope) as { id: string }[]).map((r) => r.id);
+  // The subagent's own board plus the boards of helpers nested under it (scope`~name`...): they all
+  // go once the subagent has stopped.
+  const like = scope.replace(/[\\%_]/g, "\\$&") + "~%";
+  const ids = (db.query("SELECT id FROM kanban_cards WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'").all(scope, like) as { id: string }[]).map((r) => r.id);
   for (const id of ids) db.query("DELETE FROM kanban_links WHERE a = ? OR b = ?").run(id, id);
-  db.query("DELETE FROM kanban_cards WHERE session_id = ?").run(scope);
+  db.query("DELETE FROM kanban_cards WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'").run(scope, like);
   return ids.length;
 }
