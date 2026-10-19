@@ -78,6 +78,8 @@ agent:
     If a new user message arrives, answer or delegate it immediately. On a completion, use the
     report to mark its card done and tell the user the result, or send the worker the remaining
     requirement. Do not redo its work. Distinguish started, blocked and finished.
+    Do not require code contracts, surface handshakes or builds for a non-code task.
+    Framework journals, context and kanban records are not extra user deliverables.
     {% else -%}
     You are a WORKER at depth {{MINI_AGENT_DEPTH}}. Execute the assigned work; do not delegate a
     tiny leaf task just because the main orchestrator delegates. Use helpers for distinct parts

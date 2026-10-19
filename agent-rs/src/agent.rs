@@ -634,7 +634,8 @@ impl Agent {
         // envelope answers "Task" for a greeting.
         self.task_is_conversational =
             crate::intent::classify(&crate::intent::channel_subject(task)) == crate::intent::Intent::Conversational;
-        if crate::goal_oracle::enabled() && !self.task_is_conversational {
+        if crate::goal_oracle::enabled() && !self.task_is_conversational
+            && !(Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none()) {
             if let Outcome::Output(v) = self.env.execute("git rev-parse --verify HEAD 2>/dev/null") {
                 if v.get("returncode").and_then(Value::as_i64) == Some(0) {
                     let hash = v.get("output").and_then(Value::as_str).unwrap_or("").trim();
@@ -834,7 +835,8 @@ impl Agent {
         // a coincidentally named host path. No tests, no mutation, no broad filesystem scan.
         let reference = self.goal_baseline.as_deref().unwrap_or("HEAD");
         let evidence_command = format!("{{ if git rev-parse --verify '{reference}^{{commit}}' >/dev/null 2>&1; then git diff --no-ext-diff --no-textconv {reference} 2>/dev/null || printf '\n[Change evidence unavailable: git diff failed.]\n'; else printf '\n[Change evidence unavailable: original baseline no longer resolves. Do not treat this as an empty diff.]\n'; fi; printf '\nUntracked paths (contents not read automatically):\n'; git ls-files --others --exclude-standard 2>/dev/null | head -100; }} | head -c 24000");
-        let diff = if crate::intent::classify(&goals[0]) == crate::intent::Intent::Conversational { String::new() } else { match self.env.execute(&evidence_command) {
+        let diff = if (Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none())
+            || crate::intent::classify(&goals[0]) == crate::intent::Intent::Conversational { String::new() } else { match self.env.execute(&evidence_command) {
             Outcome::Output(v) => v.get("output").and_then(Value::as_str).unwrap_or_default().to_string(),
             _ => String::new(),
         } };
