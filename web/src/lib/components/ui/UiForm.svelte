@@ -162,7 +162,7 @@
     border-radius: var(--radius-md, 8px);
     background: var(--color-surface, var(--color-canvas));
     color: var(--color-ink);
-    font-size: 13px;
+    font-size: 16px;
   }
   .ui-input:focus-visible {
     outline: 2px solid var(--color-brand);
