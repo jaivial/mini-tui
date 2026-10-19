@@ -292,6 +292,13 @@
     const current = session;
     const atts = pane.attachments;
     if ((!text && !atts.length) || sending) return;
+    // A pane can name a session this tab has not loaded yet (another tab just opened it). That is
+    // NOT a new chat: creating one here would replace the session in the shared workspace, undoing
+    // the other tab's click — the E52 bug through the composer. Wait for the session instead.
+    if (!current && pane.sessionId) {
+      toasts.push("Still opening that session…", { detail: "It is loading from the server; try again in a moment.", tone: "info" });
+      return;
+    }
     // Files alone are still a message: the names travel as the text, the ids as metadata.
     const sent = text || `📎 ${atts.map((a) => a.name).join(", ")}`;
     sending = true;
@@ -631,19 +638,30 @@
           <div class="enter-3 flex w-full max-w-xl flex-col items-center gap-5 text-center">
             <div class="grid size-11 place-items-center rounded-lg bg-brand text-brand-ink" aria-hidden="true"><SquarePen size={20} strokeWidth={2} /></div>
             <div>
-              <h2 class="text-[20px] font-semibold tracking-tight pane-xs:text-[17px]">What should we work on?</h2>
-              <p class="mt-1.5 text-[13.5px] text-ink-muted">
-                {pane.draft.targetId === "local" ? "Runs on this machine" : `Runs headless on ${store.hosts.find((h) => h.id === pane.draft.targetId)?.label ?? "the remote host"}`},
-                starting in your home folder.
-                The chat starts when you send your first message.
-              </p>
+              {#if pane.sessionId}
+                <!-- A session this pane shows but this tab has not loaded yet (E52): not a new chat,
+                     and the composer below refuses to make it one. -->
+                <h2 class="text-[20px] font-semibold tracking-tight pane-xs:text-[17px]">Opening this session…</h2>
+                <p class="mt-1.5 text-[13.5px] text-ink-muted">Loading it from the server. It is already there.</p>
+              {:else}
+                <h2 class="text-[20px] font-semibold tracking-tight pane-xs:text-[17px]">What should we work on?</h2>
+                <p class="mt-1.5 text-[13.5px] text-ink-muted">
+                  {pane.draft.targetId === "local" ? "Runs on this machine" : `Runs headless on ${store.hosts.find((h) => h.id === pane.draft.targetId)?.label ?? "the remote host"}`},
+                  starting in your home folder.
+                  The chat starts when you send your first message.
+                </p>
+              {/if}
             </div>
+            {#if pane.sessionId}
+              <Skeleton class="h-3 w-28" />
+            {:else}
             <ul class="flex flex-wrap justify-center gap-2" aria-label="Starters">
               <li><button type="button" class="starter" onclick={() => { pane.prompt = "/"; pane.chips = []; composer?.focus(); }}><SquareSlash size={14} strokeWidth={1.75} aria-hidden="true" />Commands</button></li>
               <li><button type="button" class="starter" onclick={() => { pane.prompt = "$"; composer?.focus(); }}><Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />Skills</button></li>
               <li><button type="button" class="starter" onclick={() => onapp("resume")}><RotateCcw size={14} strokeWidth={1.75} aria-hidden="true" />Resume a session</button></li>
               <li><button type="button" class="starter" onclick={() => onapp("providers")}>Connect a provider</button></li>
             </ul>
+            {/if}
             {#if loading}
               <Skeleton class="h-3 w-28" />
             {:else if store.list.length}
