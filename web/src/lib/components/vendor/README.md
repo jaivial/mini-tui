@@ -1,0 +1,1 @@
+Source components installed from https://control-ui.dev/r/timeline.json and https://beautifului.dev/r/task-rows.json on 2026-10-20. Registry receipts retained. React components run as React islands inside Svelte. Local modifications: import paths, real task status instead of demo timers, responsive wrapping. shadcn-svelte Tabs are used natively.

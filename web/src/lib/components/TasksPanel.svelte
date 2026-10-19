@@ -36,6 +36,18 @@
 
   const planOf = $derived(new Map(plans.map((p) => [p.session, p])));
 
+  let drawerWidth = $state(Number(localStorage.getItem("mini.tasks.width")) || 720);
+  let dragging = $state(false);
+  function resize(event: PointerEvent) {
+    if (!dragging) return;
+    drawerWidth = Math.max(340, Math.min(innerWidth - 24, innerWidth - event.clientX));
+  }
+  function endResize() { if(dragging) localStorage.setItem("mini.tasks.width", String(drawerWidth)); dragging=false; }
+  function resizeKey(event: KeyboardEvent) {
+    if (!["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return;
+    event.preventDefault(); drawerWidth = event.key==="Home" ? 416 : event.key==="End" ? innerWidth-24 : Math.max(340,Math.min(innerWidth-24,drawerWidth+(event.key==="ArrowLeft" ? 64 : -64)));
+    localStorage.setItem("mini.tasks.width",String(drawerWidth));
+  }
   let dialog: HTMLDialogElement | undefined = $state();
 
   /**
@@ -85,7 +97,7 @@
   }
 </script>
 
-<svelte:window onkeydown={onkey} onpointerdown={onpress} />
+<svelte:window onkeydown={onkey} onpointerdown={onpress} onpointermove={resize} onpointerup={endResize} onpointercancel={endResize} />
 
 <style>
   /* The drawer slides in from its right edge; closing is instant (a dialog's
@@ -97,10 +109,13 @@
 
 <dialog
   bind:this={dialog}
-  class="fixed top-0 right-0 bottom-auto left-auto z-50 m-0 h-[calc(100*var(--vh))] max-h-[calc(100*var(--vh))] w-[26rem] max-w-[calc(100*var(--vw))] rounded-l-2xl border-l border-line bg-canvas p-0 text-ink shadow-2xl"
+  class="fixed top-0 right-0 bottom-auto left-auto z-50 m-0 h-[calc(100*var(--vh))] max-h-[calc(100*var(--vh))] w-[min(var(--drawer-width),100vw)] max-w-[calc(100*var(--vw))] rounded-l-2xl border-l border-line bg-canvas p-0 text-ink shadow-2xl"
+  style:--drawer-width="{drawerWidth}px"
   aria-label="Session tasks"
   onclose={oncloseevent}
 >
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+  <div role="separator" tabindex="0" aria-label="Resize task sidebar" aria-orientation="vertical" aria-valuenow={Math.round(drawerWidth)} onkeydown={resizeKey} onpointerdown={(event)=>{event.preventDefault();dragging=true;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);}} class="absolute bottom-0 left-0 top-0 z-10 hidden w-2 cursor-col-resize touch-none hover:bg-brand/30 md:block"></div>
   <div class="flex h-full min-h-0 flex-col" role="document">
     <header class="flex items-center gap-2 border-b border-line/80 px-4 py-3">
       <ListChecks size={15} strokeWidth={2} class="shrink-0 text-brand" aria-hidden="true" />

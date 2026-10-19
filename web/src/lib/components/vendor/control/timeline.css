@@ -1,0 +1,120 @@
+@layer components {
+  :where([data-control-family="timeline"][data-slot="root"]) {
+    --cui-timeline-indicator-background: var(--background);
+    --cui-timeline-indicator-foreground: var(--muted-foreground);
+    --cui-timeline-running-foreground: var(--primary-text);
+    --cui-timeline-waiting-foreground: var(--warning-text);
+    --cui-timeline-success-foreground: var(--foreground);
+    --cui-timeline-error-foreground: var(--destructive-text);
+    --cui-timeline-separator-background: var(--border);
+    --cui-timeline-title-foreground: var(--foreground);
+  }
+  :where([data-control-family="timeline"][data-slot="item"]) {
+    column-gap: calc(var(--spacing) * 3);
+    padding-block-end: calc(var(--spacing) * 5);
+  }
+
+  :where([data-control-family="timeline"][data-slot="item"]:last-child) {
+    padding-block-end: 0;
+  }
+
+  :where([data-control-family="timeline"][data-slot="content"]) {
+    gap: calc(var(--spacing) * 1);
+  }
+
+  :where([data-control-family="timeline"][data-slot="meta"]) {
+    margin-block-start: calc(var(--spacing) * 1);
+    gap: calc(var(--spacing) * 1.5);
+  }
+
+  :where([data-control-family="timeline"][data-slot="indicator"]) {
+    inline-size: calc(var(--spacing) * 4);
+    block-size: calc(var(--spacing) * 4);
+    border-radius: 9999px;
+    background: var(--cui-timeline-indicator-background);
+    color: var(--cui-timeline-indicator-foreground);
+  }
+
+  :where([data-control-family="timeline"][data-slot="item"][data-state="running"] [data-control-family="timeline"][data-slot="indicator"]) {
+    color: var(--cui-timeline-running-foreground);
+  }
+
+  :where([data-control-family="timeline"][data-slot="item"][data-state="waiting"] [data-control-family="timeline"][data-slot="indicator"]) {
+    color: var(--cui-timeline-waiting-foreground);
+  }
+
+  :where([data-control-family="timeline"][data-slot="item"][data-state="success"] [data-control-family="timeline"][data-slot="indicator"]) {
+    color: var(--cui-timeline-success-foreground);
+  }
+
+  :where([data-control-family="timeline"][data-slot="item"][data-state="error"] [data-control-family="timeline"][data-slot="indicator"]) {
+    color: var(--cui-timeline-error-foreground);
+  }
+
+  :where([data-control-family="timeline"][data-slot="separator"]) {
+    background: var(--cui-timeline-separator-background);
+  }
+
+  :where([data-control-family="timeline"][data-slot="title"]) {
+    color: var(--cui-timeline-title-foreground);
+    font-size: var(--text-label);
+    font-weight: var(--font-weight-medium);
+    line-height: calc(var(--spacing) * 5);
+    text-wrap: balance;
+  }
+
+  :where([data-control-family="timeline"][data-slot="description"]) {
+    color: var(--muted-foreground);
+    font-size: var(--text-label);
+    line-height: calc(var(--spacing) * 5);
+    text-wrap: pretty;
+  }
+}
+
+@property --cui-timeline-indicator-background {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --cui-timeline-indicator-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --cui-timeline-running-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --cui-timeline-waiting-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --cui-timeline-success-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --cui-timeline-error-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --cui-timeline-separator-background {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --cui-timeline-title-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
