@@ -15,8 +15,12 @@ def snapshot():
  nodes=[];edges=[]
  def node(label,id,**props):nodes.append(dict(label=label,id='mini-tui:'+id,props=dict(source='mini-tui',**props)))
  def edge(a,b,kind):edges.append(dict(a='mini-tui:'+a,b='mini-tui:'+b,kind=kind))
- for row in c.execute('select id,parent_id,title,task,exit_status from sessions'):
-  d=dict(row);sid=d.pop('id');parent=d.pop('parent_id') or '';node('MiniAgent',sid,**d)
+ for row in c.execute('select id,parent_id,title,task,exit_status,info_json from sessions'):
+  d=dict(row);sid=d.pop('id');parent=d.pop('parent_id') or ''
+  try:info=json.loads(d.pop('info_json') or '{}')
+  except:info={}
+  d['result']=str(info.get('submission',''))
+  node('MiniAgent',sid,**d)
   if parent:edge(parent,sid,'DELEGATES')
  for row in c.execute('select * from session_tasks'):
   d=dict(row);sid=d.pop('session_id');tid='task:'+sid;node('MiniTask',tid,**d);edge(sid,tid,'HAS_TASK')
