@@ -78,7 +78,9 @@
   const byStart = (a: { createdAt: number; id: string }, b: { createdAt: number; id: string }) =>
     b.createdAt - a.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-  const visible = $derived(store.list.filter(matches));
+  // A delegate (`<parent>~<name>`) is a task of its bot: it lives nested under it (agentTree) and is
+  // never a top-level bot, whether or not it has been opened.
+  const visible = $derived(store.list.filter((s) => !s.parentId && !s.id.includes("~")).filter(matches));
   // Stable while live: a running session's `updatedAt` changes on every step, which would reshuffle
   // these rows constantly. Live rows keep the order they were started in; the others stay newest
   // first. One partition, not three independent filters — see botGroups.ts for why that matters.
@@ -103,8 +105,10 @@
   // re-runs the effect, until Svelte throws `effect_update_depth_exceeded`. The list of ids is all
   // this effect actually needs, so that is all it may read.
   $effect(() => {
-    const ids = untrack(() => bots.map((s) => s.id));
-    agentTree.sync(ids);
+    // The ids are READ tracked (a new bot must re-run this: the team map and the nested rows came up
+    // empty for any session opened after mount); only the store write is untracked.
+    const ids = bots.map((s) => s.id);
+    untrack(() => agentTree.sync(ids));
   });
 
   const BOT_DOT: Record<BotRow["tone"], string> = {
@@ -232,6 +236,7 @@
       class="size-2 shrink-0 rounded-full {store.connected ? 'bg-ok' : 'pulse-live bg-warn'}"
       title={store.connected ? "Connected" : "Reconnecting…"}
     ></span>
+    <Button variant="ghost" size="icon" icon={Plus} title="New bot" aria-label="New bot" onclick={onnew} />
     <Button variant="ghost" size="icon" icon={full ? X : PanelLeftClose} title={full ? "Close" : "Hide sidebar"} aria-label={full ? "Close the bots list" : "Hide sidebar"} onclick={onhidesidebar} />
   </div>
 

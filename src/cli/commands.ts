@@ -7,6 +7,7 @@
  *   settings [<key> <value>]  /settings (output mode, theme, jev, jev-verifier, jev-key)
  */
 
+import { kanbanCommand as runKanban, type KanbanArgs } from "../kanban";
 import { DEFAULT_MODEL } from "../config";
 import { defaultDoctorModel, formatDoctor, runDoctor } from "../cliproxyDoctor";
 import { loadLastModel, saveLastModel } from "../lastModel";
@@ -207,6 +208,11 @@ export function tasksCommand(args: TasksArgs, out: Out, dbPath: string = DEFAULT
   } finally {
     db.close();
   }
+}
+
+/** `mini-tui kanban ...`: the bot's board (see ../kanban.ts). */
+export function kanbanCommand(args: KanbanArgs, out: Out): number {
+  return runKanban(args, out, (explicit, byControl) => resolveTaskSession(explicit, process.env, byControl));
 }
 
 export function settingsCommand(args: SettingsArgs, out: Out): number {

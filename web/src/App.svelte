@@ -45,6 +45,21 @@
   let narrow = $state(false);
   let tabbed = $state(false);
   let sidebarOpen = $state(true);
+  // Desktop sidebar width, dragged by the rail's right edge. Only a floor: the user may take all the width they want.
+  const SIDEBAR_KEY = "mini-tui.sidebarW";
+  let sidebarW = $state(Number(localStorage.getItem(SIDEBAR_KEY)) || 288);
+  function startResize(e: PointerEvent) {
+    e.preventDefault();
+    const startX = e.clientX, startW = sidebarW;
+    const move = (m: PointerEvent) => { sidebarW = Math.max(200, Math.min(window.innerWidth - 60, startW + m.clientX - startX)); };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      localStorage.setItem(SIDEBAR_KEY, String(Math.round(sidebarW)));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
   let layout = $state<HTMLElement | null>(null);
   let layoutW = $state(0);
   let layoutH = $state(0);
@@ -140,7 +155,10 @@
       .then(() => askUnknown())
       .then(() => {
         // First visit (no saved layout): open the latest session, as the app always has.
-        if (!panes.restored && !panes.focused.sessionId && store.list[0]) panes.show(panes.focusedId, store.list[0].id);
+        if (!panes.restored && !panes.focused.sessionId) {
+          const first = store.list.find((s) => !s.parentId && !s.id.includes("~"));
+          if (first) panes.show(panes.focusedId, first.id);
+        }
       })
       .catch((error) => toasts.push("Could not reach the mini-tui server", { detail: (error as Error).message, tone: "err" }))
       .finally(() => (loading = false));
@@ -558,7 +576,8 @@
   {#if sidebarOpen}
     <div
       bind:this={drawer}
-      class="enter-1 {narrow ? 'absolute inset-0 z-50' : 'relative w-[288px]'}"
+      class="enter-1 {narrow ? 'absolute inset-0 z-50' : 'relative shrink-0'}"
+      style={narrow ? undefined : `width:${sidebarW}px`}
       role={narrow ? "dialog" : undefined}
       aria-modal={narrow ? "true" : undefined}
       aria-label={narrow ? "Bots" : undefined}
@@ -587,6 +606,17 @@
         focusedSession={panes.focused.sessionId}
         {loading}
       />
+      {#if !narrow}
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          class="absolute inset-y-0 -right-1 z-40 w-2 cursor-col-resize hover:bg-[var(--accent,#6aa)]/30 active:bg-[var(--accent,#6aa)]/40"
+          onpointerdown={startResize}
+          ondblclick={() => { sidebarW = 288; localStorage.setItem(SIDEBAR_KEY, "288"); }}
+        ></div>
+      {/if}
     </div>
   {/if}
 

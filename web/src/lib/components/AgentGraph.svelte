@@ -8,7 +8,7 @@
    */
   import { SvelteFlow, Background, Controls, Handle, Position, type Node, type Edge } from "@xyflow/svelte";
   import "@xyflow/svelte/dist/style.css";
-  import AgentGraphNode from "./AgentGraphNode.svelte";
+  import TeamMapNode from "./TeamMapNode.svelte";
   import FitView from "./FitView.svelte";
   import { api } from "../api";
   import type { AgentEvent, AgentNode, AgentsView } from "../types";
@@ -21,11 +21,12 @@
     onopen: (sessionId: string) => void;
   } = $props();
 
-  const nodeTypes = { agent: AgentGraphNode };
+  const nodeTypes = { agent: TeamMapNode };
 
-  const NODE_W = 230;
-  const GAP_X = 40;
-  const GAP_Y = 90;
+  const NODE_W = 158;
+  const NODE_H = 66;
+  const GAP_X = 26;
+  const GAP_Y = 64;
 
   function isLive(n: AgentNode) {
     return n.state === "running" || n.state === "starting";
@@ -37,6 +38,7 @@
     if (n.state === "dead") return { label: "dead", tone: "err" };
     if (n.state === "waiting") return n.exitStatus && n.exitStatus !== "Submitted" ? { label: n.exitStatus, tone: "warn" } : { label: "done", tone: "ok" };
     if (n.state === "exited" && n.exitStatus && n.exitStatus !== "Submitted") return { label: "failed", tone: "err" };
+    if (n.state === "stopped" && n.steps > 0 && !n.exitStatus) return { label: "done", tone: "ok" };
     if (n.state === "stopped") return { label: "stopped", tone: "idle" };
     return { label: n.exitStatus === "Submitted" ? "done" : n.state, tone: n.exitStatus === "Submitted" ? "ok" : "idle" };
   }
@@ -88,59 +90,61 @@
 
   const graph = $derived.by(() => {
     const rows = flatten(view.nodes);
-    const byDepth = new Map<number, { node: AgentNode; depth: number }[]>();
-    for (const r of rows) {
-      const list = byDepth.get(r.depth) ?? [];
-      list.push(r);
-      byDepth.set(r.depth, list);
-    }
     const nodes: Node[] = [];
     const edges: Edge[] = [];
-    // The session itself on top, as the orchestrator root.
-    const maxWidth = Math.max(1, ...[...byDepth.values()].map((l) => l.length));
-    const totalW = (n: number) => n * NODE_W + (n - 1) * GAP_X;
+    // The same tidy hierarchy as the team map: parents centred over their subtrees.
+    const byPath = new Map<string, AgentNode>();
+    for (const r of rows) if (!byPath.has(r.node.path)) byPath.set(r.node.path, r.node);
+    const parentOf = (p: string) => (p.includes("/") ? p.split("/").slice(0, -1).join("/") : "");
+    const kidsOf = new Map<string, string[]>();
+    for (const p of [...byPath.keys()].sort((x, y) => (byPath.get(x)!.startedAt - byPath.get(y)!.startedAt))) {
+      kidsOf.set(parentOf(p), [...(kidsOf.get(parentOf(p)) ?? []), p]);
+    }
+    const widthOf = new Map<string, number>();
+    const measure = (path: string): number => {
+      const kids = kidsOf.get(path) ?? [];
+      const kw = kids.map(measure);
+      const w = kids.length ? Math.max(kw.reduce((a, b) => a + b, 0) + (kids.length - 1) * GAP_X, NODE_W) : NODE_W;
+      widthOf.set(path, w);
+      return w;
+    };
+    const totalW = measure("");
     nodes.push({
       id: "root",
       type: "agent",
-      position: { x: (totalW(maxWidth) - NODE_W) / 2, y: 0 },
-      data: { name: "session", label: "orchestrator", tone: "live", model: "", steps: 0, cost: 0, task: "", root: true, sessionId: "", state: "" },
+      position: { x: totalW / 2 - NODE_W / 2, y: 0 },
+      data: { name: "session", label: "orchestrator", tone: "live", task: "", avatarId: "session", root: true, sessionId: "", state: "" },
       draggable: false,
     });
-    for (const [depth, list] of byDepth) {
-      const ordered = [...list].sort((a, b) => a.node.startedAt - b.node.startedAt);
-      const x0 = (totalW(maxWidth) - totalW(ordered.length)) / 2;
-      ordered.forEach((r, i) => {
-        const s = status(r.node);
+    const place = (path: string, x0: number, depth: number) => {
+      const n = byPath.get(path);
+      if (n) {
+        const s = status(n);
+        const w = widthOf.get(path) ?? NODE_W;
         nodes.push({
-          id: `a-${r.node.path}`,
+          id: `a-${n.path}`,
           type: "agent",
-          position: { x: x0 + i * (NODE_W + GAP_X), y: (depth + 1) * (GAP_Y + 60) },
-          data: {
-            name: r.node.name,
-            label: s.label,
-            tone: s.tone,
-            model: r.node.model,
-            steps: r.node.steps,
-            cost: r.node.cost,
-            task: r.node.task,
-            origin: r.node.origin,
-            root: false,
-            sessionId: r.node.sessionId,
-            state: r.node.state,
-          },
+          position: { x: x0 + w / 2 - NODE_W / 2, y: depth * (NODE_H + GAP_Y) },
+          data: { name: n.name, label: s.label, tone: s.tone, task: n.task, avatarId: n.sessionId, root: false, sessionId: n.sessionId, state: n.state },
           draggable: false,
         });
-        const parentPath = r.node.path.includes("/") ? r.node.path.split("/").slice(0, -1).join("/") : null;
+        const pp = parentOf(n.path);
         edges.push({
-          id: `t-${parentPath ?? "root"}-${r.node.path}`,
-          source: parentPath ? `a-${parentPath}` : "root",
-          target: `a-${r.node.path}`,
-          ...(r.node.origin ? { label: r.node.origin } : {}),
-          animated: isLive(r.node),
+          id: `t-${pp || "root"}-${n.path}`,
+          source: pp ? `a-${pp}` : "root",
+          target: `a-${n.path}`,
+          ...(n.origin ? { label: n.origin } : {}),
+          animated: isLive(n),
           style: "stroke: var(--color-line-strong);",
         });
-      });
-    }
+      }
+      let kx = x0;
+      for (const k of kidsOf.get(path) ?? []) {
+        place(k, kx, depth + 1);
+        kx += (widthOf.get(k) ?? NODE_W) + GAP_X;
+      }
+    };
+    place("", 0, 0);
     const paths = new Set(rows.map((r) => r.node.path));
     edges.push(...relationEdges(view.events, paths));
     const value = { nodes, edges };

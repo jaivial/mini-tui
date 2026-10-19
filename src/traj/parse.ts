@@ -335,6 +335,9 @@ export function messagesToEvents(
         } else if (!taskSeen) {
           taskSeen = true;
           events.push({ type: "task", text: cleanTaskText(getContentString(message)) });
+        } else if (isRuntimeRetryNudge(getContentString(message))) {
+          // The runtime's own retry instruction to the model (output cut off by the token limit).
+          // It is part of the transcript the model needs, never something the user or a bot said.
         } else {
           events.push({ type: "notice", text: getContentString(message) });
         }
@@ -350,6 +353,8 @@ export function messagesToEvents(
         }
         const text = getContentText(message.content);
         const cost = extraOf(message).cost;
+        // The cut-off draft of an output-limited turn: kept in the trajectory, never shown as a reply.
+        if (extraOf(message).interrupt_type === "OutputLimitDraft") continue;
         if (text.trim()) {
           events.push({ type: "assistant", text, cost: typeof cost === "number" ? cost : undefined });
         }
@@ -403,4 +408,9 @@ export function parseTrajectory(traj: Trajectory, options: ParseOptions = {}): P
     events: messagesToEvents(traj.messages ?? [], options, 0),
     info: parseInfo(traj),
   };
+}
+
+/** The format-error template's output-limit variant: an instruction for the model, not conversation. */
+export function isRuntimeRetryNudge(text: string): boolean {
+  return /^\s*Your previous response reached the output token limit \(finish_reason=/.test(text);
 }

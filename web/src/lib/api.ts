@@ -75,6 +75,8 @@ export const api = {
   folders: (path: string, hostId = "local") =>
     call<FolderListing>(`/folders?${new URLSearchParams({ path, ...(hostId && hostId !== "local" ? { hostId } : {}) })}`),
   sessions: () => call<SessionMeta[]>("/sessions"),
+  /** Every bot's kanban cards (`mini-tui kanban`), newest first. */
+  kanban: () => call<{ id: string; session: string; title: string; description: string; column: string; assignee: string; result: string; updatedAt: number }[]>("/kanban"),
   session: (id: string) => call<WireSession>(`/sessions/${id}`),
   create: (body: CreateSessionBody) =>
     call<WireSession>("/sessions", { method: "POST", body: JSON.stringify(body) }),

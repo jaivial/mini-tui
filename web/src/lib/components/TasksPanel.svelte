@@ -4,6 +4,7 @@
   import PlanDag from "./PlanDag.svelte";
   import QueueSection from "./QueueSection.svelte";
   import ChannelsSection from "./ChannelsSection.svelte";
+  import KanbanSection from "./KanbanSection.svelte";
   import { todoCounts, whereLabel, type TaskRow } from "../tasks";
   import { planSummary } from "../plan";
   import type { SessionPlan } from "../types";
@@ -115,6 +116,7 @@
       {#if !seen}
         <!-- Closed and never opened: nothing of the board is built. See `seen` above. -->
       {:else}
+      <KanbanSection {open} />
       <QueueSection {open} />
       <ChannelsSection {open} />
       {#if !rows.length}
