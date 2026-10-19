@@ -316,7 +316,12 @@
             prompt: sent,
             target: host ? "remote" : "local",
             hostId: host?.id,
-            model: draft.model || undefined,
+            // Send the model the composer SHOWS (currentModel), not only an explicit draft pick:
+            // omitting it lets the server fall back to the shared last-model file, which any other
+            // session may have flipped since this page read it - the run then uses a different
+            // model than the one displayed (seen live: button said MiniMax-M3.1-Flash, the run
+            // went out on MiniMax-M3.1-Flash-Preview and got a 401).
+            model: currentModel || undefined,
             attachments: atts,
           });
           store.adopt(created);
