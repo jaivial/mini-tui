@@ -52,9 +52,11 @@ export class NoteEditor {
 
   /**
    * `client` is the transport (`NotesClient`); `emit` is called after every change the screen must
-   * see (the panel copies `body` and `save` out of here into its reactive state).
+   * see (the panel copies `body` and `save` out of here into its reactive state). `now` is the
+   * app's clock — server time (`lib/clock.ts`); the one fallback timestamp below must live in the
+   * same clock as the server's `updatedAt` values it stands in for (E53).
    */
-  constructor(client: SaveClient, emit: () => void = () => {}) {
+  constructor(client: SaveClient, emit: () => void = () => {}, private now: () => number = () => Date.now()) {
     this.#client = client;
     this.#emit = emit;
   }
@@ -232,7 +234,7 @@ export class NoteEditor {
         if (result.ok) {
           this.base = result.note.updatedAt;
           this.savedBody = text;
-          this.save = this.body === text ? { kind: "saved", at: result.note.updatedAt || Date.now() } : { kind: "dirty" };
+          this.save = this.body === text ? { kind: "saved", at: result.note.updatedAt || this.now() } : { kind: "dirty" };
           this.#emit();
           if (this.body !== text) this.#schedule(id, SAVE_DELAY); // typed during the save
         } else if (result.conflict.body === text) {

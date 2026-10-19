@@ -1,4 +1,5 @@
 /** Small shared formatters, kept identical in spirit to the TUI's. */
+import { ageSeconds, ageWords } from "./ago";
 
 export function boundedText(text: string, maxLines: number, maxChars: number): string {
   if (text.length <= maxChars) return text;
@@ -12,18 +13,14 @@ export function cost(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+/**
+ * How long a turn has been running. The words live in `lib/ago.ts` (E53: every "how long ago" in
+ * one place) and the caller hands the clock's `now` — this file no longer has a clock of its own.
+ */
 export function duration(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
+  return ageWords("elapsed", Math.floor(Math.max(0, ms) / 1000));
 }
 
-export function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
+export function relativeTime(ts: number, now: number): string {
+  return ageWords("relative", ageSeconds(ts, now), ts);
 }

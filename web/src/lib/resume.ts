@@ -5,7 +5,7 @@ export type Bucket = "Today" | "Yesterday" | "This week" | "Earlier";
 const DAY = 86_400_000;
 
 /** Calendar days, in the viewer's timezone: 00:30 is "Today" even if it is 26 hours after yesterday's session. */
-export function bucketOf(updatedAt: number, now = Date.now()): Bucket {
+export function bucketOf(updatedAt: number, now: number): Bucket {
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
   const today = start.getTime();
@@ -16,7 +16,7 @@ export function bucketOf(updatedAt: number, now = Date.now()): Bucket {
 }
 
 /** Groups in reading order, each keeping the incoming (newest-first) order; empty groups are dropped. */
-export function groupByRecency(items: HistoryItem[], now = Date.now()): { bucket: Bucket; items: HistoryItem[] }[] {
+export function groupByRecency(items: HistoryItem[], now: number): { bucket: Bucket; items: HistoryItem[] }[] {
   const order: Bucket[] = ["Today", "Yesterday", "This week", "Earlier"];
   const map = new Map<Bucket, HistoryItem[]>(order.map((b) => [b, []]));
   for (const item of items) map.get(bucketOf(item.updatedAt, now))!.push(item);

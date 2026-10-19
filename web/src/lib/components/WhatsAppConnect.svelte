@@ -6,6 +6,8 @@
    * apikey and regenerates both on demand (rate-limited, ~60 s TTL); this
    * section only renders what it is given and never sees a secret.
    */
+  import { nextSecond } from "../ago";
+  import { clock } from "../stores/clock.svelte";
   import { RefreshCw } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import {
@@ -29,7 +31,6 @@
   let pairBusy = $state(false);
   let pairError = $state("");
   let remaining = $state(0);
-  let ticker: ReturnType<typeof setInterval> | undefined;
   let poller: ReturnType<typeof setInterval> | undefined;
   // Same rule as ChannelsSection: a response that arrives late must not paint, and closing
   // the panel must cancel what is in flight. Measured: a stale failure from the first poll
@@ -90,19 +91,27 @@
     }
   }
 
+  /**
+   * The pairing code's countdown ("Caduca en N s") is a claim about the clock (E53): it reads the
+   * shared one and registers the second it names, stopping itself at zero. It used to run its own
+   * 1 s `setInterval` — which kept ticking after the code expired and after the modal closed.
+   */
   function stopTicker() {
-    if (ticker) clearInterval(ticker);
-    ticker = undefined;
+    remaining = 0;
   }
 
   function startTicker(expiresAt: number) {
-    stopTicker();
-    remaining = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
-    ticker = setInterval(() => {
-      remaining = Math.max(0, Math.ceil(((pair?.expiresAt ?? expiresAt) - Date.now()) / 1000));
-      if (remaining <= 0) stopTicker();
-    }, 1000);
+    remaining = Math.max(0, Math.ceil((expiresAt - clock.now) / 1000));
   }
+
+  $effect(() => {
+    const at = pair?.expiresAt;
+    if (!at || remaining <= 0) return;
+    return clock.watch((now) => {
+      remaining = Math.max(0, Math.ceil((at - now) / 1000));
+      return remaining > 0 ? nextSecond(now) : null;
+    });
+  });
 
   function pairMessage(error?: string): string {
     switch (error) {

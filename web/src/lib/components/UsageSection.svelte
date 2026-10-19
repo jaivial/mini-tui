@@ -21,6 +21,7 @@
     type UsageView,
   } from "../usageClient";
   import { cancelLoad, createUsageLoad, isCancel, isLatest, settleLoad, startLoad } from "../usageLoad";
+  import { clock } from "../stores/clock.svelte";
 
   let { open = false }: { open?: boolean } = $props();
 
@@ -77,6 +78,14 @@
   function rows(list: UsageRow[]) {
     return list.length ? list : [];
   }
+
+  // "último uso hace 3 min" is a claim about the clock (E53): each row is woken exactly when its
+  // words can change. It used to read `Date.now()` at render and freeze there.
+  $effect(() => {
+    const seen = [...(view?.byProvider ?? []), ...(view?.byModel ?? [])].map((r) => r.lastUsedAt).filter((t): t is number => !!t);
+    const offs = seen.map((t) => clock.watchAge("when", t));
+    return () => offs.forEach((off) => off());
+  });
 </script>
 
 <section class="mb-3 rounded-2xl border border-line/80 bg-surface/70 p-3" aria-label="Uso de modelos">
@@ -156,7 +165,7 @@
                 <span>· {formatTokens(rowTokens(row))} tokens</span>
                 <span>· {formatLatency(row.avgLatencyMs)}</span>
                 {#if row.errors}<span class="text-warn">· {row.errors} errores</span>{/if}
-                <span>· último uso {formatWhen(row.lastUsedAt)}</span>
+                <span>· último uso {formatWhen(row.lastUsedAt, clock.now)}</span>
               </div>
             </li>
           {/each}

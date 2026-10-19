@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { duration } from "../format";
+  import { clock } from "../stores/clock.svelte";
   /**
    * Pixel-grid loader with a shimmering label and an elapsed timer, after beautifului.dev's
    * "Loading State". The grid and the shimmer are decoration (`aria-hidden`); the label is the
@@ -19,16 +21,12 @@
     return (c + Math.abs(r - 1)) * 90;
   });
 
-  let now = $state(Date.now());
+  // The loader's elapsed counter is a claim about the clock (E53): it reads the shared one and is
+  // woken exactly when its words can change. It used to run its own 1 s `setInterval` — and it had
+  // its own copy of the elapsed words ("1m 05s" vs the app's "1m 5s").
+  const elapsed = $derived.by(() => (since ? duration(Math.max(0, clock.now - since)) : ""));
   $effect(() => {
-    const t = setInterval(() => (now = Date.now()), 1000);
-    return () => clearInterval(t);
-  });
-
-  const elapsed = $derived.by(() => {
-    if (!since) return "";
-    const s = Math.max(0, Math.floor((now - since) / 1000));
-    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+    if (since) return clock.watchAge("elapsed", since);
   });
 </script>
 

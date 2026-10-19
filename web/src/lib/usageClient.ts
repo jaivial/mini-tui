@@ -11,6 +11,8 @@
  * print 0 is exactly the lie this task is meant to prevent.
  */
 
+import { ageSeconds, ageWords } from "./ago";
+
 export interface UsageRow {
   key: string;
   label: string;
@@ -204,13 +206,14 @@ export function formatLatency(ms: number | null): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
 }
 
-export function formatWhen(at: number | null): string {
+/**
+ * When a model was last used. The words live in `lib/ago.ts` (E53: every "how long ago" in one
+ * place) and `now` comes from the shared clock — this used to read `Date.now()` at render time and
+ * freeze there.
+ */
+export function formatWhen(at: number | null, now: number): string {
   if (!at) return "nunca";
-  const delta = Date.now() - at;
-  if (delta < 60_000) return "hace un momento";
-  if (delta < 3_600_000) return `hace ${Math.floor(delta / 60_000)} min`;
-  if (delta < 86_400_000) return `hace ${Math.floor(delta / 3_600_000)} h`;
-  return new Date(at).toLocaleDateString();
+  return ageWords("when", ageSeconds(at, now), at);
 }
 
 /** Total tokens of a row, cache included: what the operator actually paid for. */
