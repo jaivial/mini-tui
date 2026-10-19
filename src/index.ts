@@ -47,6 +47,7 @@ Scripting commands (add --json for machine-readable output):
   models                              list models (/model catalog + /connect providers)
   model [<id>]                        print / set the default model of new sessions
   skills                              list $skills
+  kanban add|move|assign|done|note|link|list|show|search   the bot's board: one task, one subagent
   tasks set [--session <id>] [--title <t>] [--description <text>]
             [--done <item>]... [--pending <item>]... [--left <item>]...
                                 write this session's task card (replaces it whole)
@@ -145,6 +146,9 @@ if (parsed.command !== "run" && parsed.command !== "view") {
       break;
     case "tasks":
       code = commands.tasksCommand(cmd, out);
+      break;
+    case "kanban":
+      code = commands.kanbanCommand(cmd, out);
       break;
     case "settings":
       code = commands.settingsCommand(cmd, out);
