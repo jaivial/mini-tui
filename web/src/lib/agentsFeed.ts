@@ -103,7 +103,9 @@ export class AgentsFeed {
       },
       apply: (_id, view) => deps.apply(view),
       hasLive: () => deps.hasLive?.() ?? false,
-      hidden: () => deps.hidden?.() ?? false,
+      // Default to the PAGE's own visibility: a watcher must never poll a tab that draws nothing
+      // (E53/E54's rule). The wiring may override it; tests do.
+      hidden: () => deps.hidden?.() ?? (typeof document === "undefined" ? false : document.hidden),
       now: () => deps.now?.() ?? Date.now(),
       setTimer: (fn, ms) => (deps.setTimer ?? ((f, m) => setTimeout(f, m)))(fn, ms),
       clearTimer: (h) => (deps.clearTimer ?? ((x) => clearTimeout(x as ReturnType<typeof setTimeout>)))(h),
