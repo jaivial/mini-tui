@@ -178,7 +178,7 @@ export class SubagentSync {
     for (const entry of entries) {
       const id = subagentSessionId(parentId, entry.name);
       views.push(toView(parentId, entry));
-      try { settleFromSubagent(this.db(), parentId, entry.name, entry.state, entry.exit_status); } catch { /* best-effort */ }
+      try { settleFromSubagent(this.db(), parentId, entry.name, entry.state, entry.exit_status, entry.steps); } catch { /* best-effort */ }
       try {
         // The session row only changes when the roster entry itself does: a child that is only
         // ticking its cost or state changes the transcript below, not this row. At 100 children
