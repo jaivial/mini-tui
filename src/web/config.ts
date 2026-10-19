@@ -127,6 +127,31 @@ export async function connectProvider(
   return { ok: true, provider: connectedProviders([connection])[0]! };
 }
 
+/**
+ * Ask the provider what models this connection's base URL and key can use right now, and store that
+ * list. Only the live answer is kept (no built-in models mixed in), so the panel shows exactly what
+ * the endpoint serves. A failure leaves the saved list untouched.
+ */
+export async function refetchProviderModels(
+  id: string,
+  deps: { fetch?: typeof fetchProviderModels; load?: typeof loadConnections; save?: typeof saveConnection } = {},
+): Promise<ConnectResult | { ok: false; error: string; notFound: true }> {
+  const connection = (deps.load ?? loadConnections)().find((c) => c.id === id);
+  if (!connection) return { ok: false, error: "not connected", notFound: true };
+  const def = PROVIDERS.find((p) => p.id === id);
+  if (!def) return { ok: false, error: "unknown provider" };
+  let models: string[];
+  try {
+    models = await (deps.fetch ?? fetchProviderModels)({ ...def, baseUrl: connection.baseUrl }, connection.key);
+  } catch (error) {
+    return { ok: false, error: `could not list models at ${connection.baseUrl}: ${(error as Error).message}` };
+  }
+  if (!models.length) return { ok: false, error: `${connection.baseUrl} returned no models` };
+  const next: SavedConnection = { ...connection, models, defaultModel: models.includes(connection.defaultModel) ? connection.defaultModel : models[0]! };
+  (deps.save ?? saveConnection)(next);
+  return { ok: true, provider: connectedProviders([next])[0]! };
+}
+
 /** Forget a connection. Returns false when there was none. */
 export function disconnectProvider(id: string, path?: string): boolean {
   const all = loadConnections(path);
