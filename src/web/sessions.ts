@@ -503,6 +503,12 @@ export class SessionManager {
       // per session per tick: at 100 children that was the largest cost of an idle tick.
       if (!viewsChanged(entry.session.subagents, views)) continue;
       entry.session.subagents = views;
+      // A yielded parent is available, but the delegated outcome is not finished.
+      if (entry.session.status === "done" && views.some((v) => v.state === "running" || v.state === "starting")) {
+        entry.session.status = "idle";
+        entry.session.exitStatus = "";
+      }
+
       log("session.subagents", { id: entry.session.id, children: views.map((v) => `${v.name}:${v.state}`).join(",") });
       this.#emit(entry);
     }
@@ -963,7 +969,9 @@ export class SessionManager {
     // turn "interrupted" back into "done" (or "error").
     if (exit && exit.type === "exit" && entry.session.status !== "interrupted") {
       entry.session.exitStatus = exit.exitStatus;
-      entry.session.status = exit.exitStatus === "Submitted" ? "done" : "error";
+      const childrenWorking = entry.session.subagents?.some((v) => v.state === "running" || v.state === "starting");
+      entry.session.status = exit.exitStatus === "Submitted" ? (childrenWorking ? "idle" : "done") : "error";
+      if (childrenWorking && exit.exitStatus === "Submitted") entry.session.exitStatus = "";
     }
     // Keep the retained copy slim: the journal-backed watcher re-slims after
     // the callback, and a long run otherwise holds every raw API response.
