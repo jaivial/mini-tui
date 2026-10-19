@@ -41,6 +41,19 @@ function parse(text: string, builtin: boolean): AgentDef | null {
   }
 }
 
+/**
+ * Every FILE `listAgentDefs` reads. The dir itself is watched as a listing (the caller decides how:
+ * a file that appears changes the listing however coarse the filesystem's timestamps are).
+ */
+export function agentDefsInputs(): string[] {
+  const dir = agentsDir();
+  const out = [BUILTIN];
+  if (existsSync(dir)) {
+    for (const f of readdirSync(dir).filter((f) => f.endsWith(".json")).sort()) out.push(join(dir, f));
+  }
+  return out;
+}
+
 export function listAgentDefs(): AgentDef[] {
   const out = new Map<string, AgentDef>();
   if (existsSync(BUILTIN)) {

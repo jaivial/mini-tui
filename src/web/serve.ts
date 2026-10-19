@@ -20,7 +20,9 @@ import { allCards } from "../kanban";
 import { FolderError, listLocal, listRemote } from "./folders";
 import { Hub, type HubClient } from "./hub";
 import { Terminals } from "./terminals";
-import { agentsView } from "./agents";
+import { briefOf } from "./agents";
+import { AgentsViewCache } from "./agentsCache";
+import { AgentsStreamHub } from "./agentsStream";
 import { listAgentDefs } from "../mini/agentDefs";
 import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
 import { homedir } from "node:os";
@@ -217,6 +219,17 @@ hub.workspace = { get: () => workspace.get(), save: (doc, base) => workspace.sav
 hub.tasks = { list: () => listTasks(sessions.db()) };
 // The DAG of every session running a plan (the hub writes subagents/plan.json; the board draws it).
 hub.plans = { plans: () => sessions.plans() };
+// The agents tree (the panel's live view, the sidebar's rows): ONE build per real change — the
+// build's own input stamps decide, so a quiet tree costs a few `stat`s — and ONE poller shared by
+// every open `/agents/stream` on a session. The deployed handler rebuilt and serialized the whole
+// 34 kB view per stream every 2 s and threw it away unless it changed (measured, E55).
+const agentsCache = new AgentsViewCache();
+const agentsHub = new AgentsStreamHub({
+  payload: (id) => agentsCache.get(id, sessions.trajsOf(id)).fullJson,
+  // The hub's timer is one-shot (a tick schedules the next one): interval semantics would pile up.
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+});
 // `MINITUI_WEB_SYNC_MS` <= 0 means "no background sync" (the session sync's rule), never a spin.
 const tasksSyncMs = Number(process.env.MINITUI_WEB_SYNC_MS ?? 1000);
 if (tasksSyncMs > 0) {
@@ -1030,7 +1043,10 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       const agentsMatch = path.match(/^\/sessions\/([^/]+)\/agents$/);
       if (agentsMatch && request.method === "GET") {
         const id = decodeURIComponent(agentsMatch[1] as string);
-        return json(agentsView(id, sessions.trajsOf(id)));
+        const view = agentsCache.get(id, sessions.trajsOf(id)).view;
+        // `?brief=1` is what the sidebar polls: it renders the rows and throws `events` + `defs`
+        // away (34 407 B per answer for 2 rows on the deployed surface, 93% of them `defs`).
+        return json(new URL(request.url).searchParams.get("brief") ? briefOf(view) : view);
       }
       if (path === "/agents" && request.method === "GET") return json(listAgentDefs());
       // Live agents view: snapshot, then a push whenever the tree or its events change. The
@@ -1043,19 +1059,11 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         let cleanup = () => {};
         const stream = new ReadableStream({
           start(controller) {
-            let last = "";
-            const push = () => {
-              try {
-                const payload = JSON.stringify(agentsView(streamId, sessions.trajsOf(streamId)));
-                if (payload === last) return;
-                last = payload;
-                controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
-              } catch {
-                cleanup();
-              }
-            };
-            push();
-            const poll = setInterval(push, 2000);
+            // The poller is per SESSION and shared (one rebuild + one diff for every open stream);
+            // this subscriber only sees what differs from what it last received.
+            const unsubscribe = agentsHub.subscribe(streamId, (payload) => {
+              controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
+            });
             const ping = setInterval(() => {
               try {
                 controller.enqueue(encoder.encode(`: ping\n\n`));
@@ -1064,7 +1072,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
               }
             }, 25_000);
             cleanup = () => {
-              clearInterval(poll);
+              unsubscribe();
               clearInterval(ping);
             };
             request.signal.addEventListener("abort", cleanup);

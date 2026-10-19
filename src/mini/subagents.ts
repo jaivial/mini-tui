@@ -84,6 +84,16 @@ export function subagentIndexPath(trajPath: string): string {
  */
 const indexCache = new Map<string, { stamp: string; entries: SubagentEntry[]; at: number }>();
 
+/**
+ * Forget a parsed roster (or all of them). The cache below is keyed `mtimeMs:size` with a 1 s age
+ * window; a caller that KNOWS a file moved (a finer-grained fingerprint flipped, E55) must not be
+ * handed the parse from before it did.
+ */
+export function invalidateSubagentIndex(path?: string): void {
+  if (path) indexCache.delete(path);
+  else indexCache.clear();
+}
+
 export function readSubagentIndex(trajPath: string): SubagentEntry[] {
   const path = subagentIndexPath(trajPath);
   let stamp = "";

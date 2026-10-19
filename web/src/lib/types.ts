@@ -389,3 +389,9 @@ export interface AgentsView {
   events: AgentEvent[];
   defs: AgentDef[];
 }
+
+/** `?brief=1`: the rows only. What the sidebar polls — it renders `nodes` and drops the rest. */
+export interface AgentsBrief {
+  sessionId: string;
+  nodes: AgentNode[];
+}
