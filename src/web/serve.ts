@@ -1011,7 +1011,11 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
 
       if (path === "/kanban" && request.method === "GET") return json(allCards(sessions.db(), 2000));
       if (path === "/orchestration/graph" && request.method === "GET") {
-        try { return json(JSON.parse(readFileSync(join(homedir(), ".config/mini-tui/orchestration-graph-status.json"), "utf8"))); }
+        try {
+          const sync=JSON.parse(readFileSync(join(homedir(), ".config/mini-tui/orchestration-graph-status.json"), "utf8"));
+          let rag={ok:false};try {rag=JSON.parse(readFileSync(join(homedir(), ".config/mini-tui/orchestration-rag-status.json"), "utf8"));}catch{}
+          return json({...sync,rag});
+        }
         catch { return json({ ok: false, error: "Graph sync has not completed" }); }
       }
       if (path === "/sessions" && request.method === "GET") return json(sessions.list().map(summarize));
