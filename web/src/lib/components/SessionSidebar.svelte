@@ -227,7 +227,8 @@
   <!-- The rail's own header: what it is, the connection, and the way out. -->
   <div class="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2">
     <Avatar id="mini-tui" size={26} />
-    <span class="min-w-0 flex-1 truncate text-[15px] leading-5 font-semibold tracking-[-0.01em]">Bots</span>
+    <span class="shrink-0 text-[15px] leading-5 font-semibold tracking-[-0.01em]">Bots</span>
+    <span class="min-w-0 flex-1" aria-hidden="true"></span>
     <!--
       The connection state is a dot, not a word: it is ambient information and
       never needs a full line of the rail.
@@ -314,7 +315,7 @@
             <button
               data-nav
               type="button"
-              class="interactive flex min-h-14 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[18px] px-2 text-left max-md:pr-14"
+              class="interactive flex min-h-14 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[18px] px-2 text-left max-md:pr-[9.5rem]"
               onclick={() => onopen(session.id)}
               ondblclick={(e) => {
                 // A double-click is also two clicks, and a single click OPENS the session:
