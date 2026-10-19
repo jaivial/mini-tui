@@ -4,10 +4,13 @@
  * flattened to rows the nested sidebar list can render directly. Polled quietly — the
  * agent files change without any socket push, and a handful of open sessions cost a
  * handful of cheap cached reads per tick. The pure flattening (and the per-path dedupe
- * a resumed run needs) lives in `../agentTreeRows`, where the test harness can reach it.
+ * a resumed run needs) lives in `../agentTreeRows`, where the test harness can reach it,
+ * and the poll's rules live in `../agentTreePoll` (one loop: a slow or hung read cannot
+ * stretch or silence the others — measured, E54). This module is the wiring only.
  */
 import { api } from "../api";
 import { viewOf, type SessionBots } from "../agentTreeRows";
+import { AgentTreePoll } from "../agentTreePoll";
 
 export type { BotRow, SessionBots } from "../agentTreeRows";
 
@@ -16,42 +19,35 @@ const EMPTY: SessionBots = { rows: [], live: 0, total: 0 };
 class AgentTreeStore {
   /** Per open session: its bots, or EMPTY before the first read lands. */
   trees = $state<Record<string, SessionBots>>({});
-  #wanted: string[] = [];
-  #sleeping = false;
+  #poll: AgentTreePoll = new AgentTreePoll({
+    read: async (id, signal) => viewOf(await api.agents(id, { signal })),
+    apply: (id, view) => {
+      this.trees[id] = view as SessionBots;
+    },
+    hasLive: (): boolean => this.#poll.wanted.some((id: string) => this.trees[id]?.live),
+    hidden: () => document.hidden,
+    now: () => Date.now(),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  });
 
   /** Track the sessions the sidebar shows; dropped ones stop being polled. */
   sync(ids: string[]) {
     const next = [...new Set(ids)].sort();
-    const old = this.#wanted;
-    if (old.length === next.length && old.every((id, i) => id === next[i])) return;
-    this.#wanted = next;
     for (const id of next) if (!this.trees[id]) this.trees[id] = EMPTY;
-    this.#wake();
+    this.#poll.sync(next);
   }
 
-  /** One loop for the whole sidebar, however many sessions are open. */
-  async #wake() {
-    if (this.#sleeping) return;
-    this.#sleeping = true;
-    while (this.#wanted.length) {
-      const ids = this.#wanted;
-      await Promise.all(
-        ids.map(async (id) => {
-          try {
-            const v = viewOf(await api.agents(id));
-            // A session that closed mid-tick: drop it rather than remember a ghost.
-            if (!this.#wanted.includes(id)) return;
-            this.trees[id] = v;
-          } catch {
-            // Keep the last good tree; the next tick tries again.
-          }
-        }),
-      );
-      const pace = this.#wanted.some((id) => this.trees[id]?.live) ? 3000 : 5000;
-      await new Promise((r) => setTimeout(r, document.hidden ? pace * 2 : pace));
-    }
-    this.#sleeping = false;
+  /** The tab was seen again: poll at once instead of waiting out the suspended cadence. */
+  resync() {
+    this.#poll.resync();
   }
 }
 
 export const agentTree = new AgentTreeStore();
+
+// A hidden tab's poll is suspended (E53's clock rule); coming back polls immediately. This is the
+// only place the store may touch the page's visibility: `agentTreePoll` gets it injected.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) agentTree.resync();
+});
