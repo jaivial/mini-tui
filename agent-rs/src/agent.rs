@@ -673,6 +673,12 @@ impl Agent {
                     if dropped == 1 { "y" } else { "ies" }
                 );
             }
+            // Forked workers inherit history, not the main orchestrator role.
+            if std::env::var_os("MINI_AGENT_DEPTH").is_some() {
+                let system = render(&self.config.system_template, &self.template_vars()).map_err(template_error)?;
+                history.retain(|m| role(m) != "system");
+                history.insert(0, self.model.format_message("system", &system, None));
+            }
             self.messages = Self::repair_tool_call_history(history);
             if compact_only {
                 self.compact_requested = true;
