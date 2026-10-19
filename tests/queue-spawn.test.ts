@@ -154,9 +154,8 @@ describe("there is only one place that spawns a queue command", () => {
     // (channels/queueBridge.ts is `systemctl is-active`, asserted below; it is not a queue launch.)
     expect(spawnSites()).toEqual([
       "channels/queueBridge.ts",
-      "mini/queueSpawn.ts",
       "mini/spawn.ts",
-      "web/folders.ts",
+      "proc/spawnBounded.ts",
       "web/ssh.ts",
       "web/terminals.ts",
     ]);
@@ -176,5 +175,17 @@ describe("there is only one place that spawns a queue command", () => {
       expect(code).not.toContain("Bun.spawn");
       expect(code).toContain("spawnQueue(");
     }
+  });
+
+  test("the remote folder listing is an adapter too (E49): same launcher, same bounds", () => {
+    // `web/folders.ts` was the LAST launcher with its own copy of "deadline + kill + read", and measured
+    // against the deployed code it had none of them: 200 MiB of remote output became 628 MiB of RSS in
+    // the web process, and a child that ignored SIGTERM left the call pending forever.
+    const source = readFileSync(join(import.meta.dir, "..", "src", "web", "folders.ts"), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toContain("Bun.spawn");
+    expect(code).toContain("spawnBounded(");
+    // And it must not have reintroduced the older read-whole-pipe shape on the way.
+    expect(code).not.toContain("new Response(proc.");
   });
 });
