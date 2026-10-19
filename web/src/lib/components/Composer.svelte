@@ -10,7 +10,7 @@
   import { skillQueryAt } from "../../../../src/skillMatch";
   import { addChip, announce, composePrompt, hasMessage, removeChip, type Chip as ChipT } from "../chips";
   import { step } from "../models";
-  import { fitHeight } from "../grow";
+  import { fitHeight, MAX_LINES } from "../grow";
   import type { PromptMemory } from "../promptMemory";
   import { humanSize, uploadAttachment, ATTACH_ACCEPT, ATTACH_MAX, type AttachmentRef } from "../attachments";
   import {
@@ -343,7 +343,7 @@
   }
 
   /**
-   * The bar is one line when empty and grows a line at a time up to five, then scrolls (`lib/grow.ts`).
+   * The bar is one line when empty and grows a line at a time up to five (ten on desktop), then scrolls (`lib/grow.ts`).
    *
    * The height is measured on a hidden mirror (same width, font and padding), never on the field
    * itself, so the visible box is not collapsed and re-expanded on every keystroke. The result is
@@ -360,7 +360,9 @@
     const cs = getComputedStyle(area);
     const line = parseFloat(cs.lineHeight) || 26;
     const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-    const fit = fitHeight(mirror.offsetHeight, line, pad);
+    // Desktop (wide window, precise pointer) grows to 10 lines; phones keep 5.
+    const desktop = typeof matchMedia === "function" && matchMedia("(min-width: 768px) and (pointer: fine)").matches;
+    const fit = fitHeight(mirror.offsetHeight, line, pad, desktop ? 10 : MAX_LINES);
     boxHeight = fit.height;
     scrolls = fit.scrolls;
     // While typing at the end of a scrolling field, keep the newest line fully in view. The browser
@@ -491,8 +493,8 @@
 >
   <div
     class={floating
-      ? "pill-float isolate pointer-events-auto relative mx-auto max-w-3xl rounded-[26px] border border-line/60 shadow-[0_12px_32px_-12px_oklch(0_0_0/0.3)] transition-[border-color,box-shadow] duration-(--duration-fast) ease-(--ease-standard) focus-within:border-brand focus-within:shadow-[0_0_0_3px_var(--color-brand-soft),0_12px_32px_-12px_oklch(0_0_0/0.3)]"
-      : "relative mx-auto max-w-3xl rounded-[26px] border border-transparent bg-raised transition-[border-color,box-shadow,background-color] duration-(--duration-fast) ease-(--ease-standard) focus-within:border-brand focus-within:bg-canvas focus-within:shadow-[0_0_0_3px_var(--color-brand-soft)]"}
+      ? "pill-float isolate pointer-events-auto relative mx-auto max-w-3xl rounded-[26px] border border-line/60 shadow-[0_12px_32px_-12px_oklch(0_0_0/0.3)] transition-[border-color,box-shadow] duration-(--duration-fast) ease-(--ease-standard)"
+      : "relative mx-auto max-w-3xl rounded-[26px] border border-transparent bg-raised transition-[border-color,box-shadow,background-color] duration-(--duration-fast) ease-(--ease-standard)"}
     ondragover={onDragOver}
     ondragleave={() => (dragging = false)}
     ondrop={onDrop}
@@ -625,7 +627,7 @@
       autocapitalize="sentences"
       style:height={boxHeight === undefined ? undefined : `${boxHeight}px`}
       style:overflow-y={scrolls ? "auto" : "hidden"}
-      class="auto-grow {FIELD} resize-none focus:outline-none disabled:opacity-50"
+      class="auto-grow {FIELD} resize-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 disabled:opacity-50"
     ></textarea>
     <p id="{uid}-hint" class="sr-only">Enter sends. Shift and Enter add a new line. Type slash for commands or dollar for skills. Backspace at the start removes the last chip.</p>
     <p class="sr-only" role="status" aria-live="polite">{liveMessage}</p>
