@@ -28,10 +28,12 @@ import {
   FOLDER_LIMIT,
   FOLDER_SCAN_LIMIT,
   FOLDER_SPAWN_MAX_BYTES,
+  MAX_REMOTE_PATH,
   REMOTE_LIST_TIMEOUT_MS,
   REMOTE_WALK_SLACK_MS,
   SSH_CONNECT_TIMEOUT_SECONDS,
   remoteListCommand,
+  parseRemoteListing,
   remoteListScript,
   remoteWalkSeconds,
 } from "../src/web/folders";
@@ -79,6 +81,11 @@ try {
   });
   const line = run.stdout.toString().split("\n").find((l) => l.startsWith("E49ANSWER "));
   if (!line) throw new Error(`the runner said nothing (rc=${run.exitCode}): ${run.stderr.toString().slice(0, 400)}`);
+  // The runner's own exit code matters: an unhandled rejection inside the listing (the kind that killed
+  // the web process with exit 1) prints AFTER the answer and would pass unnoticed.
+  if (run.exitCode !== 0) {
+    throw new Error(`the runner died with ${run.exitCode}: ${run.stderr.toString().slice(0, 400)}`);
+  }
   return JSON.parse(line.slice("E49ANSWER ".length)) as Answer;
 }
 
@@ -120,7 +127,7 @@ describe("the answer is bounded on the way back (the remote host is another serv
 describe("the deadline lands", () => {
   test("a host that ignores SIGTERM cannot outlive the deadline", () => {
     // The shape of the E47 defect, still live here: TERM is swallowed and the walk goes on for ever.
-    const pidFile = "/tmp/e49-stubborn.pid";
+    const pidFile = join(scratch, "stubborn.pid");
     Bun.spawnSync({ cmd: ["rm", "-f", pidFile] });
     const answer = againstHost(
       "stubborn",
@@ -140,6 +147,26 @@ describe("the deadline lands", () => {
     expect(answer.message).toContain("stopped the walk itself");
   });
 
+  test("and so is the escalation, which is the code the host's clock really returns", () => {
+    // `timeout -k 1 N` answers 124 when the command dies on its TERM, and 137 when it had to escalate to
+    // the KILL because the command swallowed the TERM. Both are the host cutting the walk.
+    const answer = againstHost("killed", "cat > /dev/null\nexit 137", { timeoutMs: 1_000 });
+    expect(answer.status).toBe(504);
+    expect(answer.message).toContain("stopped the walk itself");
+  });
+
+  test("the host clock really is what ends the walk: `timeout` answers 124, or 137 when it escalates", () => {
+    // The shape the remote command uses, run here against coreutils: the walk ends by ITSELF, and the
+    // code says which way it ended.
+    const soft = Bun.spawnSync({ cmd: ["bash", "-c", "timeout -k 1 1 bash -c 'exec sleep 30'; echo $?"] })
+      .stdout.toString().trim();
+    const hard = Bun.spawnSync({
+      cmd: ["bash", "-c", "timeout -k 1 1 bash -c 'trap \"\" TERM; while :; do :; done'; echo $?"],
+    }).stdout.toString().trim();
+    expect(soft).toBe("124");
+    expect(hard).toBe("137");
+  });
+
   test("an ssh that cannot connect is still a 502 with its own words", () => {
     const answer = againstHost(
       "refused",
@@ -148,6 +175,24 @@ describe("the deadline lands", () => {
     );
     expect(answer.status).toBe(502);
     expect(answer.message).toContain("Connection refused");
+  });
+
+  test("a path too long to be a path is refused before it reaches the host", () => {
+    // The program travels on stdin; half a megabyte of path is how a broken pipe used to reach this
+    // process (E49: an EPIPE nobody caught killed the process with exit 1).
+    const answer = againstHost("longpath", "cat > /dev/null\nprintf 'PATH\\t/x\\nHOME\\t/x\\n0\\ta\\n'\nexit 0", {
+      input: "x".repeat(MAX_REMOTE_PATH + 1),
+    });
+    expect(answer.status).toBe(400);
+    expect(answer.message).toContain("too long");
+  });
+
+  test("a host that dies before reading the program is an error, not a dead process", () => {
+    const answer = againstHost("epipe", "exit 0", { input: "/srv" });
+    expect(answer.ok).toBe(false);
+    // The runner's exit code is checked by `againstHost` itself: a broken pipe that nobody caught would
+    // have taken the runner down with it.
+    expect(answer.status).toBeGreaterThan(0);
   });
 
   test("a host that cannot run the walk at all says so, in its own words", () => {
@@ -215,7 +260,7 @@ describe("the walk bounds its own work", () => {
     expect(out).not.toContain("MORE");
   });
 
-  test("the loop stops looking at entries after its scan cap and says MORE", () => {
+  test("the loop stops looking at entries after its scan cap and says SCAN, not MORE", () => {
     // The answer's cap counts FOLDERS (`n`); this cap counts ENTRIES looked at (`i`), which is what grows
     // with the folder. Without it a folder with 60 000 files and two subfolders costs the host the same
     // as one with 60 000 subfolders. `aaa` sorts first, so it is inside the cap and still comes back.
@@ -224,12 +269,28 @@ describe("the walk bounds its own work", () => {
     writeFileSync(join(dir, ".seed"), "x");
     for (let i = 0; i < 400; i++) linkSync(join(dir, ".seed"), join(dir, `f${String(i).padStart(4, "0")}`));
     const capped = runScript(dir, 50);
-    expect(capped).toContain("MORE");
+    // NOT `MORE`: we stopped looking, so we do not KNOW there are more folders. Saying "more" here is a
+    // claim the listing cannot back up, and the local listing never makes it.
+    expect(capped).toContain("SCAN");
+    expect(capped).not.toContain("MORE");
     expect(capped.split("\n").filter((l) => /^[01]\t/.test(l))).toEqual(["0\taaa"]);
-    // Same folder, cap high enough to see everything: no MORE, and the same folder is still listed.
+    // Same folder, cap high enough to see everything: neither marker, and the same folder is still listed.
     const whole = runScript(dir, 10_000);
     expect(whole).not.toContain("MORE");
+    expect(whole).not.toContain("SCAN");
     expect(whole.split("\n").filter((l) => /^[01]\t/.test(l))).toEqual(["0\taaa"]);
+  });
+
+  test("the parser tells 'there are more' from 'we stopped looking'", () => {
+    const more = parseRemoteListing("PATH\t/x\nHOME\t/x\n0\ta\nMORE\n");
+    expect(more.truncated).toBe(true);
+    expect(more.truncatedReason).toBe("more-folders");
+    const scan = parseRemoteListing("PATH\t/x\nHOME\t/x\n0\ta\nSCAN\n");
+    expect(scan.truncated).toBe(true);
+    expect(scan.truncatedReason).toBe("scan-limit");
+    const whole = parseRemoteListing("PATH\t/x\nHOME\t/x\n0\ta\n");
+    expect(whole.truncated).toBe(false);
+    expect(whole.truncatedReason).toBeUndefined();
   });
 
   test("the real script carries both caps", () => {

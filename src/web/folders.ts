@@ -46,14 +46,19 @@ export const REMOTE_LIST_TIMEOUT_MS = 12_000;
 /**
  * The remote walk gets its OWN clock, `timeout(1)` around `bash -s`, and it must OUTLAST the local
  * deadline (the rule E44 wrote down: a limit has to outlast the call that spends it). Otherwise the host
- * would cut the walk before this side could pass a slow but honest answer through; and with the clocks
- * in that order, a listing this side gave up on still ends by itself, at most this much later. Killing
- * the local `ssh` does not touch the remote shell (measured: the walk ran to the end of its loop after
- * both SIGTERM and SIGKILL of the client), so without this the work nobody is waiting for is unbounded.
+ * would cut the walk before this side could pass a slow but honest answer through.
+ *
+ * Killing the local `ssh` does not touch the remote shell (measured: the walk ran to the end of its loop
+ * after both SIGTERM and SIGKILL of the client), so without this clock the work nobody is waiting for is
+ * unbounded. The bound it buys is honest but not as tight as it looks: the remote clock starts when the
+ * remote command starts, which is AFTER the connect, so a walk we gave up on ends at most
+ * `REMOTE_WALK_SLACK_MS` after our deadline PLUS the time the connect took.
  */
 export const REMOTE_WALK_SLACK_MS = 2_000;
 /** `ssh`'s own connect budget, in seconds. Must fit inside {@link REMOTE_LIST_TIMEOUT_MS}. */
 export const SSH_CONNECT_TIMEOUT_SECONDS = 8;
+/** The longest path the remote listing will carry. A real path is under 4096 bytes on every system. */
+export const MAX_REMOTE_PATH = 4_096;
 
 export interface FolderEntry {
   name: string;
@@ -70,8 +75,14 @@ export interface FolderListing {
   parent: string | null;
   home: string;
   entries: FolderEntry[];
-  /** More subfolders than FOLDER_LIMIT: the rest are not shown (type a path to reach them). */
+  /**
+   * The listing may not show every subfolder of this folder (type a path to reach them). `truncatedReason`
+   * says which of the two it is: `more-folders` when we KNOW there are more than the cap, and
+   * `scan-limit` when the scan stopped before it could find out. Before E49 the remote listing said
+   * "truncated" for both, which is a claim it could not back up.
+   */
   truncated: boolean;
+  truncatedReason?: "more-folders" | "scan-limit";
 }
 
 export class FolderError extends Error {
@@ -242,9 +253,11 @@ const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
  * skipped, which is safer than guessing.
  *
  * Two counters, and they bound different things: `n` is how many FOLDERS we have printed (the answer's
- * cap) and `i` is how many ENTRIES we have looked at (the work's cap, E49). Either one stopping prints
- * `MORE`, which the parser reads as "there may be folders below the ones shown -- type a path to reach
- * them"; when both run out there are none, and the listing says so by not printing it.
+ * cap) and `i` is how many ENTRIES we have looked at (the work's cap, E49). They stop the walk in two
+ * different ways and the parser has to be able to tell them apart: `MORE` means we KNOW there are more
+ * folders than we printed, and `SCAN` means the scan stopped before it could find out (there may be
+ * folders below the ones shown -- type a path to reach them). The old code answered "truncated" for both,
+ * which is a claim the second one cannot back up.
  */
 export function remoteListScript(input: string): string {
   const raw = input.trim();
@@ -261,7 +274,7 @@ n=0
 i=0
 for d in * .[!.]* ..?*; do
   i=$((i+1))
-  if [ "$i" -gt ${FOLDER_SCAN_LIMIT} ]; then echo "MORE"; break; fi
+  if [ "$i" -gt ${FOLDER_SCAN_LIMIT} ]; then echo "SCAN"; break; fi
   [ -d "$d" ] || continue
   case "$d" in *'
 '*|*'	'*) continue;; esac
@@ -294,7 +307,18 @@ export function parseRemoteListing(out: string): FolderListing {
   }
   sortEntries(entries);
   const parent = path === "/" ? null : path.slice(0, path.lastIndexOf("/")) || "/";
-  return { path, parent, home, entries, truncated: lines.includes("MORE") };
+  // `MORE` = we know there are more folders than we printed. `SCAN` = the scan stopped early, so we do
+  // not know: the listing is still incomplete, but it does not claim more than it can prove.
+  const more = lines.includes("MORE");
+  const scan = lines.includes("SCAN");
+  return {
+    path,
+    parent,
+    home,
+    entries,
+    truncated: more || scan,
+    truncatedReason: more ? "more-folders" : scan ? "scan-limit" : undefined,
+  };
 }
 
 /**
@@ -334,6 +358,11 @@ export async function listRemote(
   input: string,
   timeoutMs = REMOTE_LIST_TIMEOUT_MS,
 ): Promise<FolderListing> {
+  // The path travels to the host inside the program on stdin. A path of half a megabyte is not a path,
+  // and writing one to a host that is not there is how a broken pipe reaches this process (E49).
+  if (input.length > MAX_REMOTE_PATH) {
+    throw new FolderError(`that path is too long to send to the host (${input.length} characters)`, 400);
+  }
   const walkSeconds = remoteWalkSeconds(timeoutMs);
   const run = await spawnBounded(remoteListCommand(target, timeoutMs), {
     stdin: remoteListScript(input),
@@ -351,8 +380,13 @@ export async function listRemote(
     );
   }
   if (run.reason === "spawn-failed") throw new FolderError("could not start ssh", 502);
-  // 124 is `timeout`'s own exit code: the walk outran the clock we gave the host and the host stopped it.
-  if (run.code === 124) throw new FolderError(`the host stopped the walk itself after ${walkSeconds} s`, 504);
+  // `timeout` says it stopped the walk in two ways: 124 when the command died on the TERM it sent, and
+  // 137 when it had to escalate to the KILL (`-k`) because the command swallowed the TERM. Both mean the
+  // HOST cut the walk, which is not the same thing as "ssh failed", and both are the remote clock doing
+  // its job.
+  if (run.code === 124 || run.code === 137) {
+    throw new FolderError(`the host stopped the walk itself after ${walkSeconds} s`, 504);
+  }
   if (run.code !== 0) {
     const reason = run.stderr.trim().split("\n").filter(Boolean).pop()?.slice(0, 200) || `ssh exited with code ${run.code}`;
     throw new FolderError(`could not reach the host: ${reason}`, 502);

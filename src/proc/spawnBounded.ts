@@ -83,15 +83,33 @@ export async function spawnBounded(argv: string[], opts: BoundedSpawnOptions = {
   // pipe is narrowed here: only the sink can be written to.
   const sink = child.stdin;
   if (opts.stdin !== undefined && typeof sink === "object" && sink !== null) {
-    // A child that dies before reading its program answers with EPIPE here; that is its business, not a
-    // reason to throw over the result we are about to name.
+    // A child that dies before reading its program answers with EPIPE, and Bun's sink reports it ASYN-
+    // CHRONOUSLY: the write is accepted, and the rejection arrives after this function has returned. An
+    // unhandled rejection kills the process (measured: exit 1), so the promise is caught HERE. The types
+    // say `write` returns a number, but under backpressure Bun returns a promise — both are handled.
     try {
-      sink.write(opts.stdin);
-      sink.end();
+      const written = sink.write(opts.stdin) as unknown as { catch?: (fn: () => void) => unknown } | number;
+      if (written && typeof (written as { catch?: unknown }).catch === "function") {
+        (written as unknown as Promise<number>).catch(() => {});
+      }
+      const ended = sink.end() as unknown as { catch?: (fn: () => void) => unknown } | undefined;
+      if (ended && typeof ended.catch === "function") ended.catch(() => {});
     } catch { /* the child never wanted the program */ }
   }
 
   const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
+  /**
+   * Cancel a reader WITHOUT letting its rejection reach the process. `cancel()` on a reader that was
+   * already released (its stream hit EOF and `releaseLock()` ran) returns a REJECTED promise, and an
+   * unhandled rejection kills a Bun process with exit 1 — measured: the web server died on every
+   * deadline whose child happened to die on the TERM. So the rejection is swallowed here, on purpose.
+   */
+  const cancelReader = (reader: ReadableStreamDefaultReader<Uint8Array>): void => {
+    try {
+      const pending = reader.cancel() as unknown as { catch?: (fn: () => void) => unknown } | undefined;
+      if (pending && typeof pending.catch === "function") pending.catch(() => {});
+    } catch { /* already closed or released */ }
+  };
   let timedOut = false;
   let oversize = false;
   /**
@@ -103,9 +121,7 @@ export async function spawnBounded(argv: string[], opts: BoundedSpawnOptions = {
     try { child.kill("SIGTERM"); } catch { /* already gone */ }
     setTimeout(() => {
       try { child.kill("SIGKILL"); } catch { /* already gone */ }
-      for (const reader of readers) {
-        try { void reader.cancel(); } catch { /* already closed */ }
-      }
+      for (const reader of readers) cancelReader(reader);
     }, KILL_GRACE_MS);
   };
   const arm = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
@@ -133,9 +149,7 @@ export async function spawnBounded(argv: string[], opts: BoundedSpawnOptions = {
         if (bytes > maxBytes) {
           oversize = true;
           try { child.kill("SIGKILL"); } catch { /* already gone */ }
-          for (const open of readers) {
-            try { void open.cancel(); } catch { /* already closed */ }
-          }
+          for (const open of readers) cancelReader(open);
           break;
         }
         into.push(item.value);
