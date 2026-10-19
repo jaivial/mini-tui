@@ -5,6 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 const API = process.env.MINITUI_WEB_API ?? "http://127.0.0.1:4317";
 
 export default defineConfig({
+  resolve: { alias: { $lib: new URL("./src/lib", import.meta.url).pathname } },
   plugins: [tailwindcss(), svelte()],
   server: {
     port: 4318,

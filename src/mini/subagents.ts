@@ -7,7 +7,7 @@
  * and the TUI show it under its parent and can open it, follow it live and message it (the same
  * attach path a session running in another UI uses).
  */
-import { dropBoard, settleFromSubagent } from "../kanban";
+import { addCard, listCards, updateCard, settleFromSubagent } from "../kanban";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -181,15 +181,24 @@ export class SubagentSync {
 
   constructor(private readonly db: () => Database) {}
 
-  sync(parentId: string, trajPath: string): SubagentView[] {
+  sync(parentId: string, trajPath: string, depth = 0): SubagentView[] {
+    if (depth > 10) return [];
     const entries = readSubagentIndex(trajPath);
     if (!entries.length) return [];
     const views: SubagentView[] = [];
     for (const entry of entries) {
       const id = subagentSessionId(parentId, entry.name);
       views.push(toView(parentId, entry));
+      if (entry.traj_path) this.sync(id, entry.traj_path, depth + 1);
+      // Every delegation has a card even when a worker bypassed the prompt convention.
+      try {
+        if (!listCards(this.db(), parentId).some((c) => c.assignee === entry.name)) {
+          const card = addCard(this.db(), parentId, { title: firstLine(taskText(entry)), description: taskText(entry), column: "doing" });
+          updateCard(this.db(), card.id, { assignee: entry.name });
+        }
+      } catch { /* retried on the next roster sync */ }
       try { settleFromSubagent(this.db(), parentId, entry.name, entry.state, entry.exit_status, entry.steps); } catch { /* best-effort */ }
-      if (entry.state === "stopped" || entry.state === "exited") { try { dropBoard(this.db(), id); } catch { /* best-effort */ } }
+
       try {
         // The session row only changes when the roster entry itself does: a child that is only
         // ticking its cost or state changes the transcript below, not this row. At 100 children

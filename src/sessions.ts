@@ -578,6 +578,8 @@ export function saveTask(db: Database, id: string, card: { title: string; descri
     db.query(
       "INSERT INTO session_tasks (session_id, title, description, todos, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET title = excluded.title, description = excluded.description, todos = excluded.todos, updated_at = excluded.updated_at",
     ).run(id, task.title, task.description, JSON.stringify(task.todos), task.updatedAt);
+    db.exec("CREATE TABLE IF NOT EXISTS orchestration_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, entity_id TEXT NOT NULL, kind TEXT NOT NULL, snapshot TEXT NOT NULL, created_at INTEGER NOT NULL)");
+    db.query("INSERT INTO orchestration_events(entity_id,kind,snapshot,created_at) VALUES (?,?,?,?)").run("task:"+id,"task.saved",JSON.stringify(task),Date.now());
     return task;
   })();
 }

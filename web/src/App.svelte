@@ -490,7 +490,7 @@
   function closeDrawer() {
     if (!sidebarOpen) return;
     sidebarOpen = false;
-    queueMicrotask(() => findToggle(layout)?.focus());
+    queueMicrotask(() => { if (layout) findToggle(layout)?.focus(); });
   }
 
   function handleKey(event: KeyboardEvent) {
