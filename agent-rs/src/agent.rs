@@ -768,6 +768,9 @@ impl Agent {
             if self.messages.last().and_then(|m| m.pointer("/extra/exit_status")).and_then(Value::as_str) == Some("Submitted")
                 && crate::goal_oracle::enabled()
                 && !self.task_is_conversational
+                // A handoff is not a completion claim. Judging it before workers finish
+                // forces the orchestrator back into polling instead of its idle hold.
+                && !(Self::control_file().is_some() && crate::subagents::live_children() > 0)
             {
                 self.check_goal_closure();
             }
@@ -1059,7 +1062,7 @@ impl Agent {
             self.record_timings(&mut t, at);
             // With a closure judge, the redundant second plain-text confirmation is replaced
             // by an actual evidence-based judgement, saving one full worker turn.
-            if self.submission_pending || crate::goal_oracle::enabled() {
+            if self.submission_pending || crate::goal_oracle::enabled() || (Self::control_file().is_some() && crate::subagents::live_children() > 0) {
                 return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", sub, sub)]));
             }
             self.submission_pending = true;
