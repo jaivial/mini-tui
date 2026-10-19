@@ -24,7 +24,20 @@ const outDir = process.env.EVIDENCE_DIR ?? join(import.meta.dir, "..", "..", "..
 const CLIENTS = Number(process.env.CLIENTS ?? 2);
 const dir = mkdtempSync(join(tmpdir(), "minitui-e2e-resume-"));
 const dbPath = join(dir, "sessions.db");
-const PORT = Number(process.env.PORT ?? 6200 + Math.floor(Math.random() * 250));
+/** A port nothing is listening on: the run must never drive a foreign mini-tui by accident. */
+const freePort = async (start) => {
+  for (let p = start; p < start + 250; p++) {
+    try {
+      const l = Bun.listen({ hostname: "127.0.0.1", port: p, socket: { data() {}, error() {} } });
+      l.stop(true);
+      return p;
+    } catch {
+      /* taken: try the next */
+    }
+  }
+  throw new Error("no free port found");
+};
+const PORT = Number(process.env.PORT ?? (await freePort(6200 + Math.floor(Math.random() * 250))));
 const base = `http://127.0.0.1:${PORT}`;
 const TITLE = "Migrate settings page";
 const { createSession, openDb, saveTranscript } = await import(join(root, "src/sessions.ts"));
@@ -114,6 +127,28 @@ check("the session is deleted on the server", del.status === 200, `status=${del.
 for (let i = 0; i < CLIENTS; i++) {
   const cleared = await until(async () => !(await paneText(pages[i])).includes(TITLE), 6000);
   check(`tab ${i + 1}: a deleted session leaves its pane as a new chat`, cleared, await paneLabel(pages[i]) ?? "");
+}
+
+// The other half of the fix's trap (the adversarial review's finding 1): CLOSE keeps the saved row,
+// so asking `openHistory` about a closed session RE-OPENS it. After a close, the session must stay
+// closed and the panes must let go of it — the `session-gone` announcement is a verdict, not a
+// question.
+await fetch(`${base}/api/history/s-hist-b`, { method: "POST" }); // make it live (open it)
+await a.locator("section[data-pane]").first().getByRole("button", { name: "Bot menu" }).click();
+await a.waitForTimeout(300);
+await a.getByRole("menuitem", { name: /Resume/ }).first().click();
+await a.waitForTimeout(800);
+const optB = a.locator('[role="option"]').filter({ hasText: "Fix flaky reconnect test" }).first();
+await optB.click();
+check("a second session opens in the pane", await until(async () => (await paneText(a)).includes("Fix flaky reconnect test"), 4000));
+const closed = await fetch(`${base}/api/sessions/s-hist-b`, { method: "DELETE" });
+check("the session is closed on the server", closed.status === 200, `status=${closed.status}`);
+await Bun.sleep(2500);
+const liveAfter = await (await fetch(`${base}/api/sessions`)).json();
+check("a closed session STAYS closed (the question must not re-open it)", !liveAfter.some((x) => x.id === "s-hist-b"), `live=${liveAfter.map((x) => x.id).join(",")}`);
+for (let i = 0; i < CLIENTS; i++) {
+  const gone = await until(async () => !(await paneText(pages[i])).includes("Fix flaky reconnect test"), 6000);
+  check(`tab ${i + 1}: a closed session leaves its pane as a new chat`, gone, await paneLabel(pages[i]) ?? "");
 }
 
 const shot = await a.locator("section[data-pane]").first().screenshot({ path: join(outDir, CLIENTS > 1 ? "pane-DESPUES.png" : "pane-control.png") }).catch(() => null);

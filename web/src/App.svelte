@@ -12,7 +12,7 @@
   import { catalog } from "./lib/stores/catalog.svelte";
   import { store } from "./lib/stores/sessions.svelte";
   import { panes } from "./lib/stores/panes.svelte";
-  import { UnknownSessions } from "./lib/unknownSessions";
+  import { unknown } from "./lib/unknownSessions";
   import { agentTree } from "./lib/stores/agentTree.svelte";
   import { paneStatus } from "./lib/paneStatus";
   import { ui } from "./lib/stores/ui.svelte";
@@ -166,26 +166,35 @@
    * Only the server's "I do not hold it" (404) turns a pane into a new chat — an idle tab used to
    * clear the pane and write that back ~20 ms later, undoing the click in the tab that made it.
    */
-  const unknown = new UnknownSessions();
+  /** A question that proved nothing is asked again (see `done`); this is the nudge. */
+  let askTick = $state(0);
   function askUnknown(): Promise<string[]> {
     const ask = unknown.pick(panes.shown, (id) => !!store.sessions[id]);
     const done = (gone: string[]): string[] => {
       unknown.answer(ask, gone);
       // The sweep runs every time, not only when this question found something: a pane can start
       // showing an id this tab already learned is gone (a window coming back from the shelf, another
-      // tab's click), and then there is no question left to ask — only the verdict to apply.
-      panes.forgetMissing((id) => !unknown.isGone(id));
+      // tab's click), and then there is no question left to ask — only the verdict to apply. A
+      // session this tab holds is never swept, whatever a stale verdict says.
+      panes.forgetMissing((id) => !!store.sessions[id] || !unknown.isGone(id));
+      // An answer that proved nothing (the server busy, the network, a promise that rejected) frees
+      // its ids: ask again in a little while instead of leaving the pane blank for good (E52).
+      if (ask.some((id) => !unknown.isGone(id) && !store.sessions[id])) setTimeout(() => (askTick += 1), 5_000);
       return gone;
     };
-    return ask.length ? store.restore(ask).then(done) : Promise.resolve(done([]));
+    // A rejected restore is a question with no answer, not a lost one: `done` frees its ids.
+    return ask.length ? store.restore(ask).then(done, () => done([])) : Promise.resolve(done([]));
   }
 
   // A session the server no longer holds (deleted, or closed from another tab) leaves its pane as a
   // new chat; one this tab merely has not loaded is asked about, above.
   $effect(() => {
+    void askTick;
     const ids = panes.shown;
-    if (loading) return;
-    if (!ids.some((id) => !store.sessions[id])) return;
+    // Every key is read (`filter`, not `some`): Svelte tracks `$state` reads per key, and a
+    // short-circuit never subscribes the ids behind the first unknown one.
+    const missing = ids.filter((id) => !store.sessions[id]);
+    if (loading || !missing.length) return;
     untrack(() => void askUnknown());
   });
 

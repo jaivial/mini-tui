@@ -14,7 +14,7 @@ import { api } from "../api";
 import { Reconnect } from "../reconnect";
 import { SessionSocket, type SocketState } from "../session-socket";
 import { shallowEqual } from "../equal";
-import { isNowhere } from "../unknownSessions";
+import { isNowhere, unknown } from "../unknownSessions";
 import { markArrival, markCallEnd, markCallStart } from "../toolTimings";
 import type { Frame, RemoteHost, SessionMeta, SessionState, WireSession } from "../types";
 
@@ -61,6 +61,7 @@ class SessionStore {
     const [sessions, hosts] = await Promise.all([api.sessions(), api.hosts()]);
     const map: Record<string, SessionState> = {};
     for (const meta of sessions) {
+      unknown.resurrect(meta.id); // it is in the list the server just sent: it exists
       const prev = this.sessions[meta.id];
       const next = this.#merge(prev, meta);
       // Unchanged metadata keeps the previous object: a reload that found nothing new must not
@@ -112,6 +113,7 @@ class SessionStore {
         // for the same turn) must not redraw every row that shows the session.
         if (prev && shallowEqual(prev, next)) return;
         this.sessions[next.id] = next;
+        unknown.resurrect(next.id); // the server says it exists: a stale verdict is revoked
         this.#reconcileSoon();
       } else if (payload.type === "session-gone" && payload.id) {
         this.#drop(payload.id);
@@ -147,6 +149,7 @@ class SessionStore {
 
   /** Adopt a session the UI just created or opened (its transcript is included). */
   adopt(session: WireSession) {
+    unknown.resurrect(session.id); // it is here again: a stale "gone" verdict is revoked
     this.sessions[session.id] = { messages: [], ...session };
     this.hydrated[session.id] = true;
     this.#reconcile();
@@ -284,6 +287,9 @@ class SessionStore {
     // jump to some other session, which in a split layout would be one another pane already shows.
     if (this.activeId === id) this.activeId = null;
     this.#reconcile();
+    // The server announced it gone (or this tab closed it): a verdict, not a question — asking
+    // `openHistory` about it would RE-OPEN what the user just closed (E52).
+    unknown.confirmGone(id);
   }
 
   close() {

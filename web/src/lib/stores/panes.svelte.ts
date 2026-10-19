@@ -468,10 +468,14 @@ class PaneStore {
   /** Sessions that no longer exist (deleted, closed elsewhere): their panes become new chats. */
   forgetMissing(exists: (sessionId: string) => boolean) {
     let changed = false;
-    for (const pane of Object.values(this.panes)) {
-      if (pane.sessionId && !exists(pane.sessionId)) {
-        pane.sessionId = null;
-        changed = true;
+    // Every pane, on screen or shelved in another window: a dead session in a window that comes back
+    // later must not come back with it (E52), and a verdict is applied wherever it applies.
+    for (const set of [{ panes: this.panes }, ...Object.values(this.#kept)]) {
+      for (const pane of Object.values(set.panes)) {
+        if (pane.sessionId && !exists(pane.sessionId)) {
+          pane.sessionId = null;
+          changed = true;
+        }
       }
     }
     if (changed) this.#save();

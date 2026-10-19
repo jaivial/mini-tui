@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { UnknownSessions, isNowhere } from "../web/src/lib/unknownSessions";
+import { FLIGHT_MS, UnknownSessions, isNowhere, unknown as appBook } from "../web/src/lib/unknownSessions";
 
 describe("UnknownSessions: an unknown session is asked about, never guessed", () => {
   test("a shown session this client has not loaded is picked; a known one is not", () => {
@@ -41,6 +41,33 @@ describe("UnknownSessions: an unknown session is asked about, never guessed", ()
     expect(u.isGone("s-a")).toBe(true);
     expect(u.pick(["s-a"], () => false)).toEqual([]);
     expect(u.asking("s-a")).toBe(false);
+  });
+
+  test("the server's own announcement is a verdict (closing keeps the row: asking would re-open it)", () => {
+    const u = new UnknownSessions();
+    expect(u.pick(["s-a"], () => false)).toEqual(["s-a"]);
+    u.confirmGone("s-a"); // `session-gone`, or this tab closed it
+    expect(u.isGone("s-a")).toBe(true);
+    expect(u.pick(["s-a"], () => false)).toEqual([]); // never asked: `openHistory` would re-open it
+  });
+
+  test("a verdict is revoked when the session is seen again (ids can come back)", () => {
+    const u = new UnknownSessions();
+    u.confirmGone("s-a");
+    u.resurrect("s-a"); // loaded, restored or announced again
+    expect(u.isGone("s-a")).toBe(false);
+    expect(u.pick(["s-a"], () => false)).toEqual(["s-a"]);
+  });
+
+  test("a question older than the flight window is askable again (a fetch that never settles)", () => {
+    const u = new UnknownSessions();
+    expect(u.pick(["s-a"], () => false, 1000)).toEqual(["s-a"]);
+    expect(u.pick(["s-a"], () => false, 1000 + FLIGHT_MS - 1)).toEqual([]);
+    expect(u.pick(["s-a"], () => false, 1000 + FLIGHT_MS)).toEqual(["s-a"]);
+  });
+
+  test("the app has one book: the store reports verdicts into the same one App asks", () => {
+    expect(appBook).toBeInstanceOf(UnknownSessions);
   });
 
   test("a session that turns up known later needs no question at all", () => {
@@ -95,7 +122,9 @@ describe("guards: the guess must not come back", () => {
     // window coming back from the shelf), with no question left to ask — gating the sweep on the
     // answer's `gone` left that pane holding a dead session for good.
     expect(app).not.toContain("if (gone.length) panes.forgetMissing");
-    expect(app).toContain("panes.forgetMissing((id) => !unknown.isGone(id))");
+    // The sweep forgets only confirmed-gone sessions, and never one this tab holds (a stale
+    // verdict must not clear a pane showing a session the client has).
+    expect(app).toContain("panes.forgetMissing((id) => !!store.sessions[id] || !unknown.isGone(id))");
   });
 
   test("sessions.svelte.ts classifies through isNowhere and returns the verdict", () => {
@@ -107,5 +136,22 @@ describe("guards: the guess must not come back", () => {
 
   test("api.ts hands the caller the status it failed with", () => {
     expect(api).toContain("throw new HttpError(message, res.status)");
+  });
+
+  test("the store reports the server's verdicts into the same book (closing must not be re-opened)", () => {
+    // `#drop` is where `session-gone` and this tab's own close land; asking openHistory about a
+    // closed session RE-OPENS it (the row is kept), so it must be a verdict, not a question.
+    expect(sessions).toContain("unknown.confirmGone(id)");
+    // ...and a session seen again revokes a stale verdict (ids can come back).
+    expect(sessions).toContain("unknown.resurrect(");
+  });
+
+  test("a pane that names a session it has not loaded is not a new chat (the composer must not make it one)", () => {
+    const pane = readFileSync(join(import.meta.dir, "..", "web", "src", "lib", "components", "ChatPane.svelte"), "utf8");
+    // Sending in such a pane would create a session and replace the one in the shared workspace:
+    // the E52 bug through the composer.
+    expect(pane).toMatch(/if \(!current && pane\.sessionId\)/);
+    // And the pane says what it is doing instead of offering a new chat.
+    expect(pane).toContain("Opening this session…");
   });
 });

@@ -13,21 +13,32 @@
  * E52: an idle tab read "not in my list" as "deleted", cleared the pane and WROTE that into the
  * shared workspace ~20 ms later, so the tab that clicked saw its own click undone (the reported
  * "clicking a session in the sidebar does not change the pane"). The two answers are different
- * things and this bookkeeping keeps them apart: an unknown session is ASKED about, and only the
- * server's "I do not hold it" forgets it.
+ * things and this bookkeeping keeps them apart: an unknown session is ASKED about, and only a
+ * verdict from the server forgets it.
+ *
+ * A verdict comes two ways, and both are the server speaking: an answer of 404 (`isNowhere`) or its
+ * own announcement that the session is gone (`confirmGone`: `session-gone`, or this tab closing it —
+ * closing KEEPS the saved row, so asking `openHistory` about it would RE-OPEN what the user just
+ * closed). A verdict is revoked the moment the session is seen again (`resurrect`): ids can come
+ * back (`upsertSubagentSession` re-creates a subagent's row), and a stale verdict must never clear
+ * a pane that shows a session this client holds.
  */
 export class UnknownSessions {
-  /** Ids with a question in flight: the same id is not asked twice at once. */
-  #flight = new Set<string>();
+  /** Ids with a question in flight, and when it was asked: the same id is not asked twice at once. */
+  #flight = new Map<string, number>();
   /** Ids the server said it does not hold: never asked again; their panes are new chats. */
   #gone = new Set<string>();
 
-  /** The shown ids this client cannot vouch for and is not already asking about. */
-  pick(ids: Iterable<string>, known: (id: string) => boolean): string[] {
+  /**
+   * The shown ids this client cannot vouch for and is not already asking about. A question older
+   * than `flightMs` counts as lost (a fetch that will never settle must not silence an id for good).
+   */
+  pick(ids: Iterable<string>, known: (id: string) => boolean, now = Date.now(), flightMs = FLIGHT_MS): string[] {
     const out: string[] = [];
     for (const id of new Set(ids)) {
-      if (known(id) || this.#gone.has(id) || this.#flight.has(id)) continue;
-      this.#flight.add(id);
+      const asked = this.#flight.get(id);
+      if (known(id) || this.#gone.has(id) || (asked !== undefined && now - asked < flightMs)) continue;
+      this.#flight.set(id, now);
       out.push(id);
     }
     return out;
@@ -46,6 +57,16 @@ export class UnknownSessions {
     }
   }
 
+  /** The server itself announced the session is gone (`session-gone`, or this tab closed it). */
+  confirmGone(id: string): void {
+    this.answer([id], [id]);
+  }
+
+  /** The session is here again (loaded, restored or announced): a stale verdict is revoked. */
+  resurrect(id: string): void {
+    this.#gone.delete(id);
+  }
+
   /** The server said this session does not exist: its pane may become a new chat. */
   isGone(id: string): boolean {
     return this.#gone.has(id);
@@ -57,6 +78,9 @@ export class UnknownSessions {
   }
 }
 
+/** How long a question may stay in flight before the id becomes askable again. */
+export const FLIGHT_MS = 30_000;
+
 /**
  * The only error that forgets a session: the server's own "it does not hold it" (HTTP 404). A
  * failure to ASK (the network, a busy server answering 503) is not an answer, and never clears a
@@ -65,3 +89,6 @@ export class UnknownSessions {
 export function isNowhere(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { status?: unknown }).status === 404;
 }
+
+/** The one book the app reads and writes: the store reports what the server announces, App asks. */
+export const unknown = new UnknownSessions();
