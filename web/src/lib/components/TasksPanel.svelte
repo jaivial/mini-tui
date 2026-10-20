@@ -119,10 +119,10 @@
   <div class="flex h-full min-h-0 flex-col" role="document">
     <header class="flex items-center gap-2 border-b border-line/80 px-4 py-3">
       <ListChecks size={15} strokeWidth={2} class="shrink-0 text-brand" aria-hidden="true" />
-      <h2 class="min-w-0 flex-1 text-[14px] leading-5 font-semibold">Routines</h2>
+      <h2 class="min-w-0 flex-1 text-[14px] leading-5 font-semibold">Kanban</h2>
       <span class="flex items-center gap-1.5 text-[11px] text-ink-faint" title={live ? "Live" : "Reconnecting…"}>
         <span class="size-1.5 shrink-0 rounded-full {live ? 'bg-ok' : 'pulse-live bg-warn'}" aria-hidden="true"></span>
-        <span class="tnum">{rows.length}</span>
+        <span>{live ? "Connected" : "Reconnecting"}</span>
       </span>
       <Button variant="ghost" size="icon-sm" icon={X} title="Close" aria-label="Close session tasks" onclick={onclose} />
     </header>
@@ -132,8 +132,9 @@
         <!-- Closed and never opened: nothing of the board is built. See `seen` above. -->
       {:else}
       <KanbanSection {open} />
-      <QueueSection {open} />
-      <ChannelsSection {open} />
+      <details class="mx-2 mb-3 rounded-xl border border-line p-3"><summary class="cursor-pointer text-xs text-ink-muted">Workspace queue & channels</summary><QueueSection {open} /><ChannelsSection {open} /></details>
+
+      <details class="mx-2 rounded-xl border border-line p-3"><summary class="cursor-pointer text-xs text-ink-muted">Legacy session checklists · {rows.length}</summary>
       {#if !rows.length}
         <p class="px-2 py-6 text-[12.5px] leading-5 text-ink-muted">
           No task cards yet. Every agent fills one while it works (<code class="rounded-sm bg-overlay px-1 py-0.5 text-[11px]">mini-tui tasks set</code>):
@@ -207,11 +208,12 @@
           </details>
         {/each}
       {/if}
+      </details>
       {/if}
     </div>
 
     <footer class="border-t border-line/80 px-4 py-2 text-[10.5px] leading-4 text-ink-faint">
-      Filled by the agents themselves (<code class="rounded-sm bg-overlay px-1">mini-tui tasks set</code>), updated live while they work.
+      Tasks belong to the selected bot. Subagent boards and saved results stay available.
     </footer>
   </div>
 </dialog>
