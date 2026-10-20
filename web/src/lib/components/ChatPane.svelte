@@ -537,7 +537,8 @@
 
       <!-- The composer has its own row, so expanded drafts never cover the transcript. -->
       <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        <main bind:this={scroller} onscroll={onScroll} class="relative z-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
+        <div class="relative min-h-0 flex-1">
+        <main bind:this={scroller} onscroll={onScroll} class="relative z-0 h-full min-h-0 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
           <!-- Normal flow keeps the final message above the composer at every draft height. -->
           <div class="mx-auto max-w-3xl pb-3">
             {#if !store.hydrated[session.id] && !session.events.length}
@@ -560,6 +561,20 @@
             {/if}
           </div>
         </main>
+        {#if !atBottom && session.events.length}
+          <button
+            type="button"
+            class="absolute bottom-3 left-1/2 z-25 grid size-11 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line/60 bg-raised/80 text-ink-muted shadow-[0_8px_24px_-8px_oklch(0_0_0/0.3)] backdrop-blur-md transition-colors duration-(--duration-fast) ease-(--ease-standard) hover:text-ink"
+            aria-label="Scroll to the latest message"
+            onclick={jumpToLatest}
+          >
+            <ArrowDown size={18} strokeWidth={2} aria-hidden="true" />
+          </button>
+        {/if}
+
+        <FloatingMascot id={session.id} docked />
+
+        </div>
 
         {#if link === "reconnecting" || link === "connecting"}
           <div class="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 px-4 text-[12.5px] text-ink-muted pane-sm:px-3" role="status">
@@ -571,19 +586,6 @@
             <PixelLoader label={session.partial?.text ? "Writing" : session.partial?.thinking ? "Thinking" : "Working"} since={session.startedAt} />
           </div>
         {/if}
-
-        {#if !atBottom && session.events.length}
-          <button
-            type="button"
-            class="absolute bottom-[calc(7.25rem+env(safe-area-inset-bottom))] left-1/2 z-25 grid size-11 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line/60 bg-raised/80 text-ink-muted shadow-[0_8px_24px_-8px_oklch(0_0_0/0.3)] backdrop-blur-md transition-colors duration-(--duration-fast) ease-(--ease-standard) hover:text-ink"
-            aria-label="Scroll to the latest message"
-            onclick={jumpToLatest}
-          >
-            <ArrowDown size={18} strokeWidth={2} aria-hidden="true" />
-          </button>
-        {/if}
-
-        <FloatingMascot id={session.id} />
 
         <Composer
           bind:this={composer}

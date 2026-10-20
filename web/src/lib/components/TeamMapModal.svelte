@@ -32,7 +32,7 @@
   let shell: HTMLDivElement | undefined = $state();
   let view = $state(innerWidth < 640 ? "list" : "map");
   const roots = $derived(store.list.filter(s=>!s.parentId && !s.id.includes("~")));
-  const listRows = (id:string) => [...new Map((agentTree.trees[id]?.rows ?? []).map(row=>[row.path,row])).values()];
+  const listRows = (id:string) => (agentTree.trees[id]?.rows ?? []).filter((row, i, rows) => rows.findIndex(r => r.path === row.path) === i);
 
   $effect(() => {
     if (!dialog) return;
