@@ -25,8 +25,7 @@ def last_report(info, messages):
  text=info.get("submission","")
  return (text,"exit_submission") if info.get("exit_status")=="Submitted" and isinstance(text,str) and text.strip() else ("","none")
 
-def snapshot():
- c=sqlite3.connect(f'file:{DB}?mode=ro',uri=True);c.row_factory=sqlite3.Row
+def snapshot(c):
  nodes=[];edges=[]
  def node(label,id,**props):nodes.append(dict(label=label,id='mini-tui:'+id,props=dict(source='mini-tui',**props)))
  def edge(a,b,kind):edges.append(dict(a='mini-tui:'+a,b='mini-tui:'+b,kind=kind))
@@ -57,15 +56,25 @@ def snapshot():
   for row in c.execute('select * from orchestration_events'):
    d=dict(row);seq=d.pop('seq');entity=d.pop('entity_id');node('MiniEvent','event:'+str(seq),entity_id=entity,**d);edge(entity,'event:'+str(seq),'HAS_EVENT')
  except sqlite3.OperationalError:pass
- c.close();return {n['id']:n for n in nodes},edges
+ return {n['id']:n for n in nodes},edges
 
 def run(once=False):
  try:cursor=json.loads(CACHE.read_text())
  except:cursor={}
  driver=GraphDatabase.driver(URI,auth=('mini-tui','local'))
+ # data_version is meaningful only across reads on the SAME connection.
+ # Capture it before snapshot: writes during projection must trigger the next pass.
+ c=sqlite3.connect(f'file:{DB}?mode=ro',uri=True);c.row_factory=sqlite3.Row
+ projected_version=None;last_status=None;last_projection=0.0
  while True:
   try:
-   nodes,edges=snapshot();changed=[]
+   version=c.execute('PRAGMA data_version').fetchone()[0]
+   if version==projected_version and last_status is not None and not once and time.monotonic()-last_projection<60:
+    driver.verify_connectivity()
+    status=dict(last_status,synced_at=int(time.time()*1000),changed=0,source_unchanged=True)
+    tmp=STATE.with_suffix('.tmp');tmp.write_text(json.dumps(status));tmp.replace(STATE)
+    time.sleep(3);continue
+   nodes,edges=snapshot(c);changed=[]
    for id,n in nodes.items():
     digest=hashlib.sha256(json.dumps(n,sort_keys=True).encode()).hexdigest()
     if cursor.get(id)!=digest:changed.append((n,digest))
@@ -83,12 +92,17 @@ def run(once=False):
       rows=[e for e in edges if e['kind']==kind]
       for i in range(0,len(rows),100):
        s.run(f'UNWIND $rows AS row MATCH (a {{id: row.a}}), (b {{id: row.b}}) MERGE (a)-[:{kind}]->(b)',rows=rows[i:i+100]).consume()
+   cursor_changed=bool(changed) or cursor.get('_edges')!=edgehash
    cursor.update({n['id']:h for n,h in changed});cursor['_edges']=edgehash
-   CACHE.write_text(json.dumps(cursor))
-   status=dict(ok=True,synced_at=int(time.time()*1000),nodes=len(nodes),edges=len(edges),changed=len(changed),backend='neo4j-rust',uri=URI)
-  except Exception as e:status=dict(ok=False,checked_at=int(time.time()*1000),error=str(e)[:300],backend='neo4j-rust')
+   if cursor_changed:CACHE.write_text(json.dumps(cursor))
+   status=dict(ok=True,synced_at=int(time.time()*1000),nodes=len(nodes),edges=len(edges),changed=len(changed),backend='neo4j-rust',uri=URI,source_unchanged=False)
+   projected_version=version;last_status=status.copy();last_projection=time.monotonic()
+  except Exception as e:
+   projected_version=None
+   status=dict(ok=False,checked_at=int(time.time()*1000),error=str(e)[:300],backend='neo4j-rust')
   tmp=STATE.with_suffix('.tmp');tmp.write_text(json.dumps(status));tmp.replace(STATE)
-  if once:print(json.dumps(status));return
+  if once:
+   c.close();driver.close();print(json.dumps(status));return
   time.sleep(3)
 if __name__=='__main__':
  import sys
