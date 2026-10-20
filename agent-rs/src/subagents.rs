@@ -1112,7 +1112,7 @@ impl Hub {
             // entire ancestor chain remains "running" forever after the leaf is done.
             if c.deferred_turn && c.state != "stopped" && !c.stop_requested && !nested_work_pending(&c.traj, 0) {
                 c.deferred_turn = false;
-                c.state = "waiting".into();
+                c.state = "running".into();
                 // The saved submission is a handoff, not the final descendant result.
                 // Wake the child to synthesize an actual final report, never launder its
                 // earlier "work started" text into a completion for its parent.
