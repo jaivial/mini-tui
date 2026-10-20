@@ -15,3 +15,5 @@ Spanish paraphrase query retrieved relevant level2/4/5/7/9/10 nodes at cosine .8
 Model source: https://huggingface.co/intfloat/multilingual-e5-small
 
 Follow-up exposed a separate lifecycle bug: handoff exits deferred while descendants run were never re-evaluated when descendants settled, leaving ancestors running forever. Added explicit deferred-turn state and one-shot monitor completion; new input/assistant activity clears it, stopped children excluded. Final validation run s-mvglj494eaea.
+
+Refinement: deferred handoff must wake the child to synthesize final child results, not relay its stale handoff as completion. Final closure validation uses s-mvglpy1o4e70.
