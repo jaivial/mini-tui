@@ -54,10 +54,10 @@ impl StepTimings {
     /// in a row is a no-op, so guard-heavy code does not fragment a phase.
     pub fn mark(&mut self, label: &'static str) {
         let t = Instant::now();
+        if self.last.is_some_and(|(prev, _)| prev == label) {
+            return; // keep the original start instant, not just the label
+        }
         if let Some((prev, at)) = self.last.replace((label, t)) {
-            if prev == label {
-                return;
-            }
             self.add(prev, at, t);
         }
     }
@@ -87,8 +87,17 @@ impl StepTimings {
         }
     }
 
-    pub fn total(&self) -> f64 {
-        self.total_ms
+    /// Move a nested measured region out of its enclosing phase without counting it twice.
+    pub fn reclassify(&mut self, from: &'static str, to: &'static str, ms: f64) {
+        let Some((_, parent)) = self.phases.iter_mut().find(|(label, _)| *label == from) else { return };
+        let moved = ms.max(0.0).min(*parent);
+        *parent -= moved;
+        self.total_ms -= moved;
+        self.add_phase(to, moved);
+    }
+
+    pub fn overhead(&self) -> f64 {
+        (self.total_ms - self.phases.iter().filter(|(label, _)| *label == "model").map(|(_, ms)| *ms).sum::<f64>()).max(0.0)
     }
 
     /// The `extra.timings` object for the step's assistant message.
@@ -98,7 +107,7 @@ impl StepTimings {
             o.insert((*label).to_string(), json!(round1(*ms)));
         }
         // The model call dominates a step; the rest is what the harness can still improve.
-        let overhead = (self.total_ms - self.phases.iter().filter(|(l, _)| *l == "model").map(|(_, m)| *m).sum::<f64>()).max(0.0);
+        let overhead = self.overhead();
         o.insert("overhead_ms".into(), json!(round1(overhead)));
         o.insert("model_ms".into(), json!(round1(model_ms)));
         o.insert("harness_ms".into(), json!(round1(overhead)));
