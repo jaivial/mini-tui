@@ -1,12 +1,57 @@
 # mini web UI vs pi harness: speed benchmark (2026-10-09)
 
+## Evidence status, 20 October 2026
+
+This report contains several different historical runs. Do not combine their pass rates,
+time ratios, models or corpora into a single result. None measures the terminal/web parity
+changes shipped on 20 October (PRs #365-374).
+
+### Recovered 19 October closure-on result
+
+The original operational readback at 11:30 CEST on 19 October recorded a completed
+`/tmp/pm/results_dep.txt`: 30/30 PASS with exit code 0 for each arm, ten tasks with three
+interleaved repetitions, MiniMax-M3.1-Flash-Preview, mini binary
+`mini-main-b0537c9-20261019`, deployed configuration and Laya closure check enabled.
+The temporary raw directory was not available when this documentation was reconciled
+on 20 October after the host reboot. The figures below are recovered historical readback,
+not a fresh rerun or independently revalidated raw corpus. The older sections remain below.
+
+| Task | pi median (s) | mini median (s) |
+| --- | ---: | ---: |
+| t10_crash_report | 20.0 | 11.9 |
+| t1_wordfreq | 10.8 | 7.7 |
+| t2_grep_logs | 11.9 | 7.6 |
+| t3_pytest_fix | 9.7 | 7.8 |
+| t4_refactor | 27.7 | 25.2 |
+| t5_script_csv | 8.6 | 8.3 |
+| t6_readme_summary | 14.6 | 16.0 |
+| t7_regex_cli | 13.1 | 9.1 |
+| t8_js_bug | 15.4 | 10.2 |
+| t9_pkg_resize | 13.8 | 9.1 |
+| Sum of rounded per-task medians | 145.6 | 112.9 |
+
+The historical ratio is 0.78x; mini was no slower on nine of ten tasks. This is not
+proof of the current release's speed on other tasks, providers or machines.
+
+### Other figures are separate experiments
+
+- 62.5% (10/16) is the full 11 October GLM-5.3-Flash dev sweep.
+- 75% (12/16) was a targeted composite after selected failed tasks were repeated,
+  not a fresh complete sweep. It must not be plotted as a directly comparable full run.
+- 0.69x came from one earlier ten-task run. Round 6 did not reproduce it; its three
+  ratios were 1.13x, 0.98x and 0.93x (median 0.98x, effectively a tie).
+- Public harness leaderboard points used a different 30-task corpus. Their Pareto
+  frontier is reference-only; mini's 16-task local result cannot join that frontier.
+
+## Original historical report
+
 Pedido de Jaime (9 oct 20:48): ejecutar la comparacion de velocidad **mini-tui web UI vs pi
 harness**; mini debe ganar en wall time manteniendo el mismo o mejor % de exito.
 `docs/pi-speed-analysis.md` documenta el analisis previo y los items 1-6 ya implementados
 (PRs #109 y #111); este documento mide el resultado **con tareas reales** en lugar de
 argumentar desde el codigo.
 
-> **Ronda 6 (ejecutada 2026-10-10, la mas reciente)**: el **0,69x de la ronda 5 no se sostiene**.
+> **Ronda 6 (ejecutada 2026-10-10, historica)**: el **0,69x de la ronda 5 no se sostiene**.
 > Tres reps nuevas de la misma corrida dan **1,13x / 0,98x / 0,93x** (mediana **0,98x**): con este
 > corpus mini y pi estan **empatados en wall time**, no mini mas rapido. La calidad si es solida y
 > si se sostiene: **40/40 PASS en mini y 30/30 en pi**. La varianza esta en el modelo (turnos y

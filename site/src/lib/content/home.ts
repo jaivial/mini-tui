@@ -136,7 +136,7 @@ export const cuPoints = [
 ] as const;
 
 /**
- * The oracle-on benchmark, as measured. Same ten tasks and model as every round (MiniMax-M3.1-Flash-Preview),
+ * Recovered historical oracle-on readback, 19 October 2026. Ten tasks and model (MiniMax-M3.1-Flash-Preview),
  * three repetitions with pi and mini interleaved task by task so that API drift hits both alike, mini with
  * Laya as the closure judge, on the deployed binary and config. The full report is docs/pi-vs-mini-benchmark.md.
  */
@@ -149,5 +149,5 @@ export const oracleBench = {
     { label: "Tasks where mini is at least as fast", pi: "1/10", mini: "9/10" },
     { label: "Timeouts", pi: "0", mini: "0" },
   ],
-  caveats: "Ten tasks, three repetitions, one model, one machine. The gain comes from a judge that closes a clean run in about a tenth of a second instead of a model call. Earlier rounds on this page were a tie; the report keeps them.",
+  caveats: "Historical result from 19 October 2026: ten tasks, three repetitions, one model, one machine. Recovered from the original completed-run readback; the temporary raw directory is no longer available here. Not a measurement of the 20 October parity changes. Earlier rounds were a tie; the report keeps them.",
 } as const;

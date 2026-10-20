@@ -109,10 +109,10 @@
   </div>
 </Section>
 
-<Section id="proof" title="Done means proven" lede="A card closes when a check reads the goal against the diff and the logs. Pointed at Laya, a small self-hosted classifier, that check takes about a tenth of a second.">
+<Section id="proof" title="A closure check, with evidence" lede="A proposed finish is checked against the goal and available evidence. A historical run is shown below, not a guarantee that every task is correct or faster.">
   <div use:reveal class="mx-auto max-w-3xl overflow-hidden rounded-3xl border bg-card">
     <div class="border-b bg-gradient-to-b from-accent/60 to-transparent p-8 text-center">
-      <p class="text-sm text-muted-foreground">Same ten tasks, same model, pi and mini interleaved</p>
+      <p class="text-sm text-muted-foreground">19 October 2026 · ten tasks, same model, pi and mini interleaved</p>
       <p class="mt-2 font-mono text-4xl font-semibold tracking-tight sm:text-5xl">{oracleBench.headline}</p>
       <p class="mt-1 text-sm text-muted-foreground">sum of per-task medians, mini first: <span class="font-mono text-foreground">{oracleBench.ratio}</span> of pi's time</p>
     </div>
@@ -125,7 +125,7 @@
         {/each}
       </tbody>
     </table>
-    <p class="border-t px-6 py-4 text-xs text-muted-foreground">{oracleBench.caveats} <a class="text-foreground underline underline-offset-4" href="{REPO}/blob/main/docs/pi-vs-mini-benchmark.md">Read the full report</a>.</p>
+    <p class="border-t px-6 py-4 text-xs text-muted-foreground">{oracleBench.caveats} <a class="text-foreground underline underline-offset-4" href="{REPO}/blob/main/docs/pi-vs-mini-benchmark.md">Read the evidence notes and historical report</a>.</p>
   </div>
 </Section>
 
