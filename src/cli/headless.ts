@@ -237,7 +237,6 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
   // Session bookkeeping: a new row (titled like the TUI does), or continue a saved one.
   const persist = !args.noSession;
   let sessionId: string | null = resumed?.id ?? null;
-  let titleDone: Promise<void> = Promise.resolve();
   let titleJob: ReturnType<typeof generateTitle> | undefined;
   let resumePath: string | undefined;
   /** Messages the agent replays before this turn (exit markers are dropped on resume). */
@@ -256,19 +255,16 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
       createSession(db(), { id: sessionId, cwd, model, task: typed });
       if (process.env.MINITUI_NO_TITLE !== "1" && model) {
         const id = sessionId;
-        titleDone = new Promise((resolve) =>
-          titleJob = generateTitle(
-            typed,
-            model,
-            (title) => {
-              try {
-                db().query("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title, Date.now(), id);
-              } catch {
-                // best-effort
-              }
-            },
-            resolve,
-          ),
+        titleJob = generateTitle(
+          typed,
+          model,
+          (title) => {
+            try {
+              db().query("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title, Date.now(), id);
+            } catch {
+              // best-effort
+            }
+          },
         );
       }
     } catch {
@@ -446,15 +442,9 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
       // persistence is best-effort
     }
   }
-  // a title still being generated lands in the row before we close it (bounded wait)
-  let titleDeadline: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([titleDone, new Promise<void>((resolve) => { titleDeadline = setTimeout(resolve, 3000); })]);
-  } finally {
-    if (titleDeadline) clearTimeout(titleDeadline);
-    // A title is cosmetic: its child pipes/timer must not keep a finished task alive.
-    titleJob?.cancel();
-  }
+  // The fallback title was persisted at session creation. A cosmetic model call must
+  // not delay the final task result: keep any title that already landed, cancel the rest.
+  titleJob?.cancel();
 
   const steps = turnEvents.filter((event) => event.type === "tool_call").length;
   const result: HeadlessResult = {
