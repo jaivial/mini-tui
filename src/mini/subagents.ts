@@ -15,7 +15,7 @@ import type { Database } from "bun:sqlite";
 import { clearLiveRun, registerLiveRun, saveTranscript, upsertSubagentSession } from "../sessions";
 import { messagesToEvents, parseInfo } from "../traj/parse";
 import { boundEvent, slimMessage } from "../traj/slim";
-import { readTrajectory } from "../traj/watch";
+import { DurableTrajectoryReader } from "../traj/watch";
 
 export interface SubagentEntry {
   name: string;
@@ -181,6 +181,8 @@ export function toView(parentId: string, entry: SubagentViewOf): SubagentView {
  */
 export class SubagentSync {
   #seen = new Map<string, string>();
+  // Bound retained slim histories; evicted readers safely replay from disk next time.
+  #readers = new Map<string, {path: string; reader: DurableTrajectoryReader}>();
   #announced = new Map<string, string>();
   /** The last row written for a child, so an unchanged one is not written again. */
   #rows = new Map<string, string>();
@@ -269,7 +271,7 @@ export class SubagentSync {
     let stamp = "";
     try {
       const st = statSync(journal);
-      stamp = `${st.mtimeMs}:${st.size}`;
+      stamp = `${st.dev}:${st.ino}:${st.birthtimeMs}:${st.mtimeMs}:${st.size}`;
     } catch {
       try {
         const st = statSync(trajPath);
@@ -279,12 +281,19 @@ export class SubagentSync {
       }
     }
     if (this.#seen.get(id) === stamp) return;
-    const traj = readTrajectory(trajPath);
-    if (!traj) return;
-    this.#seen.set(id, stamp);
+    let cached = this.#readers.get(id);
+    if (!cached || cached.path !== trajPath) {
+      cached = {path: trajPath, reader: new DurableTrajectoryReader()};
+      if (this.#readers.size >= 4) this.#readers.delete(this.#readers.keys().next().value!);
+    }
+    this.#readers.delete(id); this.#readers.set(id, cached);
+    const traj = cached.reader.read(trajPath);
+    if (!traj) { this.#seen.set(id, stamp); return; }
     const messages = traj.messages ?? [];
     const events = messagesToEvents(messages, {}, 0).map(boundEvent);
     saveTranscript(this.db(), id, events, parseInfo(traj), messages.map(slimMessage));
+    cached.reader.slim();
+    this.#seen.set(id, stamp);
   }
 
   /** While its process holds its control file, any UI can attach to it like to a terminal's agent. */
