@@ -1175,8 +1175,8 @@ impl Agent {
         let mut t = std::mem::replace(t, crate::timings::StepTimings::start());
         // The view build happens inside the model phase (before the call); pulling it out is
         // what distinguishes "the harness cloned the conversation again" from "the model thought".
-        t.add_phase("view", std::mem::take(&mut self.last_view_ms));
-        self.harness_ms += t.total();
+        t.reclassify("model", "view", std::mem::take(&mut self.last_view_ms));
+        self.harness_ms += t.overhead();
         self.model_ms += self.last_model_ms;
         let Some(m) = self.messages.get_mut(at) else { return };
         if role(m) != "assistant" || m.get("extra").and_then(|e| e.get("timings")).is_some() {
@@ -1208,7 +1208,7 @@ impl Agent {
         self.n_calls += 1;
         let started = now();
         let mut message = self.query_model()?;
-        self.last_model_ms = (now() - started) * 1000.0;
+        self.last_model_ms = ((now() - started) * 1000.0 - self.last_view_ms).max(0.0);
         // A completed call is what the warmer keeps warm: the entry it wrote is the one the next
         // call (a follow-up, a compaction) would otherwise rebuild from scratch.
         self.warmer.observed_call();
