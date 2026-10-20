@@ -334,8 +334,9 @@ impl Hub {
         }
         let resources = self.resources_report();
         if resources.max_fanout < jobs.len() as u64 {
-            let reason = format!("Delegation blocked before launch: requested {} worker(s), safe additional capacity {}. {} No worker started. A durable blocked request was recorded for the kanban; there is no automatic retry. Keep resource protections; wait for capacity, do not lower reserves or run the workload in the orchestrator.", jobs.len(), resources.max_fanout, resources.text());
-            for j in &jobs { self.record_blocked(&j.name,&j.task,&reason); }
+            let reason = format!("Delegation blocked before launch: requested {} worker(s), safe additional capacity {}. {} No worker started; there is no automatic retry. Keep resource protections; wait for capacity, do not lower reserves or run the workload in the orchestrator.", jobs.len(), resources.max_fanout, resources.text());
+            let errors: Vec<String> = jobs.iter().filter_map(|j| self.record_blocked(&j.name,&j.task,&reason).err()).collect();
+            let reason = if errors.is_empty() { format!("{reason} Durable blocked requests recorded for the kanban.") } else { format!("{reason} Could not persist every blocked request: {}",errors.join("; ")) };
             return Ok(json!({"ok":false,"output":reason,"data":{"started":[],"blocked":jobs.iter().map(|j|j.name.clone()).collect::<Vec<_>>(),"resources":resources.to_value()}}));
         }
         let mut by_model: std::collections::BTreeMap<String, Vec<String>> = Default::default();
@@ -586,20 +587,24 @@ impl Hub {
         });
     }
 
-    pub(super) fn record_blocked(&mut self, name: &str, task: &str, reason: &str) {
+    pub(super) fn record_blocked(&mut self, name: &str, task: &str, reason: &str) -> Result<(), String> {
         let path=self.dir.join("blocked.json");
         let mut rows: Vec<Value>=std::fs::read_to_string(&path).ok().and_then(|s|serde_json::from_str(&s).ok()).unwrap_or_default();
         rows.retain(|r|s(r,"name")!=name);
         rows.push(json!({"name":name,"task":task,"reason":reason,"at":now()}));
-        let _=std::fs::create_dir_all(&self.dir);
-        let tmp=self.dir.join("blocked.json.tmp");
-        if std::fs::write(&tmp,serde_json::to_string(&rows).unwrap()).is_ok() { let _=std::fs::rename(tmp,path); }
-        self.event("delegation_blocked","hub",name,reason,json!({"task":task}));
+        let saved = (|| -> std::io::Result<()> {
+            std::fs::create_dir_all(&self.dir)?;
+            let tmp=self.dir.join("blocked.json.tmp");
+            std::fs::write(&tmp,serde_json::to_vec(&rows)?)?;
+            std::fs::rename(tmp,path)
+        })();
+        self.event("delegation_blocked","hub",name,reason,json!({"task":task,"persisted":saved.is_ok()}));
+        saved.map_err(|e|format!("blocked request {name} was not saved: {e}"))
     }
 
     fn start_job(&mut self, j: Job, copy: &[Value]) {
         if let Err(e) = self.start_agent(&j.def, &j.name, &j.task, &j.model, &j.source, &j.kind, &j.cwd, copy, &j.label) {
-            self.record_blocked(&j.name,&j.task,&e);
+            let e = match self.record_blocked(&j.name,&j.task,&e) { Ok(()) => e, Err(save) => format!("{e}. {save}") };
             self.event("error", "hub", &j.name, &format!("could not start {}: {e}", j.name), json!({}));
             if j.source == "parent" {
                 self.note(format!("[agent {}] could not start: {e}", j.name));

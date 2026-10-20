@@ -61,7 +61,12 @@ export interface SubagentView {
 }
 
 /** Whether the cached roster of `trajPath` is current (no file was re-read for it). */
+const blockedSeen = new Map<string, string>();
+function blockedStamp(trajPath: string): string {
+  try { const st=statSync(join(dirname(trajPath), "subagents", "blocked.json")); return `${st.mtimeMs}:${st.size}`; } catch { return ""; }
+}
 export function subagentIndexFresh(trajPath: string): boolean {
+  if (blockedStamp(trajPath) !== (blockedSeen.get(trajPath) ?? "")) return false;
   const path = subagentIndexPath(trajPath);
   const hit = indexCache.get(path);
   if (!hit) return false;
@@ -185,6 +190,7 @@ export class SubagentSync {
   sync(parentId: string, trajPath: string, depth = 0): SubagentView[] {
     if (depth > 10) return [];
     const entries = readSubagentIndex(trajPath);
+    const stamp = blockedStamp(trajPath);
     // Refused launches have no child roster, but the request must remain visible.
     try {
       const rows = JSON.parse(readFileSync(join(dirname(trajPath), "subagents", "blocked.json"), "utf8"));
@@ -199,7 +205,8 @@ export class SubagentSync {
           updateCard(this.db(), card.id, {column: "blocked", result: row.reason});
         }
       }
-    } catch { /* no refused requests, or a concurrent atomic rewrite */ }
+      blockedSeen.set(trajPath, stamp);
+    } catch { /* no refused requests, or a concurrent atomic rewrite; retry next sync */ }
     if (!entries.length) return [];
     const views: SubagentView[] = [];
     for (const entry of entries) {
