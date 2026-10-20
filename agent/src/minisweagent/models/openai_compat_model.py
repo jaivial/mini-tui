@@ -7,6 +7,7 @@ already loads, and keeps the exact message/trajectory shape litellm produced (`m
 `tool_calls`, `extra.response` as a dict, `extra.actions`, `extra.cost`).
 """
 
+import base64
 import http.client
 import json
 import logging
@@ -15,7 +16,8 @@ import ssl
 import time
 from functools import lru_cache
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
+from urllib.request import getproxies_environment, proxy_bypass_environment
 
 from pydantic import BaseModel
 
@@ -45,6 +47,36 @@ logger = logging.getLogger("openai_compat_model")
 _WIRE_KEYS = ("role", "content", "tool_calls", "tool_call_id", "name")
 #: `model_kwargs` that only meant something to litellm (kept for config compatibility).
 _LITELLM_ONLY_KWARGS = {"drop_params", "custom_llm_provider", "api_base", "api_key", "timeout"}
+
+
+def _proxy_for(url):
+    """Select an HTTP proxy without downgrading HTTPS destinations to plaintext."""
+    proxies = getproxies_environment()
+    if proxy_bypass_environment(url.netloc, proxies):
+        return None
+    raw = os.getenv("MSWEA_HTTP_PROXY") or proxies.get(url.scheme) or proxies.get("all")
+    if not raw:
+        return None
+    proxy = urlsplit(raw if "://" in raw else f"http://{raw}")
+    if proxy.scheme != "http" or not proxy.hostname:
+        raise OpenaiCompatError("Only http:// proxy transport is supported; refusing an unsupported proxy")
+    return proxy
+
+
+def _proxy_auth_header(proxy) -> dict[str, str]:
+    if proxy is None or proxy.username is None:
+        return {}
+    credentials = f"{unquote(proxy.username)}:{unquote(proxy.password or '')}"
+    return {"Proxy-Authorization": "Basic " + base64.b64encode(credentials.encode()).decode()}
+
+
+def _request_route(url):
+    proxy = _proxy_for(url)
+    target = url.path + (f"?{url.query}" if url.query else "")
+    # HTTPS proxy auth belongs only on CONNECT, never the origin request inside TLS.
+    if proxy is not None and url.scheme == "http":
+        return f"http://{url.netloc}{target}", _proxy_auth_header(proxy)
+    return target, {}
 
 
 @lru_cache(maxsize=1)
@@ -126,9 +158,18 @@ class OpenaiCompatModel:
     def _connection(self, url) -> http.client.HTTPConnection:
         """One keep-alive connection per model: remote HTTPS gateways skip the TCP+TLS handshake
         (tens to hundreds of ms) on every step."""
-        key = (url.scheme, url.hostname, url.port)
+        proxy = _proxy_for(url)
+        key = (url.scheme, url.hostname, url.port, proxy)
         if getattr(self, "_conn_key", None) != key or getattr(self, "_conn", None) is None:
-            if url.scheme == "https":
+            self._drop_connection()
+            if proxy is not None and url.scheme == "https":
+                conn = http.client.HTTPSConnection(
+                    proxy.hostname, proxy.port or 80, timeout=self.config.request_timeout, context=_ssl_context()
+                )
+                conn.set_tunnel(url.hostname, url.port or 443, headers=_proxy_auth_header(proxy))
+            elif proxy is not None:
+                conn = http.client.HTTPConnection(proxy.hostname, proxy.port or 80, timeout=self.config.request_timeout)
+            elif url.scheme == "https":
                 conn = http.client.HTTPSConnection(
                     url.hostname, url.port, timeout=self.config.request_timeout, context=_ssl_context()
                 )
@@ -152,11 +193,12 @@ class OpenaiCompatModel:
 
     def _post(self, path: str, body: dict, headers: dict | None = None) -> dict:
         url = urlsplit(self.config.api_base.rstrip("/") + path)
-        target = url.path + (f"?{url.query}" if url.query else "")
+        target, proxy_headers = _request_route(url)
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             **self._auth_headers(),
+            **proxy_headers,
             **(headers or {}),
         }
         payload = json.dumps(body).encode()
@@ -221,11 +263,12 @@ class OpenaiCompatModel:
         "thinking" or "text". Falls back to a normal request when the provider ignores the flag.
         """
         url = urlsplit(self.config.api_base.rstrip("/") + path)
-        target = url.path + (f"?{url.query}" if url.query else "")
+        target, proxy_headers = _request_route(url)
         request_headers = {
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
             **self._auth_headers(),
+            **proxy_headers,
             **(headers or {}),
         }
         payload = json.dumps({**body, "stream": True}).encode()
