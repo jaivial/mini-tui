@@ -17,9 +17,11 @@ import type { Database } from "bun:sqlite";
 import { DEFAULT_MODEL } from "../config";
 import { loadLastModel } from "../lastModel";
 import { runnerSupportsCompactOnly, spawnMini, tailLog, type MiniRun } from "../mini/spawn";
+import { sessionRunEnv, sessionTrajectories } from "../mini/sessionEnv";
 import { modelEnv } from "../providers";
 import {
   createSession,
+  rememberAgentRun,
   defaultDbPath,
   findSession,
   latestSession,
@@ -273,6 +275,10 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
     }
   }
 
+  let recovery: string[] = [];
+  if (persist && resumed && sessionId) {
+    try { recovery = sessionTrajectories(db(), sessionId); } catch { /* persistence is best effort */ }
+  }
   let run: MiniRun;
   try {
     run = spawnMini({
@@ -284,12 +290,16 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
       compactOnly: args.compact || undefined,
       // Caller-supplied run env (BYOK keys, the channel's `MINI_CHANNEL_SUBJECT`) wins over
       // the model-derived one: both are per-run facts the embedding process already decided.
-      env: { ...modelEnv(model), ...args.env },
+      env: sessionRunEnv({ ...modelEnv(model), ...args.env }, persist ? sessionId : null, recovery),
       control: false,
     });
   } catch (error) {
     errorOut(`could not start the agent: ${(error as Error).message}`);
     return EXIT_RUN_FAILED;
+  }
+
+  if (persist && sessionId) {
+    try { rememberAgentRun(db(), sessionId, run.session.trajPath); } catch { /* persistence is best effort */ }
   }
 
   const stream = args.outputFormat === "stream-json";

@@ -1301,7 +1301,7 @@ impl Agent {
     fn execute_actions(&mut self, message: &Value) -> Result<Vec<Value>, Flow> {
         let actions: Vec<Value> = message.pointer("/extra/actions").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut outputs = Vec::new();
-        if std::env::var("MINITUI_WEB").as_deref() == Ok("1") && Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none() {
+        if (std::env::var("MINI_AGENT_ORCHESTRATOR").as_deref() == Ok("1") || std::env::var("MINITUI_WEB").as_deref() == Ok("1")) && Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none() {
             let allowed = actions.iter().all(|action| {
                 if let Some(tool) = action.get("tool").and_then(Value::as_str) {
                     return matches!(tool, "agent_delegate" | "agent_message" | "agent_handoff" | "agent_route" | "agent_define");
@@ -1335,7 +1335,7 @@ impl Agent {
                 })
             });
             if !allowed {
-                return Ok(actions.iter().map(|_| json!({"raw_output": "Action refused by the web orchestrator boundary. Delegate with an inline brief.", "exception_info": "", "returncode": 1, "output": "Orchestrator boundary: this action was not executed. Only kanban/tasks bookkeeping and agent delegation/messaging/results are available. Pass an inline brief to a worker. Do not write brief files, inspect work, poll, or execute it yourself."})).collect());
+                return Ok(actions.iter().map(|_| json!({"raw_output": "Action refused by the orchestrator boundary. Delegate with an inline brief.", "exception_info": "", "returncode": 1, "output": "Orchestrator boundary: this action was not executed. Only kanban/tasks bookkeeping and agent delegation/messaging/results are available. Pass an inline brief to a worker. Do not write brief files, inspect work, poll, or execute it yourself."})).collect());
             }
         }
         // A single action, or concurrency disabled: the plain serial loop, unchanged.
