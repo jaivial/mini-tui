@@ -7,7 +7,7 @@
  * and the TUI show it under its parent and can open it, follow it live and message it (the same
  * attach path a session running in another UI uses).
  */
-import { addCard, listCards, updateCard, settleFromSubagent } from "../kanban";
+import { addCard, listCards, updateCard, settleFromSubagent, type Card } from "../kanban";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -191,18 +191,26 @@ export class SubagentSync {
     if (depth > 10) return [];
     const entries = readSubagentIndex(trajPath);
     const stamp = blockedStamp(trajPath);
+    if (!entries.length && !stamp) return [];
+    // One board read per pass, not a full scan for each worker and each operation.
+    // Newest assignment wins, matching listCards().find(). Settlement still checks id first.
+    const byName = new Map<string, Card>();
+    for (const card of listCards(this.db(), parentId)) {
+      if (!byName.has(card.assignee)) byName.set(card.assignee, card);
+    }
+    const remember = (card: Card | null) => { if (card) { byName.set(card.assignee, card); } };
     // Refused launches have no child roster, but the request must remain visible.
     try {
       const rows = JSON.parse(readFileSync(join(dirname(trajPath), "subagents", "blocked.json"), "utf8"));
       for (const row of Array.isArray(rows) ? rows : []) {
         if (typeof row.name !== "string" || typeof row.reason !== "string") continue;
         if (entries.some(e => e.name === row.name && childProcessAlive(e))) continue;
-        let card = listCards(this.db(), parentId).find(c => c.assignee === row.name);
+        let card = byName.get(row.name);
         if (!card) {
           card = addCard(this.db(), parentId, {title: row.name, description: String(row.task ?? ""), column: "blocked"});
-          updateCard(this.db(), card.id, {assignee: row.name, result: row.reason});
+          remember(updateCard(this.db(), card.id, {assignee: row.name, result: row.reason}));
         } else if (card.column === "backlog" || (card.column === "blocked" && card.result !== row.reason)) {
-          updateCard(this.db(), card.id, {column: "blocked", result: row.reason});
+          remember(updateCard(this.db(), card.id, {column: "blocked", result: row.reason}));
         }
       }
       blockedSeen.set(trajPath, stamp);
@@ -211,23 +219,23 @@ export class SubagentSync {
     const views: SubagentView[] = [];
     for (const entry of entries) {
       const id = subagentSessionId(parentId, entry.name);
-      views.push(toView(parentId, entry));
+      const effective = toView(parentId, entry);
+      views.push(effective);
       if (entry.traj_path) this.sync(id, entry.traj_path, depth + 1);
       // Every delegation has a card even when a worker bypassed the prompt convention.
       try {
-        if (!listCards(this.db(), parentId).some((c) => c.assignee === entry.name)) {
+        if (!byName.has(entry.name)) {
           const card = addCard(this.db(), parentId, { title: firstLine(taskText(entry)), description: taskText(entry), column: "doing" });
-          updateCard(this.db(), card.id, { assignee: entry.name });
+          remember(updateCard(this.db(), card.id, { assignee: entry.name }));
         }
       } catch { /* retried on the next roster sync */ }
-      const effective = toView(parentId, entry);
       if (effective.state === "running" || effective.state === "starting") {
-        const card = listCards(this.db(), parentId).find(c => c.assignee === entry.name);
+        const card = byName.get(entry.name);
         if (card?.column === "blocked" && /Delegation blocked before launch|refusing subagent:/.test(card.result)) {
-          updateCard(this.db(),card.id,{column:"doing",result:"",note:"Explicit retry started a live worker"});
+          remember(updateCard(this.db(),card.id,{column:"doing",result:"",note:"Explicit retry started a live worker"}));
         }
       }
-      try { settleFromSubagent(this.db(), parentId, entry.name, effective.state === "dead" ? "stopped" : effective.state, effective.state === "dead" ? "ProcessGone" : entry.exit_status, entry.steps); } catch { /* best-effort */ }
+      try { remember(settleFromSubagent(this.db(), parentId, entry.name, effective.state === "dead" ? "stopped" : effective.state, effective.state === "dead" ? "ProcessGone" : entry.exit_status, entry.steps, byName.get(entry.name) ?? null)); } catch { /* best-effort */ }
 
       try {
         // The session row only changes when the roster entry itself does: a child that is only

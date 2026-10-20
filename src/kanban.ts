@@ -253,8 +253,8 @@ export function parseKanban(rest: string[], takeValue: (a: string[], i: number, 
  * card follows without the parent having to poll. Waiting (turn over, can still be messaged) goes
  * to review; a clean stop is done; any other end is blocked with the exit status as its note.
  */
-export function settleFromSubagent(db: Database, parentId: string, name: string, state: string, exitStatus: string, steps = 1): Card | null {
-  const c = getCard(db, name) ?? listCards(db, parentId).find((c) => c.assignee === name) ?? null;
+export function settleFromSubagent(db: Database, parentId: string, name: string, state: string, exitStatus: string, steps = 1, knownCard?: Card | null): Card | null {
+  const c = getCard(db, name) ?? (knownCard === undefined ? listCards(db, parentId).find((c) => c.assignee === name) ?? null : knownCard);
   if (!c || c.session !== parentId) return null;
   if (c.column !== "doing" && c.column !== "review") return null;
   let column: Column | null = null;
