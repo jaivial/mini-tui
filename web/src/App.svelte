@@ -446,7 +446,7 @@
    * rows are built in ChatPane and these are appended to them.
    */
   const appRows = $derived.by((): MenuRow[] => [
-    { id: "routines", label: "Kanban", note: taskCards.length ? `${taskCards.length} task ${taskCards.length === 1 ? "card" : "cards"}` : "No task cards yet", icon: CalendarClock, group: "Workspace", run: () => (tasksOpen = true) },
+    { id: "routines", label: "Kanban", note: "Tasks for the selected bot", icon: CalendarClock, group: "Workspace", run: () => (tasksOpen = true) },
     { id: "team", label: "Team map", note: liveTeam ? `${liveTeam} working` : "The delegation graph", icon: Network, group: "Workspace", run: () => (teamMapOpen = true) },
     { id: "hosts", label: "Remote hosts", note: hostsNote(), icon: Server, group: "Workspace", run: () => (hostsOpen = true) },
     { id: "resume", label: "Resume a session", note: "Every saved session, searchable", icon: RotateCcw, group: "Workspace", run: () => (resumeOpen = true) },

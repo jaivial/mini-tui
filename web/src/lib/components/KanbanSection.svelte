@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { api } from "../api";
   import { store } from "../stores/sessions.svelte";
   let { open = false }: { open?: boolean } = $props();
@@ -7,6 +8,8 @@
   let error = $state("");
   let path = $state<string[]>([]);
   let selected = $state<string | null>(null);
+  let detailEl = $state<HTMLElement>();
+  $effect(()=>{if(selected)void tick().then(()=>detailEl?.scrollIntoView({block:"start",behavior:"instant"}));});
   let query = $state("");
   let blockedOnly = $state(false);
   let mode = $state(localStorage.getItem("mini.kanban.view") === "list" ? "list" : "kanban");
@@ -42,7 +45,17 @@
     <button class="rounded-lg border border-line px-3 py-2 text-xs {blockedOnly?'bg-warn/10 text-warn':''}" aria-pressed={blockedOnly} onclick={()=>blockedOnly=!blockedOnly}>Blocked · {cards.filter(c=>c.session===board&&c.column==='blocked').length}</button>
   </div>
   {#if error}<p role="status" class="mb-3 text-sm text-warn">Could not refresh tasks: {error}. Last saved view retained.</p>{/if}
-  <div class={mode==='list'?'flex flex-col gap-3':'grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4'} aria-label={mode==='list'?'Task list':'Four task columns'}>
+  {#if detail}
+    <section class="mb-4 rounded-xl border border-brand/30 bg-canvas p-4" aria-label="Task details" bind:this={detailEl}>
+      <div class="flex items-start gap-3"><h4 class="min-w-0 flex-1 break-words text-sm font-semibold">{detail.title}</h4><button class="rounded px-2 py-1 text-xs text-ink-muted" onclick={()=>selected=null}>Close details</button></div>
+      <p class="mt-2 text-xs text-ink-muted">{detail.column} · {detail.id}</p>
+      <p class="mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-sm text-ink-muted">{detail.description || 'No description saved.'}</p>
+      {#if detail.result}<details class="mt-3"><summary class="cursor-pointer py-2 text-xs font-medium">Saved result</summary><p class="whitespace-pre-wrap break-words text-sm text-ink-muted">{detail.result}</p></details>{/if}
+      <h5 class="mt-4 text-xs font-semibold">Assigned subagent</h5>
+      {#each assigned as child}<button class="mt-2 flex w-full items-center justify-between gap-2 rounded-lg border border-line p-3 text-left" onclick={()=>enter(child.id)}><span class="min-w-0 truncate text-sm">{child.title}</span><span class="shrink-0 text-xs text-brand">{child.status} · Open board →</span></button>{:else}<p class="mt-2 text-xs text-ink-muted">{detail.assignee ? `Assigned to ${detail.assignee}. No linked subagent session is available.` : 'No subagent assigned.'}</p>{/each}
+    </section>
+  {/if}
+  <div class={mode==='list'?'flex flex-col gap-3':'grid grid-flow-col auto-cols-[minmax(240px,1fr)] gap-3 overflow-x-auto pb-2 xl:auto-cols-fr'} aria-label={mode==='list'?'Task list':'Four task columns'}>
     {#each columns as col}
       <section class="min-w-0 rounded-xl border border-line bg-raised/30 p-2" aria-label={col.label}>
         <h4 class="mb-2 flex items-center justify-between px-1 py-2 text-xs font-semibold">{col.label}<span class="text-ink-faint">{shown.filter(c=>columnOf(c)===col.id).length}</span></h4>
@@ -58,16 +71,6 @@
       </section>
     {/each}
   </div>
-  {#if detail}
-    <section class="mt-4 rounded-xl border border-brand/30 bg-canvas p-4" aria-label="Task details">
-      <div class="flex items-start gap-3"><h4 class="min-w-0 flex-1 break-words text-sm font-semibold">{detail.title}</h4><button class="rounded px-2 py-1 text-xs text-ink-muted" onclick={()=>selected=null}>Close details</button></div>
-      <p class="mt-2 text-xs text-ink-muted">{detail.column} · {detail.id}</p>
-      <p class="mt-3 whitespace-pre-wrap break-words text-sm text-ink-muted">{detail.description || 'No description saved.'}</p>
-      {#if detail.result}<details class="mt-3"><summary class="cursor-pointer py-2 text-xs font-medium">Saved result</summary><p class="whitespace-pre-wrap break-words text-sm text-ink-muted">{detail.result}</p></details>{/if}
-      <h5 class="mt-4 text-xs font-semibold">Assigned subagent</h5>
-      {#each assigned as child}<button class="mt-2 flex w-full items-center justify-between gap-2 rounded-lg border border-line p-3 text-left" onclick={()=>enter(child.id)}><span class="min-w-0 truncate text-sm">{child.title}</span><span class="shrink-0 text-xs text-brand">{child.status} · Open board →</span></button>{:else}<p class="mt-2 text-xs text-ink-muted">{detail.assignee ? `Assigned to ${detail.assignee}. No linked subagent session is available.` : 'No subagent assigned.'}</p>{/each}
-    </section>
-  {/if}
   {#if children.length}<details class="mt-4 rounded-xl border border-line p-3"><summary class="cursor-pointer text-xs font-medium">All subagent boards · {children.length}</summary><div class="mt-2 flex flex-col gap-2">{#each children as child}<button class="flex min-w-0 items-center justify-between gap-2 rounded-lg px-2 py-3 text-left hover:bg-overlay" onclick={()=>enter(child.id)}><span class="min-w-0 truncate text-sm">{child.title}</span><span class="shrink-0 text-xs text-ink-muted">{child.status} →</span></button>{/each}</div></details>{/if}
   {/if}
 </section>
