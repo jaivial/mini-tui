@@ -97,7 +97,7 @@ the terminal UI is still there: run `bin/mini-tui`.
 
 ## Benchmarks
 
-**Closure check on, against pi.** Ten tasks, three repetitions, `MiniMax-M3.1-Flash-Preview` on both
+**Historical closure-check result, 19 October 2026.** Ten tasks, three repetitions, `MiniMax-M3.1-Flash-Preview` on both
 sides, pi and mini interleaved task by task so that API drift hits both alike, mini on the deployed
 binary and config with Laya as the judge.
 
@@ -108,21 +108,26 @@ binary and config with Laya as the judge.
 | Tasks where mini is at least as fast | 1/10 | 9/10 |
 | Timeouts | 0 | 0 |
 
-Limits: ten tasks, three repetitions, one model, one machine. The gain comes from a judge that
-closes a clean run in a tenth of a second instead of a model call, and from a cap on judge
+Limits: ten tasks, three repetitions, one model, one machine. Recovered from the original completed-run readback; its temporary raw directory is no longer available here. This is not a measurement of the 20 October parity changes. The earlier analysis attributed the gain to a judge that
+closes a clean run in a tenth of a second instead of a model call, with a cap on judge
 rejections. Before that, 7 of 27 runs with the model judge hit the 900 s timeout. Earlier rounds
 were a tie and the report keeps them: [`docs/pi-vs-mini-benchmark.md`](docs/pi-vs-mini-benchmark.md).
 
-Terminal-Bench 2.0 dev suite (16 tasks, GLM-5.3-Flash, Rust agent). mini-tui vs the public harness
-leaderboard: pass rate vs median cost per task, with the Pareto frontier of public harnesses.
+### Graphics with separate provenance
 
-![Pass rate vs median cost per task](docs/img/benchmark.png)
+The 11 October full dev sweep was 62.5% (10/16). A later targeted composite reached
+75% (12/16); it was not a fresh full sweep. The single-run 0.69x speed ratio belongs
+to another experiment and did not hold in the three round-6 repetitions.
 
-Average agent wall time per task vs public coding agents (Artificial Analysis):
+The graphics below keep provenance beside every result. Public leaderboard data uses
+another corpus and is not a like-for-like ranking of mini.
 
-![Time per task](docs/img/time-per-task.png)
+![Historical 19 October closure-on result, with evidence limits](docs/img/closure-history-20261019.png)
 
-![Agent submit-checklist release](docs/img/update.png)
+![Per-task historical medians, with shared zero-based scales](docs/img/closure-tasks-20261019.png)
+
+![Terminal and web implementation changes, without a speedup claim](docs/img/parity-update-20261020.png)
+
 
 ---
 
