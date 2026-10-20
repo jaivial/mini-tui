@@ -202,7 +202,7 @@ export interface SettingsView {
    */
   modelRouterEnabled?: boolean;
   /** The live cu screen. Operator config only: the client cannot change it. */
-  liveScreen?: { enabled: boolean; viewerUrl: string | null; loginUrl: string | null };
+  liveScreen?: { enabled: boolean; origin: string | null; viewerUrl: string | null; loginUrl: string | null };
 }
 
 // ------------------------------------------------------------------ v6-C router
