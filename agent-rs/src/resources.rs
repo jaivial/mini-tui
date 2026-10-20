@@ -91,11 +91,28 @@ pub fn meminfo() -> Option<(u64, u64)> {
 }
 
 /// The cgroup v2 hard ceiling, when this run lives in a limited one.
-pub fn cgroup_limit_mb() -> Option<u64> {
-    let text = read_to_string_lossy(Path::new("/sys/fs/cgroup/memory.max"))?;
-    let t = text.trim();
-    t.parse::<u64>().ok().map(|b| b / 1024 / 1024)
+fn cgroup_memory() -> (Option<u64>, Option<u64>) {
+    // Read this process hierarchy, not the host root. Ancestor limits bind too.
+    let Some(raw)=read_to_string_lossy(Path::new("/proc/self/cgroup")) else {return (None,None)};
+    let Some(rel)=raw.lines().find_map(|l|l.strip_prefix("0::")) else {return (None,None)};
+    let root=Path::new("/sys/fs/cgroup");
+    let mut dir=root.join(rel.trim_start_matches("/"));
+    let (mut limit,mut headroom): (Option<u64>,Option<u64>)=(None,None);
+    loop {
+        let max=read_to_string_lossy(&dir.join("memory.max")).and_then(|s|s.trim().parse::<u64>().ok());
+        let used=read_to_string_lossy(&dir.join("memory.current")).and_then(|s|s.trim().parse::<u64>().ok());
+        if let Some(max)=max {
+            let mb=max/1024/1024;
+            limit=Some(limit.map(|v|v.min(mb)).unwrap_or(mb));
+            // Unknown usage under a known ceiling is not permission to spend it.
+            let free=used.map(|v|max.saturating_sub(v)/1024/1024).unwrap_or(0);
+            headroom=Some(headroom.map(|v|v.min(free)).unwrap_or(free));
+        }
+        if dir==root || !dir.pop() || !dir.starts_with(root) {break;}
+    }
+    (limit,headroom)
 }
+pub fn cgroup_limit_mb() -> Option<u64> { cgroup_memory().0 }
 
 /// Logical CPUs (`nproc`), from the std library: the affinity mask, not the machine size.
 pub fn cpu_count() -> u64 {
@@ -335,9 +352,10 @@ pub fn snapshot(
 ) -> Report {
     // An unknown MemAvailable must read as "nothing to spend": refuse rather than guess big.
     let (available_mb, total_mb) = available_mb.zip(total_mb).unwrap_or((0, 0));
+    let (cg_limit,cg_available)=cgroup_memory();
     let mut budget = Budget {
         available_mb,
-        limit_mb: cgroup_limit_mb().map(|c| c.min(total_mb)).unwrap_or(total_mb),
+        limit_mb: cg_limit.map(|c| c.min(total_mb)).unwrap_or(total_mb),
         reserve_mb: Budget::reserve_default(),
         avg_child_mb: tracker.average_rss_mb(),
         floor_mb: Budget::floor_default(),
@@ -349,6 +367,7 @@ pub fn snapshot(
     if budget.limit_mb > 0 {
         budget.available_mb = budget.available_mb.min(budget.limit_mb);
     }
+    if let Some(headroom)=cg_available {budget.available_mb=budget.available_mb.min(headroom);}
     let max_fanout = budget.max_fanout();
     let children = tracker
         .samples

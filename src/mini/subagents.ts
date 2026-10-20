@@ -185,6 +185,21 @@ export class SubagentSync {
   sync(parentId: string, trajPath: string, depth = 0): SubagentView[] {
     if (depth > 10) return [];
     const entries = readSubagentIndex(trajPath);
+    // Refused launches have no child roster, but the request must remain visible.
+    try {
+      const rows = JSON.parse(readFileSync(join(dirname(trajPath), "subagents", "blocked.json"), "utf8"));
+      for (const row of Array.isArray(rows) ? rows : []) {
+        if (typeof row.name !== "string" || typeof row.reason !== "string") continue;
+        if (entries.some(e => e.name === row.name && childProcessAlive(e))) continue;
+        let card = listCards(this.db(), parentId).find(c => c.assignee === row.name);
+        if (!card) {
+          card = addCard(this.db(), parentId, {title: row.name, description: String(row.task ?? ""), column: "blocked"});
+          updateCard(this.db(), card.id, {assignee: row.name, result: row.reason});
+        } else if (card.column === "backlog" || (card.column === "blocked" && card.result !== row.reason)) {
+          updateCard(this.db(), card.id, {column: "blocked", result: row.reason});
+        }
+      }
+    } catch { /* no refused requests, or a concurrent atomic rewrite */ }
     if (!entries.length) return [];
     const views: SubagentView[] = [];
     for (const entry of entries) {
@@ -199,6 +214,12 @@ export class SubagentSync {
         }
       } catch { /* retried on the next roster sync */ }
       const effective = toView(parentId, entry);
+      if (effective.state === "running" || effective.state === "starting") {
+        const card = listCards(this.db(), parentId).find(c => c.assignee === entry.name);
+        if (card?.column === "blocked" && /Delegation blocked before launch|refusing subagent:/.test(card.result)) {
+          updateCard(this.db(),card.id,{column:"doing",result:"",note:"Explicit retry started a live worker"});
+        }
+      }
       try { settleFromSubagent(this.db(), parentId, entry.name, effective.state === "dead" ? "stopped" : effective.state, effective.state === "dead" ? "ProcessGone" : entry.exit_status, entry.steps); } catch { /* best-effort */ }
 
       try {

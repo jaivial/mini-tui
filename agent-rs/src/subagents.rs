@@ -1358,13 +1358,15 @@ impl Hub {
         } else {
             self.fanout_left()
         };
-        if live as u64 >= fits {
+        if fits == 0 {
             let r = self.resources_report();
             let b = &r.budget;
-            return Err(format!(
-                "refusing subagent: {live} are alive and the box has room for {fits} more.\n  memory {} free, the session keeps {} for itself, a subagent costs {} on average ({}).\n  `agent resources` shows the numbers; `agent stop` one that is done, then spawn again.",
+            let reason=format!(
+                "refusing subagent: {live} are alive and the box has room for {fits} more.\n  memory {} available, protected headroom {} (not allocated to this session), worker charge {} (measured average {}).\n  No worker started. Keep the protection; wait for capacity or investigate existing load. Do not lower reserves or stop unrelated work.",
                 crate::resources::gb_g(b.available_mb), crate::resources::gb_g(b.reserve_mb), crate::resources::gb_g(b.per_child_mb()), crate::resources::gb_g(b.avg_child_mb)
-            ));
+            );
+            self.record_blocked(&name,&s(req,"task"),&reason);
+            return Err(reason);
         }
         if let Some(i) = self.children.iter().position(|c| c.name == name) {
             if self.children[i].running() {
