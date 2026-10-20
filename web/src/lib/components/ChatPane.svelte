@@ -535,12 +535,11 @@
         <SubagentStrip {session} onopen={openSubagent} />
       </div>
 
-      <!-- The chat's overlay layer: the transcript runs the pane's FULL height; the prompt pill,
-           the session's pet and the jump-to-latest button float over its bottom edge. -->
+      <!-- The composer has its own row, so expanded drafts never cover the transcript. -->
       <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <main bind:this={scroller} onscroll={onScroll} class="relative z-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
-          <!-- Bottom padding clears the floating prompt pill so the newest message is never under it. -->
-          <div class="mx-auto max-w-3xl pb-[7rem]">
+          <!-- Normal flow keeps the final message above the composer at every draft height. -->
+          <div class="mx-auto max-w-3xl pb-3">
             {#if !store.hydrated[session.id] && !session.events.length}
               <div class="flex flex-col gap-4 py-2" role="status" aria-label="Loading conversation">
                 <Skeleton class="h-4 w-2/5" />
@@ -563,12 +562,12 @@
         </main>
 
         {#if link === "reconnecting" || link === "connecting"}
-          <div class="mx-auto mb-[calc(6.5rem+env(safe-area-inset-bottom))] flex w-full max-w-3xl items-center gap-2 px-4 text-[12.5px] text-ink-muted pane-sm:px-3" role="status">
+          <div class="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 px-4 text-[12.5px] text-ink-muted pane-sm:px-3" role="status">
             <WifiOff size={13} strokeWidth={2} aria-hidden="true" />
             {link === "connecting" ? "Connecting to this session" : "Connection lost. Reconnecting"}<Spinner size={12} label="" />
           </div>
         {:else if session.status === "running"}
-          <div class="mx-auto mb-[calc(6.5rem+env(safe-area-inset-bottom))] w-full max-w-3xl px-4 pane-sm:px-3">
+          <div class="mx-auto mb-2 w-full max-w-3xl px-4 pane-sm:px-3">
             <PixelLoader label={session.partial?.text ? "Writing" : session.partial?.thinking ? "Thinking" : "Working"} since={session.startedAt} />
           </div>
         {/if}
@@ -598,7 +597,6 @@
           model={currentModel}
           {switchingModel}
           {modelNote}
-          floating
           onsend={send}
           oninterrupt={interrupt}
           onmodel={pickModel}

@@ -322,7 +322,18 @@
         </div>
       {/if}
     {:else if row.kind === "notice"}
-      <div class="cv-row px-2.5 read-[11.5px] text-ink-faint {gap}">{row.event.text}</div>
+      {#if /^\[subagent [^\]\n]+\] (finished its turn|stopped)/.test(row.event.text)}
+        <details class="cv-row rounded-xl border border-line bg-raised/30 px-3 py-2 {gap}">
+          <summary class="flex cursor-pointer list-none items-center gap-2 text-xs text-ink-muted">
+            <MessageCircle size={14} class="shrink-0 text-brand" />
+            <span class="min-w-0 flex-1 truncate">{row.event.text.split("\n")[0]}</span>
+            <span class="shrink-0 text-ink-faint">Details</span>
+          </summary>
+          <p class="mt-3 whitespace-pre-wrap break-words text-xs text-ink-muted">{row.event.text}</p>
+        </details>
+      {:else}
+        <div class="cv-row px-2.5 read-[11.5px] text-ink-faint {gap}">{row.event.text}</div>
+      {/if}
     {:else if row.kind === "exit"}
       <!-- The run result is shown as the receipt ticks inside the task bubble. -->
     {:else if row.kind === "error"}
