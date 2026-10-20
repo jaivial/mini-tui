@@ -538,41 +538,41 @@
       <!-- The composer has its own row, so expanded drafts never cover the transcript. -->
       <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <div class="relative min-h-0 flex-1">
-        <main bind:this={scroller} onscroll={onScroll} class="relative z-0 h-full min-h-0 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
-          <!-- Normal flow keeps the final message above the composer at every draft height. -->
-          <div class="mx-auto max-w-3xl pb-3">
-            {#if !store.hydrated[session.id] && !session.events.length}
-              <div class="flex flex-col gap-4 py-2" role="status" aria-label="Loading conversation">
-                <Skeleton class="h-4 w-2/5" />
-                <Skeleton class="h-16 w-full" />
-                <Skeleton class="h-4 w-3/5" />
-                <Skeleton class="h-10 w-full" />
-              </div>
-            {:else}
-              {#key session.id}
-                <Transcript events={session.events} partial={session.partial} onsubmit={(message) => send(message)} />
-              {/key}
-              {#if !session.events.length}
-                <div class="py-16 text-center">
-                  <p class="text-[13px] text-ink-muted">Nothing here yet.</p>
-                  <p class="mt-1 text-[12px] text-ink-muted">Send a prompt to start this session.</p>
+          <main bind:this={scroller} onscroll={onScroll} class="relative z-0 h-full min-h-0 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
+            <!-- Normal flow keeps the final message above the composer at every draft height. -->
+            <div class="mx-auto max-w-3xl pb-3">
+              {#if !store.hydrated[session.id] && !session.events.length}
+                <div class="flex flex-col gap-4 py-2" role="status" aria-label="Loading conversation">
+                  <Skeleton class="h-4 w-2/5" />
+                  <Skeleton class="h-16 w-full" />
+                  <Skeleton class="h-4 w-3/5" />
+                  <Skeleton class="h-10 w-full" />
                 </div>
+              {:else}
+                {#key session.id}
+                  <Transcript events={session.events} partial={session.partial} onsubmit={(message) => send(message)} />
+                {/key}
+                {#if !session.events.length}
+                  <div class="py-16 text-center">
+                    <p class="text-[13px] text-ink-muted">Nothing here yet.</p>
+                    <p class="mt-1 text-[12px] text-ink-muted">Send a prompt to start this session.</p>
+                  </div>
+                {/if}
               {/if}
-            {/if}
-          </div>
-        </main>
-        {#if !atBottom && session.events.length}
-          <button
-            type="button"
-            class="absolute bottom-3 left-1/2 z-25 grid size-11 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line/60 bg-raised/80 text-ink-muted shadow-[0_8px_24px_-8px_oklch(0_0_0/0.3)] backdrop-blur-md transition-colors duration-(--duration-fast) ease-(--ease-standard) hover:text-ink"
-            aria-label="Scroll to the latest message"
-            onclick={jumpToLatest}
-          >
-            <ArrowDown size={18} strokeWidth={2} aria-hidden="true" />
-          </button>
-        {/if}
+            </div>
+          </main>
+          {#if !atBottom && session.events.length}
+            <button
+              type="button"
+              class="absolute bottom-3 left-1/2 z-25 grid size-11 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line/60 bg-raised/80 text-ink-muted shadow-[0_8px_24px_-8px_oklch(0_0_0/0.3)] backdrop-blur-md transition-colors duration-(--duration-fast) ease-(--ease-standard) hover:text-ink"
+              aria-label="Scroll to the latest message"
+              onclick={jumpToLatest}
+            >
+              <ArrowDown size={18} strokeWidth={2} aria-hidden="true" />
+            </button>
+          {/if}
 
-        <FloatingMascot id={session.id} docked />
+          <FloatingMascot id={session.id} docked />
 
         </div>
 

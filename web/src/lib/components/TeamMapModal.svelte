@@ -226,11 +226,11 @@
   onclose={oncloseevent}
 >
   <div bind:this={shell} class="elev-pop flex h-[calc(94*var(--vh))] w-full flex-col overflow-hidden rounded-2xl bg-canvas max-sm:h-[calc(100*var(--vh))] max-sm:rounded-none" role="document">
-    <header class="flex shrink-0 items-center gap-2.5 border-b border-line/80 px-4 py-2.5">
+    <header class="flex shrink-0 flex-wrap items-center gap-2.5 border-b border-line/80 px-4 py-2.5">
       <Network size={15} class="shrink-0 text-ink-muted" strokeWidth={1.75} aria-hidden="true" />
       <h2 class="text-[14px] leading-5 font-medium">Team map</h2>
-      <span class="tnum text-[11px] text-ink-faint">
-        {store.list.length} session{store.list.length === 1 ? "" : "s"}{liveCount ? ` · ${liveCount} working` : ""}
+      <span class="tnum text-[11px] text-ink-faint max-sm:order-last max-sm:w-full">
+        {roots.length} bot{roots.length === 1 ? "" : "s"}{liveCount ? ` · ${liveCount} working` : ""}
       </span>
       <div class="ml-auto flex rounded-lg border border-line p-0.5" aria-label="Team view">
         <button class="rounded px-2 py-2 text-xs {view==='map'?'bg-overlay':''}" aria-pressed={view==='map'} onclick={()=>view='map'}>Map</button>
@@ -246,7 +246,7 @@
             <section class="mb-3 rounded-xl border border-line p-3">
               <button class="flex w-full items-center justify-between gap-2 py-2 text-left" onclick={()=>{open=false;onopensession(root.id);}}><span class="min-w-0 truncate text-sm font-semibold">{root.title || 'Untitled bot'}</span><span class="shrink-0 text-xs text-ink-muted">{mapLabel(root.status)} →</span></button>
               {#each listRows(root.id) as child (child.path)}
-                <button class="mt-1 flex w-full items-center justify-between gap-2 rounded-lg border-l-2 border-line py-3 pl-3 text-left hover:bg-raised" style:margin-left="{Math.min(child.path.split('/').length-1,3)*8}px" onclick={()=>{open=false;onopensession(child.id);}}><span class="min-w-0"><span class="block truncate text-sm">{child.name}</span><span class="block truncate text-xs text-ink-muted">{child.task || 'No task details saved'}</span></span><span class="shrink-0 text-xs text-ink-muted">{child.label} →</span></button>
+                <button title={child.task || child.name} class="mt-1 flex w-full items-center justify-between gap-2 rounded-lg border-l-2 border-line py-3 pl-3 text-left hover:bg-raised" style:margin-left="{Math.min(child.path.split('/').length-1,3)*8}px" onclick={()=>{open=false;onopensession(child.id);}}><span class="min-w-0"><span class="block truncate text-sm">{child.name}</span><span class="block truncate text-xs text-ink-muted">{child.task || 'No task details saved'}</span></span><span class="shrink-0 text-xs text-ink-muted">{child.label} →</span></button>
               {:else}<p class="py-2 text-xs text-ink-faint">No delegated agents in the current roster.</p>{/each}
             </section>
           {:else}<p class="p-4 text-sm text-ink-muted">No open bots.</p>{/each}
