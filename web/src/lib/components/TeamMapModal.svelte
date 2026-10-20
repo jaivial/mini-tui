@@ -32,7 +32,6 @@
   let shell: HTMLDivElement | undefined = $state();
   let view = $state(innerWidth < 640 ? "list" : "map");
   const roots = $derived(store.list.filter(s=>!s.parentId && !s.id.includes("~")));
-  const listRows = (id:string) => (agentTree.trees[id]?.rows ?? []).filter((row, i, rows) => rows.findIndex(r => r.path === row.path) === i);
 
   $effect(() => {
     if (!dialog) return;
@@ -245,7 +244,7 @@
           {#each roots as root}
             <section class="mb-3 rounded-xl border border-line p-3">
               <button class="flex w-full items-center justify-between gap-2 py-2 text-left" onclick={()=>{open=false;onopensession(root.id);}}><span class="min-w-0 truncate text-sm font-semibold">{root.title || 'Untitled bot'}</span><span class="shrink-0 text-xs text-ink-muted">{mapLabel(root.status)} →</span></button>
-              {#each listRows(root.id) as child (child.path)}
+              {#each agentTree.trees[root.id]?.rows ?? [] as child (child.path)}
                 <button title={child.task || child.name} class="mt-1 flex w-full items-center justify-between gap-2 rounded-lg border-l-2 border-line py-3 pl-3 text-left hover:bg-raised" style:margin-left="{Math.min(child.path.split('/').length-1,3)*8}px" onclick={()=>{open=false;onopensession(child.id);}}><span class="min-w-0"><span class="block truncate text-sm">{child.name}</span><span class="block truncate text-xs text-ink-muted">{child.task || 'No task details saved'}</span></span><span class="shrink-0 text-xs text-ink-muted">{child.label} →</span></button>
               {:else}<p class="py-2 text-xs text-ink-faint">No delegated agents in the current roster.</p>{/each}
             </section>

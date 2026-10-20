@@ -144,8 +144,8 @@
   });
 
   /**
-   * False once the reader has scrolled up far enough that newer messages hide under the floating
-   * prompt pill: a jump-to-latest button appears above it until they are back in view.
+   * False while the reader is viewing history: a jump-to-latest button stays in the transcript
+   * viewport until the newest messages are back in view.
    */
   let atBottom = $state(true);
   /** What the pin effect remembers: whose transcript it was following. */
@@ -573,7 +573,6 @@
           {/if}
 
           <FloatingMascot id={session.id} docked />
-
         </div>
 
         {#if link === "reconnecting" || link === "connecting"}
