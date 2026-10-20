@@ -185,6 +185,8 @@ interface Internal {
   /** Trajectory path on the local box (local runs only). */
   trajPath?: string;
   consumed: number;
+  /** Weak source identity: final reads must not retain the heavy raw trajectory. */
+  messageSource?: WeakRef<TrajectoryMessage[]>;
   parseState: ReturnType<typeof createParseState>;
   /** A liveness probe for this entry is in flight (never two for one entry at once). */
   probing?: boolean;
@@ -871,6 +873,7 @@ export class SessionManager {
     if (entry.rebuild && messages.length) {
       // Attached to another UI's agent: its trajectory replaces the saved copy shown meanwhile.
       entry.rebuild = false;
+      entry.messageSource = undefined;
       entry.consumed = 0;
       entry.parseState = createParseState();
       entry.session.events = entry.session.events.filter((event) => event.type === "notice" && event.interruptType === "attach");
@@ -879,6 +882,7 @@ export class SessionManager {
     }
     if (messages.length < entry.consumed) {
       // A rewrite from scratch: replay the whole thing.
+      entry.messageSource = undefined;
       entry.consumed = 0;
       entry.parseState = createParseState();
       entry.session.events = [];
@@ -976,7 +980,16 @@ export class SessionManager {
     }
     // Keep the retained copy slim: the journal-backed watcher re-slims after
     // the callback, and a long run otherwise holds every raw API response.
-    entry.session.messages = messages.map(slimMessage);
+    // Like the terminal/headless paths, retain only the appended tail. Re-mapping
+    // the whole history on every completed message made long sessions quadratic.
+    // A new source array (full read/replaced journal) rebuilds the retained copy.
+    const retained = entry.session.messages;
+    if (entry.messageSource?.deref() !== messages || messages.length < retained.length) {
+      entry.session.messages = messages.map(slimMessage);
+      entry.messageSource = new WeakRef(messages);
+    } else {
+      for (let i = retained.length; i < messages.length; i++) retained.push(slimMessage(messages[i]!));
+    }
     this.#emit(entry);
   }
 
@@ -1494,6 +1507,7 @@ export class SessionManager {
       exitStatus: restored.exitStatus,
       status: restored.status,
     });
+    entry.messageSource = undefined;
     entry.consumed = restored.messages.length;
     entry.parseState = createParseState(restored.messages);
     entry.pendingTasks = [];
