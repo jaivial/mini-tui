@@ -1632,10 +1632,12 @@ export class SessionManager {
       session.events.push({ type: "notice", text: `${session.cwd} is not on this machine: continuing in ${cwd}` });
     }
     const model = session.model || DEFAULT_MODEL || loadLastModel();
+    const recoveryPaths = this.trajsOf(session.id);
+    const sharedRoot = recoveryPaths.find(p => existsSync(join(dirname(p), "context")));
     const run = spawnMini({
       task,
       model: model || undefined,
-      env: { ...modelEnv(model), MINITUI_SESSION_ID: session.id, MINI_AGENT_MAX_DEPTH: "10" },
+      env: { ...modelEnv(model), MINITUI_SESSION_ID: session.id, MINI_AGENT_MAX_DEPTH: "10", MINI_AGENT_RECOVERY_TRAJECTORIES: JSON.stringify(recoveryPaths), ...(sharedRoot ? { MINI_AGENT_CONTEXT_DIR: join(dirname(sharedRoot), "context") } : {}) },
       cwd,
       resumePath,
       control: true,

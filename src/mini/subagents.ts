@@ -135,7 +135,8 @@ function childProcessAlive(entry: SubagentEntry): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
-    return true;
+    const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\u0000");
+    return argv.includes(entry.traj_path);
   } catch (error) {
     // EPERM: alive but someone else's process - a subagent of ours would not be.
     return (error as NodeJS.ErrnoException).code === "EPERM";
@@ -197,7 +198,8 @@ export class SubagentSync {
           updateCard(this.db(), card.id, { assignee: entry.name });
         }
       } catch { /* retried on the next roster sync */ }
-      try { settleFromSubagent(this.db(), parentId, entry.name, entry.state, entry.exit_status, entry.steps); } catch { /* best-effort */ }
+      const effective = toView(parentId, entry);
+      try { settleFromSubagent(this.db(), parentId, entry.name, effective.state === "dead" ? "stopped" : effective.state, effective.state === "dead" ? "ProcessGone" : entry.exit_status, entry.steps); } catch { /* best-effort */ }
 
       try {
         // The session row only changes when the roster entry itself does: a child that is only

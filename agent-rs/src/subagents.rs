@@ -225,6 +225,8 @@ impl Child {
             "cwd": self.cwd,
             "model": self.model,
             "skills": self.skills,
+            "repos": self.repos,
+            "lane": self.lane,
             "steps": self.steps,
             "calls": self.calls,
             "cost": round4(self.total_cost()),
@@ -667,6 +669,52 @@ pub fn enabled() -> bool {
     std::env::var("MINI_AGENT_SUBAGENTS").map(|v| v != "0").unwrap_or(true)
 }
 
+/// Recover saved workers as stopped handles, never as fabricated live processes.
+/// A new parent process cannot own the old process handles. Keep their exact journals
+/// so explicit `agent send` resumes the same conversation rather than deleting work.
+fn recover_children(dir: &Path) -> Vec<Child> {
+    let mut paths = vec![dir.join("index.json")];
+    if let Ok(raw) = std::env::var("MINI_AGENT_RECOVERY_TRAJECTORIES") {
+        if let Ok(old) = serde_json::from_str::<Vec<String>>(&raw) {
+            paths.extend(old.iter().filter_map(|p| Path::new(p).parent().map(|d| d.join("subagents/index.json"))));
+        }
+    }
+    let mut out = vec![];
+    for path in paths {
+        let Ok(raw) = std::fs::read_to_string(&path) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
+        let Some(entries) = v.get("children").and_then(Value::as_array) else { continue };
+        for e in entries {
+            let name = s(e,"name");
+            if !valid_name(&name) || out.iter().any(|c: &Child| c.name==name) { continue; }
+            let traj = PathBuf::from(s(e,"traj_path"));
+            let Some(saved_dir) = traj.parent().map(Path::to_path_buf) else { continue };
+            let journal = crate::agent::journal_path(&traj);
+            if !journal.is_file() && !traj.is_file() { continue; }
+            // Do not duplicate an old child that is still alive. A resumed parent
+            // reports the external owner instead of writing to a possibly recycled pid.
+            let pid = e.get("pid").and_then(Value::as_i64).unwrap_or(0) as i32;
+            let alive = pid>0 && std::fs::read(format!("/proc/{pid}/cmdline")).map(|b| String::from_utf8_lossy(&b).contains(&traj.display().to_string())).unwrap_or(false);
+            let mut c = Child {
+                chain: Default::default(), name, task: std::fs::read_to_string(saved_dir.join("task.txt")).unwrap_or_else(|_| s(e,"task")),
+                cwd:s(e,"cwd"), repos:e.get("repos").and_then(Value::as_array).map(|a|a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(), lane:e.get("lane").and_then(Value::as_array).map(|a|a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(), model:s(e,"model"), skills:e.get("skills").and_then(Value::as_array).map(|a|a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+                traj, journal, control:saved_dir.join("control"), log:saved_dir.join("agent.log"), dir:saved_dir,
+                proc:None,pid:0,state:"stopped".into(),exit_status:"InterruptedOnResume".into(),submission:String::new(),
+                exit_text:if alive { "Previous worker is externally owned; automatic restart refused. Inspect its existing session before resuming.".into() } else { "Previous worker process is gone. Its saved conversation and files are preserved; agent send continues it.".into() },
+                last_text:String::new(),last_command:s(e,"last_command"),steps:e.get("steps").and_then(Value::as_i64).unwrap_or(0),calls:0,cost:0.0,
+                cost_before:e.get("cost").and_then(Value::as_f64).unwrap_or(0.0),turns:1,started_at:now(),last_activity:now(),max_steps:0,cost_limit:0.0,
+                offset:0,partial:String::new(),stall_reported:false,stop_requested:false,exit_code:None,replaying:false,resume_task:String::new(),turns_seen:0,deferred_turn:false,
+                mem_rss:0,mem_avg:0,mem_peak:0,
+            };
+            // Preserve a live external worker without offering a duplicate restart.
+            if alive { c.state="external".into(); c.pid=pid; }
+            c.chain.agent=s(e,"agent"); c.chain.origin=s(e,"origin"); c.chain.from=s(e,"from"); c.chain.brief=s(e,"brief");
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Start the hub for a run that journals into `traj`. `configs` are the run's `-c` specs, which
 /// children inherit (same agent config and model settings unless they choose another model).
 pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard> {
@@ -732,7 +780,9 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
     let plan = load_plan(&dir);
     // The store wraps the same folder: ON by default, `MINI_AGENT_CONTEXT=0` to opt out.
     let handover = std::env::var("MINI_AGENT_CONTEXT").map(|v| v != "0").unwrap_or(true);
-    let hub = Hub {
+    let children = recover_children(&dir);
+    let recovery_notes = children.iter().map(|c| (c.name.clone(),c.turns,format!("[subagent {}] interrupted during parent/session restart: {} Do not call this running or completed.",c.name,c.exit_text))).collect();
+    let mut hub = Hub {
         dir,
         journal: crate::agent::journal_path(traj),
         store: ContextStore::new(context_dir.clone()),
@@ -743,8 +793,8 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
         exe,
         configs: configs.to_vec(),
         depth,
-        children: vec![],
-        notes: vec![],
+        children,
+        notes: recovery_notes,
         parent_limit,
         parent_cost: 0.0,
         parent_model: String::new(),
@@ -754,6 +804,7 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
         plan,
         join: None,
     };
+    hub.write_index();
     let hub = Arc::new(Mutex::new(hub));
     let _ = HUB.set(hub.clone());
     ACTIVE.store(true, Ordering::SeqCst);
@@ -1917,6 +1968,7 @@ impl Launcher {
             .env("MINI_AGENT_DEPTH", self.depth.saturating_add(1).to_string())
             .env("MINI_AGENT_CONTEXT_DIR", &self.context_dir)
             .env("PATH", path)
+            .env_remove("MINI_AGENT_RECOVERY_TRAJECTORIES")
             .env_remove("MINI_AGENT_SOCKET")
             .env_remove("MINI_AGENT_LANE")
             .env_remove("MINI_AGENT_LANE_ROOT")
@@ -1975,6 +2027,7 @@ impl Hub {
             }
             add_cost = Some(x.min(left));
         }
+        if c.state == "external" { return Err(format!("{} is still alive under its previous owner; open that session instead of duplicating it", c.name)); }
         if c.proc.is_none() {
             // Its process is gone (stopped, crashed, or the session restarted): continue it from
             // its own saved conversation, under the same name.
