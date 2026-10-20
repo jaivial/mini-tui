@@ -4,7 +4,12 @@
  * "Was that refused handshake a deleted session, or just a dead network?" has three answers, and the
  * middle one is the one that matters: `false` = the server says the id is nowhere (it is gone),
  * `true` = it is there, `null` = could not tell (the network, a busy database) so the caller keeps
- * trying. It is the same line the server draws in `held()`: 404 is a verdict, anything else is not.
+ * trying.
+ *
+ * THE VERDICT IS READ FROM THE BODY, NEVER FROM THE STATUS. A bundle newer than its server asks a
+ * route the server does not have, and the server's catch-all answers 404 -- which is not the same
+ * as "this session is nowhere". Reading the status there wipes a LIVE pane, so every outcome that
+ * is not a 200 carrying the boolean is a failure to ASK.
  *
  * The question must be asked through the READ-ONLY route. `GET /sessions/:id` answers it by OPENING
  * the session (restoring the saved row, putting it back on the durable open list and announcing it
@@ -43,9 +48,35 @@ describe("the existence question asks the read-only route", () => {
     globalThis.fetch = RealFetch;
   });
 
-  test("404 is a verdict: the session is gone", async () => {
-    stubFetch(() => new Response(JSON.stringify({ error: "unknown session" }), { status: 404, headers: { "content-type": "application/json" } }));
+  test("the body says the session is gone", async () => {
+    stubFetch(() => new Response(JSON.stringify({ exists: false }), { status: 200, headers: { "content-type": "application/json" } }));
     expect(await sessionExists("s-gone")).toBe(false);
+    globalThis.fetch = RealFetch;
+  });
+
+  test("a ROUTING 404 is not a verdict: a bundle newer than its server must not wipe a pane", async () => {
+    // THE SKEW. The bundle is served from disk and the server is restarted separately, so a client
+    // can be NEWER than the server it talks to. The server then has no `/exists` route and its
+    // catch-all answers 404 {"error":"not found"} -- which is NOT the same as "this session is
+    // nowhere". Reading the status would wipe a LIVE session's pane (the E52 symptom, back through
+    // the other door). The verdict lives in the body, so a routing 404 is a failure to ASK.
+    stubFetch(() => new Response(JSON.stringify({ error: "not found" }), { status: 404, headers: { "content-type": "application/json" } }));
+    expect(await sessionExists("s-live")).toBe(null);
+    globalThis.fetch = RealFetch;
+  });
+
+  test("the server's own 404 for a session it does not hold is ALSO not a verdict", async () => {
+    // The route answers 200 with the verdict in the body, so a 404 from THIS route can only be a
+    // routing miss or another failure. Even one that says "unknown session" is not an answer.
+    stubFetch(() => new Response(JSON.stringify({ error: "unknown session" }), { status: 404, headers: { "content-type": "application/json" } }));
+    expect(await sessionExists("s-gone")).toBe(null);
+    globalThis.fetch = RealFetch;
+  });
+
+  test("a 200 that does not SAY so is not a verdict either", async () => {
+    // A 200 with a body that carries no boolean is a failure to ask, not an answer.
+    stubFetch(() => new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } }));
+    expect(await sessionExists("s-weird")).toBe(null);
     globalThis.fetch = RealFetch;
   });
 

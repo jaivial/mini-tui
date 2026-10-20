@@ -1180,13 +1180,17 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
           // next deploy restored it as open for good. This route answers the same question with a
           // read and no write (E52/E56).
           //
-          // The verdict is the one `held()` draws, word for word: 404 only for an id that is
-          // NOWHERE (nothing live, nothing saved), 503 for anything else that stopped us reading
-          // it. A busy database must never look like a deleted session, or the browser concludes
-          // the session is gone and turns its pane into a new chat (E52).
+          // THE VERDICT RIDES IN THE BODY, NOT IN THE STATUS. A query that answered 404 for "this
+          // id is nowhere" would be indistinguishable from a 404 that means "this server has no such
+          // route" -- which is exactly what a bundle NEWER than its server meets, because the
+          // bundle is served from disk and the server is restarted separately (the client is
+          // deployed by `bun run build`, the server by a restart). Reading that as a verdict wipes a
+          // LIVE pane (the E52 symptom, resurrected). So: 200 always means "the server answered",
+          // and the body says whether it is there. Anything else -- a 404 from an older server, a 503
+          // from a busy database, the network -- is a failure to ASK, never an answer, and it must
+          // never forget a session (E52).
           try {
-            if (!sessions.exists(id)) return json({ error: "unknown session" }, 404);
-            return json({ exists: true });
+            return json({ exists: sessions.exists(id) });
           } catch (error) {
             return json({ error: `could not look for the session: ${(error as Error).message}` }, 503);
           }

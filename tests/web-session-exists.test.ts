@@ -114,8 +114,8 @@ test("a session that is deleted AFTER being asked about stops existing (no stale
   expect((await fetch(`${base}/api/history/s-closed`, { method: "DELETE" })).status).toBe(200);
   // The same question, now carrying the validator the browser kept.
   const second = await fetch(`${base}/api/sessions/s-closed/exists`, { headers: { "if-none-match": etag! } });
-  expect(second.status).toBe(404);
-  expect((await second.json()).error).toBe("unknown session");
+  expect(second.status).toBe(200);
+  expect((await second.json()).exists).toBe(false);
   // Put it back for the tests that follow.
   const db = openDb(dbPath);
   createSession(db, { id: "s-closed", cwd: "/tmp", model: "m0", task: "closed task", title: "Closed" });
@@ -132,10 +132,35 @@ test("the existence route answers only a question (no other method acts on it)",
   expect(openMarkers()).not.toContain("s-closed");
 });
 
-test("an id that is nowhere is a 404 (the pane really is gone)", async () => {
-  const res = await fetch(`${base}/api/sessions/s-nowhere/exists`);
+test("DELETE on the existence route does not close the session (it is not that route)", async () => {
+  // `DELETE /api/sessions/:id` closes a session. `DELETE /api/sessions/:id/exists` is not that
+  // route: it must not close anything, or a typo would put a session away.
+  expect((await fetch(`${base}/api/history/s-closed`, { method: "POST" })).status).toBe(200);
+  expect(await liveSessions()).toContain("s-closed");
+  const res = await fetch(`${base}/api/sessions/s-closed/exists`, { method: "DELETE" });
   expect(res.status).toBe(404);
-  expect((await res.json()).error).toBe("unknown session");
+  expect(await liveSessions()).toContain("s-closed");
+  expect((await fetch(`${base}/api/sessions/s-closed`, { method: "DELETE" })).status).toBe(200);
+});
+
+test("an id that is nowhere says so in the body (the pane really is gone)", async () => {
+  const res = await fetch(`${base}/api/sessions/s-nowhere/exists`);
+  expect(res.status).toBe(200);
+  expect((await res.json()).exists).toBe(false);
+});
+
+test("the verdict rides in the BODY, so a routing 404 can never be read as an answer", async () => {
+  // A bundle NEWER than its server asks a route the server does not have, and the server's
+  // catch-all answers 404 {"error":"not found"}. If the verdict rode in the STATUS, that 404 would
+  // be read as "the session is nowhere" and the browser would wipe a LIVE pane -- the E52 symptom
+  // through the other door. The route answers 200 with the verdict in the body, so the only 404
+  // this client can meet is a routing miss, which it reads as "could not tell" (keep trying).
+  const res = await fetch(`${base}/api/sessions/s-nowhere/exists`);
+  expect(res.status).toBe(200);
+  // The body is the ONLY place the verdict lives, and it is a boolean, never an error string.
+  const body = (await res.json()) as { exists?: unknown; error?: unknown };
+  expect(body.exists).toBe(false);
+  expect(body.error).toBeUndefined();
 });
 
 test("the explicit opening still opens it, and only that one does", async () => {
