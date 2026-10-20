@@ -425,10 +425,11 @@
    * `PaneMenu`'s item list (plus notes/agents/terminal, which were separate buttons beside the
    * title) moved here: same actions, same disabled reasons, one menu instead of two.
    *
-   * The app-wide rows (Routines, Team map, hosts, settings, resume, help) are appended from
-   * `appActions`, which App.svelte builds — the sidebar used to own those and no longer does.
+   * Workspace actions come first, so Kanban and Team map do not hide below disabled layout rows.
+   * App.svelte still owns those actions; no pane or layout action is removed.
    */
   const paneRows = $derived.by((): MenuRow[] => [
+    ...appActions,
     { id: "new", label: "New chat here", note: "Ctrl/⌘ K", icon: Plus, group: "This bot", run: newChat },
     ...(agentCount
       ? [{ id: "agents", label: `Agents (${agentCount})`, note: sideOpen("agents") ? "Hide the panel" : "Show the panel", icon: Network, run: () => toggleSide("agents") }]
@@ -466,7 +467,6 @@
       : []),
     { id: "close-pane", label: "Close pane", note: total > 1 ? "Alt X" : "The last pane stays", icon: X, disabled: total <= 1, group: "This bot", run: onclosepane },
     ...(session ? [{ id: "close-session", label: "Close session", note: "Stops it and drops it from the list", icon: Trash2, danger: true, run: closeSession }] : []),
-    ...appActions,
   ]);
 </script>
 
