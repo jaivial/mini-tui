@@ -203,6 +203,7 @@ pub struct Child {
     resume_task: String,
     /// Turns the parent has already been told about (directly through `wait`/`result`, or by a note).
     turns_seen: i64,
+    deferred_turn: bool,
     /// Last sampled RSS of this child's process group (MiB); 0 when not sampled yet.
     pub mem_rss: u64,
     /// Its rolling mean RSS, and its peak (MiB): what a new child is charged for.
@@ -1041,6 +1042,7 @@ impl Hub {
                         let content = content_text(m);
                         match role {
                             "assistant" => {
+                                c.deferred_turn = false;
                                 c.chain.observe(m);
                                 c.steps += 1;
                                 if !content.trim().is_empty() {
@@ -1057,6 +1059,7 @@ impl Hub {
                                 c.chain.observe_user(m);
                                 if m.pointer("/extra/interrupt_type").and_then(Value::as_str) == Some("UserNewTask") {
                                     c.state = "running".into();
+                                    c.deferred_turn = false;
                                     c.stall_reported = false;
                                 }
                             }
@@ -1072,7 +1075,8 @@ impl Hub {
                                 // A child that yielded to its own workers is not a completed task.
                                 // Its eventual final exit will carry the result after descendants finish.
                                 let delegated_pending = nested_work_pending(&c.traj, 0);
-                                if delegated_pending && !was_stop { c.state = "running".into(); }
+                                c.deferred_turn = delegated_pending && !was_stop;
+                                if c.deferred_turn { c.state = "running".into(); }
                                 if !was_stop && !delegated_pending {
                                     match c.chain.on_turn_end() {
                                         chain::TurnEnd::Notify => {
@@ -1101,6 +1105,21 @@ impl Hub {
                         }
                     }
                     _ => {}
+                }
+            }
+            // A handoff exit may precede descendants settling. Re-evaluate the deferred
+            // turn on monitor ticks: otherwise no new journal exit ever arrives and the
+            // entire ancestor chain remains "running" forever after the leaf is done.
+            if c.deferred_turn && c.state != "stopped" && !c.stop_requested && !nested_work_pending(&c.traj, 0) {
+                c.deferred_turn = false;
+                c.state = "waiting".into();
+                match c.chain.on_turn_end() {
+                    chain::TurnEnd::Notify => {
+                        notes.push((c.name.clone(), c.turns, finished_note(c)));
+                        notified.push(c.name.clone()); finished.push(c.name.clone());
+                    }
+                    chain::TurnEnd::Quiet(why) => quiet.push((c.name.clone(), why)),
+                    chain::TurnEnd::Reply(to) => routes.push((c.name.clone(), to)),
                 }
             }
             if let Some(p) = c.proc.as_mut() {
@@ -1501,6 +1520,7 @@ impl Hub {
             replaying: false,
             resume_task: String::new(),
             turns_seen: 0,
+            deferred_turn: false,
             mem_rss: 0,
             mem_avg: 0,
             mem_peak: 0,
