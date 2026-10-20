@@ -1111,12 +1111,13 @@ impl Hub {
             // turn on monitor ticks: otherwise no new journal exit ever arrives and the
             // entire ancestor chain remains "running" forever after the leaf is done.
             if c.deferred_turn && c.state != "stopped" && !c.stop_requested && !nested_work_pending(&c.traj, 0) {
-                c.deferred_turn = false;
-                c.state = "running".into();
                 // The saved submission is a handoff, not the final descendant result.
                 // Wake the child to synthesize an actual final report, never launder its
                 // earlier "work started" text into a completion for its parent.
-                let _ = c.control_line(&format!("MESSAGE {}", serde_json::to_string("[hub] Your descendant tree has settled. Read your completed child results once, close only completed assigned cards, and report the final result upward. Do not restart work or poll. Your earlier handoff was not a final result.").unwrap()));
+                if c.control_line(&format!("MESSAGE {}", serde_json::to_string("[hub] Your descendant tree has settled. Read your completed child results once, close only completed assigned cards, and report the final result upward. Do not restart work or poll. Your earlier handoff was not a final result.").unwrap())).is_ok() {
+                    c.deferred_turn = false;
+                    c.state = "running".into();
+                }
             }
             if let Some(p) = c.proc.as_mut() {
                 if let Ok(Some(status)) = p.try_wait() {
