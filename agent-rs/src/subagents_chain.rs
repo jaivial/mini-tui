@@ -332,6 +332,12 @@ impl Hub {
             let model = self.model_for(&def, &s(it, "model"));
             jobs.push(Job { def, name, task, model, source: "parent".into(), kind: "delegate".into(), cwd: cwd.clone(), label: label.clone() });
         }
+        let resources = self.resources_report();
+        if resources.max_fanout < jobs.len() as u64 {
+            let reason = format!("Delegation blocked before launch: requested {} worker(s), safe additional capacity {}. {} No worker started. A durable blocked request was recorded for the kanban; there is no automatic retry. Keep resource protections; wait for capacity, do not lower reserves or run the workload in the orchestrator.", jobs.len(), resources.max_fanout, resources.text());
+            for j in &jobs { self.record_blocked(&j.name,&j.task,&reason); }
+            return Ok(json!({"ok":false,"output":reason,"data":{"started":[],"blocked":jobs.iter().map(|j|j.name.clone()).collect::<Vec<_>>(),"resources":resources.to_value()}}));
+        }
         let mut by_model: std::collections::BTreeMap<String, Vec<String>> = Default::default();
         for j in &jobs {
             by_model.entry(j.model.clone()).or_default().push(j.name.clone());
@@ -342,7 +348,7 @@ impl Hub {
         let names: Vec<String> = jobs.iter().map(|j| j.name.clone()).collect();
         for j in &jobs {
             self.event("delegate", "parent", &j.name, &j.task, json!({"agent": j.def.name, "model": j.model, "inherited": copy.len()}));
-            lines.push(format!("delegated to {} (agent {}, model {}): a copy of this session ({} messages) + its task", j.name, j.def.name, j.model, copy.len()));
+            lines.push(format!("delegation accepted for {} (agent {}, model {}): a copy of this session ({} messages) + its task", j.name, j.def.name, j.model, copy.len()));
         }
         if !warms.is_empty() {
             lines.push("The worker model's prompt cache is warmed with that copy first; the agents start the moment it is written.".into());
@@ -355,10 +361,10 @@ impl Hub {
             let _ = super::request(&sock, &json!({"cmd": "waits_on", "name": me, "on": names}), 5);
         }
         lines.push(format!(
-            "{} running in the background. You will be told when each finishes (no polling): keep working on something else, or end your turn to wait.",
+            "{} accepted for background launch, not confirmation that a worker process has started. Launch failures are reported separately. You will be told when each finishes; do not poll.",
             if names.len() == 1 { "It is".to_string() } else { format!("All {} are", names.len()) }
         ));
-        Ok(json!({"ok": true, "output": lines.join("\n"), "data": {"started": names}}))
+        Ok(json!({"ok": true, "output": lines.join("\n"), "data": {"accepted": names, "started": []}}))
     }
 
     /// `agent_handoff` from child `from`: the next agent starts as a copy of `from`'s session,
@@ -580,8 +586,20 @@ impl Hub {
         });
     }
 
+    pub(super) fn record_blocked(&mut self, name: &str, task: &str, reason: &str) {
+        let path=self.dir.join("blocked.json");
+        let mut rows: Vec<Value>=std::fs::read_to_string(&path).ok().and_then(|s|serde_json::from_str(&s).ok()).unwrap_or_default();
+        rows.retain(|r|s(r,"name")!=name);
+        rows.push(json!({"name":name,"task":task,"reason":reason,"at":now()}));
+        let _=std::fs::create_dir_all(&self.dir);
+        let tmp=self.dir.join("blocked.json.tmp");
+        if std::fs::write(&tmp,serde_json::to_string(&rows).unwrap()).is_ok() { let _=std::fs::rename(tmp,path); }
+        self.event("delegation_blocked","hub",name,reason,json!({"task":task}));
+    }
+
     fn start_job(&mut self, j: Job, copy: &[Value]) {
         if let Err(e) = self.start_agent(&j.def, &j.name, &j.task, &j.model, &j.source, &j.kind, &j.cwd, copy, &j.label) {
+            self.record_blocked(&j.name,&j.task,&e);
             self.event("error", "hub", &j.name, &format!("could not start {}: {e}", j.name), json!({}));
             if j.source == "parent" {
                 self.note(format!("[agent {}] could not start: {e}", j.name));
