@@ -238,6 +238,7 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
   const persist = !args.noSession;
   let sessionId: string | null = resumed?.id ?? null;
   let titleDone: Promise<void> = Promise.resolve();
+  let titleJob: ReturnType<typeof generateTitle> | undefined;
   let resumePath: string | undefined;
   /** Messages the agent replays before this turn (exit markers are dropped on resume). */
   let historyLength = 0;
@@ -256,7 +257,7 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
       if (process.env.MINITUI_NO_TITLE !== "1" && model) {
         const id = sessionId;
         titleDone = new Promise((resolve) =>
-          generateTitle(
+          titleJob = generateTitle(
             typed,
             model,
             (title) => {
@@ -294,6 +295,7 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
       control: false,
     });
   } catch (error) {
+    titleJob?.cancel();
     errorOut(`could not start the agent: ${(error as Error).message}`);
     return EXIT_RUN_FAILED;
   }
@@ -445,7 +447,14 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
     }
   }
   // a title still being generated lands in the row before we close it (bounded wait)
-  await Promise.race([titleDone, Bun.sleep(3000)]);
+  let titleDeadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([titleDone, new Promise<void>((resolve) => { titleDeadline = setTimeout(resolve, 3000); })]);
+  } finally {
+    if (titleDeadline) clearTimeout(titleDeadline);
+    // A title is cosmetic: its child pipes/timer must not keep a finished task alive.
+    titleJob?.cancel();
+  }
 
   const steps = turnEvents.filter((event) => event.type === "tool_call").length;
   const result: HeadlessResult = {

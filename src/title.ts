@@ -10,9 +10,10 @@ const TIMEOUT_MS = 20_000;
 
 /**
  * Ask the model for a session title (async, best-effort). Resolves to the generated
- * title or `null` — callers fall back to `fallbackTitle(task)`.
+ * Calls back when ready; callers retain `fallbackTitle(task)` on failure.
+ * The returned handle cancels cosmetic work when its owning run has already ended.
  */
-export function generateTitle(task: string, model: string, onTitle: (title: string) => void, onDone?: () => void): void {
+export function generateTitle(task: string, model: string, onTitle: (title: string) => void, onDone?: () => void): { cancel(): void } {
   // With the Rust agent (the default when its binary is there), `mini-agent-rs title` is the same helper.
   const rust = rustAgent();
   const child = rust
@@ -20,21 +21,34 @@ export function generateTitle(task: string, model: string, onTitle: (title: stri
     : spawn(PYTHON_BIN, [SCRIPT, task, model], { stdio: ["ignore", "pipe", "ignore"] });
   const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT_MS);
   let out = "";
+  let cancelled = false;
+  let settled = false;
+  const done = () => { if (!settled) { settled = true; onDone?.(); } };
   child.stdout.on("data", (chunk) => (out += String(chunk)));
   child.on("close", () => {
     clearTimeout(timer);
     try {
       const title = JSON.parse(out.trim() || '""');
-      if (typeof title === "string" && title.trim()) onTitle(title.trim());
+      if (!cancelled && typeof title === "string" && title.trim()) onTitle(title.trim());
     } catch {
       // generation failed: the caller already stored the fallback title
     }
-    onDone?.();
+    done();
   });
   child.on("error", () => {
+    cancelled = true;
     clearTimeout(timer);
-    onDone?.();
+    done();
   });
+  return {
+    cancel() {
+      if (settled) return;
+      cancelled = true;
+      clearTimeout(timer);
+      child.kill("SIGKILL");
+      done();
+    },
+  };
 }
 
 export { fallbackTitle };
