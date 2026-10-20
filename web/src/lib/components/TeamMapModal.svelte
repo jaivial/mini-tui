@@ -32,6 +32,16 @@
   let shell: HTMLDivElement | undefined = $state();
   let view = $state(innerWidth < 640 ? "list" : "map");
   const roots = $derived(store.list.filter(s=>!s.parentId && !s.id.includes("~")));
+  function listRows(id: string): BotRow[] {
+    const rows = [...(agentTree.trees[id]?.rows ?? [])];
+    const seen = new Set(rows.map(row => row.id));
+    for (const session of Object.values(store.sessions)) {
+      if (!session.parentId || !session.id.startsWith(`${id}~`) || seen.has(session.id)) continue;
+      rows.push({ id: session.id, path: session.id.slice(id.length + 1).replaceAll("~", "/"), name: session.title || session.id, agent: "", label: mapLabel(session.status), tone: mapTone(session.status), task: session.task || "Saved subagent session", depth: session.id.split("~").length - 2 });
+      seen.add(session.id);
+    }
+    return rows;
+  }
 
   $effect(() => {
     if (!dialog) return;
@@ -244,9 +254,9 @@
           {#each roots as root}
             <section class="mb-3 rounded-xl border border-line p-3">
               <button class="flex w-full items-center justify-between gap-2 py-2 text-left" onclick={()=>{open=false;onopensession(root.id);}}><span class="min-w-0 truncate text-sm font-semibold">{root.title || 'Untitled bot'}</span><span class="shrink-0 text-xs text-ink-muted">{mapLabel(root.status)} →</span></button>
-              {#each agentTree.trees[root.id]?.rows ?? [] as child (child.path)}
+              {#each listRows(root.id) as child (child.path)}
                 <button title={child.task || child.name} class="mt-1 flex w-full items-center justify-between gap-2 rounded-lg border-l-2 border-line py-3 pl-3 text-left hover:bg-raised" style:margin-left="{Math.min(child.path.split('/').length-1,3)*8}px" onclick={()=>{open=false;onopensession(child.id);}}><span class="min-w-0"><span class="block truncate text-sm">{child.name}</span><span class="block truncate text-xs text-ink-muted">{child.task || 'No task details saved'}</span></span><span class="shrink-0 text-xs text-ink-muted">{child.label} →</span></button>
-              {:else}<p class="py-2 text-xs text-ink-faint">No delegated agents in the current roster.</p>{/each}
+              {:else}<p class="py-2 text-xs text-ink-faint">No delegated agents in the current roster or loaded history.</p>{/each}
             </section>
           {:else}<p class="p-4 text-sm text-ink-muted">No open bots.</p>{/each}
         </div>
