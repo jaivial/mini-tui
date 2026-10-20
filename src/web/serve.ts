@@ -922,7 +922,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         // still open and the token already spent. `readBody` watches a clone for
         // progress and gives up when none arrives; `formData()` on the original
         // still spools the file exactly as before.
-        let form: FormData;
+        let form: Awaited<ReturnType<Request["formData"]>>;
         try {
           form = await readBody(request, (req: Request) => req.formData(), ATTACH_MAX_BYTES + 8192);
         } catch (error) {
@@ -1399,7 +1399,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
             const body = Bun.file(file);
             const gz = !isShell && /gzip/.test(request.headers.get("accept-encoding") ?? "") && [".js", ".css", ".svg", ".json"].includes(extname(file));
             // The gzip copy is bytes and the plain copy a BunFile: both are a body, whatever the types say.
-            return new Response((gz ? await gzipCached(file, body) : body) as BodyInit, {
+            return new Response((gz ? await gzipCached(file, body) : body) as ConstructorParameters<typeof Response>[0], {
               headers: {
                 ...(gz ? { "content-encoding": "gzip", vary: "accept-encoding" } : {}),
                 "content-type": MIME[extname(file)] ?? "application/octet-stream",

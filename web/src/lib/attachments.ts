@@ -38,8 +38,8 @@ export async function uploadAttachment(file: File, signal?: AbortSignal): Promis
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
     try {
-      const parsed = await res.json();
-      if (parsed?.error) message = parsed.error;
+      const parsed: unknown = await res.json();
+      if (parsed && typeof parsed === "object" && "error" in parsed && typeof parsed.error === "string") message = parsed.error;
     } catch {
       // keep the status line
     }

@@ -125,5 +125,5 @@ export function compressBody(
   // an `ArrayBuffer` under the current DOM lib. It copies a payload that is already in memory and
   // about to go to the socket.
   const encoded = Bun.gzipSync(new Uint8Array(body));
-  return new Response(encoded as BodyInit, { status: response.status, headers });
+  return new Response(encoded as ConstructorParameters<typeof Response>[0], { status: response.status, headers });
 }

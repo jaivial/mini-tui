@@ -97,14 +97,16 @@ export async function spawnBounded(argv: string[], opts: BoundedSpawnOptions = {
     } catch { /* the child never wanted the program */ }
   }
 
-  const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
+  // Teardown only needs cancellation, shared by Bun and Node web-stream readers.
+  type PipeReader = Pick<ReadableStreamDefaultReader<Uint8Array>, "cancel">;
+  const readers: PipeReader[] = [];
   /**
    * Cancel a reader WITHOUT letting its rejection reach the process. `cancel()` on a reader that was
    * already released (its stream hit EOF and `releaseLock()` ran) returns a REJECTED promise, and an
    * unhandled rejection kills a Bun process with exit 1 — measured: the web server died on every
    * deadline whose child happened to die on the TERM. So the rejection is swallowed here, on purpose.
    */
-  const cancelReader = (reader: ReadableStreamDefaultReader<Uint8Array>): void => {
+  const cancelReader = (reader: PipeReader): void => {
     try {
       const pending = reader.cancel() as unknown as { catch?: (fn: () => void) => unknown } | undefined;
       if (pending && typeof pending.catch === "function") pending.catch(() => {});
