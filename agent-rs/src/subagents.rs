@@ -708,6 +708,7 @@ fn recover_children(dir: &Path) -> Vec<Child> {
             };
             // Preserve a live external worker without offering a duplicate restart.
             if alive { c.state="external".into(); c.pid=pid; }
+            c.offset=std::fs::metadata(&c.journal).map(|m|m.len()).unwrap_or(0);
             c.chain.agent=s(e,"agent"); c.chain.origin=s(e,"origin"); c.chain.from=s(e,"from"); c.chain.brief=s(e,"brief");
             out.push(c);
         }
