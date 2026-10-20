@@ -27,6 +27,7 @@ interface JournalState {
   info: TrajectoryInfo | undefined;
   format: string | undefined;
   offset: number;
+  identity: string;
   tail: Buffer;
   /** Text of the assistant message still being generated, per channel. */
   partial: { thinking: string; text: string };
@@ -38,22 +39,29 @@ function newJournalState(): JournalState {
     info: undefined,
     format: undefined,
     offset: 0,
+    identity: "",
     tail: Buffer.alloc(0),
     partial: { thinking: "", text: "" },
   };
 }
 
 /** Consume new journal bytes into `state`. Returns true when messages/info changed. */
-function consumeJournal(state: JournalState, journalPath: string): boolean {
+function consumeJournal(state: JournalState, journalPath: string, partials = true): boolean {
   let size: number;
+  let identity: string;
   try {
-    size = statSync(journalPath).size;
+    const st = statSync(journalPath);
+    identity = `${st.dev}:${st.ino}:${st.birthtimeMs}`;
+    if (state.identity && state.identity !== identity) Object.assign(state, newJournalState());
+    state.identity = identity;
+    size = st.size;
   } catch {
     return false; // no journal (yet): the caller falls back to the full export
   }
   if (size < state.offset) {
     // truncated and rewritten (a new run reusing the path): replay from scratch
     Object.assign(state, newJournalState());
+    state.identity = identity;
   }
   if (size === state.offset) return false;
 
@@ -117,7 +125,7 @@ function consumeJournal(state: JournalState, journalPath: string): boolean {
         state.partial.text = "";
       }
       changed = true;
-    } else if (entry.t === "delta" && typeof entry.x === "string") {
+    } else if (partials && entry.t === "delta" && typeof entry.x === "string") {
       if (entry.k === "thinking") state.partial.thinking += entry.x;
       else if (entry.k === "text") state.partial.text += entry.x;
       changed = true;
@@ -165,6 +173,33 @@ export function readTrajectory(path: string): Trajectory | null {
     return data as Trajectory;
   } catch {
     return null;
+  }
+}
+
+/** Pull reader for durable transcript projection. Streaming-only deltas do not dirty SQL.
+ * The owner bounds reader count and calls slim() after consuming a changed snapshot.
+ */
+export class DurableTrajectoryReader {
+  #state = newJournalState();
+  #slimmed = 0;
+  #dirty = false;
+  read(path: string): Trajectory | null {
+    const journal = journalPathFor(path);
+    if (!existsSync(journal)) {
+      this.#state = newJournalState(); this.#slimmed = 0; this.#dirty = false;
+      return readTrajectory(path);
+    }
+    const before = this.#state.messages;
+    const changed = consumeJournal(this.#state, journal, false);
+    if (before !== this.#state.messages) this.#slimmed = 0;
+    this.#dirty ||= changed;
+    if (!this.#dirty) return null;
+    return journalTrajectory(this.#state);
+  }
+  slim(): void {
+    for (let i = this.#slimmed; i < this.#state.messages.length; i++) this.#state.messages[i] = slimMessage(this.#state.messages[i]!);
+    this.#slimmed = this.#state.messages.length;
+    this.#dirty = false;
   }
 }
 
