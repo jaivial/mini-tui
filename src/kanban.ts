@@ -29,7 +29,9 @@ export interface Card {
   updatedAt: number;
 }
 
+const kanbanReady = new WeakSet<Database>();
 export function ensureKanban(db: Database): void {
+  if (kanbanReady.has(db)) return;
   db.exec(`
     CREATE TABLE IF NOT EXISTS kanban_cards (
       id TEXT PRIMARY KEY,
@@ -50,6 +52,8 @@ export function ensureKanban(db: Database): void {
       PRIMARY KEY (a, b)
     );
   `);
+  // Mark ready only after every statement succeeds; failed setup is retried.
+  kanbanReady.add(db);
 }
 
 type Row = { id: string; session_id: string; title: string; description: string; col: string; assignee: string; result: string; notes: string; created_at: number; updated_at: number };
