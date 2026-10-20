@@ -1633,7 +1633,8 @@ export class SessionManager {
     }
     const model = session.model || DEFAULT_MODEL || loadLastModel();
     const recoveryPaths = this.trajsOf(session.id);
-    const sharedRoot = recoveryPaths.find(p => existsSync(join(dirname(p), "context")));
+    const sharedRoot = recoveryPaths.find(p => existsSync(join(dirname(p), "context", "contracts.md")))
+      ?? recoveryPaths.find(p => existsSync(join(dirname(p), "context")));
     const run = spawnMini({
       task,
       model: model || undefined,
