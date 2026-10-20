@@ -1431,7 +1431,8 @@ impl Hub {
         if raw_task.chars().count() > context_max {
             return Err(format!("the task is {} chars, over the {} char cap: put the detail in --context-file or the shared context/ folder, or `agent send` it in parts", raw_task.chars().count(), context_max));
         }
-        let shared_note = if Path::new(&cwd).ancestors().any(|p| p.join(".git").exists()) || self.store.get("contracts.md").map(|s| !s.trim().is_empty()).unwrap_or(false) { shared_context_note(&self.context_dir) } else { String::new() };
+        let child_can_delegate = env_num("MINI_AGENT_MAX_DEPTH", 0u32) == 0 || self.depth.saturating_add(1) < env_num("MINI_AGENT_MAX_DEPTH", 0u32);
+        let shared_note = if self.handover && child_can_delegate && (Path::new(&cwd).ancestors().any(|p| p.join(".git").exists()) || self.store.get("contracts.md").map(|s| !s.trim().is_empty()).unwrap_or(false)) { shared_context_note(&self.context_dir) } else { String::new() };
         let skills: Vec<String> = req.get("skills").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
         let (task, used, missing) = expand_skills(&raw_task, &skills, &[]);
         if !missing.is_empty() {
