@@ -201,6 +201,8 @@ export interface SettingsView {
    * existed before the router, which is why the flag is optional here.
    */
   modelRouterEnabled?: boolean;
+  /** The live cu screen. Operator config only: the client cannot change it. */
+  liveScreen?: { enabled: boolean; origin: string | null; viewerUrl: string | null; loginUrl: string | null };
 }
 
 // ------------------------------------------------------------------ v6-C router
