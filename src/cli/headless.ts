@@ -328,11 +328,22 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
   consumed = emitFrom ?? 0;
   const turnEvents: RunEvent[] = [];
   let lastTraj: Trajectory | null = null;
+  let sourceMessages: TrajectoryMessage[] | undefined;
+  let retainedMessages: TrajectoryMessage[] = [];
   // v6-B: messages already billed to the usage ledger (see onSnapshot).
   let usageSeen = 0;
   const onSnapshot = (traj: Trajectory) => {
-    lastTraj = { ...traj, messages: [...(traj.messages ?? [])] };
     const messages = traj.messages ?? [];
+    // Journal snapshots reuse one append-only array, including partial-token updates.
+    // Retain only its newly appended messages, not a full history copy on each delta.
+    // A full JSON/final read or journal reset supplies a new array and rebuilds safely.
+    if (messages !== sourceMessages || messages.length < retainedMessages.length) {
+      sourceMessages = messages;
+      retainedMessages = messages.map(slimMessage);
+    } else {
+      for (let i = retainedMessages.length; i < messages.length; i++) retainedMessages.push(slimMessage(messages[i]!));
+    }
+    lastTraj = { ...traj, messages: retainedMessages };
     if (messages.length < consumed) return; // a rewrite mid-flight: the final read settles it
     // v6-B: bill the model calls this run made, from the same journal the events
     // come from. Best-effort (never throws) and deduped per call, so the final
@@ -362,8 +373,6 @@ export async function runHeadless(args: HeadlessArgs, io: HeadlessIO = defaultIO
         io.stderr(formatEventText(event, io.color));
       }
     }
-    // keep the retained copy slim (the watcher slims its own after this callback)
-    lastTraj.messages = lastTraj.messages!.map(slimMessage);
   };
   const watch = watchTrajectory(run.session.trajPath, onSnapshot);
 
