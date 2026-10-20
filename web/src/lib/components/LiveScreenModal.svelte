@@ -10,7 +10,7 @@
     if (!live?.enabled || !live.viewerUrl) return null;
     try {
       const u = new URL(live.viewerUrl);
-      return u.protocol === "https:" && u.origin === live.origin && u.pathname === "/vault/live2" && !u.search && !u.hash && !u.username ? u.href : null;
+      return u.protocol === "https:" && u.origin === live.origin && u.pathname === "/vault/live2/view" && !u.search && !u.hash && !u.username && !u.password ? u.href : null;
     } catch {
       return null;
     }
@@ -23,7 +23,7 @@
     <div class="flex flex-col gap-2">
       {#if live?.loginUrl}
         <p class="text-[12.5px] text-ink-muted">
-          Session ended? <a class="underline" href={live.loginUrl} target="_blank" rel="noopener noreferrer">Open the login in a new tab</a>, then reopen this panel.
+          Read-only view. {#if live?.controlUrl}<a class="underline" href={live.controlUrl} target="_blank" rel="noopener noreferrer">Open full controls</a>.{/if} Session ended? <a class="underline" href={live.loginUrl} target="_blank" rel="noopener noreferrer">Open the login in a new tab</a>, then reopen this panel.
         </p>
       {/if}
       <!-- Height from the dynamic viewport minus the dialog chrome, so the title bar, this line and Close stay visible in landscape. -->
