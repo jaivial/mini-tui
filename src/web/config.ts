@@ -177,24 +177,26 @@ export interface LiveScreenView {
   origin: string | null;
   viewerUrl: string | null;
   loginUrl: string | null;
+  /** The full viewer with controls. Opened in its own tab, never framed. */
+  controlUrl: string | null;
 }
 
 /**
  * The live cu screen, read-only for the browser. OFF unless the operator sets
  * MINI_LIVE_SCREEN=1, MINI_LIVE_SCREEN_ORIGIN (one https origin) and
- * MINI_LIVE_SCREEN_VIEWER_URL (that origin + /vault/live2, nothing else). A
+ * MINI_LIVE_SCREEN_VIEWER_URL (that origin + /vault/live2/view, the read-only page, nothing else). A
  * client cannot patch any of it. Any mismatch turns the feature off.
  */
 export function liveScreenView(env: Record<string, string | undefined> = process.env): LiveScreenView {
-  const off: LiveScreenView = { enabled: false, origin: null, viewerUrl: null, loginUrl: null };
+  const off: LiveScreenView = { enabled: false, origin: null, viewerUrl: null, loginUrl: null, controlUrl: null };
   if (env.MINI_LIVE_SCREEN !== "1") return off;
   try {
     const origin = new URL(env.MINI_LIVE_SCREEN_ORIGIN ?? "");
     const viewer = new URL(env.MINI_LIVE_SCREEN_VIEWER_URL ?? "");
     if (origin.protocol !== "https:" || origin.origin !== (env.MINI_LIVE_SCREEN_ORIGIN ?? "").replace(/\/$/, "")) return off;
-    if (viewer.origin !== origin.origin || viewer.pathname !== "/vault/live2" || viewer.search || viewer.hash) return off;
+    if (viewer.origin !== origin.origin || viewer.pathname !== "/vault/live2/view" || viewer.search || viewer.hash) return off;
     if (viewer.username || viewer.password) return off;
-    return { enabled: true, origin: origin.origin, viewerUrl: viewer.href, loginUrl: `${origin.origin}/vault` };
+    return { enabled: true, origin: origin.origin, viewerUrl: viewer.href, loginUrl: `${origin.origin}/vault`, controlUrl: `${origin.origin}/vault/live2` };
   } catch {
     return off;
   }
