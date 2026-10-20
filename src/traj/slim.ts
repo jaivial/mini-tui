@@ -44,14 +44,23 @@ export const OUTPUT_MAX_CHARS = 40_000;
 export function boundText(text: string): string {
   if (text.length <= OUTPUT_MAX_CHARS + 2_000) return text;
   const body = text.replace(/\n+$/, "");
-  const lines = body.split("\n");
+  // Count separators without splitting an arbitrarily large output into one string per line.
+  // Only the displayed head and tail become strings.
+  let lineCount = 1;
+  let headEnd = body.length;
+  for (let pos = body.indexOf("\n"); pos >= 0; pos = body.indexOf("\n", pos + 1)) {
+    if (lineCount === OUTPUT_HEAD_LINES) headEnd = pos;
+    lineCount++;
+  }
   let head: string;
   let tail: string[] = [];
   let dropped = 0;
-  if (lines.length > OUTPUT_HEAD_LINES + OUTPUT_TAIL_LINES + 1) {
-    dropped = lines.length - OUTPUT_HEAD_LINES - OUTPUT_TAIL_LINES;
-    head = lines.slice(0, OUTPUT_HEAD_LINES).join("\n");
-    tail = lines.slice(-OUTPUT_TAIL_LINES).map((line) => (line.length > 2_000 ? `${line.slice(0, 2_000)}…` : line));
+  if (lineCount > OUTPUT_HEAD_LINES + OUTPUT_TAIL_LINES + 1) {
+    dropped = lineCount - OUTPUT_HEAD_LINES - OUTPUT_TAIL_LINES;
+    head = body.slice(0, headEnd);
+    let tailStart = body.length;
+    for (let i = 0; i < OUTPUT_TAIL_LINES; i++) tailStart = body.lastIndexOf("\n", tailStart - 1);
+    tail = body.slice(tailStart + 1).split("\n").map((line) => (line.length > 2_000 ? `${line.slice(0, 2_000)}…` : line));
   } else {
     head = body;
   }
