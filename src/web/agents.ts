@@ -19,7 +19,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 
-import { invalidateSubagentIndex, readSubagentIndex, subagentSessionId, subagentIndexPath } from "../mini/subagents";
+import { invalidateSubagentIndex, readSubagentIndex, subagentSessionId, subagentIndexPath, toView } from "../mini/subagents";
 import { agentDefsInputs, agentsDir, listAgentDefs, type AgentDef } from "../mini/agentDefs";
 
 export interface AgentCache {
@@ -176,6 +176,7 @@ function walk(trajPath: string, parentId: string, prefix: string, depth: number,
   events.push(...readEvents(join(subDir, "events.jsonl"), prefix));
   const entries = readSubagentIndex(trajPath) as unknown as Array<Record<string, unknown>>;
   return entries.map((e) => {
+    if (Number(e.pid) > 0) inputs.bytes(`/proc/${Number(e.pid)}/cmdline`);
     const name = String(e.name ?? "");
     const path = prefix ? `${prefix}/${name}` : name;
     const sessionId = subagentSessionId(parentId, name);
@@ -187,7 +188,7 @@ function walk(trajPath: string, parentId: string, prefix: string, depth: number,
       agent: String(e.agent ?? ""),
       origin: String(e.origin ?? ""),
       from: String(e.from ?? ""),
-      state: String(e.state ?? ""),
+      state: toView(parentId, e as unknown as Parameters<typeof toView>[1]).state,
       exitStatus: String(e.exit_status ?? ""),
       model: String(e.model ?? ""),
       task: String(e.brief || e.task || ""),
@@ -219,7 +220,9 @@ export function agentsViewWithInputs(sessionId: string, trajPaths: string[]): Ag
   const events: AgentEvent[] = [];
   const inputs = new InputStamps();
   // Oldest run first, so the tree reads in the order the agents were started.
-  const nodes = [...trajPaths].reverse().flatMap((p) => walk(p, sessionId, "", 0, events, inputs));
+  const byPath = new Map<string, AgentNode>();
+  for (const p of [...trajPaths].reverse()) for (const n of walk(p, sessionId, "", 0, events, inputs)) byPath.set(n.path,n);
+  const nodes = [...byPath.values()];
   events.sort((a, b) => a.at - b.at);
   inputs.list(agentsDir());
   for (const f of agentDefsInputs()) inputs.bytes(f);
