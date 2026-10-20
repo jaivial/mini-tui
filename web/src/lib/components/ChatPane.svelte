@@ -144,8 +144,8 @@
   });
 
   /**
-   * False once the reader has scrolled up far enough that newer messages hide under the floating
-   * prompt pill: a jump-to-latest button appears above it until they are back in view.
+   * False while the reader is viewing history: a jump-to-latest button stays in the transcript
+   * viewport until the newest messages are back in view.
    */
   let atBottom = $state(true);
   /** What the pin effect remembers: whose transcript it was following. */
@@ -535,56 +535,56 @@
         <SubagentStrip {session} onopen={openSubagent} />
       </div>
 
-      <!-- The chat's overlay layer: the transcript runs the pane's FULL height; the prompt pill,
-           the session's pet and the jump-to-latest button float over its bottom edge. -->
+      <!-- The composer has its own row, so expanded drafts never cover the transcript. -->
       <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        <main bind:this={scroller} onscroll={onScroll} class="relative z-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
-          <!-- Bottom padding clears the floating prompt pill so the newest message is never under it. -->
-          <div class="mx-auto max-w-3xl pb-[7rem]">
-            {#if !store.hydrated[session.id] && !session.events.length}
-              <div class="flex flex-col gap-4 py-2" role="status" aria-label="Loading conversation">
-                <Skeleton class="h-4 w-2/5" />
-                <Skeleton class="h-16 w-full" />
-                <Skeleton class="h-4 w-3/5" />
-                <Skeleton class="h-10 w-full" />
-              </div>
-            {:else}
-              {#key session.id}
-                <Transcript events={session.events} partial={session.partial} onsubmit={(message) => send(message)} />
-              {/key}
-              {#if !session.events.length}
-                <div class="py-16 text-center">
-                  <p class="text-[13px] text-ink-muted">Nothing here yet.</p>
-                  <p class="mt-1 text-[12px] text-ink-muted">Send a prompt to start this session.</p>
+        <div class="relative min-h-0 flex-1">
+          <main bind:this={scroller} onscroll={onScroll} class="relative z-0 h-full min-h-0 overflow-y-auto overscroll-contain px-4 py-5 pane-sm:px-3 pane-sm:py-4">
+            <!-- Normal flow keeps the final message above the composer at every draft height. -->
+            <div class="mx-auto max-w-3xl pb-3">
+              {#if !store.hydrated[session.id] && !session.events.length}
+                <div class="flex flex-col gap-4 py-2" role="status" aria-label="Loading conversation">
+                  <Skeleton class="h-4 w-2/5" />
+                  <Skeleton class="h-16 w-full" />
+                  <Skeleton class="h-4 w-3/5" />
+                  <Skeleton class="h-10 w-full" />
                 </div>
+              {:else}
+                {#key session.id}
+                  <Transcript events={session.events} partial={session.partial} onsubmit={(message) => send(message)} />
+                {/key}
+                {#if !session.events.length}
+                  <div class="py-16 text-center">
+                    <p class="text-[13px] text-ink-muted">Nothing here yet.</p>
+                    <p class="mt-1 text-[12px] text-ink-muted">Send a prompt to start this session.</p>
+                  </div>
+                {/if}
               {/if}
-            {/if}
-          </div>
-        </main>
+            </div>
+          </main>
+          {#if !atBottom && session.events.length}
+            <button
+              type="button"
+              class="absolute bottom-3 left-1/2 z-25 grid size-11 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line/60 bg-raised/80 text-ink-muted shadow-[0_8px_24px_-8px_oklch(0_0_0/0.3)] backdrop-blur-md transition-colors duration-(--duration-fast) ease-(--ease-standard) hover:text-ink"
+              aria-label="Scroll to the latest message"
+              onclick={jumpToLatest}
+            >
+              <ArrowDown size={18} strokeWidth={2} aria-hidden="true" />
+            </button>
+          {/if}
+
+          <FloatingMascot id={session.id} docked />
+        </div>
 
         {#if link === "reconnecting" || link === "connecting"}
-          <div class="mx-auto mb-[calc(6.5rem+env(safe-area-inset-bottom))] flex w-full max-w-3xl items-center gap-2 px-4 text-[12.5px] text-ink-muted pane-sm:px-3" role="status">
+          <div class="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 px-4 text-[12.5px] text-ink-muted pane-sm:px-3" role="status">
             <WifiOff size={13} strokeWidth={2} aria-hidden="true" />
             {link === "connecting" ? "Connecting to this session" : "Connection lost. Reconnecting"}<Spinner size={12} label="" />
           </div>
         {:else if session.status === "running"}
-          <div class="mx-auto mb-[calc(6.5rem+env(safe-area-inset-bottom))] w-full max-w-3xl px-4 pane-sm:px-3">
+          <div class="mx-auto mb-2 w-full max-w-3xl px-4 pane-sm:px-3">
             <PixelLoader label={session.partial?.text ? "Writing" : session.partial?.thinking ? "Thinking" : "Working"} since={session.startedAt} />
           </div>
         {/if}
-
-        {#if !atBottom && session.events.length}
-          <button
-            type="button"
-            class="absolute bottom-[calc(7.25rem+env(safe-area-inset-bottom))] left-1/2 z-25 grid size-11 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line/60 bg-raised/80 text-ink-muted shadow-[0_8px_24px_-8px_oklch(0_0_0/0.3)] backdrop-blur-md transition-colors duration-(--duration-fast) ease-(--ease-standard) hover:text-ink"
-            aria-label="Scroll to the latest message"
-            onclick={jumpToLatest}
-          >
-            <ArrowDown size={18} strokeWidth={2} aria-hidden="true" />
-          </button>
-        {/if}
-
-        <FloatingMascot id={session.id} />
 
         <Composer
           bind:this={composer}
@@ -598,7 +598,6 @@
           model={currentModel}
           {switchingModel}
           {modelNote}
-          floating
           onsend={send}
           oninterrupt={interrupt}
           onmodel={pickModel}

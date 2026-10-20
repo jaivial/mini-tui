@@ -136,11 +136,7 @@ agent:
   instance_template: |
     Please solve this issue: {{task}}
 
-    {% if MINI_AGENT_DEPTH is not defined -%}
-    This is a task for you to DELEGATE, not execute. Create/search/assign a kanban card, spawn one
-    owner with this raw request, then return a brief plain-text handoff WITHOUT tools. Do not
-    inspect files or verify the result yourself. The worker reports when finished.
-    {% else -%}
+    {% if MINI_AGENT_DEPTH is defined -%}
     You can execute bash commands and edit files to implement the necessary changes.
 
     ## First: is there a machine involved?

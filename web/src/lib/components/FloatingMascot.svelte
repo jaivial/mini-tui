@@ -12,10 +12,11 @@
   let {
     /** Stable id whose face floats here (the session's, or the pane's for a new chat). */
     id,
-  }: { id: string } = $props();
+    docked = false,
+  }: { id: string; docked?: boolean } = $props();
 </script>
 
-<img src={avatarSrc(id)} alt="" aria-hidden="true" draggable="false" class="mascot" />
+<img src={avatarSrc(id)} alt="" aria-hidden="true" draggable="false" class="mascot" class:docked />
 
 <style>
   .mascot {
@@ -35,6 +36,7 @@
     filter: drop-shadow(0 5px 10px oklch(0 0 0 / 0.16));
     animation: mascot-bob 6s ease-in-out infinite;
   }
+  .mascot.docked { bottom: 1rem; }
   /* A narrower pane gets a smaller pet, so it never crowds the thread. */
   @container pane (width < 44rem) {
     .mascot {
