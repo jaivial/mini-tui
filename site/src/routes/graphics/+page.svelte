@@ -17,7 +17,7 @@
   <Card.Root id="historical" class="graphic">
     <Card.Header><p class="eyebrow">mini-tui / historical evidence / 19 Oct 2026</p><Card.Title class="title">A smaller finish line.</Card.Title><Card.Description class="subtitle">Same ten tasks. Same model. Three interleaved repetitions.</Card.Description></Card.Header>
     <Card.Content class="body">
-      <p class="metric">112.9<span>s</span> <span class="versus">vs</span> 145.6<span>s</span></p>
+      <div class="metric"><span class="reading">112.9 <small>s</small></span><span class="versus">vs</span><span class="reading">145.6 <small>s</small></span></div>
       <p class="muted">Sum of per-task medians · mini first · lower is better</p>
       <div class="bars">
         <div><b>pi</b><div class="track"><span style="width:100%" class="pi"></span></div><strong>145.6 s</strong></div>
@@ -56,9 +56,9 @@
 .graphic .title{font-size:44px;line-height:1.08;letter-spacing:-.045em;font-weight:600}
 .graphic .subtitle{font-size:19px;line-height:1.5;margin-top:16px;color:#4e535c}
 .graphic .body{flex:1;display:flex;flex-direction:column;padding-top:28px!important}
-.graphic .metric{font-size:64px;line-height:1;letter-spacing:-.055em;margin:8px 0 15px}
-.graphic .metric span{font-size:29px}
-.graphic .metric .versus{font-size:23px;color:#5d626b;margin:0 6px}
+.graphic .metric{display:flex;align-items:baseline;gap:24px;font-size:64px;line-height:1;letter-spacing:-.055em;margin:8px 0 15px}
+.graphic .metric .reading{font-size:inherit;white-space:nowrap}.graphic .metric small{font-size:.34em;letter-spacing:0}.graphic .metric .versus{align-self:center}
+.graphic .metric .versus{font-size:23px;color:#5d626b;letter-spacing:0}
 .graphic .muted{font-size:16px;color:#4e535c}
 .graphic .bars{display:grid;gap:18px;margin:32px 0}
 .graphic .bars>div{display:grid;grid-template-columns:110px 1fr 86px;gap:14px;align-items:center;font-size:16px}
@@ -90,8 +90,8 @@
 @media(max-width:700px){
 .graphic{aspect-ratio:auto;min-height:650px;padding:24px}
 .graphic .title{font-size:31px}
-.graphic .metric{font-size:42px}
-.graphic .metric span{font-size:22px}
+.graphic .metric{font-size:38px;gap:12px}
+.graphic .metric .versus{font-size:18px}
 .graphic .eyebrow{font-size:11px}
 .graphic .subtitle{font-size:16px}
 .graphic .stats{gap:8px}
