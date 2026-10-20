@@ -8,6 +8,7 @@
  * the terminal UI would.
  */
 
+import { sessionRunEnv } from "../mini/sessionEnv";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { expandLocal } from "./folders";
@@ -1032,7 +1033,7 @@ export class SessionManager {
       model: effective || undefined,
       // The agent fills this session's task card (`mini-tui tasks set`): it must know which session
       // it is, and this is the one place that knows.
-      env: { ...modelEnv(effective), MINITUI_SESSION_ID: id, MINI_AGENT_MAX_DEPTH: "10" },
+      env: sessionRunEnv(modelEnv(effective), id),
       cwd,
       // The control channel stays on: follow-ups continue the same conversation.
       control: true,
@@ -1575,7 +1576,7 @@ export class SessionManager {
     const run = spawnMini({
       task: "",
       model: model || undefined,
-      env: { ...modelEnv(model), MINITUI_SESSION_ID: session.id, MINI_AGENT_MAX_DEPTH: "10" },
+      env: sessionRunEnv(modelEnv(model), session.id, this.trajsOf(session.id)),
       cwd,
       resumePath,
       compactOnly: true,
@@ -1633,12 +1634,10 @@ export class SessionManager {
     }
     const model = session.model || DEFAULT_MODEL || loadLastModel();
     const recoveryPaths = this.trajsOf(session.id);
-    const sharedRoot = recoveryPaths.find(p => existsSync(join(dirname(p), "context", "contracts.md")))
-      ?? recoveryPaths.find(p => existsSync(join(dirname(p), "context")));
     const run = spawnMini({
       task,
       model: model || undefined,
-      env: { ...modelEnv(model), MINITUI_SESSION_ID: session.id, MINI_AGENT_MAX_DEPTH: "10", MINI_AGENT_RECOVERY_TRAJECTORIES: JSON.stringify(recoveryPaths), ...(sharedRoot ? { MINI_AGENT_CONTEXT_DIR: join(dirname(sharedRoot), "context") } : {}) },
+      env: sessionRunEnv(modelEnv(model), session.id, recoveryPaths),
       cwd,
       resumePath,
       control: true,

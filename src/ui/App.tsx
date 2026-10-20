@@ -37,6 +37,7 @@ import {
 import { cleanTaskText, createParseState, messagesToEvents, parseInfo, type ParseState } from "../traj/parse";
 import { boundEvent, slimMessage } from "../traj/slim";
 import { readTrajectory, watchTrajectory, type WatchHandle } from "../traj/watch";
+import { sessionRunEnv, sessionTrajectories } from "../mini/sessionEnv";
 import { SubagentSync, type SubagentView } from "../mini/subagents";
 import { attachMini, foreignRunAlive, runnerSupportsCompactOnly, spawnMini, tailLog, type MiniRun, type TaskSpec } from "../mini/spawn";
 import { DEFAULT_MODEL } from "../config";
@@ -56,6 +57,7 @@ import {
   openDb,
   saveTranscript,
   registerLiveRun,
+  rememberAgentRun,
   clearLiveRun,
   writeResumeFile,
   type SessionRecord,
@@ -654,10 +656,23 @@ export function App(props: AppProps) {
     exitedRef.current = false;
     interruptedRef.current = false;
     setTurnStartedAt(Date.now());
+    // Direct CLI run mode reaches startRun before the prompt handler creates a session.
+    if (!sessionIdRef.current && persist) {
+      const id = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      try {
+        createSession(db(), { id, cwd: spec.cwd ?? props.cwd, model: spec.model || modelOverride || DEFAULT_MODEL, task: spec.task });
+        sessionIdRef.current = id;
+      } catch { /* persistence is best effort */ }
+    }
+    const id = sessionIdRef.current;
+    let recovery: string[] = [];
+    if (persist && id && spec.resumePath) {
+      try { recovery = sessionTrajectories(db(), id, live.current.run?.session.trajPath); } catch { /* persistence is best effort */ }
+    }
     const run = spawnMini({
       ...spec,
       model: spec.model || modelOverride,
-      env: modelEnv(spec.model || modelOverride || DEFAULT_MODEL, connections),
+      env: sessionRunEnv({ ...modelEnv(spec.model || modelOverride || DEFAULT_MODEL, connections), ...spec.env }, id, recovery),
     });
     live.current = { run };
     // Announce the agent, so the web app (or another terminal) opening this session follows this
@@ -665,6 +680,7 @@ export function App(props: AppProps) {
     const announced = sessionIdRef.current;
     if (persist && announced && run.pid) {
       try {
+        rememberAgentRun(db(), announced, run.session.trajPath);
         registerLiveRun(db(), { session_id: announced, traj_path: run.session.trajPath, control_path: run.session.controlPath, pid: run.pid, owner: "tui" });
       } catch {
         // best-effort
