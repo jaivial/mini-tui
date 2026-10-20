@@ -14,6 +14,7 @@ export function sessionTrajectories(db: Database, id: string, current?: string):
 export function sessionRunEnv(base: Record<string, string>, id?: string | null, paths: string[] = []): Record<string, string> {
   const env = { ...base };
   if (id) env.MINITUI_SESSION_ID = id;
+  env.MINI_AGENT_ORCHESTRATOR ??= process.env.MINI_AGENT_ORCHESTRATOR ?? "1";
   // Web default, but an explicit operator setting always wins.
   env.MINI_AGENT_MAX_DEPTH ??= process.env.MINI_AGENT_MAX_DEPTH ?? "10";
   if (paths.length) {
