@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { Plus, X, CalendarClock, Network, Server, Settings, RotateCcw, Keyboard } from "@lucide/svelte";
+  import { Plus, X, CalendarClock, Network, Server, Settings, RotateCcw, Keyboard, Monitor } from "@lucide/svelte";
   import SessionSidebar from "./lib/components/SessionSidebar.svelte";
   import { findToggle, focusableWithin, nextStop } from "./lib/drawerModal";
   import ChatPane from "./lib/components/ChatPane.svelte";
@@ -101,6 +101,7 @@
   let planList = $state<SessionPlan[]>([]);
   let tasksLive = $state(false);
   let settingsOpen = $state(false);
+  let liveOpen = $state(false);
   let settingsTab = $state("general");
   let helpOpen = $state(false);
   let resumeOpen = $state(false);
@@ -118,6 +119,7 @@
   let TeamMapModal = $state<ModalOf<typeof import("./lib/components/TeamMapModal.svelte")> | null>(null);
   let RemoteHostsModal = $state<ModalOf<typeof import("./lib/components/RemoteHostsModal.svelte")> | null>(null);
   let SettingsModal = $state<ModalOf<typeof import("./lib/components/SettingsModal.svelte")> | null>(null);
+  let LiveScreenModal = $state<ModalOf<typeof import("./lib/components/LiveScreenModal.svelte")> | null>(null);
   let HelpModal = $state<ModalOf<typeof import("./lib/components/HelpModal.svelte")> | null>(null);
   let ResumeModal = $state<ModalOf<typeof import("./lib/components/ResumeModal.svelte")> | null>(null);
   $effect(() => {
@@ -126,6 +128,7 @@
     if (teamMapOpen && !TeamMapModal) void import("./lib/components/TeamMapModal.svelte").then((m) => (TeamMapModal = m.default));
     if (hostsOpen && !RemoteHostsModal) void import("./lib/components/RemoteHostsModal.svelte").then((m) => (RemoteHostsModal = m.default));
     if (settingsOpen && !SettingsModal) void import("./lib/components/SettingsModal.svelte").then((m) => (SettingsModal = m.default));
+    if (liveOpen && !LiveScreenModal) void import("./lib/components/LiveScreenModal.svelte").then((m) => (LiveScreenModal = m.default));
     if (helpOpen && !HelpModal) void import("./lib/components/HelpModal.svelte").then((m) => (HelpModal = m.default));
     if (resumeOpen && !ResumeModal) void import("./lib/components/ResumeModal.svelte").then((m) => (ResumeModal = m.default));
   });
@@ -449,6 +452,9 @@
     { id: "routines", label: "Kanban", note: "Tasks for the selected bot", icon: CalendarClock, group: "Workspace", run: () => (tasksOpen = true) },
     { id: "team", label: "Team map", note: liveTeam ? `${liveTeam} working` : "The delegation graph", icon: Network, group: "Workspace", run: () => (teamMapOpen = true) },
     { id: "hosts", label: "Remote hosts", note: hostsNote(), icon: Server, group: "Workspace", run: () => (hostsOpen = true) },
+    ...(catalog.settings?.liveScreen?.enabled
+      ? ([{ id: "live-screen", label: "Live screen", note: "The shared cu browser", icon: Monitor, group: "Workspace", run: () => (liveOpen = true) }] as MenuRow[])
+      : []),
     { id: "resume", label: "Resume a session", note: "Every saved session, searchable", icon: RotateCcw, group: "Workspace", run: () => (resumeOpen = true) },
     { id: "settings", label: "Settings", note: "Ctrl/⌘ ,", icon: Settings, group: "Workspace", run: () => app("settings") },
     { id: "help", label: "Keyboard & help", note: "Shortcuts and commands", icon: Keyboard, group: "Workspace", run: () => (helpOpen = true) },
@@ -724,6 +730,7 @@
 {#if TeamMapModal}<TeamMapModal bind:open={teamMapOpen} onopensession={openInFocused} />{/if}
 {#if RemoteHostsModal}<RemoteHostsModal bind:open={hostsOpen} />{/if}
 {#if SettingsModal}<SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />{/if}
+{#if LiveScreenModal}<LiveScreenModal bind:open={liveOpen} />{/if}
 {#if HelpModal}<HelpModal bind:open={helpOpen} />{/if}
 {#if ResumeModal}<ResumeModal bind:open={resumeOpen} opening={openingId} onopen={resume} ondelete={deleteSaved} />{/if}
 <Toasts />
