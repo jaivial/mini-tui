@@ -11,7 +11,7 @@
   let owner = $state("");
   let query = $state("");
   let mode = $state("kanban");
-  let graph = $state<{ok:boolean;synced_at?:number;error?:string;rag?:{ok:boolean;indexed?:number;updated_at?:number}}>({ok:false});
+  let graph = $state<{ok:boolean;synced_at?:number;error?:string;rag?:{ok:boolean;indexed?:number;updated_at?:number;model?:string;chunks?:number}}>({ok:false});
   const columns = ["backlog","doing","review","blocked","done"];
   const label = (id:string) => id.split("~").map((part,i)=>i===0 ? (store.sessions[part]?.title || part) : part).join(" › ");
   const boards = $derived([...new Set(cards.map(c=>c.session))].sort());
@@ -40,7 +40,7 @@
     <input aria-label="Search tasks" placeholder="Search tasks and results" bind:value={query} class="w-full sm:col-span-2 rounded-md border border-line bg-canvas p-2 text-base text-ink" />
   </div>
   <p class="mt-2 text-xs text-ink-muted" role="status">{graph.ok && Date.now()-(graph.synced_at||0)<30000 ? 'Rust graph synced · '+new Date(graph.synced_at||0).toLocaleTimeString() : 'Rust graph pending'} · {shown.length} tasks</p>
-  <p class="mt-1 text-xs text-ink-muted">{graph.rag?.ok && Date.now()-(graph.rag.updated_at||0)<30000 ? `Semantic context ready · ${graph.rag.indexed} indexed records` : "Semantic context warming up or unavailable"}</p>
+  <p class="mt-1 text-xs text-ink-muted">{graph.rag?.ok && Date.now()-(graph.rag.updated_at||0)<30000 ? `Semantic context ready · ${graph.rag.indexed} records · ${graph.rag.chunks || 0} chunks · ${graph.rag.model || ''}` : "Semantic context warming up or unavailable"}</p>
   {#if error}<p class="text-sm text-warn">{error}</p>{/if}
   <Tabs.Root bind:value={mode} class="mt-3 flex-col">
     <Tabs.List class="h-10 w-full shrink-0 bg-overlay text-ink" aria-label="Task view">
