@@ -10,16 +10,39 @@ STATE=HOME/'.config/mini-tui/orchestration-graph-status.json'
 CACHE=HOME/'.config/mini-tui/orchestration-graph-cursor.json'
 URI=os.environ.get('MINITUI_GRAPH_URI','bolt://127.0.0.1:7687')
 
+REPORT_CACHE={}
+
+def last_report(info, messages):
+ # A model-authored final report is evidence, not a judge PASS. Keep the
+ # current exit/error separately so a provider failure cannot erase the report.
+ try: history=json.loads(messages or "[]")
+ except (ValueError,TypeError): history=[]
+ for m in reversed(history):
+  if not isinstance(m,dict) or m.get("role")!="assistant":continue
+  extra=m.get("extra") or {}
+  text=extra.get("submission") if isinstance(extra,dict) else None
+  if isinstance(text,str) and text.strip():return text,"assistant_submission"
+ text=info.get("submission","")
+ return (text,"exit_submission") if info.get("exit_status")=="Submitted" and isinstance(text,str) and text.strip() else ("","none")
+
 def snapshot():
  c=sqlite3.connect(f'file:{DB}?mode=ro',uri=True);c.row_factory=sqlite3.Row
  nodes=[];edges=[]
  def node(label,id,**props):nodes.append(dict(label=label,id='mini-tui:'+id,props=dict(source='mini-tui',**props)))
  def edge(a,b,kind):edges.append(dict(a='mini-tui:'+a,b='mini-tui:'+b,kind=kind))
- for row in c.execute('select id,parent_id,title,task,cwd,exit_status,info_json from sessions'):
+ for row in c.execute('select id,parent_id,title,task,cwd,exit_status,info_json,updated_at from sessions'):
   d=dict(row);sid=d.pop('id');parent=d.pop('parent_id') or ''
   try:info=json.loads(d.pop('info_json') or '{}')
   except:info={}
-  d['result']=str(info.get('submission',''))
+  stamp=d.pop('updated_at')
+  cached=REPORT_CACHE.get(sid)
+  if cached is None or cached[0]!=stamp:
+   messages=c.execute('select messages_json from sessions where id=?',(sid,)).fetchone()[0]
+   cached=(stamp,last_report(info,messages));REPORT_CACHE[sid]=cached
+  d['result'],d['result_source']=cached[1]
+  d['result_exit_status']=d['exit_status']
+  d['exit_submission']=str(info.get('submission',''))
+  d['result_is_judge_approval']=False
   node('MiniAgent',sid,**d)
   if parent:edge(parent,sid,'DELEGATES')
  for row in c.execute('select * from session_tasks'):
