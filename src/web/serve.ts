@@ -1101,7 +1101,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
           },
         });
       }
-      const sessionMatch = path.match(/^\/sessions\/([^/]+)(\/prompt|\/model|\/title|\/interrupt|\/compact)?$/);
+      const sessionMatch = path.match(/^\/sessions\/([^/]+)(\/prompt|\/model|\/title|\/interrupt|\/compact|\/exists)?$/);
       if (sessionMatch) {
         const id = decodeURIComponent(sessionMatch[1] as string);
         const action = sessionMatch[2];
@@ -1168,6 +1168,28 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         if (!action && request.method === "DELETE") {
           dropSession(id);
           return json({ ok: true });
+        }
+        if (action === "/exists" && request.method === "GET") {
+          // "Does this session exist?" -- a QUESTION, and it changes nothing.
+          //
+          // The route that used to answer it (`GET /sessions/:id`) answers by OPENING the session
+          // (`held()` is `openHistory`): it rehydrates a LiveSession, puts it back on the open list
+          // (`web_open_sessions`, durable since #345) and announces it to every tab. So a client that
+          // merely wondered whether a session was still there -- the socket's "was that handshake
+          // refused because the session is gone?" -- brought a CLOSED session back to life, and the
+          // next deploy restored it as open for good. This route answers the same question with a
+          // read and no write (E52/E56).
+          //
+          // The verdict is the one `held()` draws, word for word: 404 only for an id that is
+          // NOWHERE (nothing live, nothing saved), 503 for anything else that stopped us reading
+          // it. A busy database must never look like a deleted session, or the browser concludes
+          // the session is gone and turns its pane into a new chat (E52).
+          try {
+            if (!sessions.exists(id)) return json({ error: "unknown session" }, 404);
+            return json({ exists: true });
+          } catch (error) {
+            return json({ error: `could not look for the session: ${(error as Error).message}` }, 503);
+          }
         }
         if (!action && request.method === "GET") {
           const found = await heldOrError(id);

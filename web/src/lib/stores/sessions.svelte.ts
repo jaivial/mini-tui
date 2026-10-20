@@ -10,7 +10,7 @@
  * the active one and for every running one, so switching to a session that has been working in the
  * background shows a transcript that is already current.
  */
-import { api } from "../api";
+import { api, sessionExists } from "../api";
 import { Reconnect } from "../reconnect";
 import { SessionSocket, type SocketState } from "../session-socket";
 import { shallowEqual } from "../equal";
@@ -214,15 +214,11 @@ class SessionStore {
         },
       },
       {
-        // Was a refused handshake a deleted session, or just a dead network?
-        exists: async (sid) => {
-          try {
-            await api.session(sid);
-            return true;
-          } catch (error) {
-            return /unknown session|404/i.test((error as Error).message) ? false : null;
-          }
-        },
+        // Was a refused handshake a deleted session, or just a dead network? The probe asks the
+        // server through the READ-ONLY route: `GET /sessions/:id` answers the same question by
+        // OPENING the session, which brought a closed session back to life and marked it open for
+        // good (E52/E56).
+        exists: sessionExists,
       },
     );
     this.#sockets.set(id, socket);

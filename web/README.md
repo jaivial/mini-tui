@@ -279,6 +279,7 @@ site cannot start agents or write keys through your browser.
 | `GET` | `/api/stream` | SSE: every session and host change |
 | `GET` | `/api/sessions` | live sessions (metadata, no transcript) |
 | `GET` | `/api/sessions/:id/socket` | WebSocket: that session's transcript |
+| `GET` | `/api/sessions/:id/exists` | does that session exist? **a question, and it opens nothing**: 200 `{exists:true}`, 404 if the id is nowhere, 503 if it could not be read. `GET /api/sessions/:id` answers the same question by OPENING the session (it restores the saved row, puts it back on the durable open list and announces it to every tab), so a client that merely wondered whether a closed session was still there brought it back to life (E52/E56) |
 | `POST` | `/api/sessions` | start one (`target: local \| remote`, `hostId`) |
 | `POST` | `/api/sessions/:id/prompt` | follow-up in the same conversation (409 with the reason if there is nothing to continue from) |
 | `POST` | `/api/sessions/:id/interrupt` | stop the run |

@@ -1,6 +1,7 @@
 /** Thin fetch wrapper around the mini-tui web server. */
 import type { AttachmentRef } from "./attachments";
 import { ageClock } from "./clock";
+import { isNowhere } from "./unknownSessions";
 import type {
   CommandInfo,
   ConnectResult,
@@ -82,7 +83,16 @@ export const api = {
   sessions: () => call<SessionMeta[]>("/sessions"),
   /** Every bot's kanban cards (`mini-tui kanban`), newest first. */
   kanban: () => call<{ id: string; session: string; title: string; description: string; column: string; assignee: string; result: string; updatedAt: number }[]>("/kanban"),
-  session: (id: string) => call<WireSession>(`/sessions/${id}`),
+  /**
+   * Whether the server still knows this session — a QUESTION, and it opens nothing.
+   *
+   * There is deliberately no "read this session" call here: the route that would answer it
+   * (`GET /sessions/:id`) answers by OPENING the session — it restores the saved row into a live
+   * session, puts it back on the durable open list (`web_open_sessions`) and announces it to every
+   * tab. So a client that merely wondered whether a session was still there brought a CLOSED
+   * session back to life, and the next deploy kept it open (E52/E56). This route only reads.
+   */
+  sessionExists: (id: string) => call<{ exists: boolean }>(`/sessions/${encodeURIComponent(id)}/exists`),
   create: (body: CreateSessionBody) =>
     call<WireSession>("/sessions", { method: "POST", body: JSON.stringify(body) }),
   send: (id: string, prompt: string, attachments?: AttachmentRef[]) =>
@@ -144,3 +154,24 @@ export const api = {
   },
   disconnectProvider: (id: string) => call<{ ok: true }>(`/providers/${id}`, { method: "DELETE" }),
 };
+
+/**
+ * "Was that refused handshake a deleted session, or just a dead network?"
+ *
+ * `false` = the server says the id is nowhere (it is gone); `true` = it is there; `null` = could not
+ * tell (the network, a busy database), so the caller keeps trying. It is the same line the server
+ * draws in `held()`: 404 is a verdict, anything else is not.
+ *
+ * The question is asked through the READ-ONLY route on purpose. `GET /sessions/:id` answers it by
+ * OPENING the session -- restoring the saved row, putting the id back on the durable open list
+ * (`web_open_sessions`) and announcing it to every tab -- so asking whether a closed session was
+ * still there brought it back to life (E52/E56).
+ */
+export async function sessionExists(id: string): Promise<boolean | null> {
+  try {
+    await api.sessionExists(id);
+    return true;
+  } catch (error) {
+    return isNowhere(error) ? false : null;
+  }
+}
