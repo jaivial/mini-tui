@@ -10,7 +10,7 @@
     if (!live?.enabled || !live.viewerUrl) return null;
     try {
       const u = new URL(live.viewerUrl);
-      return u.protocol === "https:" && u.origin === live.origin && u.pathname === "/vault/live2/view" && !u.search && !u.hash && !u.username ? u.href : null;
+      return u.protocol === "https:" && u.origin === live.origin && u.pathname === "/vault/live2/view" && !u.search && !u.hash && !u.username && !u.password ? u.href : null;
     } catch {
       return null;
     }
