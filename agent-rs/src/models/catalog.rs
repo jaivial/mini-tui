@@ -177,7 +177,7 @@ fn anthropic_compat(config: &Obj) -> Box<dyn Model> {
     c.insert("api_key".into(), json!(env_or("ANTHROPIC_API_KEY", "")));
     c.insert("set_cache_control".into(), json!("rolling"));
     c.insert("api_version".into(), json!("2023-06-01"));
-    let max_tokens: i64 = env_or("MSWEA_MAX_TOKENS", "8192").parse().unwrap_or(8192);
+    let max_tokens: i64 = env_or("MSWEA_MAX_TOKENS", "4096").parse().unwrap_or(4096);
     c.insert("max_tokens".into(), json!(max_tokens));
     for (k, v) in config {
         c.insert(k.clone(), v.clone());
@@ -267,7 +267,7 @@ fn opencode_go(config: &Obj, force_responses: bool) -> Box<dyn Model> {
             let mut c = base_config(&Obj::new(), "ignore_errors");
             c.insert("set_cache_control".into(), json!("rolling"));
             c.insert("api_version".into(), json!("2023-06-01"));
-            let max_tokens: i64 = env_or("MSWEA_MAX_TOKENS", "8192").parse().unwrap_or(8192);
+            let max_tokens: i64 = env_or("MSWEA_MAX_TOKENS", "4096").parse().unwrap_or(4096);
             c.insert("max_tokens".into(), json!(max_tokens));
             for (k, v) in impl_cfg {
                 c.insert(k, v);
@@ -367,9 +367,25 @@ pub fn build(name: &str, class: &str, mut config: Obj) -> Result<Box<dyn Model>,
             // XIAOMI_API_BASE can point at the token-plan Anthropic-compatible surface
             // (`.../anthropic/v1`): Messages protocol, and rolling cache markers — the
             // gateway honors cache_control (measured 2026-10-21: replayed 4.8k-token
-            // prefix came back as cache_read_input_tokens).
+            // prefix came back as cache_read_input_tokens). It also honors the Anthropic
+            // `thinking` parameter (probed same day: unbounded thinking measured at ~40 s
+            // per turn on analysis work), so bound it by default: XIAOMI_THINKING=off
+            // disables thinking, =on leaves the gateway's own default,
+            // XIAOMI_THINKING_BUDGET sets the budget (default 2048).
             let protocol = if c["api_base"].as_str().unwrap_or("").contains("/anthropic") {
                 c.entry("set_cache_control".to_string()).or_insert(json!("rolling"));
+                let mode = std::env::var("XIAOMI_THINKING").unwrap_or_else(|_| "budget".into());
+                if mode != "on" {
+                    let budget: i64 = env_or("XIAOMI_THINKING_BUDGET", "2048").parse().unwrap_or(2048);
+                    let mk = c.entry("model_kwargs".to_string()).or_insert(json!({}));
+                    if let Some(obj) = mk.as_object_mut() {
+                        obj.entry("thinking").or_insert(if mode == "off" || mode == "disabled" {
+                            json!({"type": "disabled"})
+                        } else {
+                            json!({"type": "enabled", "budget_tokens": budget})
+                        });
+                    }
+                }
                 Protocol::Messages
             } else {
                 Protocol::Chat

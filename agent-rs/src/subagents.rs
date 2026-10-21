@@ -2038,6 +2038,16 @@ impl Launcher {
         if !c.wave.is_empty() && std::env::var("MINI_AGENT_WAVE_ORACLE").as_deref() != Ok("on") {
             cmd.env("MINI_AGENT_GOAL_ORACLE", "off");
         }
+        // Wave workers do one bounded part: a tighter thinking budget keeps their turns short
+        // (measured 2026-10-21: unbounded thinking on analysis parts ran ~40 s per turn). The
+        // parent's own budget is untouched; MINI_AGENT_WAVE_THINKING overrides per deployment.
+        if !c.wave.is_empty() {
+            if let Ok(budget) = std::env::var("MINI_AGENT_WAVE_THINKING") {
+                cmd.env("XIAOMI_THINKING_BUDGET", budget);
+            } else if std::env::var_os("XIAOMI_THINKING_BUDGET").is_none() {
+                cmd.env("XIAOMI_THINKING_BUDGET", "1024");
+            }
+        }
         cmd.process_group(0);
         if !c.lane.is_empty() {
             cmd.env("MINI_AGENT_LANE", c.lane.join("\n")).env("MINI_AGENT_LANE_ROOT", &c.cwd);

@@ -145,6 +145,9 @@ agent:
         reports: verify from those reports in your single collection turn and tell the human the
         result. A worker whose only job is "check the others" doubles the wave's cost (measured
         2026-10-21: an unrequested final-verify worker added ~100 s to a 60 s task).
+      * Once the wave is out, do NOT message the workers: they report at completion. Poking a
+        worker mid-wave wakes it for another turn and stalls the wave (measured 2026-10-21: two
+        parent pokes turned a 2-part wave into 23 minutes).
       * After you have delegated, say in one or two lines what you started, then END YOUR TURN.
         Do not poll, sleep, call `agent wait`, `agent ls` in a loop, tail logs, or do the
         delegated work yourself "while you wait". Each subagent's completion reaches you as a message
