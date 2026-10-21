@@ -14,3 +14,4 @@ site/build/
 site/.svelte-kit/
 site/node_modules
 .worktrees/
+benchmark/pi-vs-mini/runs/
