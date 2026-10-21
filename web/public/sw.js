@@ -20,10 +20,13 @@
  *     `put` only costs the offline copy. Responding to a navigation with a rejected promise is a
  *     dead page — that exact bug is why the document's body is read once and turned into two
  *     independent Responses instead of a shared, teed one.
- *   - VERSION names the cache set. Bump it when this file or the build's public assets change and
- *     the old set is deleted on activate. A tab left open across a rebuild is already handled by
- *     the app's own stale-bundle reload (main.ts): a request for a bundle this cache no longer
- *     holds falls through to the server, 404s there, and the app reloads itself onto the new shell.
+ *   - VERSION names the cache set, and only this file (or anything else in web/public/) changes
+ *     it: bump it there and activate drops the superseded set. An APP rebuild needs NO bump —
+ *     index.html is network-first, so the next visit asks for the current bundle names, and a tab
+ *     still holding old ones is covered by the app's own stale-bundle reload (main.ts): a request
+ *     for a bundle the server no longer has 404s and the page reloads onto the new shell. Bundle
+ *     entries from rebuilds between two bumps linger as bounded disk only, and the next bump
+ *     clears them.
  */
 const VERSION = "2026-10-21.2";
 const SHELL_CACHE = `mini-tui-shell-${VERSION}`;
