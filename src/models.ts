@@ -29,6 +29,10 @@ export const MODELS: SelectOption[] = [
     description: "Rosetta · MiniMax M3",
     value: "rosetta/minimax/claude-minimax-m3",
   },
-  { name: "ollama/minicpm5-heretic:2b-q4_K_M", description: "Ollama local · MiniCPM5 Heretic 2B Q4_K_M", value: "ollama/maternion/minicpm5-heretic:2b-q4_K_M" },
   { name: "openai/gpt-6-astra", description: "OpenAI GPT-6 Astra (Responses API)", value: "openai/gpt-6-astra" },
+  {
+    name: "ollama/minicpm5-heretic:2b-q4_K_M",
+    description: "Ollama local · MiniCPM5 Heretic 2B Q4_K_M (~25 tok/s, no OOM)",
+    value: "ollama/maternion/minicpm5-heretic:2b-q4_K_M",
+  },
 ];
