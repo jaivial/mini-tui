@@ -122,6 +122,10 @@ to another experiment and did not hold in the three round-6 repetitions.
 The graphics below keep provenance beside every result. Public leaderboard data uses
 another corpus and is not a like-for-like ranking of mini.
 
+![Release card: v0.43.0, bots that run your board, with the 19 Oct run's figures and their limits](docs/img/update.png)
+
+![Every mini-vs-pi run as one bar, each with the corpus, model and judge it came from](docs/img/benchmark.png)
+
 ![Historical 19 October closure-on result, with evidence limits](docs/img/closure-history-20261019.png)
 
 ![Per-task historical medians, with shared zero-based scales](docs/img/closure-tasks-20261019.png)
