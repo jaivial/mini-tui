@@ -180,6 +180,9 @@ pub struct Agent {
     /// the transport frame around them (`intent::channel_subject`). False for every run that
     /// was asked for work.
     task_is_conversational: bool,
+    /// P1 router: false when this session's current task is single-part work, so the
+    /// orchestrator boundary is disarmed and the top-level session executes directly.
+    orchestrator_lane: bool,
     goal_reports: Vec<Value>,
     oracle_errors: usize,
     /// Rejections the judge has returned for this run (see MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS).
@@ -242,6 +245,7 @@ impl Agent {
             fastpath_answered: false,
             jev_report: None,
             task_is_conversational: false,
+            orchestrator_lane: true,
             goal_reports: Vec::new(),
             oracle_errors: 0,
             oracle_rejections: 0,
@@ -651,6 +655,15 @@ impl Agent {
         // envelope answers "Task" for a greeting.
         self.task_is_conversational =
             crate::intent::classify(&crate::intent::channel_subject(task)) == crate::intent::Intent::Conversational;
+        // P1 router: the orchestrator lane pays for itself only on work that actually splits.
+        // A single-part task executes directly in this session — the delegation detour through
+        // coordinator, worker, handoff and closure judge measured 2.5x the wall of direct
+        // execution on the pi-vs-mini corpus (2026-10-20). `MINI_AGENT_ROUTER=0` restores the
+        // always-delegate lane.
+        self.orchestrator_lane = match std::env::var("MINI_AGENT_ROUTER").as_deref() {
+            Ok("0") => true,
+            _ => crate::intent::decomposable(&crate::intent::channel_subject(task)),
+        };
         if crate::goal_oracle::enabled() && !self.task_is_conversational
             && !(Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none()) {
             if let Outcome::Output(v) = self.env.execute("git rev-parse --verify HEAD 2>/dev/null") {
@@ -1415,7 +1428,7 @@ impl Agent {
     fn execute_actions(&mut self, message: &Value) -> Result<Vec<Value>, Flow> {
         let actions: Vec<Value> = message.pointer("/extra/actions").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut outputs = Vec::new();
-        if (std::env::var("MINI_AGENT_ORCHESTRATOR").as_deref() == Ok("1") || std::env::var("MINITUI_WEB").as_deref() == Ok("1")) && Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none() {
+        if (std::env::var("MINI_AGENT_ORCHESTRATOR").as_deref() == Ok("1") || std::env::var("MINITUI_WEB").as_deref() == Ok("1")) && Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none() && self.orchestrator_lane {
             let allowed = actions.iter().all(|action| {
                 if let Some(tool) = action.get("tool").and_then(Value::as_str) {
                     return matches!(tool, "agent_delegate" | "agent_message" | "agent_handoff" | "agent_route" | "agent_define");

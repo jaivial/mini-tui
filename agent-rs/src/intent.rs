@@ -84,6 +84,15 @@ const WORK_MARKERS: &[&str] = &[
     "recalculate", "parse", "extract", "rewrite", "update", "change", "modify", "create",
     "generate", "produce", "write a", "write the", "convert", "migrate", "port", "clean up",
     "cleanup", "rename", "move", "delete", "remove", "add a", "add the", "apply", "restore",
+    // Spanish work vocabulary: a Spanish work ask ("crea un fichero...") carries none of the
+    // English markers and used to fall through to the tool-free conversational answer, which
+    // executes nothing (measured 2026-10-21).
+    "archivo", "archivos", "fichero", "ficheros", "carpeta", "directorio", "codigo", "código",
+    "script de", "crea", "crear", "ejecuta", "ejecutar", "arregla", "arreglar", "corrige",
+    "corregir", "compila", "compilar", "prueba", "pruebas", "test de", "muestra", "lista",
+    "busca", "analiza", "calcula", "genera", "modifica", "cambia", "elimina", "borra", "migra",
+    "renombra", "servidor", "comando", "terminal", "puerto", "proceso", "configuracion",
+    "configuración", "base de datos", "paquete", "dependencia", "repositorio", "commit",
 ];
 
 /// Words that mark the text as a *question about the conversation or the assistant*, which is the
@@ -119,6 +128,33 @@ fn normalize(task: &str) -> String {
         }
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether the task names several independent work items that parallel workers could own.
+///
+/// Local and free like `classify`, and eager to say NO. A false split routes a task one agent
+/// does faster through the delegation detour — measured 2026-10-20 at 2.5x the wall of direct
+/// execution (coordinator + worker + handoff + closure judge) — while a missed split only
+/// delays the fan-out: `agent_delegate` accepts new tasks at any turn. A split is claimed only
+/// on explicit multi-part structure: an enumeration of two or more items, or vocabulary that
+/// itself demands concurrent or separated execution.
+pub fn decomposable(task: &str) -> bool {
+    let items = task.lines().filter(|line| {
+        let t = line.trim_start();
+        let bytes = t.as_bytes();
+        t.starts_with("- ") || t.starts_with("* ") || t.starts_with("• ")
+            || (bytes.len() >= 2 && bytes[0].is_ascii_digit() && (bytes[1] == b'.' || bytes[1] == b')'))
+    }).count();
+    if items >= 2 {
+        return true;
+    }
+    const SPLIT_MARKERS: &[&str] = &[
+        "en paralelo", "in parallel", "simultaneously", "simultáneamente", "a la vez",
+        "por separado", "separately", "each of the", "cada una de", "cada uno de",
+        "fan out", "subtasks", "subtareas",
+    ];
+    let hay = normalize(task);
+    SPLIT_MARKERS.iter().any(|m| contains_word(&hay, m))
 }
 
 /// True when `needle` appears in `hay` on word boundaries.
@@ -256,6 +292,31 @@ mod tests {
         for t in tasks {
             assert_eq!(classify(t), Intent::Task, "{t}");
         }
+    }
+
+    #[test]
+    fn single_part_tasks_are_not_decomposable() {
+        // The corpus's own tasks, plus everyday unitary asks: none names several parts, so
+        // the router must keep them in the direct lane (the delegation detour is 2.5x slower).
+        let tasks = [
+            "# Task: top-5 words in a stress log\n\nWrite answer.json with the five most frequent tokens.",
+            "Fix the discount tiers in cart.js: the boundary is >= not >.",
+            "mira los logs del servidor y dime si hay errores",
+            "create a file hola.txt containing exactly 'hola'",
+            "merge several files into one summary", // "several files" is one operation, not a split
+        ];
+        for t in tasks {
+            assert!(!decomposable(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn explicit_multi_part_structure_is_decomposable() {
+        assert!(decomposable("Traduce los README a inglés, francés y alemán:\n1. README.es.md\n2. README.fr.md"));
+        assert!(decomposable("Run the scraper against each of the three sources in parallel and write one report per source"));
+        assert!(decomposable("- migrate the users table\n- migrate the orders table"));
+        assert!(decomposable("Reparte el trabajo entre subtareas: frontend, backend y docs"));
+        assert!(decomposable("Refactor module A, module B, and module C separately"));
     }
 
     #[test]
