@@ -67,11 +67,14 @@ function safeNotes(s: string): string[] {
 
 const newId = () => "k-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
 
-export function addCard(db: Database, session: string, f: { title: string; description?: string; column?: Column }): Card {
+export function addCard(db: Database, session: string, f: { title: string; description?: string; column?: Column; selfAssign?: boolean }): Card {
   ensureKanban(db);
   const id = newId(); const now = Date.now();
-  db.query("INSERT INTO kanban_cards (id, session_id, title, description, col, created_at, updated_at) VALUES (?,?,?,?,?,?,?)")
-    .run(id, session, f.title.slice(0, 200), (f.description ?? "").slice(0, 4000), f.column ?? "backlog", now, now);
+  // selfAssign (--assign) lands the card already in doing, owned by its own id - the convention
+  // that the subagent is named after its card - in the SAME insert, so the board never shows a
+  // card that exists but has no owner, not even between two statements.
+  db.query("INSERT INTO kanban_cards (id, session_id, title, description, col, assignee, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(id, session, f.title.slice(0, 200), (f.description ?? "").slice(0, 4000), f.selfAssign ? "doing" : (f.column ?? "backlog"), f.selfAssign ? id : "", now, now);
   const card = getCard(db, id)!;
   db.query("INSERT INTO orchestration_events(entity_id,kind,snapshot,created_at) VALUES (?,?,?,?)").run(id,"card.created",JSON.stringify(card),Date.now());
   return card;
@@ -150,6 +153,7 @@ export interface KanbanArgs {
   description?: string;
   column?: string;
   assignee?: string;
+  assign?: boolean;
   text?: string;
   json: boolean;
 }
@@ -174,10 +178,12 @@ export function kanbanCommand(
     const col = args.column as Column | undefined;
     if (col && !COLUMNS.includes(col)) { out.stderr(`error: column must be one of ${COLUMNS.join(", ")}\n`); return 2; }
     const need = (id?: string) => { const c = id ? getCard(db, id) : null; if (!c) out.stderr(`error: no card ${id ?? "(missing id)"}\n`); return c; };
+    if (args.assign && args.action !== "add") { out.stderr("error: --assign only applies to kanban add\n"); return 2; }
     switch (args.action) {
       case "add": {
         if (!args.title?.trim()) { out.stderr("error: add needs --title\n"); return 2; }
-        const c = addCard(db, session!, { title: args.title, description: args.description, column: col });
+        if (args.assign && col && col !== "doing") { out.stderr(`error: add --assign puts the card in doing; it conflicts with --column ${col}\n`); return 2; }
+        const c = addCard(db, session!, { title: args.title, description: args.description, column: args.assign ? "doing" : col, selfAssign: args.assign });
         if (args.json) return print(c), 0;
         out.stdout(`card ${c.id} added to ${c.column}: ${c.title}\n`); return 0;
       }
@@ -237,6 +243,7 @@ export function parseKanban(rest: string[], takeValue: (a: string[], i: number, 
     else if (x === "--description" || x === "--desc") a.description = takeValue(rest, i++, x);
     else if (x === "--column" || x === "--to") a.column = takeValue(rest, i++, x);
     else if (x === "--assignee" || x === "--agent") a.assignee = takeValue(rest, i++, x);
+    else if (x === "--assign") a.assign = true;
     else if (x === "--text" || x === "--result") a.text = takeValue(rest, i++, x);
     else if (x.startsWith("-")) throw new Error(`unknown option for kanban: ${x}`);
     else pos.push(x);
