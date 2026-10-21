@@ -133,17 +133,19 @@ fn normalize(task: &str) -> String {
 /// Whether the task names several independent work items that parallel workers could own.
 ///
 /// Local and free like `classify`, and eager to say NO. A false split routes a task one agent
-/// does faster through the delegation detour — measured 2026-10-20 at 2.5x the wall of direct
-/// execution (coordinator + worker + handoff + closure judge) — while a missed split only
-/// delays the fan-out: `agent_delegate` accepts new tasks at any turn. A split is claimed only
-/// on explicit multi-part structure: an enumeration of two or more items, or vocabulary that
-/// itself demands concurrent or separated execution.
+/// does faster through the delegation detour — measured 2026-10-21 at 4-11x the wall of direct
+/// execution once the wave's ceremony is counted — while a missed split only delays the
+/// fan-out: `agent_delegate` accepts new tasks at any turn. A split is claimed only on
+/// explicit multi-part structure: a NUMBERED list of two or more items, or vocabulary that
+/// itself demands concurrent or separated execution. Bare markdown bullets do not count: in
+/// real task texts they overwhelmingly enumerate the fields of ONE deliverable ("write
+/// report.json with: - lines: ... - errors: ..."), which misrouted a unitary log analysis
+/// into a full delegation wave (measured tp1, 2026-10-21: 413 s vs 36.5 s direct).
 pub fn decomposable(task: &str) -> bool {
     let items = task.lines().filter(|line| {
         let t = line.trim_start();
         let bytes = t.as_bytes();
-        t.starts_with("- ") || t.starts_with("* ") || t.starts_with("• ")
-            || (bytes.len() >= 2 && bytes[0].is_ascii_digit() && (bytes[1] == b'.' || bytes[1] == b')'))
+        bytes.len() >= 2 && bytes[0].is_ascii_digit() && (bytes[1] == b'.' || bytes[1] == b')')
     }).count();
     if items >= 2 {
         return true;
@@ -297,13 +299,16 @@ mod tests {
     #[test]
     fn single_part_tasks_are_not_decomposable() {
         // The corpus's own tasks, plus everyday unitary asks: none names several parts, so
-        // the router must keep them in the direct lane (the delegation detour is 2.5x slower).
+        // the router must keep them in the direct lane (the delegation detour is slower).
+        // Bare bullets are NOT a split signal: they usually enumerate the fields of one
+        // deliverable (that misroute cost 413 s vs 36.5 s on tp1, 2026-10-21).
         let tasks = [
             "# Task: top-5 words in a stress log\n\nWrite answer.json with the five most frequent tokens.",
             "Fix the discount tiers in cart.js: the boundary is >= not >.",
             "mira los logs del servidor y dime si hay errores",
             "create a file hola.txt containing exactly 'hola'",
             "merge several files into one summary", // "several files" is one operation, not a split
+            "From logs/auth.log write report_auth.json with exactly these keys:\n- \"lines\": total lines\n- \"errors\": ERROR count\n- \"top_service\": the busiest service",
         ];
         for t in tasks {
             assert!(!decomposable(t), "{t}");
@@ -312,9 +317,9 @@ mod tests {
 
     #[test]
     fn explicit_multi_part_structure_is_decomposable() {
-        assert!(decomposable("Traduce los README a inglés, francés y alemán:\n1. README.es.md\n2. README.fr.md"));
+        assert!(decomposable("Traduce los README:\n1. README.es.md\n2. README.fr.md"));
         assert!(decomposable("Run the scraper against each of the three sources in parallel and write one report per source"));
-        assert!(decomposable("- migrate the users table\n- migrate the orders table"));
+        assert!(decomposable("1. migrate the users table\n2. migrate the orders table"));
         assert!(decomposable("Reparte el trabajo entre subtareas: frontend, backend y docs"));
         assert!(decomposable("Refactor module A, module B, and module C separately"));
     }
