@@ -132,6 +132,11 @@ another corpus and is not a like-for-like ranking of mini.
 
 ![Terminal and web implementation changes, without a speedup claim](docs/img/parity-update-20261020.png)
 
+> **Obsolete, kept for context.** `docs/img/time-per-task.png` (11 October dev sweep)
+> carries the earlier dev-sweep framing and is referenced by nothing in this repo. It is
+> not a like-for-like view of the corpus above and should not be quoted; it is kept only
+> as a historical artifact until someone decides to archive or drop it.
+
 
 ---
 

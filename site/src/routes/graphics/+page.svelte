@@ -8,16 +8,33 @@
     ["t7 · regex CLI",13.1,9.1],["t8 · JavaScript fix",15.4,10.2],["t9 · package resize",13.8,9.1],
     ["t10 · crash report",20.0,11.9]
   ] as const;
-  /** One line per measured run. Every ratio keeps its own corpus, model and judge next to it. */
-  type Run = { run: string; ratio: number; label: string; note: string; hollow?: boolean; closure?: boolean };
+  /**
+   * One line per measured run. Every ratio keeps its own corpus, model and judge next to it.
+   *
+   * Colour comes from the documented outcome, never from a numeric threshold: a threshold
+   * like "within 0.05 of 1.00x is a tie" would silently reclassify round 3's real 0.95x win
+   * as a tie. So `outcome` is set explicitly per run, from what the report states. Round 6 is
+   * a documented tie ("median 0.98x, effectively a tie" — docs/pi-vs-mini-benchmark.md §2),
+   * so it is neither "faster" (green) nor "slower" (grey); it uses the neutral tie colour and
+   * the legend spells the tie out. Round 3 is a documented faster run and stays green at 0.95x.
+   */
+  type Run = {
+    run: string;
+    ratio: number;
+    label: string;
+    note: string;
+    outcome: "faster" | "slower" | "tie";
+    hollow?: boolean;
+    closure?: boolean;
+  };
   const runs: readonly Run[] = [
-    { run: "Round 1", ratio: 3.65, label: "3.65x", note: "bash-only writes · zai/glm-5.3 · 10 tasks" },
-    { run: "Round 2", ratio: 1.28, label: "1.28x", note: "native write/edit · minimax/MiniMax-M3" },
-    { run: "Round 3", ratio: 0.95, label: "0.95x", note: "fast lane + leaner turns" },
-    { run: "Round 4", ratio: 1.07, label: "1.07x", note: "median flips to mini: 20.0 s vs 21.1 s" },
-    { run: "Round 5", ratio: 0.69, label: "0.69x", note: "one run · did not reproduce (see round 6)", hollow: true },
-    { run: "Round 6", ratio: 0.98, label: "0.98x", note: "3 fresh reps: 1.13x, 0.98x, 0.93x — a tie" },
-    { run: "19 Oct, closure on", ratio: 0.78, label: "0.78x", note: "10 tasks × 3 interleaved reps · 30/30 PASS both arms · MiniMax-M3.1-Flash-Preview + Laya", closure: true },
+    { run: "Round 1", ratio: 3.65, label: "3.65x", note: "bash-only writes · zai/glm-5.3 · 10 tasks", outcome: "slower" },
+    { run: "Round 2", ratio: 1.28, label: "1.28x", note: "native write/edit · minimax/MiniMax-M3", outcome: "slower" },
+    { run: "Round 3", ratio: 0.95, label: "0.95x", note: "fast lane + leaner turns", outcome: "faster" },
+    { run: "Round 4", ratio: 1.07, label: "1.07x", note: "median flips to mini: 20.0 s vs 21.1 s", outcome: "slower" },
+    { run: "Round 5", ratio: 0.69, label: "0.69x", note: "one run · did not reproduce (see round 6)", outcome: "slower", hollow: true },
+    { run: "Round 6", ratio: 0.98, label: "0.98x", note: "3 fresh reps: 1.13x, 0.98x, 0.93x — a tie", outcome: "tie" },
+    { run: "19 Oct, closure on", ratio: 0.78, label: "0.78x", note: "10 tasks × 3 interleaved reps · 30/30 PASS both arms · MiniMax-M3.1-Flash-Preview + Laya", outcome: "faster", closure: true },
   ];
 </script>
 <Seo page={{path:"/graphics/",title:"Release graphics and evidence",description:"Source-labelled graphics for mini-tui: the v0.43.0 release card, the run-by-run pi comparison with its provenance, the recovered historical result and the implemented terminal/web parity changes.",modified:"2026-10-21"}} />
@@ -40,8 +57,8 @@
   <Card.Root id="progression" class="graphic">
     <Card.Header><p class="eyebrow">mini-tui / vs pi / one line per run</p><Card.Title class="title">Every run, with the run it came from.</Card.Title><Card.Description class="subtitle">Wall-clock ratio of mini against pi; below 1.00x is faster for mini. Each bar keeps its corpus, model and judge beside it.</Card.Description></Card.Header>
     <Card.Content class="body">
-      <div class="legend"><span class="pi-dot"></span> slower than pi <span class="mini-dot"></span> faster than pi</div>
-      <div class="run-list">{#each runs as r}<div class="run-row{r.closure ? " closure" : ""}"><span>{r.run}</span><div class="run-track"><i class="{r.hollow ? "hollow " : ""}{r.ratio <= 1 ? "mini" : "pi"}" style="width:{(r.ratio / 3.7 * 100).toFixed(1)}%"></i><em style="left:{(1 / 3.7 * 100).toFixed(1)}%"></em></div><b>{r.label}</b></div><p class="run-note">{r.note}</p>{/each}</div>
+      <div class="legend"><span class="pi-dot"></span> slower than pi <span class="tie-dot"></span> a tie <span class="mini-dot"></span> faster than pi</div>
+      <div class="run-list">{#each runs as r}<div class="run-row{r.closure ? " closure" : ""}"><span>{r.run}</span><div class="run-track"><i class="{r.hollow ? "hollow " : ""}{r.outcome}" style="width:{(r.ratio / 3.7 * 100).toFixed(1)}%"></i><em style="left:{(1 / 3.7 * 100).toFixed(1)}%"></em></div><b>{r.label}</b></div><p class="run-note">{r.note}</p>{/each}</div>
       <p class="note">Rounds 1–6: ten-task corpus, minimax/MiniMax-M3 (round 1: zai/glm-5.3), no closure judge. The 19 Oct line is a different setup — closure check on with Laya — and is not pooled with them. Public leaderboard figures use another corpus and are not plotted here.</p>
     </Card.Content><Card.Footer class="footer">Source: docs/pi-vs-mini-benchmark.md · every ratio keeps its own run</Card.Footer>
   </Card.Root>
@@ -88,8 +105,7 @@
 .graphic .subtitle{font-size:19px;line-height:1.5;margin-top:16px;color:#4e535c}
 .graphic .body{flex:1;display:flex;flex-direction:column;padding-top:28px!important}
 .graphic .metric{display:flex;align-items:baseline;gap:24px;font-size:64px;line-height:1;letter-spacing:-.055em;margin:8px 0 15px}
-.graphic .metric .reading{font-size:inherit;white-space:nowrap}.graphic .metric small{font-size:.34em;letter-spacing:0}.graphic .metric .versus{align-self:center}
-.graphic .metric .versus{font-size:23px;color:#5d626b;letter-spacing:0}
+.graphic .metric .reading{font-size:inherit;white-space:nowrap}.graphic .metric small{font-size:.34em;letter-spacing:0}.graphic .metric .versus{align-self:center;font-size:23px;color:#5d626b;letter-spacing:0}
 .graphic .muted{font-size:16px;color:#4e535c}
 .graphic .bars{display:grid;gap:18px;margin:32px 0}
 .graphic .bars>div{display:grid;grid-template-columns:110px 1fr 86px;gap:14px;align-items:center;font-size:16px}
@@ -110,8 +126,10 @@
 .graphic .run-row.closure{font-weight:600}
 .graphic .run-track{position:relative;height:11px;background:#eef0f3;border-radius:3px}
 .graphic .run-track i{display:block;height:100%;border-radius:3px}
-.graphic .run-track i.pi{background:#626975}
-.graphic .run-track i.mini{background:#2f9e55}
+.graphic .run-track i.faster{background:#2f9e55}
+.graphic .run-track i.slower{background:#626975}
+/* Documented tie: neither mini's green nor pi's grey — a neutral slate so it is not read as a win. */
+.graphic .run-track i.tie{background:#8a8f98}
 .graphic .run-track i.hollow{background:#fff;border:2px solid #626975}
 .graphic .run-track em{position:absolute;top:-3px;bottom:-3px;width:1px;background:#14161a}
 .graphic .run-row b{text-align:right;font-size:14px}
@@ -119,6 +137,7 @@
 .graphic .footer{font-size:13px;line-height:1.5;color:#5d626b;border-top:1px solid #dcdfe5;padding-top:16px!important;margin-top:22px}
 .graphic .legend{font-size:15px;display:flex;gap:9px;align-items:center;margin-bottom:17px}
 .graphic .pi-dot,.graphic .mini-dot{display:inline-block;width:10px;height:10px;border-radius:3px;background:#626975}
+.graphic .tie-dot{display:inline-block;width:10px;height:10px;border-radius:3px;background:#8a8f98;margin-left:14px}
 .graphic .mini-dot{background:#2f9e55;margin-left:14px}
 .graphic .task-list{display:grid;gap:12px}
 .graphic .task-row{display:grid;grid-template-columns:186px 1fr 95px;gap:10px;align-items:center;font-size:14px}
@@ -133,11 +152,6 @@
 .graphic .update p:not.note{font-size:17px;color:#4e535c;line-height:1.5;margin:8px 0 0}
 .graphic .update span{position:absolute;right:0;top:6px;font-size:13px;color:#5d626b}
 .graphic .update .note{margin-top:auto}
-.graphic .run-row{grid-template-columns:104px 1fr 46px;font-size:11px;gap:7px}
-.graphic .run-note{font-size:10.5px;margin:0 0 7px 111px}
-.graphic .run-track{height:9px}
-.graphic .features b{font-size:16px}
-.graphic .features p{font-size:13px}
 @media(max-width:700px){
 .graphic{aspect-ratio:auto;min-height:650px;padding:24px}
 .graphic .title{font-size:31px}
@@ -154,6 +168,11 @@
 .graphic .note{margin-top:28px}
 .graphic .update b{font-size:19px}
 .graphic .update p:not.note{font-size:15px}
+.graphic .run-row{grid-template-columns:104px 1fr 46px;font-size:11px;gap:7px}
+.graphic .run-note{font-size:10.5px;margin:0 0 7px 111px}
+.graphic .run-track{height:9px}
+.graphic .features b{font-size:16px}
+.graphic .features p{font-size:13px}
 .graphic .footer{font-size:11px}}
 
 }
