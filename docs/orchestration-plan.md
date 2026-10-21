@@ -314,9 +314,9 @@ actualizar `skills/subagents/SKILL.md`.
 > (2 repos, orquestador + 2 hijos, 3 runs A/B): descubrimiento del hijo ~3.197 → ~1.456 tokens
 > (**-54%**), tokens del orquestador ~26.699 → ~12.093 (**-55%**), y 1 bug de integración
 > detectado por el hijo que el padre habría mergeado. Lecturas duplicadas **no** bajan (y no
-> deberían: un hijo lee el fichero que va a editar). *(Corregido 2026-10-21: Fase 2 (plan.json +
-> scheduler) y Fase 3 (visualización) **ya estaban hechas** — 0.33.0 y 0.34.0; esta nota dejó
-> decir "sigue pendiente" al escribirse.)*
+> deberían: un hijo lee el fichero que va a editar). *(Corregido 2026-10-21: esta nota decía
+> «Fase 2 (plan.json + scheduler) sigue pendiente» cuando se escribió, y no era cierto — Fase 2
+> ya estaba hecha en 0.33.0 y Fase 3 en 0.34.0.)*
 *Riesgos*: tareas más grandes (medir en Fase 0); convención ignorada (hacerla explícita y
 automática, no dependiente del buen hacer del modelo). *Tests*: e2e con modelos deterministas al
 estilo `agent-rs/tests/subagents.rs` (sin red): el hijo recibe el contexto; `expand_skills` sigue
