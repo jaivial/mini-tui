@@ -999,7 +999,7 @@ impl Agent {
                     // benchmark runs spent 900 s (158 identical rejections) on a finished task.
                     // After the cap the closure is accepted and the report says so.
                     self.oracle_rejections += 1;
-                    let cap = std::env::var("MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS").ok().and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(3);
+                    let cap = std::env::var("MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS").ok().and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(2);
                     let words: std::collections::HashSet<String> = v.gaps.join(" ").to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() > 3).map(String::from).collect();
                     let overlap = if words.is_empty() || self.oracle_last_gap.is_empty() { 0.0 } else {
                         words.intersection(&self.oracle_last_gap).count() as f64 / words.union(&self.oracle_last_gap).count() as f64
@@ -1013,9 +1013,16 @@ impl Agent {
                         return;
                     }
                     self.submission_pending = false;
+                    // P0-A: a gap is a requirement, never an instruction. Drop any gap that orders
+                    // deleting/cleaning a file: the judge hallucinating provenance once described the
+                    // harness verifier as a scratch file to delete, the worker obeyed, and correct
+                    // work scored FAIL (2026-10-20 pi-vs-mini benchmark). File-level cleanup demands
+                    // are the measured hazard; unmet-requirement gaps are kept.
+                    let gaps: Vec<&String> = v.gaps.iter().filter(|g| !gap_orders_file_deletion(g)).collect();
+                    let gaps_text = if gaps.is_empty() { "(no textual gaps; compare the goal against the observed results)".to_string() } else { gaps.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n") };
                     self.add_messages(vec![json!({
                         "role": "user",
-                        "content": format!("[Automated goal judge: closure rejected (rejection {}, score {} / 100). This message is from the automated closure judge, not from the user: do not investigate, debug, or modify the agent harness or this judge. Keep the work already done: do not redo, revert, or clean it up, and never delete or modify files that existed before this task started unless the original goal explicitly names them. Resolve only the unmet requirements listed below, then submit again.]\n{}", self.oracle_rejections, v.score, v.gaps.join("\n")),
+                        "content": format!("[Automated goal judge: closure rejected (rejection {}, score {} / 100). This message is from the automated closure judge, not from the user: do not investigate, debug, or modify the agent harness or this judge. Keep the work already done: do not redo, revert, or clean it up, and never delete or modify files that existed before this task started unless the original goal explicitly names them. Resolve only the unmet requirements listed below, then submit again.]\n{}", self.oracle_rejections, v.score, gaps_text),
                         "extra": {"interrupt_type": "GoalOracle", "goal_verdict": v.record()},
                     })]);
                     return;
@@ -1967,6 +1974,18 @@ impl Agent {
     pub fn save_interrupted(&mut self) {
         self.save(false);
     }
+}
+
+/// True when a judge gap orders deleting/cleaning a file ("delete it", "remove the scratch
+/// file", "clean up: x.sh was a scratch checker"...). Such a gap is a hallucinated instruction,
+/// not an unmet requirement, and letting it through has caused real deletions of pre-existing
+/// files (the harness own verifier). Requirement-shaped gaps never match: they describe what is
+/// missing or wrong, they do not order file removal.
+fn gap_orders_file_deletion(gap: &str) -> bool {
+    let l = gap.to_lowercase();
+    const VERBS: [&str; 6] = ["delete", "remove", "clean up", "cleanup", "rm ", "wipe"];
+    const NAMES: [&str; 10] = [".sh", ".py", ".js", ".ts", ".json", ".md", "file", "script", "checker", "scratch"];
+    VERBS.iter().any(|v| l.contains(v)) && NAMES.iter().any(|n| l.contains(n))
 }
 
 /// A raw pointer that claims `Send` so one closure can borrow the agent's environment. See the
