@@ -123,6 +123,7 @@ _MODEL_CLASS_MAPPING = {
     "openai": "minisweagent.models.openai_model.OpenaiModel",
     "openai_response": "minisweagent.models.openai_model.OpenaiResponseModel",
     "xiaomi": "minisweagent.models.xiaomi_model.XiaomiModel",
+    "xiaomi_anthropic": "minisweagent.models.xiaomi_model.XiaomiAnthropicModel",
     "openai_compat": "minisweagent.models.openai_compat_model.OpenaiCompatModel",
     "anthropic_compat": "minisweagent.models.anthropic_compat_model.AnthropicCompatModel",
     "responses_compat": "minisweagent.models.responses_compat_model.ResponsesCompatModel",
@@ -165,7 +166,8 @@ def get_model_class(model_name: str, model_class: str = "") -> type:
         elif is_deepseek_model(model_name):
             model_class = "deepseek"
         elif is_xiaomi_model(model_name):
-            model_class = "xiaomi"
+            # XIAOMI_API_BASE can select the token-plan Anthropic-compatible surface.
+            model_class = "xiaomi_anthropic" if "/anthropic" in os.getenv("XIAOMI_API_BASE", "") else "xiaomi"
         elif is_openai_model(model_name):
             # Some ids (e.g. gpt-6-astra) reject function tools on /chat/completions.
             model_class = "openai_response" if needs_responses_api(model_name) else "openai"

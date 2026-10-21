@@ -25,12 +25,16 @@ import os
 from typing import Any, Literal
 
 from minisweagent.models.routing import XIAOMI_PREFIX, is_xiaomi_model  # noqa: F401 (re-exported)
+from minisweagent.models.anthropic_compat_model import AnthropicCompatModel, AnthropicCompatModelConfig
 from minisweagent.models.openai_compat_model import OpenaiCompatModel, OpenaiCompatModelConfig, gateway_settings
 
 
 DEFAULT_API_BASE = "https://token-plan-sgp.xiaomimimo.com/v1"
 DEFAULT_API_KEY = ""
 """An unset key fails on the first call with a clear 401 message."""
+
+DEFAULT_ANTHROPIC_API_BASE = "https://token-plan-sgp.xiaomimimo.com/anthropic/v1"
+"""Anthropic-compatible surface: honors `cache_control` (measured 2026-10-21)."""
 
 
 
@@ -57,4 +61,26 @@ class XiaomiModel(OpenaiCompatModel):
         kwargs["model_kwargs"] = {k: v for k, v in model_kwargs.items() if k not in ("api_base", "api_key")}
         super().__init__(**kwargs)
         # The routing prefix is stripped: the gateway receives exactly the id it advertises.
+        self.config.model_name = strip_xiaomi_prefix(self.config.model_name)
+
+
+class XiaomiAnthropicModelConfig(AnthropicCompatModelConfig):
+    cost_tracking: Literal["default", "ignore_errors"] = os.getenv("MSWEA_COST_TRACKING", "ignore_errors")
+
+
+class XiaomiAnthropicModel(AnthropicCompatModel):
+    """MiMo over the token-plan Anthropic-compatible surface (`{base}/messages`).
+
+    Picked automatically when `XIAOMI_API_BASE` contains `/anthropic`; rolling cache
+    markers ride along (the gateway honors `cache_control`).
+    """
+
+    _price_provider = "xiaomi"
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("config_class", XiaomiAnthropicModelConfig)
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
+        kwargs.update(gateway_settings(model_kwargs, "XIAOMI_API_BASE", DEFAULT_ANTHROPIC_API_BASE, "XIAOMI_API_KEY", DEFAULT_API_KEY))
+        kwargs["model_kwargs"] = {k: v for k, v in model_kwargs.items() if k not in ("api_base", "api_key")}
+        super().__init__(**kwargs)
         self.config.model_name = strip_xiaomi_prefix(self.config.model_name)

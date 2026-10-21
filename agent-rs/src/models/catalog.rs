@@ -364,7 +364,17 @@ pub fn build(name: &str, class: &str, mut config: Obj) -> Result<Box<dyn Model>,
             } else {
                 provider(&stripped).map(|p| strip(&stripped, p.prefix)).unwrap_or(stripped.clone())
             };
-            wire(c, Protocol::Chat, Flavor::Plain, ty, "generic", wire_name)
+            // XIAOMI_API_BASE can point at the token-plan Anthropic-compatible surface
+            // (`.../anthropic/v1`): Messages protocol, and rolling cache markers — the
+            // gateway honors cache_control (measured 2026-10-21: replayed 4.8k-token
+            // prefix came back as cache_read_input_tokens).
+            let protocol = if c["api_base"].as_str().unwrap_or("").contains("/anthropic") {
+                c.entry("set_cache_control".to_string()).or_insert(json!("rolling"));
+                Protocol::Messages
+            } else {
+                Protocol::Chat
+            };
+            wire(c, protocol, Flavor::Plain, ty, "generic", wire_name)
         }
         "deepseek" => {
             let mut c = base_config(&config, "ignore_errors");
