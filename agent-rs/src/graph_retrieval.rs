@@ -51,6 +51,10 @@ pub fn context(task: &str, cwd: &str, delivered: &str) -> Option<(String, Value)
                 body.clear();
             }
             let mut v = v;
+            // Audit contract: `hits` stays the service's raw answer (provenance — its
+            // `retrieval_id` lets you reconstruct what was dropped), `hits_delivered` is the
+            // subset actually framed into the body, `dedup_skipped` how many were already in
+            // the delivered context. Consumers must read `hits_delivered`, not `hits`.
             v["dedup_skipped"] = json!(dedup_skipped);
             v["hits_delivered"] = json!(kept.len());
             Some((body, v))
