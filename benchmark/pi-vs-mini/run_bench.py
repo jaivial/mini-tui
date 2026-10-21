@@ -58,7 +58,7 @@ def api(method, payload=None):
 
 def tasks():
     root = os.environ.get("BENCH_TASKS_DIR") or os.path.join(BASE, "tasks")
-    return sorted(d for d in os.listdir(root) if d[:1] in ("t", "p") and os.path.isdir(os.path.join(root, d)))
+    return sorted(d for d in os.listdir(root) if d[:1] in ("t", "p", "h") and os.path.isdir(os.path.join(root, d)))
 
 
 def verify(work):
