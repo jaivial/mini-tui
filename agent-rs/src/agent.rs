@@ -1035,7 +1035,7 @@ impl Agent {
                     let gaps_text = if gaps.is_empty() { "(no textual gaps; compare the goal against the observed results)".to_string() } else { gaps.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n") };
                     self.add_messages(vec![json!({
                         "role": "user",
-                        "content": format!("[Automated goal judge: closure rejected (rejection {}, score {} / 100). This message is from the automated closure judge, not from the user: do not investigate, debug, or modify the agent harness or this judge. Keep the work already done: do not redo, revert, or clean it up, and never delete or modify files that existed before this task started unless the original goal explicitly names them. Resolve only the unmet requirements listed below, then submit again.]\n{}", self.oracle_rejections, v.score, gaps_text),
+                        "content": format!("[Goal oracle (automated judge): closure rejected (rejection {}, score {} / 100). This message is from the automated closure judge, not from the user: do not investigate, debug, or modify the agent harness or this judge. Keep the work already done: do not redo, revert, or clean it up, and never delete or modify files that existed before this task started unless the original goal explicitly names them. Resolve only the unmet requirements listed below, then submit again.]\n{}", self.oracle_rejections, v.score, gaps_text),
                         "extra": {"interrupt_type": "GoalOracle", "goal_verdict": v.record()},
                     })]);
                     return;

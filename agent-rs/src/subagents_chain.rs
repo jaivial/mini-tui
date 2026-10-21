@@ -213,7 +213,7 @@ impl Hub {
     }
 
     /// Start one agent session as a copy of `source` (see the module doc). Returns its model.
-    fn start_agent(&mut self, def: &Def, name: &str, task: &str, model: &str, source: &str, kind: &str, cwd: &str, copy: &[Value], label: &str) -> Result<String, String> {
+    fn start_agent(&mut self, def: &Def, name: &str, task: &str, model: &str, source: &str, kind: &str, cwd: &str, copy: &[Value], label: &str, wave: &str) -> Result<String, String> {
         let started_by = if source == "parent" { "the session that started you".to_string() } else { format!("agent {source}") };
         let message = agents::task_message(def, name, task, &started_by, label, kind);
         let model = self.model_for(def, model);
@@ -225,6 +225,9 @@ impl Hub {
             "inherit_messages": copy,
             "cwd": cwd,
         });
+        if !wave.is_empty() {
+            req["wave"] = json!(wave);
+        }
         if let Some(n) = def.max_steps {
             req["max_steps"] = json!(n);
         }
@@ -312,6 +315,9 @@ impl Hub {
         let cwd = s(req, "cwd");
         let (copy, label) = self.copy_of("parent")?;
         // Resolve every agent first: the warmups go out before any agent's first call.
+        // One wave id for the whole fan-out: the hub reports it to the parent as ONE note when
+        // the last member ends (measured 2026-10-21: per-member wakes cost 4-11x the direct wall).
+        let wave = format!("w{:.3}-{}", now(), items.len());
         let mut jobs: Vec<Job> = vec![];
         let mut taken: Vec<String> = vec![];
         for it in &items {
@@ -330,7 +336,7 @@ impl Hub {
             }
             taken.push(name.clone());
             let model = self.model_for(&def, &s(it, "model"));
-            jobs.push(Job { def, name, task, model, source: "parent".into(), kind: "delegate".into(), cwd: cwd.clone(), label: label.clone() });
+            jobs.push(Job { def, name, task, model, source: "parent".into(), kind: "delegate".into(), cwd: cwd.clone(), label: label.clone(), wave: wave.clone() });
         }
         let resources = self.resources_report();
         if resources.max_fanout < jobs.len() as u64 {
@@ -395,7 +401,7 @@ impl Hub {
         let def_name = def.name.clone();
         let n_copy = copy.len();
         self.event("handoff", &from, &name, &task, json!({"agent": def_name, "model": model, "inherited": n_copy}));
-        self.launch_jobs(vec![Job { def, name: name.clone(), task, model: model.clone(), source: from, kind: "handoff".into(), cwd, label }], copy, warms);
+        self.launch_jobs(vec![Job { def, name: name.clone(), task, model: model.clone(), source: from, kind: "handoff".into(), cwd, label, wave: String::new() }], copy, warms);
         self.write_index();
         Ok(json!({"ok": true, "output": format!(
             "handed over to {name} (agent {def_name}, model {model}): it starts from a copy of your session ({n_copy} messages) and continues. End your turn now with a one-line summary; if {name} sends you corrections you will be woken with them."
@@ -561,6 +567,9 @@ pub(super) struct Job {
     kind: String,
     cwd: String,
     label: String,
+    /// Fan-out wave id: members launched together report to the parent as ONE note (empty =
+    /// solo). See `Hub`'s `wave_notes` in subagents.rs.
+    wave: String,
 }
 
 impl Hub {
@@ -603,7 +612,7 @@ impl Hub {
     }
 
     fn start_job(&mut self, j: Job, copy: &[Value]) {
-        if let Err(e) = self.start_agent(&j.def, &j.name, &j.task, &j.model, &j.source, &j.kind, &j.cwd, copy, &j.label) {
+        if let Err(e) = self.start_agent(&j.def, &j.name, &j.task, &j.model, &j.source, &j.kind, &j.cwd, copy, &j.label, &j.wave) {
             let e = match self.record_blocked(&j.name,&j.task,&e) { Ok(()) => e, Err(save) => format!("{e}. {save}") };
             self.event("error", "hub", &j.name, &format!("could not start {}: {e}", j.name), json!({}));
             if j.source == "parent" {
