@@ -215,7 +215,14 @@ impl Agent {
             messages: vec![],
             model,
             env,
-            extra_vars: Obj::new(),
+            extra_vars: {
+                let mut v = Obj::new();
+                // Templates render with StrictUndefined and read it (the prompt follows the
+                // router's lane); run() flips it to "direct" per task. The constructor's default
+                // keeps pre-run renders on the orchestrator side, the historical behavior.
+                v.insert("MINI_AGENT_LANE_MODE".into(), json!("orchestrator"));
+                v
+            },
             cost: 0.0,
             n_calls: 0,
             format_errors: 0,
@@ -673,6 +680,11 @@ impl Agent {
             Ok("0") => true,
             _ => crate::intent::decomposable(&crate::intent::channel_subject(task)),
         };
+        // The prompt follows the lane: a direct-lane session gets the worker discipline (a tool
+        // call per turn, no delegation bookkeeping), not the orchestrator framing. Measured
+        // 2026-10-21: the orchestrator prompt alone cost a unitary task 66.6 s vs 26.5 s for the
+        // same work executed directly.
+        self.extra_vars.insert("MINI_AGENT_LANE_MODE".into(), json!(if self.orchestrator_lane { "orchestrator" } else { "direct" }));
         if crate::goal_oracle::enabled() && !self.task_is_conversational
             && !(Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none()) {
             if let Outcome::Output(v) = self.env.execute("git rev-parse --verify HEAD 2>/dev/null") {
