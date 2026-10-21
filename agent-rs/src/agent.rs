@@ -414,6 +414,15 @@ impl Agent {
         std::env::var("MSWEA_CONTROL_FILE").ok().filter(|s| !s.is_empty())
     }
 
+    /// The workspace carries its own harness verifier (`verify.sh` and friends at its root):
+    /// passing that check IS the closure verification, and a model judge over it is pure cost.
+    fn workspace_has_verifier(&mut self) -> bool {
+        match self.env.execute("for f in ./verify.sh ./run_tests.sh ./verify ./check.sh ./test.sh; do [ -f \"$f\" ] && printf '%s\\n' \"$f\" && break; done") {
+            Outcome::Output(v) => !v.get("output").and_then(Value::as_str).unwrap_or_default().trim().is_empty(),
+            _ => false,
+        }
+    }
+
     /// Whether anyone can send this run a follow-up: the cache warmer only makes sense for a run
     /// that can still be continued (`MINI_AGENT_CACHE_WARMER=auto`, the default).
     pub fn control_file_exists() -> bool {
@@ -877,6 +886,18 @@ impl Agent {
         use crate::goal_oracle::{Evidence, GoalOracle, HttpOracle, ModelOracle, LayaOracle};
         let Some(exit) = self.messages.pop() else { return };
         self.journaled = self.journaled.min(self.messages.len());
+        // A workspace with its own harness verifier IS the verification (mini.yaml's own rule:
+        // "when the task names its own check, passing that check IS the verification"). Calling a
+        // model judge over such a task costs a model call and an evidence diff per task and can
+        // only add reopens (measured 2026-10-21 on the pi-vs-mini corpus: ~1 call + 5-20 s per
+        // task; every task passed with zero reopen dependency). The judge stays for work with no
+        // verifier of its own — where "did it actually do it" is not mechanically answerable.
+        // MINI_AGENT_GOAL_ORACLE=always forces the judge regardless.
+        if std::env::var("MINI_AGENT_GOAL_ORACLE").as_deref() != Ok("always") && self.workspace_has_verifier() {
+            self.goal_reports.push(json!({"status": "verifier-backed", "reason": "the workspace carries its own verify.sh; passing it is the verification (judge skipped)"}));
+            self.messages.push(exit);
+            return;
+        }
         let goal = self.extra_vars.get("task").and_then(Value::as_str).unwrap_or_default().to_string();
         // Keep the original goal plus every explicit follow-up, not observations disguised as
         // user messages. The latest 24 KB is a window of evidence, not a claim of exhaustive QA.
