@@ -14,6 +14,19 @@ Usage:
 import json, os, shutil, subprocess, sys, time, types, urllib.request
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+
+def ensure_fixtures():
+    """The three seeded logs are generated, not committed; restore any missing one."""
+    gen = os.path.join(BASE, "tasks", "gen_fixtures.py")
+    missing = [rel for task, rel in (("t1_wordfreq", "logs/app.log"),
+                                     ("t6_readme_summary", "logs/access.log"),
+                                     ("t10_crash_report", "logs/service.log"))
+               if not os.path.exists(os.path.join(BASE, "tasks", task, rel))]
+    if missing:
+        subprocess.run([sys.executable, gen], check=True)
+
+ensure_fixtures()
+
 PORT = os.environ.get("MINITUI_WEB_PORT", "4317")
 URL = f"http://127.0.0.1:{PORT}/api/sessions"
 MODEL = os.environ.get("BENCH_MODEL", "minimax/MiniMax-M3")
@@ -21,9 +34,10 @@ MODEL = os.environ.get("BENCH_MODEL", "minimax/MiniMax-M3")
 # chat completions, same credentials), so the comparison is harness-vs-harness.
 PI_PROVIDER = os.environ.get("BENCH_PI_PROVIDER", "minimax")
 PI_MODEL = os.environ.get("BENCH_PI_MODEL", "MiniMax-M3")
-NODE = os.path.expanduser("~/.nvm/versions/node/v24.18.0/bin/node")
-PI = os.environ.get("BENCH_PI_BIN", os.path.expanduser(
-    "~/.nvm/versions/node/v24.18.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"))
+NODE = os.environ.get("BENCH_NODE_BIN") or shutil.which("node") or os.path.expanduser(
+    "~/.nvm/versions/node/v24.18.0/bin/node")
+PI = os.environ.get("BENCH_PI_BIN") or os.path.expanduser(
+    "~/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js")
 TIMEOUT = 1800
 
 
