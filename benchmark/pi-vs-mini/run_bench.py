@@ -26,10 +26,11 @@ def ensure_fixtures():
     if missing:
         subprocess.run([sys.executable, gen], check=True)
     if os.environ.get("BENCH_TASKS_DIR"):
-        gen2 = os.path.join(TASKS_DIR, "gen_fixtures.py")
-        marker = os.path.join(TASKS_DIR, "tp1_single", "logs", "auth.log")
-        if os.path.exists(gen2) and not os.path.exists(marker):
-            subprocess.run([sys.executable, gen2], check=True)
+        for gen_name, marker in (("gen_fixtures.py", os.path.join("tp1_single", "logs", "auth.log")),
+                                 ("gen_heavy.py", os.path.join("ph1_single", "logs", "miss.log"))):
+            gen2 = os.path.join(TASKS_DIR, gen_name)
+            if os.path.exists(gen2) and not os.path.exists(os.path.join(TASKS_DIR, marker)):
+                subprocess.run([sys.executable, gen2], check=True)
 
 ensure_fixtures()
 
