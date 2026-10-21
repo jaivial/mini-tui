@@ -6,7 +6,7 @@ import type { SitemapEntry } from "./seo";
 const MODIFIED = "2026-10-01";
 
 export const pages: SitemapEntry[] = [
-  { path: "/graphics/", priority: 0.5, changefreq: "monthly", modified: "2026-10-20" },
+  { path: "/graphics/", priority: 0.5, changefreq: "monthly", modified: "2026-10-21" },
   { path: "/", priority: 1, changefreq: "weekly", modified: MODIFIED },
   { path: "/web-app/", priority: 0.9, changefreq: "monthly", modified: MODIFIED },
   { path: "/docs/", priority: 0.8, changefreq: "monthly", modified: MODIFIED },

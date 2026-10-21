@@ -8,12 +8,42 @@
     ["t7 · regex CLI",13.1,9.1],["t8 · JavaScript fix",15.4,10.2],["t9 · package resize",13.8,9.1],
     ["t10 · crash report",20.0,11.9]
   ] as const;
+  /** One line per measured run. Every ratio keeps its own corpus, model and judge next to it. */
+  const runs = [
+    { run: "Round 1", ratio: 3.65, label: "3.65x", note: "bash-only writes · zai/glm-5.3 · 10 tasks" },
+    { run: "Round 2", ratio: 1.28, label: "1.28x", note: "native write/edit · minimax/MiniMax-M3" },
+    { run: "Round 3", ratio: 0.95, label: "0.95x", note: "fast lane + leaner turns" },
+    { run: "Round 4", ratio: 1.07, label: "1.07x", note: "median flips to mini: 20.0 s vs 21.1 s" },
+    { run: "Round 5", ratio: 0.69, label: "0.69x", note: "one run · did not reproduce (see round 6)", hollow: true },
+    { run: "Round 6", ratio: 0.98, label: "0.98x", note: "3 fresh reps: 1.13x, 0.98x, 0.93x — a tie" },
+    { run: "19 Oct, closure on", ratio: 0.78, label: "0.78x", note: "10 tasks × 3 interleaved reps · 30/30 PASS both arms · MiniMax-M3.1-Flash-Preview + Laya", closure: true },
+  ] as const;
 </script>
-<Seo page={{path:"/graphics/",title:"Release graphics and evidence",description:"Source-labelled graphics for mini-tui: recovered historical pi comparison, per-task medians and the implemented terminal/web parity changes.",modified:"2026-10-20"}} />
+<Seo page={{path:"/graphics/",title:"Release graphics and evidence",description:"Source-labelled graphics for mini-tui: the v0.43.0 release card, the run-by-run pi comparison with its provenance, the recovered historical result and the implemented terminal/web parity changes.",modified:"2026-10-21"}} />
 <div class="mx-auto max-w-5xl px-4 py-12">
   <h1 class="text-3xl font-semibold">Release graphics and evidence</h1>
   <p class="mt-3 text-muted-foreground">English square graphics, composed from the site's shadcn Card components. Historical results do not measure the current release.</p>
   <div class="mt-8 grid gap-8">
+  <Card.Root id="release" class="graphic">
+    <Card.Header><p class="eyebrow">mini-tui / new release / v0.43.0</p><Card.Title class="title">Bots that run your board.</Card.Title><Card.Description class="subtitle">You say what you want. The bot writes the cards, workers carry them out, and nothing counts as done until the evidence is on the card.</Card.Description></Card.Header>
+    <Card.Content class="body">
+      <div class="stats lead"><div><b>30/30</b><span>PASS, both arms, closure check on</span></div><div><b>0.78x</b><span>time vs pi, sum of per-task medians</span></div><div><b>9/10</b><span>tasks where mini was not slower</span></div></div>
+      <div class="features">
+        <div><b>A board, not a transcript</b><p>Every request becomes cards with dependencies on a durable task graph. Workers lease a card; an expired lease freezes the project instead of dropping work.</p></div>
+        <div><b>WhatsApp groups, synced both ways</b><p>Each bot answers in its own group, and the thread mirrors into the web app — voice notes, images and all.</p></div>
+        <div><b>A browser it can look through</b><p>The computer-use tool drives real browsers through cu and posts screenshots to the chat, so a bot checks the page it just changed.</p></div>
+      </div>
+      <p class="note">The 30/30 and 0.78x are the 19 Oct 2026 run: ten tasks, three interleaved repetitions, MiniMax-M3.1-Flash-Preview on both sides, mini with Laya as the judge. Historical readback; not a measurement of the 20 Oct parity changes.</p>
+    </Card.Content><Card.Footer class="footer">Open source · Rust agent · bring your own model · github.com/jaivial/mini-tui</Card.Footer>
+  </Card.Root>
+  <Card.Root id="progression" class="graphic">
+    <Card.Header><p class="eyebrow">mini-tui / vs pi / one line per run</p><Card.Title class="title">Every run, with the run it came from.</Card.Title><Card.Description class="subtitle">Wall-clock ratio of mini against pi; below 1.00x is faster for mini. Each bar keeps its corpus, model and judge beside it.</Card.Description></Card.Header>
+    <Card.Content class="body">
+      <div class="legend"><span class="pi-dot"></span> slower than pi <span class="mini-dot"></span> faster than pi</div>
+      <div class="run-list">{#each runs as r}<div class="run-row{r.closure ? " closure" : ""}"><span>{r.run}</span><div class="run-track"><i class="{r.hollow ? "hollow " : ""}{r.ratio <= 1 ? "mini" : "pi"}" style="width:{(r.ratio / 3.7 * 100).toFixed(1)}%"></i><em style="left:{(1 / 3.7 * 100).toFixed(1)}%"></em></div><b>{r.label}</b></div><p class="run-note">{r.note}</p>{/each}</div>
+      <p class="note">Rounds 1–6: ten-task corpus, minimax/MiniMax-M3 (round 1: zai/glm-5.3), no closure judge. The 19 Oct line is a different setup — closure check on with Laya — and is not pooled with them. Public leaderboard figures use another corpus and are not plotted here.</p>
+    </Card.Content><Card.Footer class="footer">Source: docs/pi-vs-mini-benchmark.md · every ratio keeps its own run</Card.Footer>
+  </Card.Root>
   <Card.Root id="historical" class="graphic">
     <Card.Header><p class="eyebrow">mini-tui / historical evidence / 19 Oct 2026</p><Card.Title class="title">A smaller finish line.</Card.Title><Card.Description class="subtitle">Same ten tasks. Same model. Three interleaved repetitions.</Card.Description></Card.Header>
     <Card.Content class="body">
@@ -45,7 +75,7 @@
     </Card.Content><Card.Footer class="footer">Sources: GitHub PRs #370, #373, #374 · merged 20 Oct 2026</Card.Footer>
   </Card.Root>
   </div>
-  <p class="mt-8 text-muted-foreground"><a href="{REPO}/blob/main/docs/pi-vs-mini-benchmark.md" class="underline">Evidence notes and historical report</a>. The previous 75% composite and 0.69x single run belong to other experiments, not these results.</p>
+  <p class="mt-8 text-muted-foreground"><a href="{REPO}/blob/main/docs/pi-vs-mini-benchmark.md" class="underline">Evidence notes and historical report</a>. The previous 75% composite belongs to another experiment, not these results; round 5's 0.69x is drawn hollow because round 6 did not reproduce it.</p>
 </div>
 <style>
 :global {
@@ -70,6 +100,21 @@
 .graphic .stats b{display:block;font-size:31px}
 .graphic .stats span{display:block;font-size:15px;color:#4e535c;line-height:1.4;margin-top:6px}
 .graphic .note{font-size:15px;line-height:1.5;color:#4e535c;background:#f4f5f7;padding:17px;border-radius:12px;margin-top:auto}
+.graphic .stats.lead{border-top:0;padding-top:0;margin:10px 0 26px}
+.graphic .features{display:grid;gap:15px;margin-bottom:24px}
+.graphic .features b{font-size:19px}
+.graphic .features p{font-size:15px;color:#4e535c;line-height:1.45;margin:3px 0 0}
+.graphic .run-list{display:grid;grid-template-columns:1fr;gap:4px;margin:6px 0 20px}
+.graphic .run-row{display:grid;grid-template-columns:150px 1fr 62px;gap:12px;align-items:center;font-size:14px}
+.graphic .run-row.closure{font-weight:600}
+.graphic .run-track{position:relative;height:11px;background:#eef0f3;border-radius:3px}
+.graphic .run-track i{display:block;height:100%;border-radius:3px}
+.graphic .run-track i.pi{background:#626975}
+.graphic .run-track i.mini{background:#2f9e55}
+.graphic .run-track i.hollow{background:#fff;border:2px solid #626975}
+.graphic .run-track em{position:absolute;top:-3px;bottom:-3px;width:1px;background:#14161a}
+.graphic .run-row b{text-align:right;font-size:14px}
+.graphic .run-note{grid-column:1/-1;font-size:12.5px;color:#5d626b;margin:0 0 8px 162px}
 .graphic .footer{font-size:13px;line-height:1.5;color:#5d626b;border-top:1px solid #dcdfe5;padding-top:16px!important;margin-top:22px}
 .graphic .legend{font-size:15px;display:flex;gap:9px;align-items:center;margin-bottom:17px}
 .graphic .pi-dot,.graphic .mini-dot{display:inline-block;width:10px;height:10px;border-radius:3px;background:#626975}
@@ -87,6 +132,11 @@
 .graphic .update p:not.note{font-size:17px;color:#4e535c;line-height:1.5;margin:8px 0 0}
 .graphic .update span{position:absolute;right:0;top:6px;font-size:13px;color:#5d626b}
 .graphic .update .note{margin-top:auto}
+.graphic .run-row{grid-template-columns:104px 1fr 46px;font-size:11px;gap:7px}
+.graphic .run-note{font-size:10.5px;margin:0 0 7px 111px}
+.graphic .run-track{height:9px}
+.graphic .features b{font-size:16px}
+.graphic .features p{font-size:13px}
 @media(max-width:700px){
 .graphic{aspect-ratio:auto;min-height:650px;padding:24px}
 .graphic .title{font-size:31px}
