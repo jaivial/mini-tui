@@ -26,10 +26,12 @@ def ensure_fixtures():
     if missing:
         subprocess.run([sys.executable, gen], check=True)
     if os.environ.get("BENCH_TASKS_DIR"):
-        for gen_name, marker in (("gen_fixtures.py", os.path.join("tp1_single", "logs", "auth.log")),
-                                 ("gen_heavy.py", os.path.join("ph1_single", "logs", "miss.log"))):
+        # Always regenerate: the generators are deterministic and their per-task placement
+        # lists grow (a single stale marker skipped het* logs entirely, and both A/B arms
+        # then spent turns hunting the file across other runs' work dirs, 2026-10-21).
+        for gen_name in ("gen_fixtures.py", "gen_heavy.py"):
             gen2 = os.path.join(TASKS_DIR, gen_name)
-            if os.path.exists(gen2) and not os.path.exists(os.path.join(TASKS_DIR, marker)):
+            if os.path.exists(gen2):
                 subprocess.run([sys.executable, gen2], check=True)
 
 ensure_fixtures()
