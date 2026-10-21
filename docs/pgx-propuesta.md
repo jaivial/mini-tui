@@ -28,7 +28,7 @@ Datos de contexto (todo del propio proyecto, **mediciones suyas, no nuestras**):
   tag propuesto `pgx-v0.1-baseline` aún no creado; tag real `pgx-v0.1-beta.1` (commit
   `913630e11d`) es el motor que PGRun despliega en su beta.
 - **Licencia AGPL-3.0** (`LICENSE`), con partes derivadas de PostgreSQL bajo licencia
-  PostgreSQL (`NOTICE`). El patrocinador/comodity es PGRun (<https://pgrun.dev>), que usa
+  PostgreSQL (`NOTICE`). El patrocinador es PGRun (<https://pgrun.dev>), que usa
   PGX como motor de "ramas" efímeras.
 - **Compatibilidad:** suite de regresión de PostgreSQL: 219/231 byte-idénticos, los otros 12
   difieren solo en texto de `EXPLAIN`, 0 diferencias de resultado; 36/36 ciclos de
@@ -81,7 +81,7 @@ Todo esto es **diseño propuesto; nada de esto está implementado.**
 ### 3.1 Topología
 
 ```text
-                  1 runtime pgx por máquina (proceso único, ya existente como daemon)
+                  1 runtime pgx por máquina (proceso único, nuevo daemon — NO arrancado aún)
                   data dir en btrfs con reflink (p. ej. ~/.pgx, en /home)
                   aislamiento extra: systemd-run --scope -p MemoryMax=... (cgroup)
                                      + pgrust.ephemeral_db_connection_limit
@@ -150,8 +150,8 @@ PGX es AGPL-3.0 completo. **Esto no es asesoramiento legal; es el análisis para
   sobre tu código. "Mero agregado" de dos programas independientes.
 - **Riesgo ALTO si PGX se distribuye con mini-tui:** mini-tui publica releases e instalador
   (`jaivial/mini-tui`, landing con guía de instalación) y **no declara licencia**
-  (`package.json` `private: true`, sin LICENSE en la raíz). Meter el binario de PGX (o un
-  wrapper construido sobre su código) en el instalador/imagen de mini-tui es *conveying*:
+  (`package.json` `private: true`, sin LICENSE en la raíz). Meter el binario de PGX (o
+  cualquier binario que enlace su código) en el instalador/imagen de mini-tui es *conveying*:
   obligación de distribuir AGPL-3.0 completo de PGX, `NOTICE`, Corresponding Source y
   avisos, y de no imponer restricciones adicionales. Con el resto de mini-tui sin licencia
   pública, eso crea un lío evitable.
@@ -185,12 +185,12 @@ PGX es AGPL-3.0 completo. **Esto no es asesoramiento legal; es el análisis para
 
 - 13 días de repo público (2026-10-08), beta, un solo sponsor (PGRun), sin tags en el
   engine baseline, 4 issues abiertos; dos bugs reales aparecieron en la primera carga real
-  (2026-10-09, corregidos y con reproducción permanente). La superficie compatibile es lo
+  (2026-10-09, corregidos y con reproducción permanente). La superficie compatible es lo
   que cubren su suite y sus workloads: **extensiones no encuestadas**, MVCC/isolation y
   features poco usadas son la zona oscura. 12 planes de `EXPLAIN` distintos de PostgreSQL.
 - Versiones ancladas: engine baseline `727f31e49f`, tras los fixes `913630e11d`
   (tag `pgx-v0.1-beta.1`); conviene **fijar commit/versión** en vez de seguir `latest`.
-- Buses factor y dirección: PGX es el motor de PGRun; si PGRun cambia de rumbo, mini-tui
+- Factor bus y dirección: PGX es el motor de PGRun; si PGRun cambia de rumbo, mini-tui
   queda con un fork AGPL que alguien tendría que mantener.
 
 ### 4.4 Operativa en este escritorio
