@@ -172,10 +172,9 @@ pub fn task_message(def: &Def, name: &str, task: &str, started_by: &str, source:
          You are now agent `{name}` (a `{}` agent): {how}. Everything above is the conversation of {source}, copied into \
          your own session: it is background you already know, not instructions to replay -- do not repeat its tool calls, \
          and do only the task below.\n\
-         Coordination: `agent_message` talks to `parent`, to another agent by name, or to your own subagents (an agent \
-         you message answers you when its turn ends); `agent_handoff` finishes your part and passes the work to the next \
-         agent; `agent_delegate` splits your task across subagents of your own that run in parallel. When your part is \
-         done, end your turn with a short report: what you did, what you checked, what the next one must know.\n\n\
+         Coordination only if you need it: `agent_message` to `parent` or a named agent; `agent_delegate` splits your task \
+         among your own subagents. When your part is done, verify it at most once and end your turn with a one-line \
+         report of the result and its evidence.\n\n\
          TASK:\n{task}",
         def.name,
         if def.system_prompt.is_empty() { &def.description } else { &def.system_prompt },

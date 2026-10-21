@@ -1229,8 +1229,13 @@ impl Agent {
         if let Some(sub) = get(&message, "extra").and_then(|e| e.get("submission")).and_then(Value::as_str) {
             self.record_timings(&mut t, at);
             // With a closure judge, the redundant second plain-text confirmation is replaced
-            // by an actual evidence-based judgement, saving one full worker turn.
-            if self.submission_pending || crate::goal_oracle::enabled() || (Self::control_file().is_some() && crate::subagents::live_children() > 0) {
+            // by an actual evidence-based judgement, saving one full worker turn. An explicitly
+            // disabled judge (`MINI_AGENT_GOAL_ORACLE=off`, e.g. wave workers reviewed by their
+            // parent's collection turn) closes the same way: the retry tax cost every wave
+            // worker one full turn (measured 2026-10-21).
+            if self.submission_pending || crate::goal_oracle::enabled()
+                || matches!(std::env::var("MINI_AGENT_GOAL_ORACLE").as_deref(), Ok("off") | Ok("0") | Ok("false"))
+                || (Self::control_file().is_some() && crate::subagents::live_children() > 0) {
                 return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", sub, sub)]));
             }
             self.submission_pending = true;
