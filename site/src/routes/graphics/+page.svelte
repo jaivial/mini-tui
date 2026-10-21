@@ -9,7 +9,8 @@
     ["t10 · crash report",20.0,11.9]
   ] as const;
   /** One line per measured run. Every ratio keeps its own corpus, model and judge next to it. */
-  const runs = [
+  type Run = { run: string; ratio: number; label: string; note: string; hollow?: boolean; closure?: boolean };
+  const runs: readonly Run[] = [
     { run: "Round 1", ratio: 3.65, label: "3.65x", note: "bash-only writes · zai/glm-5.3 · 10 tasks" },
     { run: "Round 2", ratio: 1.28, label: "1.28x", note: "native write/edit · minimax/MiniMax-M3" },
     { run: "Round 3", ratio: 0.95, label: "0.95x", note: "fast lane + leaner turns" },
@@ -17,7 +18,7 @@
     { run: "Round 5", ratio: 0.69, label: "0.69x", note: "one run · did not reproduce (see round 6)", hollow: true },
     { run: "Round 6", ratio: 0.98, label: "0.98x", note: "3 fresh reps: 1.13x, 0.98x, 0.93x — a tie" },
     { run: "19 Oct, closure on", ratio: 0.78, label: "0.78x", note: "10 tasks × 3 interleaved reps · 30/30 PASS both arms · MiniMax-M3.1-Flash-Preview + Laya", closure: true },
-  ] as const;
+  ];
 </script>
 <Seo page={{path:"/graphics/",title:"Release graphics and evidence",description:"Source-labelled graphics for mini-tui: the v0.43.0 release card, the run-by-run pi comparison with its provenance, the recovered historical result and the implemented terminal/web parity changes.",modified:"2026-10-21"}} />
 <div class="mx-auto max-w-5xl px-4 py-12">
