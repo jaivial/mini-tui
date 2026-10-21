@@ -14,6 +14,7 @@ Usage:
 import json, os, shutil, subprocess, sys, time, types, urllib.request
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+TASKS_DIR = os.environ.get("BENCH_TASKS_DIR") or os.path.join(BASE, "tasks")
 
 def ensure_fixtures():
     """The three seeded logs are generated, not committed; restore any missing one."""
@@ -21,9 +22,14 @@ def ensure_fixtures():
     missing = [rel for task, rel in (("t1_wordfreq", "logs/app.log"),
                                      ("t6_readme_summary", "logs/access.log"),
                                      ("t10_crash_report", "logs/service.log"))
-               if not os.path.exists(os.path.join(BASE, "tasks", task, rel))]
+               if not os.path.exists(os.path.join(TASKS_DIR, task, rel))]
     if missing:
         subprocess.run([sys.executable, gen], check=True)
+    if os.environ.get("BENCH_TASKS_DIR"):
+        gen2 = os.path.join(TASKS_DIR, "gen_fixtures.py")
+        marker = os.path.join(TASKS_DIR, "tp1_single", "logs", "auth.log")
+        if os.path.exists(gen2) and not os.path.exists(marker):
+            subprocess.run([sys.executable, gen2], check=True)
 
 ensure_fixtures()
 
@@ -50,8 +56,8 @@ def api(method, payload=None):
 
 
 def tasks():
-    root = os.path.join(BASE, "tasks")
-    return sorted(d for d in os.listdir(root) if d.startswith("t") and os.path.isdir(os.path.join(root, d)))
+    root = os.environ.get("BENCH_TASKS_DIR") or os.path.join(BASE, "tasks")
+    return sorted(d for d in os.listdir(root) if d[:1] in ("t", "p") and os.path.isdir(os.path.join(root, d)))
 
 
 def verify(work):
@@ -60,7 +66,7 @@ def verify(work):
     # "verify.sh deleted" after an oracle turn told the worker to remove it), which would score
     # correct work as FAIL. Restore the pristine copy before scoring and record the tampering.
     task = os.path.basename(work)
-    src = os.path.join(BASE, "tasks", task, "verify.sh")
+    src = os.path.join(TASKS_DIR, task, "verify.sh")
     dst = os.path.join(work, "verify.sh")
     tampered = False
     if os.path.exists(src):
@@ -145,8 +151,8 @@ def mini_info(sess, traj=None):
 def run_mini(task, rundir, log):
     work = os.path.join(rundir, "mini", task)
     shutil.rmtree(work, ignore_errors=True)
-    shutil.copytree(os.path.join(BASE, "tasks", task), work)
-    prompt = open(os.path.join(BASE, "tasks", task, "TASK.md")).read().strip()
+    shutil.copytree(os.path.join(TASKS_DIR, task), work)
+    prompt = open(os.path.join(TASKS_DIR, task, "TASK.md")).read().strip()
     t0 = time.time()
     sess = api("POST", {"prompt": prompt, "cwd": work, "model": MODEL})
     log(f"  mini session {sess['id']} started")
@@ -178,8 +184,8 @@ def run_mini(task, rundir, log):
 def run_pi(task, rundir, log):
     work = os.path.join(rundir, "pi", task)
     shutil.rmtree(work, ignore_errors=True)
-    shutil.copytree(os.path.join(BASE, "tasks", task), work)
-    prompt = open(os.path.join(BASE, "tasks", task, "TASK.md")).read().strip()
+    shutil.copytree(os.path.join(TASKS_DIR, task), work)
+    prompt = open(os.path.join(TASKS_DIR, task, "TASK.md")).read().strip()
     t0 = time.time()
     # Popen (not run) because the row records the pid: a completed subprocess has none, and
     # this is what made every pi run raise before its result was written.
