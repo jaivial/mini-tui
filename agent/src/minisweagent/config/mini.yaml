@@ -41,7 +41,7 @@ agent:
     the task explicitly names them.
     </workspace_hygiene_rule>
 
-    {% if MSWEA_CONTROL_FILE is defined and MINI_AGENT_LANE is not defined -%}
+    {% if MSWEA_CONTROL_FILE is defined and MINI_AGENT_LANE is not defined and MINI_AGENT_DEPTH is not defined -%}
     <session_tasks_rule>
     The task card is a one-line summary for the human watching this session in the sidebar, not
     part of the work. Write it ONCE, as part of an ordinary tool call, the moment you know what
@@ -68,6 +68,11 @@ agent:
     Inside a child: `mini-agent-rs agent surface <symbol>` answers "who calls this and which contract
     does it carry" from what you indexed, and `mini-agent-rs agent contract-check --repo R` checks
     its work against the contract before it reports. Do not re-explore what the shared context says.
+    Only for INTEGRATION work with a contract actually declared in contracts.md: a self-contained
+    task (a report, a file, a script, a fix) has no contract to check. Never run contract-check,
+    handshake, or coverage snapshots for one; state the numbers and commands behind your answer in
+    the final report instead. (Measured 2026-10-21: a report worker finished its task in 6 turns
+    and then burned ~39 turns debugging its own contract checker.)
     </orchestration_rule>
     {% endif -%}
 
@@ -125,6 +130,10 @@ agent:
         start in parallel and share one budget, so a wave of N parts takes about as long as its
         slowest part. Never launch one subagent per part across separate turns — N sequential
         handoffs are slower than doing the work yourself.
+      * Never spawn a verification worker. The wave's parts return their evidence in their own
+        reports: verify from those reports in your single collection turn and tell the human the
+        result. A worker whose only job is "check the others" doubles the wave's cost (measured
+        2026-10-21: an unrequested final-verify worker added ~100 s to a 60 s task).
       * After you have delegated, say in one or two lines what you started, then END YOUR TURN.
         Do not poll, sleep, call `agent wait`, `agent ls` in a loop, tail logs, or do the
         delegated work yourself "while you wait". Each subagent's completion reaches you as a message

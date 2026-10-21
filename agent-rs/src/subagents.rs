@@ -154,6 +154,10 @@ pub struct Child {
     /// Agent bookkeeping (definition, origin, peer routing, measured cache reuse): `chain`.
     pub chain: chain::ChildChain,
     pub name: String,
+    /// Fan-out wave this child was launched with (batch or `agent_delegate tasks[...]`); empty =
+    /// solo spawn. Members of one wave are reported to the parent as ONE note when the last one
+    /// ends (see [`Hub`]'s `wave_notes`), so a wave costs one parent wake, not one per member.
+    pub wave: String,
     pub task: String,
     pub cwd: String,
     /// The repos this child was resolved to when it was spawned (`--repo`, else guessed from its
@@ -278,6 +282,11 @@ pub struct Hub {
     children: Vec<Child>,
     /// (child, turn, text): a turn report names its child and turn; other notes have turn 0.
     notes: Vec<(String, i64, String)>,
+    /// Wave exits held for ONE parent wake: wave id -> (child, turn, note). A wave (batch or
+    /// `agent_delegate tasks[...]` fan-out) is reported once, when its last member ends, instead
+    /// of once per member (measured 2026-10-21: per-member wakes turned a 6-turn job into 52
+    /// messages and pushed the orchestrator arm to 4-11x the wall of direct execution).
+    wave_notes: std::collections::HashMap<String, Vec<(String, i64, String)>>,
     /// The parent's cost limit and own spend, for capping a child's budget.
     parent_limit: f64,
     parent_cost: f64,
@@ -696,7 +705,7 @@ fn recover_children(dir: &Path) -> Vec<Child> {
             let pid = e.get("pid").and_then(Value::as_i64).unwrap_or(0) as i32;
             let alive = pid>0 && std::fs::read(format!("/proc/{pid}/cmdline")).map(|b| String::from_utf8_lossy(&b).contains(&traj.display().to_string())).unwrap_or(false);
             let mut c = Child {
-                chain: Default::default(), name, task: std::fs::read_to_string(saved_dir.join("task.txt")).unwrap_or_else(|_| s(e,"task")),
+                chain: Default::default(), name, wave: String::new(), task: std::fs::read_to_string(saved_dir.join("task.txt")).unwrap_or_else(|_| s(e,"task")),
                 cwd:s(e,"cwd"), repos:e.get("repos").and_then(Value::as_array).map(|a|a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(), lane:e.get("lane").and_then(Value::as_array).map(|a|a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(), model:s(e,"model"), skills:e.get("skills").and_then(Value::as_array).map(|a|a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
                 traj, journal, control:saved_dir.join("control"), log:saved_dir.join("agent.log"), dir:saved_dir,
                 proc:None,pid:0,state:"stopped".into(),exit_status:"InterruptedOnResume".into(),submission:String::new(),
@@ -796,6 +805,7 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
         depth,
         children,
         notes: recovery_notes,
+        wave_notes: Default::default(),
         parent_limit,
         parent_cost: 0.0,
         parent_model: String::new(),
@@ -1075,6 +1085,8 @@ impl Hub {
             }
         }
         let mut notes = vec![];
+        // Wave exits held back for the single grouped wake (see the flush after the loop).
+        let mut held: Vec<(String, String, i64, String)> = vec![];
         let mut finished: Vec<String> = vec![];
         let (mut routes, mut quiet, mut notified): (Vec<(String, String)>, Vec<(String, String)>, Vec<String>) = (vec![], vec![], vec![]);
         for c in self.children.iter_mut() {
@@ -1132,7 +1144,12 @@ impl Hub {
                                 if !was_stop && !delegated_pending {
                                     match c.chain.on_turn_end() {
                                         chain::TurnEnd::Notify => {
-                                            notes.push((c.name.clone(), c.turns, finished_note(c)));
+                                            if c.wave.is_empty() {
+                                                notes.push((c.name.clone(), c.turns, finished_note(c)));
+                                            } else {
+                                                // One wake per wave: hold until the last member ends.
+                                                held.push((c.wave.clone(), c.name.clone(), c.turns, finished_note(c)));
+                                            }
                                             notified.push(c.name.clone());
                                             finished.push(c.name.clone());
                                         }
@@ -1220,9 +1237,32 @@ impl Hub {
                 let hs = self.record_handshake(&self.children[i]);
                 let checked = self.contract_check(&self.children[i]);
                 if !hs.is_empty() || !checked.is_empty() {
-                    notes.push((String::new(), 0, format!("{hs}{checked}")));
+                    let wave = self.children[i].wave.clone();
+                    let text = format!("{hs}{checked}");
+                    if wave.is_empty() {
+                        notes.push((String::new(), 0, text));
+                    } else {
+                        held.push((wave, n, 0, text));
+                    }
                 }
             }
+        }
+        // Wave grouping: one parent wake per wave, when its last member has ended. A wave whose
+        // members all hold other states (stopped, replaced) is delivered at this same check.
+        for (wave, name, turn, note) in held {
+            self.wave_notes.entry(wave).or_default().push((name, turn, note));
+        }
+        let done_waves: Vec<String> = self
+            .wave_notes
+            .keys()
+            .filter(|w| !self.children.iter().any(|o| &o.wave == *w && (o.state == "running" || o.state == "starting")))
+            .cloned()
+            .collect();
+        for w in done_waves {
+            let items = self.wave_notes.remove(&w).unwrap_or_default();
+            let text = items.iter().map(|(_, _, n)| n.as_str()).collect::<Vec<_>>().join("\n");
+            let (name, turn) = items.last().map(|(n, t, _)| (n.clone(), *t)).unwrap_or_default();
+            notes.push((name, turn, text));
         }
         self.notes.extend(notes);
         if !routes.is_empty() || !quiet.is_empty() || !notified.is_empty() {
@@ -1532,6 +1572,7 @@ impl Hub {
         let mut child = Child {
             chain: Default::default(),
             name: name.clone(),
+            wave: s(req, "wave"),
             task: raw_task.clone(),
             cwd: cwd.clone(),
             repos: repos_of(req, &cwd, &name),
@@ -1761,9 +1802,13 @@ impl Hub {
         };
         let mut started: Vec<String> = vec![];
         let mut outs: Vec<String> = vec![];
+        // One wave id for the whole batch: the hub reports the batch to the parent as ONE note
+        // when its last member ends (Hub's wave_notes), not one wake per member.
+        let wave = format!("w{:.3}-{}", now(), entries.len());
         for e in &entries {
             let mut r = e.clone();
             r["cmd"] = json!("spawn");
+            r["wave"] = json!(wave.clone());
             let name = s(&r, "name");
             if name.is_empty() {
                 return Err(format!("{}batch entry needs a name", report(&outs)));
@@ -1986,6 +2031,13 @@ impl Launcher {
         // `hub_parent_gone` in agent.rs) -- PDEATHSIG is no use here because the spawn happens
         // on a short-lived hub thread, and the kernel would kill the child the moment it ends.
         cmd.env("MINI_AGENT_HUB_PARENT_PID", std::process::id().to_string());
+        // A wave member's closure is reviewed in the parent's collection turn, not by its own
+        // judge pass: a per-worker oracle round costs a call, and a reopen can cost a whole
+        // evidence tour (measured 2026-10-21, tp2 pay worker: ~39 turns of ceremony). Solo
+        // spawns keep their judge. MINI_AGENT_WAVE_ORACLE=on restores per-worker judging.
+        if !c.wave.is_empty() && std::env::var("MINI_AGENT_WAVE_ORACLE").as_deref() != Ok("on") {
+            cmd.env("MINI_AGENT_GOAL_ORACLE", "off");
+        }
         cmd.process_group(0);
         if !c.lane.is_empty() {
             cmd.env("MINI_AGENT_LANE", c.lane.join("\n")).env("MINI_AGENT_LANE_ROOT", &c.cwd);
