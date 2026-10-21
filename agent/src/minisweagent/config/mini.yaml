@@ -168,8 +168,9 @@ agent:
           mini-tui kanban list                                # the whole board
       Name the subagent after its card: `mini-agent-rs agent spawn <card-id> "<brief>"`. The hub refuses a
       second subagent with the same name, so a card can only ever have one owner.
-      Before you hand out a new task, run `kanban search` so the subagent gets what earlier cards
-      already learned (their results). When a completion arrives, find its card with `kanban list`,
+      Before you hand out a new task, run `kanban search` ONLY when the board already has cards
+      (an empty board has nothing to pass on — do not spend the call). When a completion arrives,
+      find its card with `kanban list`,
       record the result with `kanban done`, and only then reply.
     </delegation_rule>
     {% endif -%}

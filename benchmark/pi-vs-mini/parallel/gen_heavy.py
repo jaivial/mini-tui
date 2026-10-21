@@ -68,7 +68,8 @@ if __name__ == "__main__":
              "ph2_pair": ["miss", "orders"],
              "ph4_quad": ["miss", "orders", "index", "notify"],
              "het2_pair": ["miss"],
-             "het4_quad": ["miss"]}
+             "het4_quad": ["miss"],
+             "het8_wave": ["miss", "orders"]}
     for task, names in needs.items():
         dst = os.path.join(BASE, task, "logs")
         os.makedirs(dst, exist_ok=True)
