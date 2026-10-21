@@ -2,8 +2,11 @@
   import { tick } from "svelte";
   import { api } from "../api";
   import { store } from "../stores/sessions.svelte";
+  import { agentTree } from "../stores/agentTree.svelte";
   let { open = false }: { open?: boolean } = $props();
   type Card = { id:string; session:string; title:string; description:string; column:string; assignee:string; result:string; updatedAt:number };
+  /** A subagent board reachable from this board: the session id it opens as, its name and state. */
+  type Child = { id:string; title:string; status:string };
   let cards = $state<Card[]>([]);
   let error = $state("");
   let path = $state<string[]>([]);
@@ -15,11 +18,38 @@
   let mode = $state(localStorage.getItem("mini.kanban.view") === "list" ? "list" : "kanban");
   const columns = [{id:"backlog",label:"To do"},{id:"doing",label:"In progress"},{id:"review",label:"Review"},{id:"done",label:"Done"}];
   const board = $derived(path.at(-1) || store.activeId || "");
-  const title = (id:string) => store.sessions[id]?.title || id;
+  /** The session this board tree started from: its roster is what knows every subagent session. */
+  const root = $derived(path[0] || store.activeId || "");
+  const rows = $derived(agentTree.trees[root]?.rows ?? []);
+  /** Every delegate name the trees have said so far, so a breadcrumb can name a board it enters. */
+  const names = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const tree of Object.values(agentTree.trees)) for (const row of tree.rows) if (!map.has(row.id)) map.set(row.id, row.name);
+    return map;
+  });
+  const title = (id:string) => store.sessions[id]?.title || names.get(id) || id;
   const shown = $derived(cards.filter(c=>c.session===board && (!blockedOnly || c.column==="blocked") && (!query || (c.title+" "+c.description+" "+c.result).toLowerCase().includes(query.toLowerCase()))));
   const detail = $derived(shown.find(c=>c.id===selected));
-  const children = $derived(Object.values(store.sessions).filter(s=>s.parentId===board || store.sessions[board]?.subagents?.some(c=>c.sessionId===s.id)));
-  const assigned = $derived(detail ? children.filter(s=>s.id===`${board}~${detail.assignee}`) : []);
+  /**
+   * The boards nested under this one. The roster (agentTree) is the source that always has them:
+   * `/api/sessions` lists ROOT sessions only, so a child session reaches `store.sessions` only when
+   * this browser opens it once — without the roster a board's children list would be empty on a
+   * first visit. A direct child only: a grandchild belongs to the list of the board in between.
+   * Any session the store already holds (with this board as its parent) merges in for its own title.
+   */
+  const children = $derived.by((): Child[] => {
+    const out = new Map<string, Child>();
+    for (const row of rows) {
+      if (!row.id.startsWith(`${board}~`)) continue;
+      if (row.id.slice(board.length + 1).includes("~")) continue;
+      out.set(row.id, { id: row.id, title: row.name || row.id, status: row.label });
+    }
+    for (const s of Object.values(store.sessions)) {
+      if (s.parentId===board || store.sessions[board]?.subagents?.some(c=>c.sessionId===s.id)) out.set(s.id, { id: s.id, title: s.title || s.id, status: s.status });
+    }
+    return [...out.values()];
+  });
+  const assigned = $derived(detail ? children.filter(c=>c.id===`${board}~${detail.assignee}`) : []);
   const columnOf = (c:Card) => c.column==="blocked" ? "backlog" : c.column;
   $effect(()=>{ const id=store.activeId; path=id?[id]:[]; selected=null; query=""; blockedOnly=false; });
   function enter(id:string) { path=[...path,id];selected=null;query="";blockedOnly=false; }
@@ -63,7 +93,12 @@
           <button class="w-full rounded-lg border border-line bg-canvas p-3 text-left hover:border-brand focus-visible:outline-2 focus-visible:outline-brand" onclick={()=>selected=selected===card.id?null:card.id} aria-expanded={selected===card.id}>
             <span class="block break-words text-sm font-medium">{card.title}</span>
             {#if card.column==='blocked'}<span class="mt-2 inline-block rounded bg-warn/10 px-2 py-1 text-xs text-warn">Blocked</span>{/if}
-            {#if card.assignee}<span class="mt-2 block truncate text-xs text-ink-muted">{card.assignee}</span>{/if}
+            <!-- The card's id is how the bot names it (`kanban move <id>`), so it is on the card,
+                 not only in the details: a glance at the board is enough to act on it. -->
+            <span class="mt-2 flex min-w-0 items-center gap-2 text-xs text-ink-muted">
+              <code class="tnum shrink-0 rounded bg-overlay px-1.5 py-0.5 font-mono text-[10.5px] text-ink-muted">{card.id}</code>
+              {#if card.assignee}<span class="min-w-0 truncate">{card.assignee}</span>{/if}
+            </span>
             <span class="mt-2 block text-xs text-brand">View task & subagents →</span>
           </button>
         {/each}
