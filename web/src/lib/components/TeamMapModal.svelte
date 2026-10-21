@@ -245,7 +245,10 @@
         <button class="rounded px-2 py-2 text-xs {view==='map'?'bg-overlay':''}" aria-pressed={view==='map'} onclick={()=>view='map'}>Map</button>
         <button class="rounded px-2 py-2 text-xs {view==='list'?'bg-overlay':''}" aria-pressed={view==='list'} onclick={()=>view='list'}>List</button>
       </div>
-      <Button variant="ghost" size="icon-sm" icon={fullscreen ? Minimize : Maximize} title={fullscreen ? "Exit fullscreen (F)" : "Fullscreen (F)"} onclick={() => void toggleFullscreen()} />
+      <!-- On a phone the first row only has so many pixels: the counter already takes a row of its
+           own below, and a fullscreen button the mobile browser may refuse would push Close to a
+           second line (measured at 390px), so it is desktop's control. -->
+      <Button class="max-sm:hidden" variant="ghost" size="icon-sm" icon={fullscreen ? Minimize : Maximize} title={fullscreen ? "Exit fullscreen (F)" : "Fullscreen (F)"} onclick={() => void toggleFullscreen()} />
       <Button variant="ghost" size="icon-sm" icon={X} title="Close" onclick={() => (open = false)} />
     </header>
     <div class="map min-h-0 flex-1">
