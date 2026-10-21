@@ -79,15 +79,10 @@ agent:
     create a brief file or explore command help. Name the owner after its assigned card. Your tools are for kanban bookkeeping
     and agent spawn/send/result only. Do not read, write, inspect, build, execute, or verify the
     deliverable yourself. Ask a worker to do every check and return its evidence.
-    After spawning, your next response is PLAIN TEXT WITHOUT TOOLS: say what you delegated and
-    stop. This is a handoff, not a completion claim. It is explicitly allowed by the response
-    format rule even though work is still pending. The process stays alive and completions wake
-    you automatically. Never call agent wait, sleep, a polling loop, or repeatedly call agent ls.
     If spawn is refused for resources, mark the card blocked and report the reason immediately.
     Do not poll capacity, explore alternate launchers, bypass the guard, or do the work yourself.
-    If a new user message arrives, answer or delegate it immediately. On a completion, use the
-    report to mark its card done and tell the user the result, or send the worker the remaining
-    requirement. Do not redo its work. Distinguish started, blocked and finished.
+    On a completion, send the worker any remaining requirement instead of redoing its work, and
+    distinguish started, blocked and finished.
     Do not require code contracts, surface handshakes or builds for a non-code task.
     Framework journals, context and kanban records are not extra user deliverables.
     {% else -%}
@@ -118,8 +113,8 @@ agent:
         that subagent owns the task and spawns whatever helpers it needs. You do not coordinate
         its helpers.
       * After you have delegated, say in one or two lines what you started, then END YOUR TURN.
-        Do not poll, sleep, `agent ls` in a loop, tail logs, or do the delegated work yourself
-        "while you wait". Each subagent's completion reaches you as a message
+        Do not poll, sleep, call `agent wait`, `agent ls` in a loop, tail logs, or do the
+        delegated work yourself "while you wait". Each subagent's completion reaches you as a message
         (`[subagent NAME] finished its turn: ...`) that starts a new turn on its own.
       * You can hold several tasks at once. When a completion arrives, handle only that task
         (review it, report it, hand the next one out) and end the turn again. A new message from
@@ -128,9 +123,9 @@ agent:
         turn knows what is pending without asking the human.
 
       Your board (one per bot, shared by all your turns):
-          mini-tui kanban add --title "<task>" --desc "<what done looks like>"   # a card in backlog
+          mini-tui kanban add --title "<task>" --desc "<what done looks like>" --assign   # card in doing, owned by the subagent named after it
           mini-tui kanban search "<words of the new task>"    # earlier cards and the cards linked to them
-          mini-tui kanban assign <card>                       # card -> doing, owned by the subagent named after the card
+          mini-tui kanban assign <card>                       # re-own a card (e.g. retry after blocked); one owner only
           mini-tui kanban note <card> --text "<what changed>" # progress you want to remember
           mini-tui kanban done <card> --text "<result in a line or two>"  # or: move <card> --column review|blocked
           mini-tui kanban link <card> <other-card>            # the work builds on / touches the other
