@@ -118,6 +118,13 @@ Una fila por job, escrita **solo** por `record_receipt.py` leyendo los `result.j
 rewards, agent_wall_s_total, agent_wall_s_median, job_wall_s, tokens_in, tokens_cache,
 tokens_out, cost_usd, harbor_version, mini_commit, errors, artifacts`
 
+Dos columnas de procedencia, que no son lo mismo: `mini_commit` es el **HEAD del checkout al
+escribir la fila** (el script lo resuelve con `git -C` desde su propia ruta, nunca desde el
+cwd); el sha del **binario** de verdad va en la provenance que el adaptador escribe dentro del
+contenedor (`/usr/local/share/mini-agent-rs.provenance`, campo `binary_sha256`) y en
+`$BENCH_ROOT/setup-provenance.json` (`mini_agent_rs_sha256`). En las tres filas del piloto el
+binario es el mismo, compilado desde `1914430`.
+
 ---
 
 ## 4. Cómo se pluguea mini-tui optimizado
