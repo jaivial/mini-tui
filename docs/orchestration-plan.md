@@ -351,7 +351,7 @@ Fork padre→hijo desde el resumen de `compaction.rs` + últimos K mensajes; for
 *Riesgos*: coste de tokens (presupuesto por fork), resumen demasiado grueso (K ajustable).
 *Tests*: e2e de fork con verificación de presupuesto; el hijo "sabe" lo que el padre sabía.
 
-**Fase 6 — Modo RLM completo** (opcional/experimental, guiada por datos) — **HECHA en 0.38.0 (7-oct-2026)**
+**Fase 6 — Modo RLM completo** (opcional/experimental, guiada por datos) — **HECHA en 0.37.0 (6-oct-2026)**
 Consolidar el prototipo `agent-rs/src/rlm.rs` (REPL con variables y sub-agentes como llamadas,
 `save/load`) detrás de un flag; comparar con el orquestador actual en las métricas de Fase 0.
 *Puerta de entrada*: solo si Fase 1–2 no alcanzan las métricas. *Riesgos*: dos orquestadores que
