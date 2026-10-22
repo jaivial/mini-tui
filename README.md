@@ -822,6 +822,15 @@ so on a repo this small its own cost still roughly matches what a child would ha
 tokens went *up*. It amortises with more children or a bigger repo — which is exactly the shape
 the baseline measurement (66% of tokens spent rediscovering) came from.
 
+**Two delivery paths, one message.** The store is not the only context a child gets at launch: the
+local graph RAG (`MINI_AGENT_GRAPH_RAG_URL`, `docs/semantic-delegation.md`) adds retrieved
+historical evidence in a `<graph-context>` block right after the `<context>` blocks. They are
+independent switches — `MINI_AGENT_CONTEXT=0` turns off only the store, unsetting the URL turns
+off only the retrieval — and since 2026-10-21 they are deduplicated at the launch point: a hit
+whose text is already in the delivered blocks/brief/task is dropped instead of delivered twice
+(`dedup_skipped` in the `graph_retrieval` event audit, and no empty `<graph-context>` block when
+every hit was already there).
+
 ### The RLM harness (`mini-agent-rs rlm`)
 
 The Rust binary also carries a small **RLM (Recursive Language Model) harness** in pure Rust —

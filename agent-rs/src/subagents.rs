@@ -1656,13 +1656,20 @@ impl Hub {
         };
         // Central launch covers spawn, dispatch, DAG plans, agent_delegate and handoff,
         // including grandchildren. Never let background evidence displace explicit context.
+        // The graph and the store are two delivery paths into one message, so the retrieval is
+        // handed what the child already gets and drops hits that are already in it (dedup).
         let mut rag_block = String::new();
-        if let Some((body, audit)) = crate::graph_retrieval::context(&raw_task, &cwd) {
+        let already_delivered = format!("{context_blocks}{brief_block}{task}\n{raw_task}\n{shared_note}");
+        if let Some((body, audit)) = crate::graph_retrieval::context(&raw_task, &cwd, &already_delivered) {
             let base_chars = context_blocks.chars().count() + brief_block.chars().count() + task.chars().count() + shared_note.chars().count() + 2;
             let available = (2 * context_max).saturating_sub(base_chars);
-            let delivered = body.chars().count() <= available;
+            let empty = body.is_empty(); // every hit was a duplicate of the delivered context
+            let delivered = !empty && body.chars().count() <= available;
             if delivered { rag_block = body; }
-            self.event("graph_retrieval", "hub", &name, if delivered {"graph context supplied"} else {"graph context omitted: context budget full"}, json!({"retrieval":audit,"delivered":delivered}));
+            let note = if empty { "graph context skipped: every hit already in the delivered context"}
+                else if delivered { "graph context supplied" }
+                else { "graph context omitted: context budget full" };
+            self.event("graph_retrieval", "hub", &name, note, json!({"retrieval":audit,"delivered":delivered}));
         }
         let full_task = format!("{context_blocks}{rag_block}{brief_block}{task}\n\n{shared_note}");
         // The assembled message has a cap of its own: pieces capped one by one could still add up.

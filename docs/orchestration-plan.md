@@ -291,7 +291,7 @@ No adoptar: fork completo por defecto (caro y con context rot), ni el REPL Pytho
 
 ## (d) Plan por fases (pequeñas), con riesgos y tests
 
-**Fase 0 — Métricas del arranque en frío** (1–2 días)
+**Fase 0 — Métricas del arranque en frío** (1–2 días) — **HECHA en 0.31.0 (6-oct-2026)**
 Instrumentar cuántos pasos/tokens dedica un hijo al re-descubrimiento (comandos de lectura/busca
 en el journal) y cuánto costaría un brief. Sin cambios de comportamiento.
 *Riesgos*: ninguno. *Tests*: n/a (solo medición).
@@ -314,14 +314,15 @@ actualizar `skills/subagents/SKILL.md`.
 > (2 repos, orquestador + 2 hijos, 3 runs A/B): descubrimiento del hijo ~3.197 → ~1.456 tokens
 > (**-54%**), tokens del orquestador ~26.699 → ~12.093 (**-55%**), y 1 bug de integración
 > detectado por el hijo que el padre habría mergeado. Lecturas duplicadas **no** bajan (y no
-> deberían: un hijo lee el fichero que va a editar). Fase 2 (plan.json + scheduler) sigue
-> pendiente.
+> deberían: un hijo lee el fichero que va a editar). *(Corregido 2026-10-21: esta nota decía
+> «Fase 2 (plan.json + scheduler) sigue pendiente» cuando se escribió, y no era cierto — Fase 2
+> ya estaba hecha en 0.33.0 y Fase 3 en 0.34.0.)*
 *Riesgos*: tareas más grandes (medir en Fase 0); convención ignorada (hacerla explícita y
 automática, no dependiente del buen hacer del modelo). *Tests*: e2e con modelos deterministas al
 estilo `agent-rs/tests/subagents.rs` (sin red): el hijo recibe el contexto; `expand_skills` sigue
 intacto; límites de tamaño del task.
 
-**Fase 2 — plan.json + scheduler dinámico en el hub** (1–2 semanas)
+**Fase 2 — plan.json + scheduler dinámico en el hub** (1–2 semanas) — **HECHA en 0.33.0 (6-oct-2026)**
 `agent plan …`; máquina de estados en `Hub::monitor`; lanzamiento automático de sucesores;
 handoff de `artifacts`; notas `[plan]`.
 *Riesgos*: condiciones de carrera (el hub ya serializa con un mutex; procesar eventos por tick);
@@ -332,25 +333,25 @@ existentes); reproducibilidad (todo queda en `plan.json`/`index.json` junto al t
 reintentos) con reloj/eventos simulados; e2e A1→A2 auto-lanzado mientras B corre; e2e Z1→Z2→Z3
 encadenado; e2e de fallo con notificación al padre. Todos deterministas, sin modelo real ni red.
 
-**Fase 3 — Visualización en web/TUI** (3–5 días)
+**Fase 3 — Visualización en web/TUI** (3–5 días) — **HECHA en 0.34.0 (6-oct-2026)**
 DAG en el task board (aristas desde `plan.json`, topic `plan.watch` en `src/web/hub.ts`), notas
 `[plan]` en el feed, atajos para revisar/adjuntar hijos.
 *Riesgos*: churn de UI. *Tests*: tests del protocolo del hub (`tests/web-hub.test.ts`) con el
 topic nuevo; snapshots de la tarjeta con estados del plan.
 
-**Fase 4 — RLM-lite** (3–5 días)
+**Fase 4 — RLM-lite** (3–5 días) — **HECHA en 0.36.0 (6-oct-2026)**
 `agent result --json`; interpolación `{{var}}` desde `plan.json`/`context/` al materializar
 tareas; `agent spawn --batch` (análogo a `llm_batch`).
 *Riesgos*: compatibilidad del formato de mensajes con los UIs (hoy `result` es prosa). *Tests*:
 e2e de resultados estructurados y de batch con presupuestos compartidos.
 
-**Fase 5 — Fork desde compactado** (opcional, 3–5 días)
+**Fase 5 — Fork desde compactado** (opcional, 3–5 días) — **HECHA en 0.35.0 (6-oct-2026)**
 Fork padre→hijo desde el resumen de `compaction.rs` + últimos K mensajes; fork hermano
 (Z2 continúa el traj de Z1) vía `--resume` de traj sintético.
 *Riesgos*: coste de tokens (presupuesto por fork), resumen demasiado grueso (K ajustable).
 *Tests*: e2e de fork con verificación de presupuesto; el hijo "sabe" lo que el padre sabía.
 
-**Fase 6 — Modo RLM completo** (opcional/experimental, guiada por datos)
+**Fase 6 — Modo RLM completo** (opcional/experimental, guiada por datos) — **HECHA en 0.37.0 (6-oct-2026)**
 Consolidar el prototipo `agent-rs/src/rlm.rs` (REPL con variables y sub-agentes como llamadas,
 `save/load`) detrás de un flag; comparar con el orquestador actual en las métricas de Fase 0.
 *Puerta de entrada*: solo si Fase 1–2 no alcanzan las métricas. *Riesgos*: dos orquestadores que
