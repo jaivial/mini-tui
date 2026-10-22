@@ -262,12 +262,102 @@ F1: ventana de máquina libre y las ~10 tasks; nada de lo anterior se estima, se
 
 ---
 
-## 7. Plan por fases con gates
+## 7. Resultados de F1 — sample completo (2026-10-22)
+
+Método (todo medido, nada estimado): worktree propio desde `main` `34b65d2` (el árbol Rust
+es idéntico al de main; los cambios del worktree son solo de benchmark/docs), binario musl
+compilado en ese worktree — **sha256 `990143334d84cd078e08b40533a061ee208b54311d4f348c59635f265fc2fd60`**
+(provenance en `$BENCH_ROOT/f1-provenance.json`) — y `bash benchmark/terminal-bench/run_f1.sh`:
+**10 jobs secuenciales** (un job por task, `-n 1 -k 1`), el adaptador v2 con bundle CA, los
+mismos flags que F0 (`WALL_LIMIT=600`, `STEP_LIMIT=50`, superficie `/anthropic`), todo bajo
+`systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=6G` en ventana tranquila
+(loadavg < 1, ninguna otra corrida). Fase completa: **17:24:09Z → 18:37:58Z (73.8 min)**.
+Un job por task (frente al job único de F0) significa que el receipt recibe **una fila por
+task** (el `run_id` la identifica) y que un corte a mitad de fase pierde como mucho el task
+en vuelo: `run_f1.sh` es reanudable y salta los tasks que ya tienen fila F1; nada se retoca.
+
+| task | reward | agent wall | llamadas | tokens in / out |
+| --- | ---: | ---: | ---: | --- |
+| `build-cython-ext` | 0.0 | 607.9 s | 25 | 35 924 / 12 331 |
+| `chess-best-move` | 0.0 | 669.3 s | 18 | 24 393 / 11 197 |
+| `configure-git-webserver` | **1.0** | 162.8 s | 14 | 7 855 / 3 089 |
+| `fix-code-vulnerability` | **1.0** | 74.8 s | 8 | 7 617 / 1 717 |
+| `log-summary-date-ranges` | **1.0** | 61.8 s | 6 | 4 196 / 1 281 |
+| `polyglot-c-py` | 0.0 | 402.5 s | 19 | 14 618 / 10 018 |
+| `qemu-alpine-ssh`¹ | 0.0 | 658.4 s | 19 | 22 578 / 15 926 |
+| `qemu-startup`¹ | 0.0 | 284.4 s | 17 | 11 737 / 7 661 |
+| `regex-log` | 0.0 | 853.9 s | 2 | 117 / 16 384 |
+| `sqlite-with-gcov` | **1.0** | 208.9 s | 16 | 18 442 / 5 355 |
+
+**Score 0.400 (4/10)** como lo puntúa Harbor; **0 excepciones** `exception_info` en los 10
+trials; agent wall total **3 984.7 s** (mediana 343.5 s), job wall total **4 404.0 s**;
+tokens **147 477 in / 84 959 out**; `cost_usd = 0.0000` (el endpoint token-plan no publica
+precios). Las 10 filas están en `receipt/runs.csv` (columna `phase` nueva; las 3 filas de F0
+se rellenaron como F0), escritas solo por `record_receipt.py` leyendo cada `result.json`;
+verificado tras el run: el reward de cada fila coincide con el del trial y ninguna fila
+arrastra un `exception_info`. «Llamadas» = `max(api_calls)` del journal `model_stats` en la
+trayectoria (la misma definición con la que F0 reportó 18 llamadas en `fix-code-vulnerability`).
+
+¹ El reward 0 de estas dos tasks **no mide al agente**: su verificador muere antes de los
+tests (motivo abajo).
+
+### Motivo de cada reward 0 (leído del verificador, no estimado)
+
+- `build-cython-ext` — el agente agotó el wall cap: la trayectoria termina en `exit=TimeExceeded`
+  tras 25 llamadas / 607.9 s; el verificador no encuentra el módulo compilado
+  (`ModuleNotFoundError`: 8 failed, 3 passed).
+- `chess-best-move` — el agente terminó solo (`exit=Done`): leyó la posición de la imagen y
+  clasificó las piezas, pero el verificador fallen `test_move_correct` (movida incorrecta).
+- `polyglot-c-py` — el agente terminó solo (`exit=Done`) creando `/app/polyglot/main.py.c`;
+  `test_fibonacci_polyglot` falla (AssertionError: salida incorrecta bajo uno de los intérpretes).
+- `regex-log` — **mismo modo de fallo que en F0 v2**: 2 llamadas, 16 384 tokens de salida (el
+  cap) con solo 117 de entrada y 8 cortes `finish_reason=length` en el journal; `/app/regex.txt`
+  nunca se crea. No es TLS: la llamada llega al modelo (la infra funciona), se pierde el giro.
+- `qemu-startup`, `qemu-alpine-ssh` — el propio `tests/test.sh` instala curl con
+  `apt-get install` en cada verificación y hoy el pool `debian-security` de bullseye devuelve
+  **6× `404 Not Found` por task** (URLs caducadas dentro de la imagen pinneada) → sin curl no
+  se instala uv, `test.sh` aborta y escribe reward 0. Es **drift del mirror Debian** entre la
+  construcción de la imagen y hoy: ni el agente ni el adaptador tienen la culpa, y re-correlar
+  hoy daría el mismo 0.
+
+Score honesto: **0.400 oficial** (4/10); sobre las 8 tasks cuyo verificador sí ejecuta,
+**4/8 = 0.500**.
+
+### Comparación con F0
+
+| | F0 v2 (2 tasks) | F1 (10 tasks) |
+| --- | ---: | ---: |
+| score | 0.500 (1/2) | **0.400 (4/10)** — 0.500 sobre las 8 medibles |
+| agent wall total / mediana | 1 070.0 / 535.0 s | 3 984.7 / 343.5 s |
+| tokens in / out | 14 681 / 22 188 | 147 477 / 84 959 |
+| excepciones de infraestructura | 0 | **0** (además: 2 reward-0 por verificador roto, arriba) |
+
+- `fix-code-vulnerability` (task compartida): F0 **252.1 s / 18 llamadas** → F1 **74.8 s /
+  8 llamadas**, reward 1 en ambas — el build optimizado de `main` resuelve la misma task
+  **~3.4× más rápido con menos de la mitad de llamadas**.
+- `regex-log` (task compartida): reward 0 en ambas, mismo patrón (2 llamadas, giro recortado
+  a 16 384 tokens de salida).
+
+### Gate F1 (evaluado con estos datos)
+
+| Criterio del gate | Estado |
+| --- | --- |
+| 10/10 trials cerrados con reward | **PASS** (10 filas, 0 jobs incompletos, 0 `exception_info`) |
+| score + wall + tokens en receipt | **PASS** (las 10 filas, con la verificación reward↔result.json descrita arriba) |
+| score 0 motivado por task | **PASS** (los 6 ceros motivados con su verificador; 2 atribuidos al verificador con evidencia 404) |
+
+**F1 = PASS → F2 desbloqueado** (`terminal-bench@2.0`, 89 tasks, A/B de harness). Antes de
+lanzar F2 conviene decidir el trato de las tasks cuyo verificador depende de mirrors vivos
+(documentarlas como «verificador roto» en el score de F2, no contarlas como agent failures).
+
+---
+
+## 8. Plan por fases con gates
 
 | Fase | Qué | Comando | **Gate para pasar de fase** |
 | --- | --- | --- | --- |
 | **F0 — hoy** | Piloto acotado: 2 tasks de `terminal-bench-sample@2.0`, brazo `oracle` + brazo `mini` | `bash benchmark/terminal-bench/setup.sh && bash benchmark/terminal-bench/run_pilot.sh` | Oracle **2/2** (el entorno y los verificadores funcionan); brazo mini **sin errores de infraestructura** (trial con `exception_info` de tipo infra → no se pasa); 2 filas reales en `receipt/runs.csv` |
-| **F1** | Sample completo: las **10** tasks de `terminal-bench-sample@2.0`, `-k 1 -n 1`, mini vs oracle | `harbor run -p …/terminal-bench-sample -a mini_agent_rs:MiniAgentRs -m xiaomi/mimo-v2.6-flash -n 1 -k 1` | 10/10 trials cerrados con reward; **score + wall + tokens** en receipt; si score = 0 se documenta el motivo por task (no se retoca el verificador) |
+| **F1 — 2026-10-22** | Sample completo: las **10** tasks de `terminal-bench-sample@2.0`, `-k 1 -n 1`, brazo `mini` (un job por task, runner reanudable) | `bash benchmark/terminal-bench/run_f1.sh` | **PASS** — 10/10 trials cerrados con reward; score 0.400, wall + tokens en receipt; los 6 ceros motivados por task (2 de ellos por verificador roto, §7) |
 | **F2** | `terminal-bench@2.0` (89) con **A/B de harness**: brazo `mini` (HEAD) vs brazo **control** (commit previo a #386-389, `git worktree`/tag propio, sin tocar otros worktrees) | mismos flags, `-k 1 -n 2` en ventana de máquina | ≥ 80 % de trials sin error de infra; A/B con ≥ 1 repetición; resultado publicado **solo en el repo** (nada externo sin aprobación) |
 | **F3** | Cross-check en segundo benchmark con el **mismo** adaptador: `quixbugs@1.0` (80 bugs de una línea) o `swebench-verified@1.0` (500) | `harbor download quixbugs@1.0 …` + mismos flags | Un score + wall más en receipt; confirma que el adaptador no está sobreajustado a TB |
 | **F4** | Escalado Nx con #386/#388 (brazo delegado de mini-tui-web sobre tasks que dividen) | runner de `benchmark/pi-vs-mini/parallel` + receipt | S(N) medido ≥ 1 con N=8 (umbral ya alcanzado en repo: 1.62-1.63) y sin regresión en F2 |
@@ -279,7 +369,7 @@ casos se deja el receipt con lo corrido y se anota el motivo; **no se rellena co
 
 ---
 
-## 8. Riesgos, divergencias declaradas y límites
+## 9. Riesgos, divergencias declaradas y límites
 
 1. **No es comparable 1:1 con el leaderboard público**: modelo distinto (MiMo V2.6 vs los
    modelos del leaderboard), Docker local en lugar de Modal/Runta, y wall medido por nosotros.
@@ -309,7 +399,7 @@ casos se deja el receipt con lo corrido y se anota el motivo; **no se rellena co
 
 ---
 
-## 9. Comandos de referencia (F0, reproducibles)
+## 10. Comandos de referencia (F0 y F1, reproducibles)
 
 ```bash
 # 0) una vez: harbor 0.24.0 + datasets + binario estático (todo en $BENCH_ROOT, fuera del repo)
@@ -321,7 +411,11 @@ bash benchmark/terminal-bench/run_pilot.sh
 # 2) receipt de cualquier job ya corrido (lee sus result.json; no estima nada)
 $BENCH_ROOT/hbenv/bin/python benchmark/terminal-bench/record_receipt.py \
   $BENCH_ROOT/jobs/<job> --arm mini --agent mini_agent_rs:MiniAgentRs \
-  --model xiaomi/mimo-v2.6-flash --dataset terminal-bench-sample@2.0
+  --model xiaomi/mimo-v2.6-flash --dataset terminal-bench-sample@2.0 --phase F0
+
+# 3) F1: sample completo (10 tasks), un job de harbor por task, receipts por task
+bash benchmark/terminal-bench/run_f1.sh
+#    reanudable: repetir el comando salta los tasks que ya tienen fila F1 en el receipt
 ```
 
 Ficheros versionados de esta preparación:
@@ -332,12 +426,13 @@ Ficheros versionados de esta preparación:
 | `benchmark/terminal-bench/mini_agent_rs.py` | adaptador custom de Harbor para `mini-agent-rs` |
 | `benchmark/terminal-bench/setup.sh` | instalación idempotente (venv, datasets, binario, provenance) |
 | `benchmark/terminal-bench/run_pilot.sh` | piloto acotado F0 (oracle + mini + receipts) |
+| `benchmark/terminal-bench/run_f1.sh` | F1: sample completo, un job por task, receipts por task (reanudable) |
 | `benchmark/terminal-bench/record_receipt.py` | convierte un job de Harbor en fila de receipt |
 | `benchmark/terminal-bench/receipt/runs.csv` | receipt: una fila por job, solo con métricas medidas |
 
 ---
 
-## 10. Fuentes
+## 11. Fuentes
 
 - <https://github.com/harbor-framework/terminal-bench> — Apache-2.0, tasks públicas (consultado 2026-10-22).
 - <https://github.com/harbor-framework/harbor> — Apache-2.0, harness oficial de Terminal-Bench (consultado 2026-10-22).
