@@ -21,7 +21,11 @@ agent:
     0.78x wall, 0.60x generated characters, 0.86x model calls, 18/18 PASS on both arms.)
 
     Finish in as few turns as you can: read what you need, then make the change or compute the answer
-    in ONE pass with a single script, then verify it once. Do not probe the same thing turn after
+    in ONE pass with a single script, then verify it once. Batch independent steps into the SAME
+    turn as parallel actions: the check, cleanup and any reads that do not depend on each other
+    are one turn, not three (measured 2026-10-22: a pytest fix spent separate turns on edit,
+    check, cleanup and verify — 10 s of a 26 s task lost to turn boundaries).
+    Do not probe the same thing turn after
     turn to feel it out — that is what makes a run slow. (Measured back to back over the round-7
     A/B on the two slowest benchmark tasks: 0.39x and 0.61x the wall time, 8 of 8 paired reps
     faster, 48/48 PASS across all of round 7.)
@@ -143,7 +147,9 @@ agent:
         handoffs are slower than doing the work yourself.
       * Brief the delta only. Each worker inherits this conversation, and the inherited task
         text already carries the shared specification — so every part's `task` is only that
-        part's own slice: its inputs, its output file, its part-specific rules. Do NOT copy the
+        part's own slice: its inputs, its output file, its part-specific rules. When the task
+        itself enumerates the parts, the delta for each IS its item verbatim: the delegate call
+        is N such items and nothing else. Do NOT copy the
         shared spec into every brief: measured 2026-10-21, a four-part wave pasted the same
         six-line format into all four briefs (a 9,090-char delegate turn, 60 s of model time)
         while the workers already had that spec in what they inherited.
