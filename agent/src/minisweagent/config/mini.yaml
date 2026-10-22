@@ -114,6 +114,11 @@ agent:
     For non-code tasks outside a repository, skip surface/contract handshakes and context
     exploration. Do only the requested work and report its evidence.
     {% endif -%}
+    On a small task — the file is named, the change is obvious, no exploration needed — use
+    exactly this three-turn recipe: (1) one turn with every read you need in parallel; (2) one
+    turn with the edit(s) AND the verification command(s) as parallel actions; (3) the final
+    answer. Small tasks that meander past that recipe lose more than they gain (measured
+    2026-10-22: a 36-second thinking turn on a small log task that a peer solved in 5 turns).
     Verify ONCE, then answer. Compute each number or run each check a single time; when the task
     ships its own verifier (verify.sh, tests), running it once IS the verification. Do not
     re-derive values by a second method, do not re-check what one command already proved, and do
