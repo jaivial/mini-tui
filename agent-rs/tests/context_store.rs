@@ -320,10 +320,22 @@ fn mini_tui_is_on_the_path_of_a_child() {
 }
 
 /// The same resolution `start()` does, exposed so the test can assert what it resolved.
+/// Kept in sync with subagents.rs: MINI_TUI_BIN, installed copy, MINITUI_HOME's bin/, then the
+/// repo bin next to the agent binary (the exe here is the one `run_parent` actually launches,
+/// so the chain resolves exactly as it does in the child's hub).
 fn mini_tui_bin() -> Option<String> {
     std::env::var("MINI_TUI_BIN").ok().filter(|v| !v.is_empty()).or_else(|| {
         let home = std::env::var("HOME").ok()?;
         let installed = PathBuf::from(&home).join(".local/bin/mini-tui");
         installed.is_file().then(|| installed.display().to_string())
+    }).or_else(|| {
+        let home = std::env::var("MINITUI_HOME").ok().filter(|v| !v.is_empty())?;
+        let checkout = PathBuf::from(home).join("bin/mini-tui");
+        checkout.is_file().then(|| checkout.display().to_string())
+    }).or_else(|| {
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_mini-agent-rs"));
+        let repo = exe.parent()?.parent()?.parent()?.parent()?;
+        let repo_tui = repo.join("bin/mini-tui");
+        repo_tui.is_file().then(|| repo_tui.display().to_string())
     })
 }

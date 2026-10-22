@@ -889,6 +889,10 @@ pub fn handshake_block(dir: &Path) -> String {
     // copied `<file:line symbol -> who calls it now>` VERBATIM into its surface line, and the
     // contract check then failed on a file named `<file`. A literal example beats a placeholder
     // here: the check is mechanical, so one copied token of prose is a false claim.
+    // Measured 2026-10-22 after the Nx campaign: the demand contradicted mini.yaml's non-code
+    // exemption — workers on report/log tasks invented `surface:` lines for their own scratch
+    // scripts and logs (9/12 final answers in the heavy corpus; still the majority of report
+    // workers post-#390) — so the block now carries the same exemption the prompt has.
     format!(
         "Before your final answer, write these three lines (they are how the work is handed to\
          the next subagent; the hub stores them as {}/<your-name>.md):\n\
@@ -896,7 +900,11 @@ pub fn handshake_block(dir: &Path) -> String {
          contract: some_json_field -> who consumes it\n\
          surprise: what did not match what you were told, or the word none\n\
          Replace EVERY part with something real: file, symbol, caller. A line left as written here\
-         is a false claim and `contract-check` will fail it.",
+         is a false claim and `contract-check` will fail it.\n\
+         Exception (the same rule as your prompt): a task with no code to hand off — a report,\
+         a log analysis, a dataset, an answer — has no surface to name. Skip these three lines\
+         there and put everything in your final answer instead; never invent a file, symbol or\
+         caller you did not touch.",
         dir.display()
     )
 }
