@@ -2089,7 +2089,7 @@ impl Launcher {
             if let Ok(budget) = std::env::var("MINI_AGENT_WAVE_THINKING") {
                 cmd.env("XIAOMI_THINKING_BUDGET", budget);
             } else if std::env::var_os("XIAOMI_THINKING_BUDGET").is_none() {
-                cmd.env("XIAOMI_THINKING_BUDGET", "1024");
+                cmd.env("XIAOMI_THINKING_BUDGET", "512");
             }
         }
         cmd.process_group(0);
