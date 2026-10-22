@@ -764,18 +764,46 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
     std::env::set_var("MINI_AGENT_BIN", &exe);
     let path = std::env::var("PATH").unwrap_or_default();
     // `mini-tui` goes on PATH next to `mini-agent-rs`, found the same way the runner finds it:
-    // MINI_TUI_BIN, then the installed copy, then the repo's bin/. Measured in the browser on
-    // 2026-10-07: the system prompt tells every agent to keep a task card with `mini-tui tasks
-    // set`, the command was not on PATH, and the model spent ~20 calls hunting for it (and for
-    // bun, which the script needs) before doing the work it was asked for.
+    // MINI_TUI_BIN, then the installed copy, then the checkout's bin/ (MINITUI_HOME, which the
+    // runner sets for every bundled launch), then the repo bin next to this binary. Measured in
+    // the browser on 2026-10-07: the system prompt tells every agent to keep a task card with
+    // `mini-tui tasks set`, the command was not on PATH, and the model spent ~20 calls hunting
+    // for it (and for bun, which the script needs) before doing the work it was asked for.
+    // Re-measured 2026-10-22 after the Nx campaign: 48 of the `mini-tui` calls in 64 runs came
+    // back rc127 (49 parent turns, 627 s of model time) because the documented third fallback
+    // was never implemented and this machine has no installed copy.
     let mut extra = vec![bin.display().to_string()];
-    let tui = std::env::var("MINI_TUI_BIN").ok().filter(|v| !v.is_empty()).or_else(|| {
-        let home = std::env::var("HOME").ok()?;
-        let installed = PathBuf::from(&home).join(".local/bin/mini-tui");
-        installed.is_file().then_some(installed.display().to_string())
-    });
+    // Every rung of the chain validates its candidate: a dead MINI_TUI_BIN falls through to the
+    // next instead of pushing a non-existent PATH entry (PR review iter 1).
+    let tui = std::env::var("MINI_TUI_BIN").ok().filter(|v| !v.is_empty()).map(PathBuf::from)
+        .filter(|p| p.exists())
+        .or_else(|| {
+            let home = std::env::var("HOME").ok()?;
+            let installed = PathBuf::from(home).join(".local/bin/mini-tui");
+            installed.is_file().then_some(installed)
+        })
+        .or_else(|| {
+            let home = std::env::var("MINITUI_HOME").ok().filter(|v| !v.is_empty())?;
+            let checkout = PathBuf::from(home).join("bin/mini-tui");
+            checkout.is_file().then_some(checkout)
+        })
+        .or_else(|| {
+            // <repo>/agent-rs/target/<profile>/mini-agent-rs -> <repo>/bin/mini-tui. An
+            // installed binary resolves nothing here (no bin/mini-tui above it) and moves on.
+            let exe = std::env::current_exe().ok()?;
+            let repo = exe.parent()?.parent()?.parent()?.parent()?;
+            let repo_tui = repo.join("bin/mini-tui");
+            repo_tui.is_file().then_some(repo_tui)
+        });
     if let Some(tui) = tui {
-        extra.push(tui);
+        // PATH entries are directories: pushing the FILE (what this did for MINI_TUI_BIN and
+        // the installed copy) never made `command -v mini-tui` succeed on its own.
+        let dir = if tui.is_dir() { Some(tui) } else { tui.parent().map(|p| p.to_path_buf()) };
+        if let Some(dir) = dir {
+            if !dir.as_os_str().is_empty() {
+                extra.push(dir.display().to_string());
+            }
+        }
         // The bin/ scripts are `#!/bin/sh exec bun ...`, so bun has to be reachable too.
         if let Ok(bun) = std::env::var("HOME") {
             for d in [".bun/bin", ".local/bin"] {
@@ -1318,12 +1346,21 @@ impl Hub {
         // closed out). For repo children coverage stays a failure - that is the 2026-10-07
         // green-over-nothing protection. Other failures (missing claimed files, contradicted
         // clauses) still nag for every child.
+        //
+        // The second suppression is the non-code exemption from 1.4: with NO contract declared
+        // and NO handshake written (a report/log worker told by its prompt to skip the three
+        // lines), coverage-of-nothing is not a claim of anything — nagging would tell the parent
+        // to resume a child whose task was to hand over a report, not code (the measured
+        // 2026-10-19 resume-forever loop). A declared contract (contracts.md non-empty) still
+        // nags every child, handshake or not: there the coverage check is the point.
+        let no_contract = self.store.get("contracts.md").map(|s| s.trim().is_empty()).unwrap_or(true);
+        let no_handshake = handshake.trim().is_empty();
         let failed: Vec<&context_store::Check> = checks
             .iter()
             .filter(|k| !k.ok)
             .filter(|k| !(k.name == "coverage"
-                && !Path::new(&c.cwd).ancestors().any(|p| p.join(".git").exists())
-                && self.store.get("contracts.md").map(|s| s.trim().is_empty()).unwrap_or(true)))
+                && no_contract
+                && (!Path::new(&c.cwd).ancestors().any(|p| p.join(".git").exists()) || no_handshake)))
             .collect();
         if failed.is_empty() {
             return String::new(); // green, or nothing checkable: no noise in the parent's notes

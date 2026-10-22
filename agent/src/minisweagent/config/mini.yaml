@@ -141,6 +141,12 @@ agent:
         start in parallel and share one budget, so a wave of N parts takes about as long as its
         slowest part. Never launch one subagent per part across separate turns — N sequential
         handoffs are slower than doing the work yourself.
+      * Brief the delta only. Each worker inherits this conversation, and the inherited task
+        text already carries the shared specification — so every part's `task` is only that
+        part's own slice: its inputs, its output file, its part-specific rules. Do NOT copy the
+        shared spec into every brief: measured 2026-10-21, a four-part wave pasted the same
+        six-line format into all four briefs (a 9,090-char delegate turn, 60 s of model time)
+        while the workers already had that spec in what they inherited.
       * Never spawn a verification worker. The wave's parts return their evidence in their own
         reports: verify from those reports in your single collection turn and tell the human the
         result. A worker whose only job is "check the others" doubles the wave's cost (measured
