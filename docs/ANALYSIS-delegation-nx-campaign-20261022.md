@@ -76,3 +76,40 @@ BENCH_TASKS_DIR=$PWD/parallel python3 run_bench.py het8_wave big8_wave --mini-on
 python3 run_ab_surface.sh                     # /v1 vs /anthropic endpoint A/B
 ```
 Launchers resolve node/pi from env/PATH; fixtures regenerate automatically.
+
+---
+
+# Update 2026-10-22 — loops 9-14
+
+| loop | change | measured effect |
+|---|---|---|
+| 9 | turn-batching recipe + verbatim briefs; **nx8** corpus (8 foreign parts) | nx8 S(8)=0.53x — parts the serial arm writes in batched turns do not divide |
+| 10 | `MINI_AGENT_TEMPERATURE=0` default | variance fell but t10 locked into a 36-second thinking path (34.7-52.6 s at 1.0 -> 88.9 s) |
+| 11 | **nx4b** corpus: four foreign projects whose suites fail in staged ways | solvability proven 4/4 both directions; **S(4)=1.59x — division wins when each part owns a test->fix loop** |
+| 12 | temp 0.2 + an explicit three-turn recipe for small tasks | recipe verified (t3 down to exactly 3 turns); temp 0.2 cost t4 (158.2 s) |
+| 13 | thinking budget 512 by default (was 2048; wave workers 1024->512) | **mini 587.6 s vs pi 655.0 same day — 1.11x, 10/10 PASS** |
+| 14 | targeted edits over full-file rewrites | no more whole-file regenerations (t4 154.2 -> 132.2, one 68.4 s gateway spike inside); **mini 617.6 vs 655.0 — 1.06x, 10/10** |
+
+## Goal A standing (2026-10-22)
+
+Totals: mini wins every validated rep today against the same-day pi reference
+(587.6/617.6 vs 655.0) plus yesterday's 497.7 vs 550.9. Per-task: 5-6 of 10
+wins; the losses are 5-15 s margins on small tasks (inside the measured
+cross-rep noise, pi swings 550-655 across its own reps) plus t4, whose gap is
+dominated by gateway-latency spikes (a 68.4 s round trip for a 29-byte
+`node --version`) and by being the corpus's most thorough task. t7 — the
+harness's historical disaster (1192.8 s on 2026-10-20) — is now a mini win on
+every rep (56.1-88.1 s vs pi's 44.6-210.3).
+
+## Goal B standing
+
+S(N) by part shape (the motif's honest boundary):
+
+- seconds-scale parts a serial session can batch: S(8)=0.53x
+- minutes-scale homogeneous parts: S(8)=1.62-1.63x
+- **minutes-scale foreign parts with per-part test->fix loops: S(4)=1.59x
+  and rising with part size** — the regime where division wins
+
+The Nx limit stays Amdahl's: with the wave's fixed cost at ~60 s and the
+measured per-part parity gap, the ceiling for N=4 is ~3.2x and for N=8 ~6x
+(0.75-0.8 N) once workers match the serial arm's per-part efficiency.
