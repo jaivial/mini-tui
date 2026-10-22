@@ -17,6 +17,8 @@ the token usage the agent reported. Nothing is estimated, nothing is typed in by
     cost_usd        as reported; the token-plan endpoint reports no prices → 0.0/empty
     mini_commit     HEAD of THIS checkout (resolved from the script's own path, never
                     from the caller's cwd)
+    phase           which phase of the plan produced the row (F0, F1, ...); the F0
+                    rows were backfilled when the column was introduced
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ FIELDS = [
     "mini_commit",
     "errors",
     "artifacts",
+    "phase",
 ]
 
 
@@ -125,6 +128,8 @@ def main() -> int:
     ap.add_argument("--dataset", default="", help="dataset name@version actually run")
     ap.add_argument("--task-filter", default="", help="-i patterns used for the run")
     ap.add_argument("--notes", default="", help="stored in the errors column when non-empty")
+    ap.add_argument("--phase", required=True,
+                    help="phase label this row belongs to (F0, F1, ...)")
     args = ap.parse_args()
 
     trials = list(iter_trials(args.job_dir))
@@ -217,6 +222,7 @@ def main() -> int:
         "mini_commit": commit,
         "errors": args.notes or ";".join(errors),
         "artifacts": str(args.job_dir),
+        "phase": args.phase,
     }
 
     CSV_PATH.parent.mkdir(parents=True, exist_ok=True)

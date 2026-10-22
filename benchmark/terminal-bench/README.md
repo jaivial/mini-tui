@@ -10,7 +10,8 @@ candidatos descartados con fuente, métricas y plan por fases con gates — est�
 | `setup.sh` | Instala Harbor en un venv, descarga los datasets (`terminal-bench@2.0`, `terminal-bench-sample@2.0`) y compila `mini-agent-rs` estático (musl). Todo bajo `$BENCH_ROOT` (**fuera** del repo: 47 MB + 13 MB de tasks, venv e imágenes). |
 | `mini_agent_rs.py` | Adaptador custom de Harbor (`-a mini_agent_rs:MiniAgentRs`): sube binario + YAML al contenedor, corre el agente y deja la trayectoria en el formato que Harbor convierte a ATIF. |
 | `run_pilot.sh` | Piloto acotado F0: brazo `oracle` (sin modelo) y brazo `mini` sobre 2 tasks de `terminal-bench-sample@2.0`, `-n 1`, todo en `systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=6G`. |
-| `record_receipt.py` | Convierte los `result.json` de un job de Harbor en una fila de `receipt/runs.csv`. Solo lee métricas medidas; no estima nada. |
+| `run_f1.sh` | F1: el sample completo (las 10 tasks del dataset, enumeradas de disco), un job de Harbor por task, brazo `mini`, `-n 1 -k 1`, secuencial. **Reanudable**: salta las tasks que ya tienen fila de receipt en fase F1. |
+| `record_receipt.py` | Convierte los `result.json` de un job de Harbor en una fila de `receipt/runs.csv` (`--phase F0/F1/...`). Solo lee métricas medidas; no estima nada. |
 | `receipt/runs.csv` | El receipt: una fila por job (score, rewards, wall del agente, wall del job, tokens, versión de harbor y commit del binario). |
 
 ## Arranque
@@ -19,6 +20,7 @@ candidatos descartados con fuente, métricas y plan por fases con gates — est�
 bash benchmark/terminal-bench/setup.sh      # una vez
 bash benchmark/terminal-bench/run_pilot.sh  # F0: oracle + mini + receipts
 ARMS=mini bash benchmark/terminal-bench/run_pilot.sh   # repetir solo un brazo
+bash benchmark/terminal-bench/run_f1.sh     # F1: sample completo (10 tasks) + receipts
 ```
 
 ## Credenciales

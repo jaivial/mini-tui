@@ -63,7 +63,7 @@ receipt() { # $1 = job name, $2 = arm, $3 = agent, $4 = model
   [ -d "$dir" ] || { echo "no job dir found for $1" >&2; return 1; }
   "$PY" "$REPO_ROOT/benchmark/terminal-bench/record_receipt.py" \
     "$dir" --arm "$2" --agent "$3" --model "$4" \
-    --dataset "$DATASET_LABEL" --task-filter "$TASKS"
+    --dataset "$DATASET_LABEL" --task-filter "$TASKS" --phase F0
 }
 
 load_model_credentials() {
