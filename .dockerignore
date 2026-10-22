@@ -1,0 +1,32 @@
+# Keep the build context small (< ~20 MB): everything here is either rebuilt
+# inside the image or not needed to run it. Measured on main: repo 2.5 GB, of
+# which agent-rs/target 1.9 GB and web/node_modules 226 MB.
+
+# VCS + worktrees
+.git
+**/.git
+.worktrees
+
+# Build outputs and dependencies, rebuilt in the image
+agent-rs/target
+node_modules
+web/node_modules
+web/dist
+site
+docs/screenshots
+docs/img
+
+# Benchmark payloads and runs (255 MB; never needed to build the image)
+benchmark
+
+# Python bytecode
+**/__pycache__
+*.pyc
+
+# Logs
+**/*.log
+
+# Tests (not part of the runtime)
+tests
+agent-rs/tests
+agent/tests
