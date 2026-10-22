@@ -1,0 +1,21 @@
+import assert from "assert";
+import { slugify, truncate, camelCase, parseQuery, render, levenshtein } from "./strkit.js";
+
+assert.strictEqual(slugify("Hello,  World!"), "hello-world");
+assert.strictEqual(slugify("  Already--slugged  "), "already--slugged");
+assert.strictEqual(slugify("Café Au Lait"), "caf-au-lait");
+assert.strictEqual(truncate("hello world", 8), "hello...");
+assert.strictEqual(truncate("hi", 8), "hi");
+assert.strictEqual(truncate("hello world", 5), "he...");
+assert.strictEqual(camelCase("hello world foo"), "helloWorldFoo");
+assert.strictEqual(camelCase("a"), "a");
+assert.deepStrictEqual(parseQuery("a=1&b=2&a=3"), { a: ["1", "3"], b: ["2"] });
+assert.deepStrictEqual(parseQuery("x="), { x: [""] });
+assert.deepStrictEqual(parseQuery(""), {});
+assert.strictEqual(render("hi {name}!", { name: "ana" }), "hi ana!");
+assert.strictEqual(render("{a}{b}", { a: "1" }), "1undefined");
+assert.strictEqual(render("no keys", {}), "no keys");
+assert.strictEqual(levenshtein("kitten", "sitting"), 3);
+assert.strictEqual(levenshtein("", "abc"), 3);
+assert.strictEqual(levenshtein("same", "same"), 0);
+console.log("part1 strkit PASS");
