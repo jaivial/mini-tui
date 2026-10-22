@@ -109,6 +109,14 @@ fn base_config(config: &Obj, cost_default: &str) -> Obj {
     c.insert("api_base".into(), json!(""));
     c.insert("api_key".into(), json!(""));
     c.insert("model_kwargs".into(), json!({}));
+    // Deterministic sampling by default: the measured per-rep swing on benchmark tasks
+    // (2026-10-22: t3 ran 26.5 s then 74.1 s, both PASS) was thinking-length variance at the
+    // providers' default temperature of 1.0. MINI_AGENT_TEMPERATURE overrides; a provider
+    // that rejects the parameter has it dropped by the wire.
+    let temp: f64 = env_or("MINI_AGENT_TEMPERATURE", "0").parse().unwrap_or(0.0);
+    if let Some(mk) = c.get_mut("model_kwargs").and_then(Value::as_object_mut) {
+        mk.insert("temperature".into(), json!(temp));
+    }
     let timeout: f64 = env_or("MSWEA_MODEL_TIMEOUT", "600").parse().unwrap_or(600.0);
     c.insert("request_timeout".into(), json!(timeout));
     c.insert("set_cache_control".into(), Value::Null);
