@@ -800,7 +800,9 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
         // the installed copy) never made `command -v mini-tui` succeed on its own.
         let dir = if tui.is_dir() { Some(tui) } else { tui.parent().map(|p| p.to_path_buf()) };
         if let Some(dir) = dir {
-            extra.push(dir.display().to_string());
+            if !dir.as_os_str().is_empty() {
+                extra.push(dir.display().to_string());
+            }
         }
         // The bin/ scripts are `#!/bin/sh exec bun ...`, so bun has to be reachable too.
         if let Ok(bun) = std::env::var("HOME") {
