@@ -46,10 +46,21 @@ harbor_run() { # $1 = job name, $2 = agent, rest = extra harbor args
 
 receipt() { # $1 = job name, $2 = arm, $3 = agent, $4 = model
   local dir="$BENCH_ROOT/jobs/$1"
-  if [ ! -d "$dir" ]; then # harbor may suffix the job name; fall back to the newest job dir
-    dir=$(ls -1dt "$BENCH_ROOT/jobs"/*/ 2>/dev/null | head -1)
+  if [ ! -d "$dir" ]; then
+    # Harbor may suffix the job name. Only fall back when it is unambiguous: exactly
+    # one job dir created since this run started, and report which one was used —
+    # a receipt row must never be attributed to a job it did not come from.
+    local candidates=()
+    while IFS= read -r d; do candidates+=("$d"); done < <(
+      find "$BENCH_ROOT/jobs" -mindepth 1 -maxdepth 1 -type d -newer "$RUN_MARKER" 2>/dev/null | sort)
+    if [ "${#candidates[@]}" -ne 1 ]; then
+      echo "receipt: $dir missing and ${#candidates[@]} new job dirs; refusing to guess" >&2
+      return 1
+    fi
+    dir="${candidates[0]}"
+    echo "receipt: job dir suffixed by harbor; using $(basename "$dir")"
   fi
-  [ -n "$dir" ] && [ -d "$dir" ] || { echo "no job dir found for $1" >&2; return 1; }
+  [ -d "$dir" ] || { echo "no job dir found for $1" >&2; return 1; }
   "$PY" "$REPO_ROOT/benchmark/terminal-bench/record_receipt.py" \
     "$dir" --arm "$2" --agent "$3" --model "$4" \
     --dataset "$DATASET_LABEL" --task-filter "$TASKS"
@@ -68,6 +79,9 @@ load_model_credentials() {
 }
 
 STAMP=$(date -u +%Y%m%d-%H%M%S)
+RUN_MARKER="$BENCH_ROOT/.pilot-start-$$"
+touch "$RUN_MARKER"
+trap 'rm -f "$RUN_MARKER"' EXIT
 
 for arm in $ARMS; do
   case "$arm" in

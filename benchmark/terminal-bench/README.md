@@ -7,7 +7,7 @@ candidatos descartados con fuente, métricas y plan por fases con gates — est�
 
 | Fichero | Qué hace |
 | --- | --- |
-| `setup.sh` | Instala Harbor en un venv, descarga los datasets (`terminal-bench@2.0`, `terminal-bench-sample@2.0`) y compila `mini-agent-rs` estático (musl). Todo bajo `$BENCH_ROOT` (**fuera** del repo: ~600 MB de tasks + venv + imágenes). |
+| `setup.sh` | Instala Harbor en un venv, descarga los datasets (`terminal-bench@2.0`, `terminal-bench-sample@2.0`) y compila `mini-agent-rs` estático (musl). Todo bajo `$BENCH_ROOT` (**fuera** del repo: 47 MB + 13 MB de tasks, venv e imágenes). |
 | `mini_agent_rs.py` | Adaptador custom de Harbor (`-a mini_agent_rs:MiniAgentRs`): sube binario + YAML al contenedor, corre el agente y deja la trayectoria en el formato que Harbor convierte a ATIF. |
 | `run_pilot.sh` | Piloto acotado F0: brazo `oracle` (sin modelo) y brazo `mini` sobre 2 tasks de `terminal-bench-sample@2.0`, `-n 1`, todo en `systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=6G`. |
 | `record_receipt.py` | Convierte los `result.json` de un job de Harbor en una fila de `receipt/runs.csv`. Solo lee métricas medidas; no estima nada. |

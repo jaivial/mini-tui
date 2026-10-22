@@ -2,9 +2,10 @@
 # One-shot, idempotent setup for running Terminal-Bench against mini-agent-rs (mini-tui).
 #
 # Everything heavy lands OUTSIDE the git worktree, under $BENCH_ROOT (a session
-# directory): a python venv with Harbor, ~600 MB of task sources and the docker images
-# they reference do not belong in a commit. What this repo keeps is the adapter
-# (mini_agent_rs.py), the runner, the receipt template and the analysis doc.
+# directory): a python venv with Harbor, tens of MB of task sources (measured today:
+# terminal-bench@2.0 47 MB, sample 13 MB, the @latest download with task data 548 MB)
+# and the docker images they reference do not belong in a commit. What this repo keeps
+# is the adapter (mini_agent_rs.py), the runner, the receipt template and the doc.
 #
 #   bash benchmark/terminal-bench/setup.sh
 #
@@ -28,17 +29,17 @@ echo "==> bench dir: $BENCH_ROOT"
 mkdir -p "$BENCH_ROOT"
 
 echo "==> harbor $HARBOR_PIN in $VENV (python 3.12 via uv)"
+# Every long-running step of this setup runs inside the same scope: the install pulls
+# a large dependency tree, the build is cargo, and systemd-run failing must stop the
+# setup instead of silently falling back to an unbounded run.
+scoped() { systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=6G "$@"; }
 if [ ! -x "$VENV/bin/harbor" ]; then
-  uv venv --python 3.12 "$VENV"
-  uv pip install --python "$VENV/bin/python" "harbor==$HARBOR_PIN"
+  scoped uv venv --python 3.12 "$VENV"
+  scoped uv pip install --python "$VENV/bin/python" "harbor==$HARBOR_PIN"
 fi
 "$VENV/bin/harbor" --version
 
 echo "==> datasets: $DATASETS"
-# Downloads are wrapped in the same scope as the build: nothing long-running in
-# this repo runs unbounded, and systemd-run failing must stop the setup instead of
-# silently falling back to a naked build.
-scoped() { systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=6G "$@"; }
 for ds in $DATASETS; do
   scoped "$VENV/bin/harbor" download "$ds" -o "$BENCH_ROOT/dataset"
 done

@@ -133,8 +133,9 @@ tokens_out, cost_usd, harbor_version, mini_commit, errors, artifacts`
   y los YAML de `agent/src/minisweagent/config/` al contenedor.
 - **Run**: `mini-agent-rs --yolo --model=<modelo> --task=<instrucción> --output=/logs/agent/mini-swe-agent.trajectory.json
   --exit-immediately -c mini [-c agent.wall_time_limit_seconds=N] [-c agent.step_limit=M]`, con
-  `tee` a `/logs/agent/mini-agent-rs.txt`. El cwd es el `WORKDIR` de la task (`/app` en 61/66
-  tasks de la descarga), igual que corre el agente built-in.
+  `tee` a `/logs/agent/mini-agent-rs.txt`. El cwd es el `WORKDIR` de la task (medido hoy:
+  **10/10** tasks del sample y **88/89** de `terminal-bench@2.0` declaran `WORKDIR /app`),
+  igual que corre el agente built-in.
 - **Trust store de TLS**: el adaptador sube el bundle de CA del host a
   `/usr/local/share/mini-tui/ca-bundle.crt` (copia **regular**, no symlink — en este host
   `/etc/ssl/certs/ca-certificates.crt` es un symlink a `/etc/pki/...` y tar/cp lo copiaría tal

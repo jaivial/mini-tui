@@ -4,16 +4,19 @@
     $VENV/bin/python benchmark/terminal-bench/record_receipt.py <job-dir> \
         --arm mini --agent mini_agent_rs:MiniAgentRs --model xiaomi/mimo-v2.6-flash
 
-Every number in the row is read from the job's own `results.json` files (Harbor's
+Every number in the row is read from the job's own `result.json` files (Harbor's
 TrialResult): the reward the task verifier returned, the agent-phase timestamps and
 the token usage the agent reported. Nothing is estimated, nothing is typed in by hand.
 
     score           resolved rate = trials with reward >= 1.0 / trials
     rewards         per-trial rewards, in task order ("task=reward;...")
     agent_wall_s_*  agent execution phase only (started_at → finished_at)
-    job_wall_s      min(started_at) → max(finished_at) over the job, sequential runs
+    job_wall_s      job-level result.json started_at → finished_at (falls back to
+                    min(started) → max(finished) over the trials)
     tokens_*        as reported by the agent's own trajectory (0 when it reported none)
     cost_usd        as reported; the token-plan endpoint reports no prices → 0.0/empty
+    mini_commit     HEAD of THIS checkout (resolved from the script's own path, never
+                    from the caller's cwd)
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 CSV_PATH = Path(__file__).resolve().parent / "receipt" / "runs.csv"
+# benchmark/terminal-bench/record_receipt.py -> <repo>
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 FIELDS = [
     "run_id",
@@ -124,7 +129,7 @@ def main() -> int:
 
     trials = list(iter_trials(args.job_dir))
     if not trials:
-        print(f"no results.json under {args.job_dir}", file=sys.stderr)
+        print(f"no trial result.json under {args.job_dir}", file=sys.stderr)
         return 2
 
     rewards: list[tuple[str, float]] = []
@@ -170,10 +175,16 @@ def main() -> int:
     job_w = job_wall_seconds(args.job_dir)
     job_wall_s = job_w if job_w is not None else derived
 
+    # Resolve from the checkout that owns this script, never from the caller's cwd:
+    # a receipt row has to be tie-able to the exact harness commit it measured.
     try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=15
-        ).stdout.strip()
+        out = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        commit = out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else "unknown"
     except Exception:
         commit = "unknown"
     try:
