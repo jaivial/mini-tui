@@ -381,12 +381,13 @@ pub fn build(name: &str, class: &str, mut config: Obj) -> Result<Box<dyn Model>,
             // `thinking` parameter (probed same day: unbounded thinking measured at ~40 s
             // per turn on analysis work), so bound it by default: XIAOMI_THINKING=off
             // disables thinking, =on leaves the gateway's own default,
-            // XIAOMI_THINKING_BUDGET sets the budget (default 2048).
+            // XIAOMI_THINKING_BUDGET sets the budget (default 512 — 2048 let a trivial read
+            // turn burn 12-19 s and a refactor turn 42-58 s, 2026-10-22, vs pi's 5-7 s/turn).
             let protocol = if c["api_base"].as_str().unwrap_or("").contains("/anthropic") {
                 c.entry("set_cache_control".to_string()).or_insert(json!("rolling"));
                 let mode = std::env::var("XIAOMI_THINKING").unwrap_or_else(|_| "budget".into());
                 if mode != "on" {
-                    let budget: i64 = env_or("XIAOMI_THINKING_BUDGET", "2048").parse().unwrap_or(2048);
+                    let budget: i64 = env_or("XIAOMI_THINKING_BUDGET", "512").parse().unwrap_or(512);
                     let mk = c.entry("model_kwargs".to_string()).or_insert(json!({}));
                     if let Some(obj) = mk.as_object_mut() {
                         obj.entry("thinking").or_insert(if mode == "off" || mode == "disabled" {
