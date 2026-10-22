@@ -324,7 +324,9 @@ fn mini_tui_is_on_the_path_of_a_child() {
 /// repo bin next to the agent binary (the exe here is the one `run_parent` actually launches,
 /// so the chain resolves exactly as it does in the child's hub).
 fn mini_tui_bin() -> Option<String> {
-    std::env::var("MINI_TUI_BIN").ok().filter(|v| !v.is_empty()).or_else(|| {
+    std::env::var("MINI_TUI_BIN").ok().filter(|v| !v.is_empty())
+        .filter(|v| PathBuf::from(v).exists())
+        .or_else(|| {
         let home = std::env::var("HOME").ok()?;
         let installed = PathBuf::from(&home).join(".local/bin/mini-tui");
         installed.is_file().then(|| installed.display().to_string())

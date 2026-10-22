@@ -773,7 +773,10 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
     // back rc127 (49 parent turns, 627 s of model time) because the documented third fallback
     // was never implemented and this machine has no installed copy.
     let mut extra = vec![bin.display().to_string()];
+    // Every rung of the chain validates its candidate: a dead MINI_TUI_BIN falls through to the
+    // next instead of pushing a non-existent PATH entry (PR review iter 1).
     let tui = std::env::var("MINI_TUI_BIN").ok().filter(|v| !v.is_empty()).map(PathBuf::from)
+        .filter(|p| p.exists())
         .or_else(|| {
             let home = std::env::var("HOME").ok()?;
             let installed = PathBuf::from(home).join(".local/bin/mini-tui");

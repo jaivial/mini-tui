@@ -16,7 +16,7 @@ y alcanzó: goal A a **1.11x sobre pi** (10/10) y goal B **S(8)=1.62-1.63** con 
 1-3 minutos (`docs/ANALYSIS-delegation-nx-campaign-20261022.md`). Este documento re-mide los
 cuatro cuellos de botella originales contra ese estado y deja constancia de cuáles siguen abiertos.
 
-## 1. Los cuatro hallazmedidos originales, re-medidos tras los loops 4-8
+## 1. Los cuatro hallazgos medidos originalmente, re-medidos tras los loops 4-8
 
 ### 1.1 Doble confirmación del final en workers de ola — `[MEDIDO]` y **YA RESUELTO por #390**
 
@@ -45,9 +45,9 @@ hay copia instalada ni `MINI_TUI_BIN`.
 
 | métrica (64 runs post-#390) | valor |
 |---|---|
-| comandos `mini-tui` con rc≠0 | **48** (rc127 "orden no encontrada") |
+| comandos `mini-tui` con rc127 ("orden no encontrada") | **48** |
 | turnos de padre con `mini-tui` fallido | **49** = **627,5 s de modelo** |
-| turnos de padre con `mini-tui` OK | 4 (92% fallan) |
+| turnos de padre con `mini-tui` OK | **4** de53 (el92% de los turnos con `mini-tui` fallan) |
 
 El padre gasta giros enteros —o el intento completo de la tarjeta de sesión que su propio
 system prompt le pide— en un comando que su propio hub promete y no entrega. `#396` mitigó un
