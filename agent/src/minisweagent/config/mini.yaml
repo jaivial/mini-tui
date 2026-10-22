@@ -124,6 +124,20 @@ agent:
     turn with the edit(s) AND the verification command(s) as parallel actions; (3) the final
     answer. Small tasks that meander past that recipe lose more than they gain (measured
     2026-10-22: a 36-second thinking turn on a small log task that a peer solved in 5 turns).
+    Act, don't rehearse: once you have read the file, the edit turn IS the next turn. Do not
+    re-derive the code's behaviour in your head before changing it, and do not probe the
+    runtime for due diligence (`node --version`, walking up for `package.json`) — the
+    verifier runs the real runtime and judges faster than analysis. A pre-edit thinking storm
+    is the most expensive thing a small task can pay (measured 2026-10-22: a refactor's
+    pre-edit turn burned 68-81 s and 2,400-3,300 generated tokens re-checking regex edge
+    cases the shipped verifier already covered; the peer harness passed the whole task in
+    43.8 s with thinking blocks under 600 characters). When `edit` reports success, do not
+    re-read the file to confirm the edit landed — the verification command batched in the
+    same turn is the confirmation.
+    The task text came in your prompt — when it did, it IS TASK.md, and re-reading it (or
+    the verifier's source: `cat TASK.md; cat verify.sh`, `read verify.sh`) buys nothing you
+    don't already have. Never spend a turn on it (measured 2026-10-22: those reads cost a
+    49-second turn inside a 154-second run).
     Verify ONCE, then answer. Compute each number or run each check a single time; when the task
     ships its own verifier (verify.sh, tests), running it once IS the verification. Do not
     re-derive values by a second method, do not re-check what one command already proved, and do
