@@ -186,7 +186,7 @@ cuatro se apaga para este run: se corre el `HEAD` de `origin/main` (commits `2f0
 | Adaptador | `benchmark/terminal-bench/mini_agent_rs.py` | importa, expone `wall_time_limit_sec` / `step_limit` y sube binario + YAML + bundle de CA |
 | Conexión del modelo | `mini-agent-rs test-model xiaomi/mimo-v2.6-flash` (superficie `/anthropic`) | **ok** desde el host |
 | Validación oracle (2 tasks) | `harbor run -p dataset/terminal-bench -i *html-js-filter* -i *bun-sourcemap-leak* -a oracle -n 1` | **2/2 reward 1.000, 0 excepciones, 6 m 21 s** (`jobs/2026-10-22__11-53-50`) — pull + verificador + scoring funcionan en esta máquina (tasks de la descarga `@latest`; los runs puntuados usan `dataset/v2` y `dataset/sample`) |
-| Piloto acotado | `bash benchmark/terminal-bench/run_pilot.sh` | ver §6 |
+| Piloto acotado | `bash benchmark/terminal-bench/run_pilot.sh` | 3 jobs / 3 filas en receipt: oracle **1.000 (2/2)**, mini v1 **0.500** (1 excepción TLS), mini v2 **0.500** con **0 excepciones** — detalle y gate en §6 |
 
 Todo lo largo corre bajo `systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=6G`.
 
@@ -194,8 +194,63 @@ Todo lo largo corre bajo `systemd-run --user --scope -p CPUQuota=200% -p MemoryM
 
 ## 6. Resultados del piloto (2026-10-22)
 
-*(se rellena con las filas reales de `receipt/runs.csv` al terminar el run; si algo falla,
-aquí pone BLOQUEADO + causa.)*
+Todas las cifras salen de `benchmark/terminal-bench/receipt/runs.csv`, generado por
+`record_receipt.py` leyendo los `result.json` de cada job. Mismo dataset
+(`terminal-bench-sample@2.0`), mismas 2 tasks (`fix-code-vulnerability`, `regex-log`),
+`-n 1 -k 1`, mismo binario (commit `1914430`, sha del build en la provenance del adaptador).
+
+| job | brazo | score | rewards | agent wall total / mediana | job wall | tokens in / out | excepciones |
+| --- | --- | ---: | --- | ---: | ---: | --- | --- |
+| `oracle-pilot-20261022-100521` | oracle (sin modelo) | **1.000** (2/2) | fix=1, regex=1 | 0.4 s / 0.2 s | 87.9 s | 0 / 0 | — |
+| `mini-pilot-20261022-101010` (v1, **sin** bundle CA) | mini + MiMo V2.6 | 0.500 (1/2) | fix=1, regex=0 | 229.8 s / 114.9 s | 298.1 s | 11 551 / 2 957 | **1**: `regex-log:NonZeroAgentExitCodeError` |
+| `mini-pilot-20261022-103205` (v2, adaptador con CA) | mini + MiMo V2.6 | **0.500** (1/2) | fix=1, regex=0 | 1070.0 s / 535.0 s | 1156.7 s | 14 681 / 22 188 | **0** |
+
+Detalle del run v2 (el que lleva el adaptador que se versiona):
+
+| task | reward | agent wall | llamadas al modelo | tokens in / out | excepción |
+| --- | ---: | ---: | ---: | --- | --- |
+| `fix-code-vulnerability` | **1.0** | 252.1 s | 18 | 12 170 / 5 804 | ninguna |
+| `regex-log` | 0.0 | 817.9 s | 2 | 2 511 / 16 384 | ninguna (ver lección 4) |
+
+`cost_usd = 0.0000` en las tres filas: el endpoint token-plan no publica precios
+(`docs/providers-catalog.md`), así que **el comparador válido son los tokens**.
+
+### Lecciones del piloto
+
+1. **Imágenes sin trust store.** `regex-log` tiene **0** certificados en `/etc/ssl/certs` y
+   ningún bundle: `rustls-native-certs` arranca con cero roots y la primera llamada muere con
+   `invalid peer certificate: UnknownIssuer`. Medido: v1 → 0 tokens y
+   `NonZeroAgentExitCodeError` en 67.1 s; v2 (con el bundle del adaptador) → **el mismo trial
+   llega al modelo** (2 llamadas, 2 511 in / 16 384 out). `fix-code-vulnerability` sí trae 301
+   certificados: por eso en v1 esa task funcionó y se resolvió (11 551/2 957, reward 1).
+2. **El bundle del host es un symlink.** En este host RHEL `/etc/ssl/certs/ca-certificates.crt`
+   apunta a `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`; `docker cp`/tar lo copian tal
+   cual y dentro del contenedor queda **colgado** → dos experimentos de diagnóstico dieron
+   falsos negativos antes de copiar a fichero regular. Por eso `install()` copia a un
+   temporal y sube bytes, no el enlace.
+3. **Overhead del run:** en el brazo oracle, 0.4 s de agente dentro de un job de 87.9 s
+   (pull + verificación es el coste fijo). Para comparar harnesses hay que usar
+   `agent_wall_s_*`, no `job_wall_s` — por eso el receipt trae ambas columnas.
+4. **El cap de wall no interrumpe llamadas en vuelo.** `wall_time_limit_sec=600` sólo se
+   evalúa entre pasos: `regex-log` corrió **817.9 s** porque una llamada se cayó en streaming
+   (`ProviderError: Error while decoding chunks`, con reintentos) y el giro gastó **16 384
+   tokens de salida** (`finish_reason=length` en el journal). El techo real lo puso Harbor
+   (`[agent] timeout_sec = 900`). En F1 conviene o subir ese cap o asumir que el límite
+   efectivo es el de Harbor.
+5. **Las dos ejecuciones del brazo mini dan el mismo score (0.500)** con distinto wall: la
+   diferencia de v1→v2 no es calidad, es **infraestructura** (TLS) — exactamente lo que el
+   gate de F0 separa.
+
+### Gate F0 (evaluado con estos datos)
+
+| Criterio del gate | Estado |
+| --- | --- |
+| Brazo oracle 2/2 (entorno + verificadores OK) | **PASS** (1.000) |
+| Brazo mini sin errores de infraestructura | **PASS en v2** (0 excepciones); v1 los tuvo y motivó el fix |
+| ≥ 2 filas reales en `receipt/runs.csv` | **PASS** (3 filas) |
+
+**F0 = PASS → F1 desbloqueado** (sample completo, 10 tasks, mismos flags). Lo que queda para
+F1: ventana de máquina libre y las ~10 tasks; nada de lo anterior se estima, se re-corre.
 
 ---
 
@@ -236,6 +291,13 @@ casos se deja el receipt con lo corrido y se anota el motivo; **no se rellena co
 7. **Publicación prohibida**: nada de issues/comentarios/rrss (decisión de Jaime 2026-10-22).
 8. **Credenciales**: nunca en el repo, el PR, los logs ni el receipt. El adapter solo las
    reenvía por entorno del contenedor; el script de piloto las lee de `~/.config/mini-tui-web.env`.
+   Nota: Harbor las pasa al motor de Docker como `-e K=V` en el argv de `docker compose exec`,
+   así que en este host local se ven en `ps` (comportamiento propio de Harbor, idéntico para sus
+   agentes built-in); los artefactos del job **no** contienen la clave (verificado con grep
+   sobre `bench/jobs/`: 0 coincidencias) y nada de eso se sube a ninguna parte.
+9. **El cap de wall no corta llamadas en vuelo** (lección 4 de §6): `wall_time_limit_sec` sólo
+   se evalúa entre pasos; el techo efectivo de un trial es el `[agent] timeout_sec` de la task
+   (900 s en el sample). Presupuestar F1/F2 con ese techo.
 
 ---
 
