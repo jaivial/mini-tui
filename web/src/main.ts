@@ -36,3 +36,12 @@ try {
 }
 
 export default mount(App, { target: document.getElementById("app")! });
+
+// The PWA's services: register the worker that caches the shell, the hashed bundles and the icons,
+// so the installed app paints on a repeat visit and still opens (with the app's own reconnect
+// banner) offline. The worker is a built asset, so a dev server — where modules and styles change
+// on every save — must never control the page. A failed registration (an old browser, plain http
+// without a certificate) leaves the app exactly as it was: the worker is an enhancement.
+if (!import.meta.env.DEV && "serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}

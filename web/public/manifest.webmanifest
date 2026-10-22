@@ -2,6 +2,7 @@
   "name": "mini-tui",
   "short_name": "mini-tui",
   "description": "Chat with your agents from anywhere.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
