@@ -24,15 +24,20 @@ aisladas por nombre/roles/límites; el CLI `pgx` gestiona un clúster bajo `~/.p
 
 Datos de contexto (todo del propio proyecto, **mediciones suyas, no nuestras**):
 
-- **Beta.** Repo creado 2026-10-08, 234 ★ y 4 issues abiertos al 2026-10-21. Versión v0.1,
-  tag propuesto `pgx-v0.1-baseline` aún no creado; tag real `pgx-v0.1-beta.1` (commit
-  `913630e11d`) es el motor que PGRun despliega en su beta.
+- **Beta.** Repo creado 2026-10-08, 234 ★ y 4 issues abiertos al 2026-10-21. Versión v0.1:
+  tag propuesto `pgx-v0.1-baseline` aún no creado (el readiness doc lo dice); el proyecto
+  publicó después `v0.1.0-beta.1` y **`v0.1.0`** (tag del 2026-10-21, tras los fixes
+  `913630e11d` = `pgx-v0.1-beta.1`), que su README ya declara como release vigente. Para
+  este plan, la referencia a fijar es `v0.1.0`.
 - **Licencia AGPL-3.0** (`LICENSE`), con partes derivadas de PostgreSQL bajo licencia
   PostgreSQL (`NOTICE`). El patrocinador es PGRun (<https://pgrun.dev>), que usa
   PGX como motor de "ramas" efímeras.
-- **Compatibilidad:** suite de regresión de PostgreSQL: 219/231 byte-idénticos, los otros 12
-  difieren solo en texto de `EXPLAIN`, 0 diferencias de resultado; 36/36 ciclos de
-  frameworks reales (Rails 8.1, Django 5.2, Prisma 6, SQLAlchemy 2, node-postgres).
+- **Compatibilidad:** suite de regresión de PostgreSQL. En el freeze v0.1 (readiness doc):
+  219/231 byte-idénticos, los otros 12 solo en texto de `EXPLAIN`, 0 diferencias de
+  resultado. En la nightly más reciente del proyecto (2026-10-21, `README`): **223/231
+  byte-idénticos, 6 solo de `EXPLAIN` y 2 con diferencias de resultado** (`select_parallel`
+  y `stats`, issue #17). 36/36 ciclos de frameworks reales (Rails 8.1, Django 5.2,
+  Prisma 6, SQLAlchemy 2, node-postgres).
 - **Uso aprobado por su propio readiness doc** (`docs/pgx/v0.1-readiness.md`): bases
   efímeras de agente, CI, por PR, test y preview. **No aprobado:** producción, sistema de
   registro, alta disponibilidad, PITR.
@@ -59,10 +64,10 @@ Datos de contexto (todo del propio proyecto, **mediciones suyas, no nuestras**):
 ## 2. Contexto: qué usa hoy mini-tui
 
 - **El estado propio de mini-tui ya es SQLite** (`bun:sqlite` / `node:sqlite`):
-  `sessions.sqlite`, `channels.sqlite`, `graph.sqlite` y
-  `~/.local/share/mini-tui/task-graph.sqlite` (ver `docs/task-graph.md`). Nada de eso
-  necesita PGX: seguiría en SQLite, que es la herramienta correcta para un solo proceso
-  local con escritura frecuente.
+  `~/.config/mini-tui/sessions.db` (sesiones), `~/.local/share/mini-tui/channels.sqlite`
+  (canales) y `~/.local/share/mini-tui/task-graph.sqlite` (grafo; ver `docs/task-graph.md`).
+  Nada de eso necesita PGX: seguiría en SQLite, que es la herramienta correcta para un
+  solo proceso local con escritura frecuente.
 - **Los workers ya trabajan en worktrees** (`<repo>/.worktrees/<nombre>`, p. ej.
   `newvillacarmen/backend/.worktrees/be-x`), y **el entorno de los hijos se construye en
   `agent-rs/src/environment.rs`** (los `env: BTreeMap<String,String>` de las líneas ~614 y
@@ -93,7 +98,10 @@ Todo esto es **diseño propuesto; nada de esto está implementado.**
 ```
 
 - **Plantilla por proyecto** (`mt_tpl_<proyecto>`): schema base + migraciones + fixtures
-  mínimos, sellada una vez. Clonar una rama es `CREATE DATABASE … STRATEGY = FILE_COPY`
+  mínimos, sellada una vez (`pgrust_seal_template(...)` del diagrama es un nombre
+  ilustrativo: pgx no expone operación "seal"; el sellado sería nuestro script de
+  migraciones + `CREATE DATABASE … FROM template`). Clonar una rama es
+  `CREATE DATABASE … STRATEGY = FILE_COPY`
   con `file_copy_method = clone` (CoW en btrfs reflink; si no, copia completa).
 - **Una base por worktree/sesión**, nombre derivado y estable:
   `mt_wt_<proyecto>_<idWorktree>` (límite: 63 bytes, `^[A-Za-z_][A-Za-z0-9_-]*$`;
@@ -183,13 +191,16 @@ PGX es AGPL-3.0 completo. **Esto no es asesoramiento legal; es el análisis para
 
 ### 4.3 Inmadurez del proyecto
 
-- 13 días de repo público (2026-10-08), beta, un solo sponsor (PGRun), sin tags en el
-  engine baseline, 4 issues abiertos; dos bugs reales aparecieron en la primera carga real
-  (2026-10-09, corregidos y con reproducción permanente). La superficie compatible es lo
-  que cubren su suite y sus workloads: **extensiones no encuestadas**, MVCC/isolation y
-  features poco usadas son la zona oscura. 12 planes de `EXPLAIN` distintos de PostgreSQL.
+- 13 días de repo público (2026-10-08), beta, un solo sponsor (PGRun), sin tag en el
+  engine baseline propuesto (`pgx-v0.1-baseline`), 4 issues abiertos; dos bugs reales
+  aparecieron en la primera carga real (2026-10-09, corregidos y con reproducción
+  permanente). La superficie compatible es lo que cubren su suite y sus workloads:
+  **extensiones no encuestadas**, MVCC/isolation y features poco usadas son la zona oscura.
+  En la nightly del 2026-10-21: 6 tests solo de `EXPLAIN` y **2 con diferencias de
+  resultado** (`select_parallel`, `stats`, issue #17).
 - Versiones ancladas: engine baseline `727f31e49f`, tras los fixes `913630e11d`
-  (tag `pgx-v0.1-beta.1`); conviene **fijar commit/versión** en vez de seguir `latest`.
+  (tag `pgx-v0.1-beta.1`); el proyecto publicó después `v0.1.0` (2026-10-21). Conviene
+  **fijar `v0.1.0`** (o commit) en vez de seguir `latest`.
 - Factor bus y dirección: PGX es el motor de PGRun; si PGRun cambia de rumbo, mini-tui
   queda con un fork AGPL que alguien tendría que mantener.
 
