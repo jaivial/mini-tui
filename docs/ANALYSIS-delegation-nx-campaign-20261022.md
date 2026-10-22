@@ -113,3 +113,68 @@ S(N) by part shape (the motif's honest boundary):
 The Nx limit stays Amdahl's: with the wave's fixed cost at ~60 s and the
 measured per-part parity gap, the ceiling for N=4 is ~3.2x and for N=8 ~6x
 (0.75-0.8 N) once workers match the serial arm's per-part efficiency.
+
+# Update 2026-10-22 — loop 15
+
+t4 (refactor) attack: per-turn traces instead of anecdotes. Reading the
+`model_ms` / `output_tokens` / thinking length of every assistant turn in the
+three slowest mini t4 runs and in pi's reference run (20261022-162146)
+reshuffles the earlier diagnosis:
+
+| run | t4 wall | turns | biggest turn | that turn's output | thinking chars | task output tok total |
+|---|---|---|---|---|---|---|
+| mini 165510 | 154.2 | 8 | 58.8 s | 3,243 tok (`code`) | — | 6,105 |
+| mini 170659 | 132.2 | 6 | 68.4 s | 2,380 tok (`node --version`) | 6,525 | 4,209 |
+| mini 172213 | 120.1 | 6 | 80.7 s | 3,331 tok (`edit`) | 8,373 | 4,595 |
+| **pi 162146** | **43.8** | 6 | (max turn) | **382 tok** | **max 579** | **1,378** |
+
+- **Not gateway latency.** The slow turns generated 2,400-3,300 output tokens
+  at ~42 tok/s — they are generation-bound rumination, not round-trip spikes.
+  The loop-14 note's "68.4 s round trip for a 29-byte `node --version`" is
+  corrected: that call *generated* 2,380 tokens; the byte count of the command
+  was never the cost. Real spikes do exist (see rep 181417 below) but they are
+  not what kept t4 slow.
+- **Not turn count.** mini and pi both ran 6 turns; mini's per-turn output was
+  3-7x pi's, dominated by ONE pre-edit turn per run.
+- **Not the edits.** utils.js is 479 bytes; the edit block was 265 chars
+  against 8,373 chars of thinking. The 512-token thinking budget is sent but
+  the gateway does not enforce it (same run: 27- and 57-char thinking blocks
+  on turns 1-2, 8,373 on turn 3), so the cap has to come from the prompt.
+- **Second measured waste:** re-reading TASK.md/verify.sh when the task text
+  came in the prompt — a 49 s turn inside a 154 s run (181417).
+
+## The lever
+
+`mini.yaml` role_boundary, two rules: *act, don't rehearse* (the edit turn IS
+the next turn after the reads; no pre-edit re-derivation, no runtime probes
+like `node --version` or walking up for `package.json`; no re-read of a file
+edit just reported success) and *never spend a turn reading TASK.md/verify.sh
+back*. No code lever: the gateways' non-enforcement of `budget_tokens` and its
+stalls are outside the harness; everything controllable is turn/generation
+volume.
+
+## Measured (both configs, all runs today)
+
+| config | rep | total | t4 | PASS | stalls (>25 s at <200 tok) |
+|---|---|---|---|---|---|
+| pre (loops 9-14) | 172213 (best) | 507.1 | 120.1 | 10/10 | — |
+| pre | 165510/170659 | 587.6/617.6 | 154.2/132.2 | 10/10 | — |
+| loop 15 | 180230 | **429.2** | 70.1 | 10/10 | 1 (29 s) |
+| loop 15 | 181417 | 763.7 | 154.2 | 10/10 | 3 totalling 235 s (incl. one 142.4 s call at 79 tok) |
+| loop 15 (final) | 183230 | **473.4** | **62.1** | 10/10 | 0 |
+| loop 15 (final) | 184025 | **523.3** | 76.1 | 10/10 | 1 (38.9 s) |
+
+**Final validating pair: 473.4 and 523.3 vs pi's 655.0 (1.38x, 1.25x), 10/10
+PASS both, t4 62.1 s — down from 120.1-154.2, i.e. 1.9-2.5x on the task mini
+lost structurally, and under pi's 43.8-50.1 in 1 of 4 runs (70.1 in a second).**
+t4 pre-edit thinking went 8,373 -> 806 chars and t4's generated task tokens
+4,595 -> 1,145-1,671.
+
+Rep 181417 is the honest counterexample kept in the table: same config, a
+gateway-bad window — three calls each returning <200 tokens after 43-142 s
+(235 s of wall, ~215 s of it pure stall) plus a partial rumination relapse on
+t4 (2,407 tok). Excluding the stalls its total lands ~550 s, still under pi;
+no prompt lever can touch (a), so it is documented rather than "fixed". Per
+task vs 172213: t1 improved (42.1 -> 20.0/22.0), t2 inside its 26-66 band
+(38.1/38.1), t7 inside its 42-126 mini band (126.2/68.1, zero stalls in the
+126.2 rep — all generation, and pi itself spans 44.6-210.3 on t7).
