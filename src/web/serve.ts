@@ -1101,7 +1101,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
           },
         });
       }
-      const sessionMatch = path.match(/^\/sessions\/([^/]+)(\/prompt|\/model|\/title|\/interrupt|\/compact)?$/);
+      const sessionMatch = path.match(/^\/sessions\/([^/]+)(\/prompt|\/model|\/title|\/interrupt|\/compact|\/exists)?$/);
       if (sessionMatch) {
         const id = decodeURIComponent(sessionMatch[1] as string);
         const action = sessionMatch[2];
@@ -1168,6 +1168,32 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         if (!action && request.method === "DELETE") {
           dropSession(id);
           return json({ ok: true });
+        }
+        if (action === "/exists" && request.method === "GET") {
+          // "Does this session exist?" -- a QUESTION, and it changes nothing.
+          //
+          // The route that used to answer it (`GET /sessions/:id`) answers by OPENING the session
+          // (`held()` is `openHistory`): it rehydrates a LiveSession, puts it back on the open list
+          // (`web_open_sessions`, durable since #345) and announces it to every tab. So a client that
+          // merely wondered whether a session was still there -- the socket's "was that handshake
+          // refused because the session is gone?" -- brought a CLOSED session back to life, and the
+          // next deploy restored it as open for good. This route answers the same question with a
+          // read and no write (E52/E56).
+          //
+          // THE VERDICT RIDES IN THE BODY, NOT IN THE STATUS. A query that answered 404 for "this
+          // id is nowhere" would be indistinguishable from a 404 that means "this server has no such
+          // route" -- which is exactly what a bundle NEWER than its server meets, because the
+          // bundle is served from disk and the server is restarted separately (the client is
+          // deployed by `bun run build`, the server by a restart). Reading that as a verdict wipes a
+          // LIVE pane (the E52 symptom, resurrected). So: 200 always means "the server answered",
+          // and the body says whether it is there. Anything else -- a 404 from an older server, a 503
+          // from a busy database, the network -- is a failure to ASK, never an answer, and it must
+          // never forget a session (E52).
+          try {
+            return json({ exists: sessions.exists(id) });
+          } catch (error) {
+            return json({ error: `could not look for the session: ${(error as Error).message}` }, 503);
+          }
         }
         if (!action && request.method === "GET") {
           const found = await heldOrError(id);

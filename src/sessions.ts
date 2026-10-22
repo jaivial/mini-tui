@@ -200,6 +200,19 @@ export function getSession(db: Database, id: string): SessionRecord | null {
   return (db.query("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRecord | undefined) ?? null;
 }
 
+/**
+ * Whether a saved session with this id exists.
+ *
+ * One indexed lookup and no transcript: the EXISTENCE of a session is not its content, and
+ * reading a conversation to answer "is it there?" is what made the old existence check expensive
+ * (and, through `openHistory`, mutating). E56.
+ */
+export function sessionExists(db: Database, id: string): boolean {
+  // `get()` answers `null` for a row that is not there (not `undefined`), and the id is the
+  // primary key, so this is one indexed lookup and no transcript is read.
+  return db.query("SELECT 1 FROM sessions WHERE id = ? LIMIT 1").get(id) !== null;
+}
+
 /** An agent process some UI is running for a session (see `live_runs`). */
 export interface LiveRunRecord {
   session_id: string;

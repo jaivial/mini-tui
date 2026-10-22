@@ -82,7 +82,16 @@ export const api = {
   sessions: () => call<SessionMeta[]>("/sessions"),
   /** Every bot's kanban cards (`mini-tui kanban`), newest first. */
   kanban: () => call<{ id: string; session: string; title: string; description: string; column: string; assignee: string; result: string; updatedAt: number }[]>("/kanban"),
-  session: (id: string) => call<WireSession>(`/sessions/${id}`),
+  /**
+   * Whether the server still knows this session — a QUESTION, and it opens nothing.
+   *
+   * There is deliberately no "read this session" call here: the route that would answer it
+   * (`GET /sessions/:id`) answers by OPENING the session — it restores the saved row into a live
+   * session, puts it back on the durable open list (`web_open_sessions`) and announces it to every
+   * tab. So a client that merely wondered whether a session was still there brought a CLOSED
+   * session back to life, and the next deploy kept it open (E52/E56). This route only reads.
+   */
+  sessionExists: (id: string) => call<{ exists: boolean }>(`/sessions/${encodeURIComponent(id)}/exists`),
   create: (body: CreateSessionBody) =>
     call<WireSession>("/sessions", { method: "POST", body: JSON.stringify(body) }),
   send: (id: string, prompt: string, attachments?: AttachmentRef[]) =>
@@ -144,3 +153,34 @@ export const api = {
   },
   disconnectProvider: (id: string) => call<{ ok: true }>(`/providers/${id}`, { method: "DELETE" }),
 };
+
+/**
+ * "Was that refused handshake a deleted session, or just a dead network?"
+ *
+ * `false` = the server says the id is nowhere (it is gone); `true` = it is there; `null` = could not
+ * tell (the network, a busy database), so the caller keeps trying.
+ *
+ * THE VERDICT IS READ FROM THE BODY, NEVER FROM THE STATUS. A route that answered "nowhere" with a
+ * 404 would be indistinguishable from a 404 that means "this server has no such route" -- which is
+ * exactly what a bundle NEWER than its server meets, because the bundle is served from disk and the
+ * server is restarted separately (the client ships with `bun run build`, the server with a restart).
+ * The old code read the status and so mistook the routing 404 for the answer, and the browser
+ * concluded a LIVE session was gone and turned its pane into a new chat: the E52 symptom, back
+ * through the other door. So the route answers 200 with `{exists:true|false}` and EVERY other
+ * outcome -- a routing 404, a 503 from a busy database, the network -- is a failure to ASK, never
+ * an answer, and must never forget a session (E52).
+ *
+ * The question is asked through the READ-ONLY route on purpose. `GET /sessions/:id` answers it by
+ * OPENING the session -- restoring the saved row, putting the id back on the durable open list
+ * (`web_open_sessions`) and announcing it to every tab -- so asking whether a closed session was
+ * still there brought it back to life (E52/E56).
+ */
+export async function sessionExists(id: string): Promise<boolean | null> {
+  try {
+    const answer = await api.sessionExists(id);
+    // Only a body that SAYS so is an answer. A 200 with anything else is a failure to ask.
+    return typeof answer?.exists === "boolean" ? answer.exists : null;
+  } catch {
+    return null;
+  }
+}

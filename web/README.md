@@ -279,6 +279,7 @@ site cannot start agents or write keys through your browser.
 | `GET` | `/api/stream` | SSE: every session and host change |
 | `GET` | `/api/sessions` | live sessions (metadata, no transcript) |
 | `GET` | `/api/sessions/:id/socket` | WebSocket: that session's transcript |
+| `GET` | `/api/sessions/:id/exists` | does that session exist? **a question, and it opens nothing**: **200 `{exists:true}` or 200 `{exists:false}`**, and 503 if it could not be read. **The verdict rides in the body, never in the status**: the bundle is served from disk and the server is restarted separately, so a client can be NEWER than its server, and a server that predates this route answers its catch-all `404 {"error":"not found"}` -- which is NOT "this session is nowhere". Reading the status there would wipe a LIVE pane, so every outcome that is not a 200 carrying the boolean is a failure to ASK, never an answer. `GET /api/sessions/:id` answers the same question by OPENING the session (it restores the saved row, puts it back on the durable open list and announces it to every tab), so a client that merely wondered whether a closed session was still there brought it back to life (E52/E56) |
 | `POST` | `/api/sessions` | start one (`target: local \| remote`, `hostId`) |
 | `POST` | `/api/sessions/:id/prompt` | follow-up in the same conversation (409 with the reason if there is nothing to continue from) |
 | `POST` | `/api/sessions/:id/interrupt` | stop the run |

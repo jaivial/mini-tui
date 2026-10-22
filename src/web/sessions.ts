@@ -33,6 +33,7 @@ import {
   rememberAgentRun,
   agentRuns,
   getSession,
+  sessionExists,
   registerLiveRun,
   markSessionOpen,
   unmarkSessionOpen,
@@ -666,6 +667,20 @@ export class SessionManager {
 
   get(id: string): LiveSession | undefined {
     return this.#live.get(id)?.session;
+  }
+
+  /**
+   * Whether this session exists, WITHOUT opening it.
+   *
+   * A question, not an act: it does not restore a session, does not put it back on the open
+   * list (`web_open_sessions`), does not rehydrate its mirror and does not announce it. The
+   * route that asked the question (`GET /sessions/:id`) answers it by OPENING the session, so a
+   * client that merely wondered whether a session was still there brought it back to life --
+   * durably, since PR #345 made the open marker survive a restart (E52/E56).
+   */
+  exists(id: string): boolean {
+    if (this.#live.has(id)) return true;
+    return sessionExists(this.db(), id);
   }
 
   /**
