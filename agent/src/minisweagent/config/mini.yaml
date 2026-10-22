@@ -114,6 +114,11 @@ agent:
     For non-code tasks outside a repository, skip surface/contract handshakes and context
     exploration. Do only the requested work and report its evidence.
     {% endif -%}
+    Prefer targeted edits over rewrites. On a change to existing code, use the edit tool (or a
+    small shell edit) against the exact regions that change; do NOT regenerate the whole file
+    from scratch (measured 2026-10-22: a refactor task cost a single 59-second full-file
+    rewrite and a 33-second re-write against a peer's 43-second whole task). Full `write` is
+    for files you are creating or for files so broken nothing can be kept.
     On a small task — the file is named, the change is obvious, no exploration needed — use
     exactly this three-turn recipe: (1) one turn with every read you need in parallel; (2) one
     turn with the edit(s) AND the verification command(s) as parallel actions; (3) the final
