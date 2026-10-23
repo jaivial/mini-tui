@@ -1,0 +1,77 @@
+# mini-tui in a container.
+#
+# Design contract: TOOLS live in the image (bun, node, python+agent, whisper,
+# mini-agent-rs); STATE lives in the bind-mounted home (providers.json with the
+# API keys, sessions.db, skills, the repos the agent works on). That is why the
+# single mount is /home/jaime:/home/jaime and the netns is the host's.
+#
+#   docker compose up -d                      # the web app on 4317
+#   docker compose --profile channels up -d   # + the WhatsApp consumer daemon
+#   docker compose --profile rag up -d        # + RAG server + graph projection
+#
+# See docs/docker.md for the whole tour.
+
+x-mini-tui-base: &mini-tui-base
+  build:
+    context: .
+  image: mini-tui:latest
+  # Linux: the web keeps port 4317 exactly like the host service, and the
+  # loopback services the scripts talk to (ollama 11434, neo4j-rust 7687,
+  # evo 127.0.0.1) stay reachable at 127.0.0.1 — the same URLs the code uses.
+  network_mode: host
+  restart: unless-stopped
+  # SELinux (Fedora/RHEL host, enforcing): the container domain cannot read the
+  # bind-mounted home (measured: EACCES on ~/.config/mini-tui/providers.json and
+  # ~/.config/mini-swe-agent/.env even with the right uid). `:Z` would relabel
+  # the WHOLE home (breaks sshd et al.) — never that. This container is trusted
+  # by design (it mounts your home), so it runs unlabeled; DAC (uid jaime) still
+  # applies. No-op on hosts without SELinux.
+  security_opt:
+    - label=disable
+  volumes:
+    # Parity of paths: agent sessions write ~/.config/mini-tui and work on the
+    # host repos at identical paths inside and outside the container.
+    - /home/jaime:/home/jaime
+  # Optional repo-local .env (never baked into the image; the provider keys
+  # live in ~/.config/mini-tui/providers.json and enter through the bind).
+  env_file:
+    - path: .env
+      required: false
+
+services:
+  mini-tui:
+    <<: *mini-tui-base
+    environment:
+      MINITUI_WEB_HOST: "0.0.0.0"
+      MINITUI_WEB_PORT: "4317"
+
+  # The WhatsApp channel consumer daemon (src/channels/consumerMain.ts).
+  channels:
+    <<: *mini-tui-base
+    profiles: [channels]
+    command: ["bun", "src/channels/consumerMain.ts"]
+    environment:
+      # No systemd user session inside a container: whisper runs unwrapped
+      # instead of failing on `systemd-run --user` (src/channels/transcribe.ts).
+      EVO_TRANSCRIBE_CPU_QUOTA: ""
+    healthcheck:
+      disable: true
+
+  # Local graph RAG over the Rust Bolt property graph (port 9446 on loopback;
+  # needs bolt://127.0.0.1:7687 = the host's neo4j-rust, reachable via the
+  # host netns). Downloads its embedding model to ~/.cache on first run.
+  rag:
+    <<: *mini-tui-base
+    profiles: [rag]
+    command: ["python3", "scripts/orchestration_rag.py"]
+    healthcheck:
+      disable: true
+
+  # Durable task/board projection into the same graph (omit --once for the
+  # loop; `docker compose run --rm rag-sync ... --once` for a single pass).
+  rag-sync:
+    <<: *mini-tui-base
+    profiles: [rag]
+    command: ["python3", "scripts/orchestration_graph_sync.py"]
+    healthcheck:
+      disable: true
