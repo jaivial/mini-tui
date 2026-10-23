@@ -89,9 +89,41 @@ export async function discoverModels(def: ProviderDef, key: string): Promise<str
   }
 }
 
+/** Model ids that are almost never chat-completion models (speech, embedding, realtime…). */
+const NON_CHAT_MODEL = /(^|[-_.])(asr|tts|stt|whisper|audio|speech|voice|embed|embedding|rerank|moderation|realtime)([-_.]|$)/i;
+
+/**
+ * The models a new key is validated against, in catalogue order.
+ *
+ * THE DEFECT THIS EXISTS TO FIX (measured on the deployed web app): the live /models
+ * list is sorted alphabetically and mixes in everything the endpoint serves — xiaomi's
+ * lists `mimo-v2.5-asr` and three TTS models before `mimo-v2.6-flash` — and the probe
+ * used to test `models[0]` ALONE. An ASR model answers a chat completion with
+ * `400 Param Incorrect`, so pasting a CORRECT key was rejected with
+ * `could not reach xiaomi/mimo-v2.5-asr with that key` (the same class of failure as
+ * kimi-coding and any provider whose first id is speech, embedding or plan-gated).
+ *
+ * Candidates are the chat-looking ids, catalogue order preserved; a list with no
+ * chat-looking id at all is kept whole (nothing may become unselectable by filtering).
+ * Everything stays in the saved model list either way — this only picks what gets probed.
+ */
+export function connectCandidates(models: string[]): string[] {
+  const chatLike = models.filter((m) => !NON_CHAT_MODEL.test(m));
+  return chatLike.length ? chatLike : models;
+}
+
+/** How many catalogue models a connect may probe before it condemns the key.
+ *  Failures are fast (a 4xx from the endpoint); the cap bounds a provider that
+ *  answers slowly, so a bad key still fails in seconds, not minutes. */
+const CONNECT_PROBE_ATTEMPTS = 5;
+
 /**
  * Validate a key with a real one-token completion, then save it (same steps as `/connect`).
  * Nothing is written unless the test passes, so a typo never replaces a working connection.
+ *
+ * A key is never condemned by ONE model: the catalogue lists everything the provider's
+ * /models serves (speech, embedding and plan-gated ids included), so the probe walks the
+ * candidate models until one answers. The first model that answers becomes the default.
  */
 export async function connectProvider(
   input: { providerId: string; key: string; model?: string },
@@ -104,27 +136,33 @@ export async function connectProvider(
   if (/\s/.test(key) || key.length > 512) return { ok: false, error: "that does not look like an API key" };
 
   const models = await (deps.discover ?? discoverModels)(def, key);
-  const model = input.model && models.includes(input.model) ? input.model : (models[0] ?? "");
-  if (!model) return { ok: false, error: "the provider returned no models" };
+  // An explicit choice must pass as given (or, if it is not in the catalogue at all,
+  // fall back to the candidates) — it is never silently replaced by another model.
+  const candidates = input.model && models.includes(input.model) ? [input.model] : connectCandidates(models);
+  if (!candidates.length) return { ok: false, error: "the provider returned no models" };
 
-  const ok = await (deps.test ?? testProviderModel)(def, `${def.prefix}/${model}`, key);
-  if (!ok) return { ok: false, error: `could not reach ${def.prefix}/${model} with that key` };
-
-  const connection: SavedConnection = {
-    id: def.id,
-    name: def.name,
-    route: def.route,
-    keyEnv: def.keyEnv,
-    extraEnv: def.extraEnv,
-    baseUrl: def.baseUrl,
-    prefix: def.prefix,
-    key,
-    models,
-    defaultModel: model,
-    addedAt: Date.now(),
-  };
-  (deps.save ?? saveConnection)(connection);
-  return { ok: true, provider: connectedProviders([connection])[0]! };
+  const probed: string[] = [];
+  for (const candidate of candidates.slice(0, CONNECT_PROBE_ATTEMPTS)) {
+    probed.push(candidate);
+    if (!(await (deps.test ?? testProviderModel)(def, `${def.prefix}/${candidate}`, key))) continue;
+    const connection: SavedConnection = {
+      id: def.id,
+      name: def.name,
+      route: def.route,
+      keyEnv: def.keyEnv,
+      extraEnv: def.extraEnv,
+      baseUrl: def.baseUrl,
+      prefix: def.prefix,
+      key,
+      models,
+      defaultModel: candidate,
+      addedAt: Date.now(),
+    };
+    (deps.save ?? saveConnection)(connection);
+    return { ok: true, provider: connectedProviders([connection])[0]! };
+  }
+  const named = probed.map((m) => `${def.prefix}/${m}`).join(", ");
+  return { ok: false, error: `could not reach ${probed.length === 1 ? named : `${def.prefix} (tried ${named})`} with that key` };
 }
 
 /**
@@ -147,7 +185,9 @@ export async function refetchProviderModels(
     return { ok: false, error: `could not list models at ${connection.baseUrl}: ${(error as Error).message}` };
   }
   if (!models.length) return { ok: false, error: `${connection.baseUrl} returned no models` };
-  const next: SavedConnection = { ...connection, models, defaultModel: models.includes(connection.defaultModel) ? connection.defaultModel : models[0]! };
+  // Same rule as connect: a vanished default falls back to the first CHAT model, so a
+  // refetch can never hand the default slot to an ASR/TTS/embedding id.
+  const next: SavedConnection = { ...connection, models, defaultModel: models.includes(connection.defaultModel) ? connection.defaultModel : connectCandidates(models)[0]! };
   (deps.save ?? saveConnection)(next);
   return { ok: true, provider: connectedProviders([next])[0]! };
 }
