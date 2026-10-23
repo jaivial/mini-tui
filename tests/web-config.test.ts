@@ -125,6 +125,29 @@ describe("connectProvider", () => {
     expect(loadConnections()).toHaveLength(0);
   });
 
+  test("a failed connect carries the provider's own answer, never the key", async () => {
+    const r = await cfg.connectProvider(
+      { providerId: "deepseek", key: KEY },
+      {
+        discover: async () => ["m1"],
+        probe: async () => ({ ok: false, detail: "error: ProviderAbortError: HTTP 401 from https://api.deepseek.com: The API Key appears to be invalid or may have expired" }),
+      },
+    );
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("HTTP 401") });
+    expect(JSON.stringify(r)).not.toContain(KEY);
+  });
+
+  test("an unreachable model list is named in the failure", async () => {
+    const r = await cfg.connectProvider(
+      { providerId: "deepseek", key: KEY },
+      {
+        discoverDetailed: async () => ({ models: ["m1"], listError: "https://api.deepseek.com/v1/models said HTTP 401" }),
+        probe: async () => ({ ok: false }),
+      },
+    );
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("models said HTTP 401") });
+  });
+
   test("connecting again replaces that provider's entry instead of duplicating it", async () => {
     await cfg.connectProvider({ providerId: "deepseek", key: "sk-one-1111111111111" }, ok);
     await cfg.connectProvider({ providerId: "deepseek", key: "sk-two-2222222222222" }, ok);

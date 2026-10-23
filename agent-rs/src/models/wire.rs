@@ -182,6 +182,13 @@ impl WireModel {
                 })
                 .collect()
         };
+        // The OpenAI-compat wire cannot carry Anthropic thinking blocks. A history that came
+        // through the Messages protocol (mimo/xiaomi runs normalize reasoning into content
+        // parts) gets replayed verbatim here, and a strict endpoint refuses it — measured on
+        // api.kimi.com/coding with a valid key: HTTP 400 "the message at position 2 with role
+        // 'assistant' contains an invalid part type: thinking". They are dropped, never sent:
+        // `reasoning_content` is not a WIRE_KEY either, so nothing part-shaped leaks through.
+        let prepared = drop_thinking_blocks(prepared);
         let prepared = reorder_thinking(prepared);
         if self.flavor == Flavor::OpencodeGo {
             return prepared; // the Go chat flavor sends no cache markers
@@ -682,6 +689,27 @@ fn is_thinking(b: &Value) -> bool {
     get_str(b, "type").is_some_and(|t| THINKING.contains(&t))
 }
 
+/// Drop `thinking`/`redacted_thinking` content blocks from messages that carry any (see
+/// `chat_messages`). A message without them is left untouched; one left with nothing but
+/// thinking keeps `content: null`, the OpenAI-compat spelling for "nothing to say here" —
+/// a tool-calling assistant turn may legally send no text at all.
+fn drop_thinking_blocks(messages: Vec<Value>) -> Vec<Value> {
+    messages
+        .into_iter()
+        .map(|mut m| {
+            if let Some(Value::Array(content)) = m.get("content").cloned() {
+                if content.iter().any(is_thinking) {
+                    let kept: Vec<Value> = content.into_iter().filter(|b| !is_thinking(b)).collect();
+                    if let Some(o) = m.as_object_mut() {
+                        o.insert("content".into(), if kept.is_empty() { Value::Null } else { Value::Array(kept) });
+                    }
+                }
+            }
+            m
+        })
+        .collect()
+}
+
 /// Thinking blocks first in assistant messages (an Anthropic requirement).
 fn reorder_thinking(messages: Vec<Value>) -> Vec<Value> {
     messages
@@ -924,6 +952,30 @@ mod tests {
         assert_eq!(n["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"], "{\"command\": \"ls\"}");
         assert_eq!(n["choices"][0]["finish_reason"], "tool_use");
         assert_eq!(n["usage"]["input_tokens"], 5);
+    }
+
+    #[test]
+    fn thinking_blocks_never_reach_the_chat_wire() {
+        // A history that came through the Messages protocol (mimo/xiaomi runs) stores reasoning
+        // as content parts; a strict OpenAI-compat endpoint (api.kimi.com/coding) answers
+        // "the message at position 2 with role 'assistant' contains an invalid part type:
+        // thinking" when they are replayed verbatim.
+        let msgs = vec![
+            json!({"role": "user", "content": "task"}),
+            json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm"},
+                {"type": "text", "text": "answer"},
+            ], "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]}),
+            json!({"role": "assistant", "content": [{"type": "redacted_thinking", "data": "x"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "more"}]}),
+        ];
+        let out = drop_thinking_blocks(msgs);
+        assert_eq!(out[1]["content"], json!([{"type": "text", "text": "answer"}]));
+        assert_eq!(out[1]["tool_calls"][0]["id"], "t1");
+        // A turn that was only reasoning becomes content: null (legal beside tool_calls).
+        assert_eq!(out[2]["content"], Value::Null);
+        // Messages without thinking parts are untouched.
+        assert_eq!(out[3]["content"], json!([{"type": "text", "text": "more"}]));
     }
 
     #[test]

@@ -13,6 +13,7 @@ import {
   loadConnections,
   saveConnection,
   testProviderModel,
+  testProviderModelDetail,
   type ProviderDef,
   type SavedConnection,
 } from "../providers";
@@ -79,14 +80,21 @@ export type ConnectResult =
   | { ok: true; provider: ProviderView }
   | { ok: false; error: string };
 
-/** The provider's live catalogue merged over the built-in one, so a fresh key sees new models. */
-export async function discoverModels(def: ProviderDef, key: string): Promise<string[]> {
+/** The provider's live catalogue merged over the built-in one, so a fresh key sees new models.
+ *  The list failure is kept too: when every probe then fails, "the model list at <url> said
+ *  HTTP 401" is the difference between a mystery and a diagnosis. */
+export async function discoverModelsWithDetail(def: ProviderDef, key: string): Promise<{ models: string[]; listError?: string }> {
   try {
     const live = await fetchProviderModels(def, key);
-    return [...new Set([...live, ...def.staticModels])];
-  } catch {
-    return def.staticModels;
+    return { models: [...new Set([...live, ...def.staticModels])] };
+  } catch (error) {
+    return { models: def.staticModels, listError: `${def.baseUrl.replace(/\/$/, "")}/models said ${(error as Error).message}` };
   }
+}
+
+/** The provider's live catalogue merged over the built-in one (see discoverModelsWithDetail). */
+export async function discoverModels(def: ProviderDef, key: string): Promise<string[]> {
+  return (await discoverModelsWithDetail(def, key)).models;
 }
 
 /** Model ids that are almost never chat-completion models (speech, embedding, realtime…). */
@@ -127,7 +135,13 @@ const CONNECT_PROBE_ATTEMPTS = 5;
  */
 export async function connectProvider(
   input: { providerId: string; key: string; model?: string },
-  deps: { test?: typeof testProviderModel; discover?: typeof discoverModels; save?: typeof saveConnection } = {},
+  deps: {
+    test?: typeof testProviderModel;
+    discover?: typeof discoverModels;
+    save?: typeof saveConnection;
+    probe?: (def: ProviderDef, modelName: string, key: string) => Promise<{ ok: boolean; detail?: string }>;
+    discoverDetailed?: typeof discoverModelsWithDetail;
+  } = {},
 ): Promise<ConnectResult> {
   const def = PROVIDERS.find((p) => p.id === input.providerId);
   if (!def) return { ok: false, error: "unknown provider" };
@@ -135,16 +149,25 @@ export async function connectProvider(
   if (!key) return { ok: false, error: "an API key is required" };
   if (/\s/.test(key) || key.length > 512) return { ok: false, error: "that does not look like an API key" };
 
-  const models = await (deps.discover ?? discoverModels)(def, key);
+  const { models, listError } = deps.discover
+    ? { models: await deps.discover(def, key), listError: undefined as string | undefined }
+    : await (deps.discoverDetailed ?? discoverModelsWithDetail)(def, key);
   // An explicit choice must pass as given (or, if it is not in the catalogue at all,
   // fall back to the candidates) — it is never silently replaced by another model.
   const candidates = input.model && models.includes(input.model) ? [input.model] : connectCandidates(models);
   if (!candidates.length) return { ok: false, error: "the provider returned no models" };
 
+  const probe: (def: ProviderDef, modelName: string, key: string) => Promise<{ ok: boolean; detail?: string }> =
+    deps.probe ?? (deps.test ? async (d, m, k) => ({ ok: await deps.test!(d, m, k) }) : testProviderModelDetail);
   const probed: string[] = [];
+  let firstDetail: string | undefined;
   for (const candidate of candidates.slice(0, CONNECT_PROBE_ATTEMPTS)) {
     probed.push(candidate);
-    if (!(await (deps.test ?? testProviderModel)(def, `${def.prefix}/${candidate}`, key))) continue;
+    const verdict = await probe(def, `${def.prefix}/${candidate}`, key);
+    if (!verdict.ok) {
+      firstDetail ??= verdict.detail;
+      continue;
+    }
     const connection: SavedConnection = {
       id: def.id,
       name: def.name,
@@ -162,7 +185,11 @@ export async function connectProvider(
     return { ok: true, provider: connectedProviders([connection])[0]! };
   }
   const named = probed.map((m) => `${def.prefix}/${m}`).join(", ");
-  return { ok: false, error: `could not reach ${probed.length === 1 ? named : `${def.prefix} (tried ${named})`} with that key` };
+  // The provider's own words when it gave any: "could not reach …" alone cannot distinguish
+  // an expired key from a wrong model id from a missing agent binary — that mystery is what
+  // kept the kimi-coding report unsolvable.
+  const why = [firstDetail, listError && `model list: ${listError}`].filter(Boolean).join("; ");
+  return { ok: false, error: `could not reach ${probed.length === 1 ? named : `${def.prefix} (tried ${named})`} with that key${why ? ` — ${why}` : ""}` };
 }
 
 /**
