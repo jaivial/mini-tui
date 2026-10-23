@@ -2,6 +2,46 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.44.0 — 2026-10-23
+
+The docker release: the whole runtime in one image, with the tools that keep the container from
+becoming a sandbox — `gh` and `ssh` work inside it exactly like in the terminal outside. This
+release covers everything since 0.43.0.
+
+### Added
+
+- **mini-tui in a container.** `docker compose up -d` brings the web app on 4317 with the whole
+  runtime baked in the image (bun, node, python+agent, whisper.cpp + ggml-small, mini-agent-rs);
+  state lives in the bind-mounted home at identical paths. Profiles: `channels` (WhatsApp consumer)
+  and `rag` (RAG server + graph projection). `network_mode: host`, SELinux handled (`label=disable`,
+  measured `EACCES` on the mounted home without it). See [docs/docker.md](docs/docker.md).
+- **The container is not a sandbox: `gh` + `ssh` parity with the host terminal.** `gh` (official
+  `cli/cli` tarball, pinned) lands at `/usr/bin/gh` — the exact path the mounted `~/.gitconfig`
+  calls for git's credential helper — and `openssh-client` is in the image; GitHub auth
+  (`~/.config/gh`) and your ssh config/keys (`~/.ssh`) ride the home mount. `gh pr create`,
+  `git push` and `ssh <host>` in an agent session are the same actions as outside. A regression
+  test pins the contract (`tests/docker-host-parity.test.ts`). Documented limit: a passphrase-
+  protected ssh key needs the host's `ssh-agent` (`SSH_AUTH_SOCK` mount).
+- **Terminal-Bench sample F1** (10 tasks) and the nx8/nx4b corpora: mutually foreign minutes-scale
+  parts, with the Nx regime and turn batching.
+- **ContextStore launch-time dedup** against graph-RAG hits, with reconciled docs.
+
+### Fixed
+
+- **A pasted API key is no longer condemned by a non-chat model** first in the catalogue: providers
+  whose first id is speech, embedding or plan-gated rejected working keys with 400.
+- **kimi for coding works end to end** — temperature 1, no thinking parts, honest errors.
+- Markdown bullets are not a split signal in the router; goal-oracle caps at one reopen and
+  protects pre-existing files.
+
+### Changed
+
+- **Prompting: act, don't rehearse.** Targeted edits over full-file rewrites, with the measured
+  cost of pre-edit thinking storms documented per turn.
+- Model defaults: deterministic sampling (`MINI_AGENT_TEMPERATURE=0`), thinking budget 512 by
+  default and for wave workers, temperature 0.2 default.
+- P1 router + P2-D fan-out policy: delegate only what splits, in one wave.
+
 ## 0.43.0 — 2026-10-19
 
 mini-tui is now a team of bots that organize work as a kanban, with workers that carry the cards out,
