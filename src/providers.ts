@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import type { SelectOption } from "@opentui/core";
 
-import { runHelperScript } from "./helpers";
+import { runHelperScriptCapture } from "./helpers";
 import { rustAgent } from "./mini/spawn";
 
 /**
@@ -381,9 +381,24 @@ export async function fetchProviderModels(def: ProviderDef, key: string): Promis
  * test means a run will work with this key.
  */
 export function testProviderModel(def: ProviderDef, modelName: string, key: string): Promise<boolean> {
+  return testProviderModelDetail(def, modelName, key).then((r) => r.ok);
+}
+
+/**
+ * The same test, keeping the provider's own answer when it fails. The web's connect
+ * error used to be an unexplained "could not reach …" because the helper's stderr was
+ * discarded — whether the provider said 401-expired, model-not-found, or the agent
+ * binary was missing, the user saw the same sentence. The detail is the last non-empty
+ * stderr line, capped, and never contains the key (redacted defensively).
+ */
+export async function testProviderModelDetail(def: ProviderDef, modelName: string, key: string): Promise<{ ok: boolean; detail?: string }> {
   const script = join(import.meta.dir, "..", "scripts", "test_model.py");
   const env = connectionEnv({ route: def.route, keyEnv: def.keyEnv, extraEnv: def.extraEnv, baseUrl: def.baseUrl, key });
   // With the Rust agent (the default when its binary is there), `mini-agent-rs test-model` runs it.
   const rust = rustAgent();
-  return runHelperScript(script, [modelName], env, rust ? [rust, "test-model"] : undefined).then((code) => code === 0);
+  const { code, stderr } = await runHelperScriptCapture(script, [modelName], env, rust ? [rust, "test-model"] : undefined);
+  if (code === 0) return { ok: true };
+  const tail = stderr.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
+  const detail = tail.replaceAll(key, "•••").slice(0, 300);
+  return { ok: false, ...(detail ? { detail } : {}) };
 }

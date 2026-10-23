@@ -43,23 +43,43 @@ export function resolveCommand(cmd: string, env: NodeJS.ProcessEnv = process.env
 
 /** Run one of the helper scripts with mini's interpreter. */
 export function runHelperScript(script: string, args: string[], env: Record<string, string>, command?: string[]): Promise<number> {
+  return runHelperScriptCapture(script, args, env, command).then((r) => r.code);
+}
+
+/**
+ * `runHelperScript` keeping the child's stderr tail (bounded) and exit code, so a caller can
+ * tell the user WHY the helper failed. Discarding stderr made every failure look identical:
+ * the web's provider connect answered a bare "could not reach <model> with that key" whether
+ * the provider said 401-expired, model-not-found, or the binary was missing.
+ */
+export function runHelperScriptCapture(
+  script: string,
+  args: string[],
+  env: Record<string, string>,
+  command?: string[],
+): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve) => {
     const [bin, ...rest] = command ?? [PYTHON_BIN, script];
     const child = spawn(bin as string, [...rest, ...args], {
-      stdio: ["ignore", "ignore", "ignore"],
+      stdio: ["ignore", "ignore", "pipe"],
       env: { ...process.env, ...env },
+    });
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      // Bounded: a chatty failure must not grow memory. Enough for the last error line.
+      if (stderr.length < 8192) stderr += String(chunk);
     });
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      resolve(-1);
+      resolve({ code: -1, stderr });
     }, 30_000);
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve(code ?? -1);
+      resolve({ code: code ?? -1, stderr });
     });
-    child.on("error", () => {
+    child.on("error", (error) => {
       clearTimeout(timer);
-      resolve(-1);
+      resolve({ code: -1, stderr: `${stderr}${stderr && !stderr.endsWith("\n") ? "\n" : ""}${(error as Error).message}` });
     });
   });
 }
