@@ -40,6 +40,9 @@ pub struct WireModel {
     pub wire_name: String,
     pub api_base: String,
     pub api_key: String,
+    /// Consecutive turns cut off at the output cap that then failed to parse. The retry gets a
+    /// BIGGER cap (see `escalated_max_tokens`); a turn that ends normally resets the count.
+    pub length_strikes: i64,
 }
 
 const LITELLM_ONLY: [&str; 5] = ["drop_params", "custom_llm_provider", "api_base", "api_key", "timeout"];
@@ -72,6 +75,29 @@ const DEFAULT_MAX_TOKENS: i64 = 4096;
 
 fn default_max_tokens() -> i64 {
     crate::config::env_or("MSWEA_MAX_TOKENS", &DEFAULT_MAX_TOKENS.to_string()).parse().unwrap_or(DEFAULT_MAX_TOKENS)
+}
+
+/// Turns below this cap are one-token helper calls (the closure judge, `title`, `max_tokens: 1`):
+/// they ALWAYS end `finish_reason: "length"` and must never count as a truncation strike.
+const TRUNCATION_STRIKE_MIN_TOKENS: i64 = 256;
+
+/// Ceiling of the escalation. The loop's whole retry budget is 3 consecutive format errors
+/// (`max_consecutive_format_errors: 3`), so this is 4096 → 8192 → 16384 → 32768.
+const ESCALATED_MAX_TOKENS_CEILING: i64 = 32_768;
+
+/// The per-turn output cap after `strikes` consecutive output-cap truncations.
+///
+/// THE DEFECT THIS FIXES (measured on orchestrated subagent sessions): the retry that follows a
+/// `finish_reason: "length"` turn re-sent the same request with the SAME cap, so a model whose
+/// thought needed more than 4096 tokens was cut off at exactly the same place — three times, the
+/// loop's whole format-error budget — and the session died with the same "output token limit"
+/// nudge three times in a row. The retry needs MORE room than the turn that did not fit, not the
+/// same room again. Normal turns keep the 4096 speed win (see `DEFAULT_MAX_TOKENS`).
+fn escalated_max_tokens(base: i64, strikes: i64) -> i64 {
+    if strikes <= 0 {
+        return base;
+    }
+    base.saturating_mul(1i64 << strikes.min(3)).min(ESCALATED_MAX_TOKENS_CEILING)
 }
 
 impl WireModel {
@@ -122,6 +148,11 @@ impl WireModel {
 
     fn timeout(&self) -> f64 {
         self.config.get("request_timeout").and_then(Value::as_f64).unwrap_or(600.0)
+    }
+
+    /// The configured per-turn output cap, before truncation escalation.
+    fn base_max_tokens(&self) -> i64 {
+        self.config.get("max_tokens").and_then(Value::as_i64).unwrap_or_else(default_max_tokens)
     }
 
     fn auth_headers(&self) -> Vec<(String, String)> {
@@ -203,7 +234,7 @@ impl WireModel {
         // The per-turn output cap (see `DEFAULT_MAX_TOKENS`). Placed here, after the kwargs loop,
         // so an explicit `model_kwargs.max_tokens` still wins: this only supplies the default that
         // used to be an unstated 8192.
-        body["max_tokens"] = json!(self.config.get("max_tokens").and_then(Value::as_i64).unwrap_or_else(default_max_tokens));
+        body["max_tokens"] = json!(escalated_max_tokens(self.base_max_tokens(), self.length_strikes));
         for (k, v) in params {
             body[k] = v;
         }
@@ -510,10 +541,29 @@ impl Model for WireModel {
         let response = with_retry(|| self.raw_query(messages, &mut sink))?;
         let cost = self.cost(&response)?;
         super::global_stats_add(cost)?;
-        Ok(match self.protocol {
+        let finish = response
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|c| c.first())
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(Value::as_str)
+            .map(String::from);
+        let reply = match self.protocol {
             Protocol::Responses => self.responses_reply(response, cost),
             _ => self.chat_reply(response, cost),
-        })
+        };
+        // Output-cap bookkeeping (see `escalated_max_tokens`): a turn cut off at the cap that then
+        // failed to parse is a truncation strike, and the next attempt gets more room. A turn that
+        // ended normally resets the escalation; a length-truncated turn that still delivered valid
+        // tool calls needs nothing; one-token helper calls always end "length" and are not counted.
+        if self.base_max_tokens() >= TRUNCATION_STRIKE_MIN_TOKENS {
+            match (finish.as_deref(), &reply) {
+                (Some("length"), Reply::FormatError(_)) => self.length_strikes = (self.length_strikes + 1).min(3),
+                (Some("length"), _) => {}
+                _ => self.length_strikes = 0,
+            }
+        }
+        Ok(reply)
     }
 
     /// The fast path's call (`src/intent.rs`): the same request with the tool list dropped.
@@ -976,6 +1026,20 @@ mod tests {
         assert_eq!(out[2]["content"], Value::Null);
         // Messages without thinking parts are untouched.
         assert_eq!(out[3]["content"], json!([{"type": "text", "text": "more"}]));
+    }
+
+    #[test]
+    fn a_truncated_turn_escalates_the_next_cap_and_a_normal_one_resets() {
+        // Retry-at-the-same-cap was a death spiral: the thought that did not fit in 4096 tokens
+        // does not fit on the second try either — measured on orchestrated subagent sessions:
+        // three identical "output token limit" nudges and the session was gone.
+        assert_eq!(escalated_max_tokens(4096, 0), 4096);
+        assert_eq!(escalated_max_tokens(4096, 1), 8192);
+        assert_eq!(escalated_max_tokens(4096, 2), 16384);
+        assert_eq!(escalated_max_tokens(4096, 3), 32768);
+        assert_eq!(escalated_max_tokens(16000, 1), 32000);
+        assert_eq!(escalated_max_tokens(20000, 2), 32768); // the ceiling holds
+        assert_eq!(escalated_max_tokens(1, 3), 8); // proportional; helper calls never strike — query() only counts at base >= 256
     }
 
     #[test]

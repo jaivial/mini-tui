@@ -157,7 +157,7 @@ fn gateway(c: &mut Obj, base_env: &str, default_base: &str, key_env: &str, defau
 fn wire(config: Obj, protocol: Protocol, flavor: Flavor, model_type: &str, price: &str, wire_name: String) -> Box<dyn Model> {
     let api_base = config.get("api_base").and_then(Value::as_str).unwrap_or("").to_string();
     let api_key = config.get("api_key").and_then(Value::as_str).unwrap_or("").to_string();
-    Box::new(WireModel { config, protocol, flavor, model_type: model_type.into(), price_provider: price.into(), wire_name, api_base, api_key })
+    Box::new(WireModel { config, protocol, flavor, model_type: model_type.into(), price_provider: price.into(), wire_name, api_base, api_key, length_strikes: 0 })
 }
 
 /// Plain `OpenaiCompatModel`: a registry row or the generic OpenAI-compatible slot.
@@ -196,7 +196,7 @@ fn anthropic_compat(config: &Obj) -> Box<dyn Model> {
     let wire_name = strip(&name, "anthropic/");
     let api_base = c["api_base"].as_str().unwrap_or("").to_string();
     let api_key = c["api_key"].as_str().unwrap_or("").to_string();
-    Box::new(WireModel { config: c, protocol: Protocol::Messages, flavor: Flavor::Plain, model_type: "minisweagent.models.anthropic_compat_model.AnthropicCompatModel".into(), price_provider: "anthropic".into(), wire_name, api_base, api_key })
+    Box::new(WireModel { config: c, protocol: Protocol::Messages, flavor: Flavor::Plain, model_type: "minisweagent.models.anthropic_compat_model.AnthropicCompatModel".into(), price_provider: "anthropic".into(), wire_name, api_base, api_key, length_strikes: 0 })
 }
 
 fn openai_model(config: &Obj, responses: bool) -> Box<dyn Model> {
@@ -290,7 +290,7 @@ fn opencode_go(config: &Obj, force_responses: bool) -> Box<dyn Model> {
     let ty = if force_responses { "minisweagent.models.opencode_go_model.OpencodeGoResponseModel" } else { "minisweagent.models.opencode_go_model.OpencodeGoModel" };
     let api_base = c["api_base"].as_str().unwrap_or("").to_string();
     let api_key = c["api_key"].as_str().unwrap_or("").to_string();
-    Box::new(WireModel { config: c, protocol, flavor: Flavor::OpencodeGo, model_type: ty.into(), price_provider: "opencode-go".into(), wire_name: model_id, api_base, api_key })
+    Box::new(WireModel { config: c, protocol, flavor: Flavor::OpencodeGo, model_type: ty.into(), price_provider: "opencode-go".into(), wire_name: model_id, api_base, api_key, length_strikes: 0 })
 }
 
 /// `get_model_class` + the constructor: routing by explicit class, else by model name.
