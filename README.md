@@ -95,16 +95,26 @@ bun run web                                   # http://127.0.0.1:4317
 ```
 
 Or run the whole runtime in Docker — same web on 4317, state in your mounted home, tools baked
-into the image:
-
-```bash
-docker compose up -d                         # web on 4317
-# full tour (profiles, keys, whisper, backup): docs/docker.md
-```
+into the image: see [Run it in Docker](#run-it-in-docker) below.
 
 Then open Settings, Providers, and paste a model key. It is tested with one real request before it
-is saved, and a refusal names what the provider actually answered. The [install guide](https://jaivial.github.io/mini-tui/docs/install/) has the rest, and
-the terminal UI is still there: run `bin/mini-tui`.
+is saved, and a refusal names what the provider actually answered. The [install guide](https://jaivial.github.io/mini-tui/docs/install/) has the rest,
+and the terminal UI is still there: run `bin/mini-tui`.
+
+### Run it in Docker
+
+The whole runtime also ships as one image — tools in the image, state in your mounted home:
+
+```bash
+docker compose up -d                      # the web app on 4317
+docker compose --profile channels up -d   # + the WhatsApp consumer daemon
+docker compose --profile rag up -d        # + RAG server + graph projection
+```
+
+**The container is not a sandbox**: `gh` and `ssh` work inside exactly like in the terminal
+outside it (GitHub auth and your ssh keys/config ride the home mount, `gh` and `openssh-client`
+have the image). Agent sessions can open PRs and reach your ssh hosts from the container. See
+[`docs/docker.md`](docs/docker.md) for the whole tour.
 
 ## Benchmarks
 

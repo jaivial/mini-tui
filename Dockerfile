@@ -62,21 +62,24 @@ RUN cargo build --release --locked --jobs "${BUILD_JOBS}" --manifest-path agent-
 
 ###############################################################################
 # Stage 2 — runtime: the app plus every tool it shells out to.
-# TOOLS live in the image (bun, node, python+agent, whisper, mini-agent-rs);
-# STATE lives in the mounted home (providers.json, sessions.db, skills, repos).
+# TOOLS live in the image (bun, node, gh, ssh, python+agent, whisper,
+# mini-agent-rs); STATE lives in the mounted home (providers.json, sessions.db,
+# skills, repos, ~/.ssh, ~/.config/gh). The container is NOT a sandbox: agent
+# sessions run `gh` and `ssh` exactly like the terminal outside it.
 ###############################################################################
 FROM debian:bookworm-slim
 
 # Pinned; bump deliberately.
 ARG NODE_VERSION=v24.22.1
 ARG BUN_VERSION=1.4.3
+ARG GH_VERSION=2.103.0
 # The state-owning user matches the host user, so files written through the
 # /home bind stay editable from the host (override on another box).
 ARG HOST_UID=1000
 ARG HOST_GID=1000
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl git jq libgomp1 procps python3 python3-pip python3-venv ripgrep unzip xz-utils \
+      bash ca-certificates curl git jq libgomp1 openssh-client procps python3 python3-pip python3-venv ripgrep unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # bun — official release tarball into /usr/local (same layout as
@@ -99,6 +102,21 @@ RUN set -eux; \
     curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${narch}.tar.xz" \
       | tar -xJ -C /usr/local --strip-components=1; \
     node --version
+
+# gh (GitHub CLI) — official tarball, pinned. Lands at /usr/bin/gh ON PURPOSE:
+# the bind-mounted ~/.gitconfig wires git's credential helper to
+# `!/usr/bin/gh auth git-credential` (host parity), so that absolute path must
+# resolve inside the container too. Auth state (~/.config/gh/hosts.yml) rides
+# the home bind: `gh pr create` in the container is the same action as in the
+# terminal outside. The container is not a sandbox for git hosting either.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64) garch=amd64 ;; arm64) garch=arm64 ;; *) garch="$arch" ;; esac; \
+    curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${garch}.tar.gz"; \
+    tar -xzf /tmp/gh.tgz -C /tmp; \
+    install -m755 "/tmp/gh_${GH_VERSION}_linux_${garch}/bin/gh" /usr/bin/gh; \
+    rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_${garch}"; \
+    gh --version
 
 RUN groupadd -g "${HOST_GID}" jaime \
     && useradd -m -u "${HOST_UID}" -g "${HOST_GID}" -s /bin/bash jaime

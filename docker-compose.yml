@@ -1,9 +1,11 @@
 # mini-tui in a container.
 #
-# Design contract: TOOLS live in the image (bun, node, python+agent, whisper,
-# mini-agent-rs); STATE lives in the bind-mounted home (providers.json with the
-# API keys, sessions.db, skills, the repos the agent works on). That is why the
-# single mount is /home/jaime:/home/jaime and the netns is the host's.
+# Design contract: TOOLS live in the image (bun, node, gh, ssh, python+agent,
+# whisper, mini-agent-rs); STATE lives in the bind-mounted home (providers.json
+# with the API keys, sessions.db, skills, the repos the agent works on, ~/.ssh
+# and ~/.config/gh). That is why the single mount is /home/jaime:/home/jaime and
+# the netns is the host's. The container is NOT a sandbox: `gh` and `ssh` work
+# in the agent's terminal exactly like in the terminal outside it.
 #
 #   docker compose up -d                      # the web app on 4317
 #   docker compose --profile channels up -d   # + the WhatsApp consumer daemon
