@@ -75,7 +75,10 @@ How it works: [`docs/goal-closure.md`](docs/goal-closure.md).
 
 ### Also new
 
-Model router with three tiers and a persistent fallback breaker, usage metering per model and
+One Docker image for the whole runtime (web, agent, whisper, Python), and provider keys that
+connect for real — including Kimi for Coding, whose temperature and message-part constraints the
+connection now handles — with failed connects that say what the provider actually answered.
+Also: model router with three tiers and a persistent fallback breaker, usage metering per model and
 provider, generative UI in the chat (forms, tables and charts), a voice-note recorder and player,
 inline images and attachments, AI session titles, a PWA with cookie login, and a long list of
 hardening passes on the web server (per-IP rate limits, loopback-only CORS, upload sniffing).
@@ -91,9 +94,12 @@ mkdir -p ~/.local/lib/mini-tui && cp agent-rs/target/release/mini-agent-rs ~/.lo
 bun run web                                   # http://127.0.0.1:4317
 ```
 
+Or run the whole runtime in Docker — same web on 4317, state in your mounted home, tools baked
+into the image: see [Run it in Docker](#run-it-in-docker) below.
+
 Then open Settings, Providers, and paste a model key. It is tested with one real request before it
-is saved. The [install guide](https://jaivial.github.io/mini-tui/docs/install/) has the rest, and
-the terminal UI is still there: run `bin/mini-tui`.
+is saved, and a refusal names what the provider actually answered. The [install guide](https://jaivial.github.io/mini-tui/docs/install/) has the rest,
+and the terminal UI is still there: run `bin/mini-tui`.
 
 ### Run it in Docker
 

@@ -28,9 +28,22 @@ release covers everything since 0.43.0.
 
 ### Fixed
 
-- **A pasted API key is no longer condemned by a non-chat model** first in the catalogue: providers
-  whose first id is speech, embedding or plan-gated rejected working keys with 400.
-- **kimi for coding works end to end** — temperature 1, no thinking parts, honest errors.
+- **A pasted API key is no longer condemned by a non-chat model** first in the catalogue (#412):
+  the connect flow validated the key against `models[0]` of the live `/models` list alone — sorted
+  alphabetically, and for xiaomi that is `mimo-v2.5-asr`, a speech model that answers a chat
+  completion with `400 Param Incorrect`. Measured: pasting the CORRECT xiaomi key answered
+  "could not reach xiaomi/mimo-v2.5-asr with that key". The probe now walks chat-looking
+  candidates until one answers, and the first that answers becomes the connection's default model.
+- **A failed connect says what the provider actually answered** (#413): the probe helper discarded
+  the child's stderr and the model-list failure was swallowed silently, so an expired key, a wrong
+  model id and a missing agent binary all collapsed into the same mystery sentence. A refusal now
+  carries the provider's own words (key redacted).
+- **kimi for coding works end to end** (#413) — temperature 1, no thinking parts, honest errors:
+  its endpoint accepts only `temperature: 1` (measured: HTTP 400 "invalid temperature: only 1 is
+  allowed for this model" at the agent's 0.2 default — the key was valid all along) and refuses
+  Anthropic `thinking` parts replayed from a Messages-protocol history (HTTP 400 "invalid part
+  type: thinking"). The connection pins the temperature for probes and runs both, and the
+  OpenAI-compat wire never sends thinking blocks again.
 - Markdown bullets are not a split signal in the router; goal-oracle caps at one reopen and
   protects pre-existing files.
 
@@ -41,6 +54,9 @@ release covers everything since 0.43.0.
 - Model defaults: deterministic sampling (`MINI_AGENT_TEMPERATURE=0`), thinking budget 512 by
   default and for wave workers, temperature 0.2 default.
 - P1 router + P2-D fan-out policy: delegate only what splits, in one wave.
+
+Also merged since 0.43.0: web sidebar and kanban hardening, incremental subagent journals, paged
+transcripts in recoverable batches, and open-session recovery after a server restart.
 
 ## 0.43.0 — 2026-10-19
 
