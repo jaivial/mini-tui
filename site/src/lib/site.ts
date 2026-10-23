@@ -4,7 +4,7 @@
  */
 export const SITE_URL: string = (import.meta.env.VITE_SITE_URL ?? "https://jaivial.github.io/mini-tui").replace(/\/$/, "");
 export const REPO = "https://github.com/jaivial/mini-tui";
-export const RELEASE = "0.43.0";
+export const RELEASE = "0.44.0";
 export const NAME = "mini-tui";
 export const TAGLINE = "Bots that run your kanban, from the web or WhatsApp";
 export const DESCRIPTION =
