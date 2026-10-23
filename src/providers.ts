@@ -216,7 +216,12 @@ export const PROVIDERS: ProviderDef[] = [
     description: "Kimi coding plan (api.kimi.com/coding)",
     route: "native",
     keyEnv: "KIMI_API_KEY",
-    extraEnv: { KIMI_API_BASE: "https://api.kimi.com/coding/v1" },
+    // The coding plan REJECTS any sampling temperature other than 1 (measured: HTTP 400
+    // "invalid temperature: only 1 is allowed for this model" — it killed every connect
+    // probe AND every run at the agent's 0.2 default, with a perfectly valid key). This
+    // env reaches both: the connect probe (testProviderModelDetail's child) and real runs
+    // (modelEnv → sessionRunEnv), so temperature 1 is sent wherever kimi is used.
+    extraEnv: { KIMI_API_BASE: "https://api.kimi.com/coding/v1", MINI_AGENT_TEMPERATURE: "1" },
     baseUrl: "https://api.kimi.com/coding/v1",
     probe: "openai",
     prefix: "kimi-coding",

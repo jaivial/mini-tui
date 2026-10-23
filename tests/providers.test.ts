@@ -62,6 +62,16 @@ describe("provider registry", () => {
 });
 
 describe("BYOK connections", () => {
+  test("kimi-coding pins temperature 1 — the coding plan rejects any other value (HTTP 400)", () => {
+    const def = PROVIDERS.find((p) => p.id === "kimi-coding")!;
+    const env = connectionEnv({ route: def.route, keyEnv: def.keyEnv, extraEnv: def.extraEnv, baseUrl: def.baseUrl, key: "k" });
+    expect(env).toMatchObject({
+      KIMI_API_KEY: "k",
+      KIMI_API_BASE: "https://api.kimi.com/coding/v1",
+      MINI_AGENT_TEMPERATURE: "1",
+    });
+  });
+
   test("persist, inject per-model env and add models to the picker", () => {
     rmSync(PATH, { force: true });
     const xiaomi = PROVIDERS.find((p) => p.id === "xiaomi")!;
