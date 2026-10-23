@@ -2,6 +2,43 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## 0.44.0 — 2026-10-23
+
+Everything runs in one Docker image now, and pasting a provider key works — including Kimi for
+Coding, which took three measured fixes to get end to end. This release covers the deploy and
+provider-connect work since 0.43.0.
+
+### Added
+
+- **One image with the whole runtime** (#411). A multi-stage build compiles mini-agent-rs and a
+  static whisper.cpp, bakes the ggml-small model, and ships bun, node and the Python agent; state
+  stays in the mounted home (providers.json, sessions.db, skills, the repos). `docker compose up -d`
+  serves the web on 4317 exactly like the host service, with profiles for the WhatsApp consumer and
+  the RAG lanes. Build, profiles, keys and every decision: [`docs/docker.md`](docs/docker.md).
+
+### Fixed
+
+- **A pasted API key is no longer condemned by a non-chat model first in the catalogue** (#412).
+  The connect flow validated the key against `models[0]` of the live `/models` list alone — sorted
+  alphabetically, and for xiaomi that is `mimo-v2.5-asr`, a speech model that answers a chat
+  completion with `400 Param Incorrect`. Measured: pasting the CORRECT xiaomi key answered
+  "could not reach xiaomi/mimo-v2.5-asr with that key". The probe now walks chat-looking candidates
+  until one answers, and the first that answers becomes the connection's default model.
+- **A failed connect says what the provider actually answered** (#413). The probe helper discarded
+  the child's stderr and the model-list failure was swallowed silently, so an expired key, a wrong
+  model id and a missing agent binary all collapsed into the same mystery sentence. A refusal now
+  carries the provider's own words (key redacted).
+- **Kimi for Coding connects and runs** (#413). Its endpoint accepts only `temperature: 1`
+  (measured: HTTP 400 "invalid temperature: only 1 is allowed for this model" at the agent's 0.2
+  default — the key was valid all along), and refuses Anthropic `thinking` parts replayed from a
+  Messages-protocol history (HTTP 400 "invalid part type: thinking"). The connection pins the
+  temperature it needs for both probes and runs, and the OpenAI-compat wire never sends thinking
+  blocks again.
+
+Also merged since 0.43.0: web sidebar and kanban hardening, incremental subagent journals, paged
+transcripts in recoverable batches, open-session recovery after a server restart, and the benchmark
+corpus work.
+
 ## 0.43.0 — 2026-10-19
 
 mini-tui is now a team of bots that organize work as a kanban, with workers that carry the cards out,
