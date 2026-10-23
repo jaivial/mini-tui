@@ -10,7 +10,7 @@ Nada de lo que se ejecuta depende de que el host tenga algo instalado.
 
 | | Dónde | Ejemplos |
 |---|---|---|
-| **Horneado** (imagen) | `/opt/mini-tui`, `/opt/whisper`, `/usr/local` | la app + `web/dist`, `mini-agent-rs`, `whisper-cli` + `ggml-small.bin`, bun 1.4.3, node 24 LTS, python + paquete `mini-sweagent`, git/ripgrep/jq… |
+| **Horneado** (imagen) | `/opt/mini-tui`, `/opt/whisper`, `/usr/local`, `/usr/bin` | la app + `web/dist`, `mini-agent-rs`, `whisper-cli` + `ggml-small.bin`, bun 1.4.3, node 24 LTS, `gh` + `ssh` (openssh-client), python + paquete `mini-sweagent`, git/ripgrep/jq… |
 | **Montado** (bind `/home/jaime:/home/jaime`) | el home del usuario | `~/.config/mini-tui` (providers.json con las API keys, sessions.db, skills), los repos sobre los que trabaja el agente, `~/.claude/skills`, la caché de embeddings |
 
 ## Build
@@ -171,9 +171,16 @@ La imagen en sí no lleva estado: reconstruible con `docker compose build`.
   `unhealthy` para siempre. Va en la imagen pero se desactiva en esos servicios.
   Ojo con otro matiz: en host network, un healthcheck contra 4317 pasa también
   si el que escucha es el servicio del host, no el contenedor.
-- **`gh` NO está horneado** (la lista del diseño no lo incluye). Las acciones
-  del agente que necesiten `gh` (PRs, issues) fallan dentro del contenedor;
-  se añade con el siguiente rebuild si se quiere.
+- **`gh` y `ssh` están horneados — el contenedor no es un sandbox**: `gh`
+  (GitHub CLI, tarball oficial pinneada) vive en `/usr/bin/gh` a propósito: el
+  `~/.gitconfig` del home montado apunta el credential helper de git a esa ruta
+  exacta (`!/usr/bin/gh auth git-credential`). `ssh` viene de `openssh-client`.
+  Las credenciales son las del host porque el estado entra por el bind:
+  `~/.config/gh/hosts.yml` (auth de gh), `~/.ssh/config`, claves y `known_hosts`.
+  Así `gh pr create` o `ssh kraken` dentro del contenedor son la misma acción
+  que en la terminal de fuera. Ojo: si la clave SSH tiene passphrase y está en
+  el `ssh-agent` del host, dentro del contenedor no hay agent — usar clave sin
+  passphrase (como las de este host) o montar el socket `SSH_AUTH_SOCK`.
 - **bun del home montado**: `src/mini/spawn.ts` prepende `~/.local/bin:~/.bun/bin`
   al PATH de los hijos. Si el host tiene `~/.bun/bin/bun`, los subprocesos bun
   del TUI pueden resolver ese binario (es estático y corre bien en el
