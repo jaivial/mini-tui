@@ -71,11 +71,75 @@ describe("connectProvider", () => {
     expect(r2.ok && r2.provider.defaultModel).toBe("model-b");
   });
 
+  // Regression for the deployed defect: xiaomi's live /models is sorted alphabetically and
+  // mimo-v2.5-asr (a speech model that answers a chat completion with 400 Param Incorrect)
+  // comes first — probing models[0] alone rejected a CORRECT key with
+  // "could not reach xiaomi/mimo-v2.5-asr with that key" (the kimi-coding report's class).
+  test("a non-chat model first in the live list does not condemn a working key", async () => {
+    const probed: string[] = [];
+    const r = await cfg.connectProvider(
+      { providerId: "xiaomi", key: KEY },
+      {
+        discover: async () => ["mimo-v2.5-asr", "mimo-v2.5-tts", "mimo-v2.6-flash"],
+        test: async (_def: unknown, model: string) => (probed.push(model), model.endsWith("mimo-v2.6-flash")),
+      },
+    );
+    expect(r.ok).toBe(true);
+    expect(probed).toEqual(["xiaomi/mimo-v2.6-flash"]); // asr/tts are never probed
+    expect(r.ok && r.provider.defaultModel).toBe("mimo-v2.6-flash");
+  });
+
+  test("a plan-gated first model is retried on the next candidate before giving up", async () => {
+    const probed: string[] = [];
+    const r = await cfg.connectProvider(
+      { providerId: "deepseek", key: KEY },
+      {
+        discover: async () => ["deepseek-probe-1", "deepseek-probe-2"],
+        test: async (_def: unknown, model: string) => (probed.push(model), model.endsWith("deepseek-probe-2")),
+      },
+    );
+    expect(r.ok).toBe(true);
+    expect(probed).toEqual(["deepseek/deepseek-probe-1", "deepseek/deepseek-probe-2"]);
+    expect(r.ok && r.provider.defaultModel).toBe("deepseek-probe-2");
+    expect(loadConnections()[0]?.defaultModel).toBe("deepseek-probe-2");
+  });
+
+  test("an explicit model choice is probed as given and never replaced", async () => {
+    const probed: string[] = [];
+    const r = await cfg.connectProvider(
+      { providerId: "deepseek", key: KEY, model: "deepseek-chat" },
+      {
+        discover: async () => ["deepseek-chat", "deepseek-reasoner"],
+        test: async (_def: unknown, model: string) => (probed.push(model), model.endsWith("deepseek-chat")),
+      },
+    );
+    expect(r.ok).toBe(true);
+    expect(probed).toEqual(["deepseek/deepseek-chat"]);
+  });
+
+  test("when every candidate fails the error names what was tried", async () => {
+    const r = await cfg.connectProvider({ providerId: "deepseek", key: KEY }, { discover: async () => ["m1", "m2"], test: async () => false });
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("deepseek/m1") });
+    expect(JSON.stringify(r)).toContain("deepseek/m2");
+    expect(JSON.stringify(r)).not.toContain(KEY);
+    expect(loadConnections()).toHaveLength(0);
+  });
+
   test("connecting again replaces that provider's entry instead of duplicating it", async () => {
     await cfg.connectProvider({ providerId: "deepseek", key: "sk-one-1111111111111" }, ok);
     await cfg.connectProvider({ providerId: "deepseek", key: "sk-two-2222222222222" }, ok);
     expect(loadConnections()).toHaveLength(1);
     expect(loadConnections()[0]?.key).toBe("sk-two-2222222222222");
+  });
+});
+
+describe("connectCandidates", () => {
+  test("chat-looking models come first, catalogue order preserved", () => {
+    expect(cfg.connectCandidates(["mimo-v2.5-asr", "mimo-v2.5-tts", "mimo-v2.6-flash"])).toEqual(["mimo-v2.6-flash"]);
+    expect(cfg.connectCandidates(["text-embedding-3-small", "k3", "kimi-for-coding"])).toEqual(["k3", "kimi-for-coding"]);
+  });
+  test("a list with nothing but non-chat ids is kept whole, never emptied", () => {
+    expect(cfg.connectCandidates(["whisper-1", "mimo-v2.5-asr"])).toEqual(["whisper-1", "mimo-v2.5-asr"]);
   });
 });
 
