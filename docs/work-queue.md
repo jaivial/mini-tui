@@ -71,3 +71,47 @@ Agents (loopback, `x-queue-token` = a per-process secret handed only to agents t
 
 Benchmarks: `benchmark/pi-vs-mini/run_queue_bench.py` (the real flow through the queue, vs pi,
 interleaved) and `run_worker_direct.py` (the worker alone, for fast A/B).
+
+## Benchmark: assigned-task execution, mini queue vs pi (24 Oct 2026)
+
+Corpus `benchmark/pi-vs-mini/tasks` (10 tasks, deterministic `verify.sh`), MiMo v2.6 Flash on the
+token-plan Anthropic surface for both harnesses, 3 repetitions, mini and pi interleaved task by
+task, a fresh queue per round. "worker" = the queue task's start → finish (the assigned task's
+execution); "e2e" adds the dispatcher's turn (message sent → task finished).
+Runner: `python3 run_queue_bench.py --reps 3`.
+
+Final configuration (`runs/queue-20261024-031939`):
+
+| task | mini worker (s) | mini e2e (s) | pi (s) | pi / mini worker |
+| --- | ---: | ---: | ---: | ---: |
+| t10_crash_report | 22.5 | 37.1 | 32.4 | 1.44x |
+| t1_wordfreq | 13.4 | 18.0 | 19.2 | 1.43x |
+| t2_grep_logs | 15.5 | 23.0 | 18.8 | 1.21x |
+| t3_pytest_fix | 18.7 | 27.0 | 17.4 | 0.93x |
+| t4_refactor | 55.4 | 74.1 | 91.9 | 1.66x |
+| t5_script_csv | 15.8 | 19.0 | 36.9 | 2.34x |
+| t6_readme_summary | 38.8 | 42.1 | 53.0 | 1.37x |
+| t7_regex_cli | 19.0 | 35.1 | 116.4 | 6.13x |
+| t8_js_bug | 9.9 | 19.0 | 69.8 | 7.05x |
+| t9_pkg_resize | 12.7 | 28.1 | 45.3 | 3.57x |
+| **sum of medians** | **221.7** | **322.5** | **501.1** | **2.26x** (e2e 1.55x) |
+
+Pass: mini 30/30, pi 30/30. Against pi's mean over the three comparable rounds (478 s) the worker
+ratio is 2.16x.
+
+How the worker got there (same corpus, worker run directly, `run_worker_direct.py`, 3 reps):
+
+| change | sum of medians |
+| --- | ---: |
+| first queue round (worker in `~` when the brief named no cwd, closure judge on) | ~600 s |
+| worker starts in the task's directory, no closure judge | 391 s |
+| adaptive thinking (reason only after a real failure) | 253 s |
+| look-around misses do not trigger thinking; short result card | 217 s |
+| hedged provider calls (duplicate after 12 s of silence) | 232 s (noise) |
+
+The dispatcher went from ~10 s per message (writing a ~460-token brief) to ~5 s: a single task
+needs no prompt at all, the human's message is the brief.
+
+Limits: one model, one machine, ten small tasks, three repetitions; provider latency tails
+(turns of 100+ s on both sides) dominate the variance, which is why per-round ratios moved
+between 1.4x and 2.3x while the worker changes above were landing.

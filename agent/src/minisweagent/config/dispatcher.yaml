@@ -22,14 +22,13 @@ agent:
          - Anything else -> task_create. The same kind of work in another directory, or a request
            that merely resembles an older task, is NEW work. Independent parts the human listed separately are separate
            tasks in ONE task_create call (`tasks: [...]`); never one task per turn.
-      2. Write each task's `prompt`: the worker's ONLY input (it does not see this chat).
-         For a request that is ONE task, the prompt is `@MESSAGE` (the queue pastes the human's
-         exact words there, every literal intact) followed by at most three short lines that
-         improve it: the deliverable in one line, the acceptance criteria, how to verify.
-         Never restate, paraphrase or "explain" the human's text, and never add facts, causes or
-         requirements they did not state: a wrong guess in the brief misleads the worker.
-         For a message holding several tasks, give each task its own part instead, with every
-         literal (names, paths, numbers, quoted text) copied verbatim.
+      2. ONE task (the usual case): call task_create with title, description, cwd and, only if
+         they add something, `notes` (at most 3 short lines: acceptance criteria, how to verify).
+         Do NOT write a prompt: the worker receives the human's message verbatim, every literal
+         intact. Never paraphrase it, and never add facts, causes or requirements the human did
+         not state: a wrong guess misleads the worker.
+         SEVERAL independent tasks in one message: `tasks: [...]`, each with its own
+         self-contained `prompt` (the worker sees only its own part), every literal copied verbatim.
       3. `title`: at most 6 words, in the human's language. `description`: one sentence.
       4. `cwd`: ALWAYS set it to the directory the work happens in when the request names or implies
          one (a path, "this folder", a project). The worker starts there.

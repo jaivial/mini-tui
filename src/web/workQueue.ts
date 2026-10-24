@@ -222,6 +222,8 @@ export interface TaskSpec {
   title?: unknown;
   description?: unknown;
   prompt?: unknown;
+  /** One task without a prompt: short notes appended to the human's message. */
+  notes?: unknown;
   cwd?: unknown;
 }
 
@@ -362,14 +364,26 @@ export class WorkQueue {
     const force = spec.new_task === true;
     // `@MESSAGE` in a brief is the human's own message, pasted verbatim (the dispatcher need not copy it).
     const message = input.message ?? "";
+    // One task without its own prompt: the human's message IS the brief, verbatim (every literal
+    // intact, no output tokens spent copying it), plus the dispatcher's short notes.
+    const single = raw.length === 1 && !!message.trim();
+    const briefOf = (s: TaskSpec) => {
+      const own = String(s.prompt ?? "").trim().split("@MESSAGE").join(message);
+      const notes = String(s.notes ?? "").trim();
+      // A single task from a message: the message IS the brief. A prompt the dispatcher wrote
+      // anyway is kept below it as its notes, never in place of the human's words.
+      if (single) return [message, own && own !== message ? `Dispatcher notes:\n${own}` : "", notes].filter(Boolean).join("\n\n");
+      return notes ? `${own}\n\n${notes}` : own;
+    };
     const specs = raw.map((s) => ({
       title: oneLine(s.title, 80),
       description: oneLine(s.description, 400),
-      prompt: clean(String(s.prompt ?? "").split("@MESSAGE").join(message), PROMPT_MAX),
+      prompt: clean(briefOf(s), PROMPT_MAX),
       cwd: typeof s.cwd === "string" ? s.cwd : "",
     }));
     const bad = specs.findIndex((s) => !s.prompt || !s.title);
-    if (bad >= 0) return { ok: false, text: `task ${bad + 1} needs a title and a prompt` };
+    if (bad >= 0) return { ok: false, text: `task ${bad + 1} needs a title and a prompt (only a single task may omit its prompt)` };
+    if (specs.length > 1 && raw.some((s) => !String(s.prompt ?? "").trim())) return { ok: false, text: "with several tasks, each one needs its own prompt" };
     if (specs.length > 100) return { ok: false, text: "at most 100 tasks per call" };
     const existing = this.list();
     const active = existing.filter((t) => t.status === "queued" || t.status === "running");

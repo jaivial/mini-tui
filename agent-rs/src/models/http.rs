@@ -297,11 +297,14 @@ pub fn post_json(base: &str, path: &str, body: &Value, headers: &[(String, Strin
             });
         };
         launch(tx.clone());
+        // Up to two duplicates, each after another `hedge` seconds of silence: a request that
+        // sat at the provider measured 100+ s, and so did its first copy once.
         let mut in_flight = 1;
-        let mut hedged = false;
+        let mut hedges = 0;
         let mut last_err = None;
+        let started = std::time::Instant::now();
         loop {
-            let wait = if hedged { Duration::from_secs_f64(timeout.max(1.0)) } else { Duration::from_secs_f64(hedge) };
+            let wait = if hedges < 2 { Duration::from_secs_f64(hedge) } else { Duration::from_secs_f64((timeout - started.elapsed().as_secs_f64()).max(1.0)) };
             match rx.recv_timeout(wait) {
                 Ok(Ok(v)) => return Ok(v),
                 Ok(Err(e)) => {
@@ -311,10 +314,10 @@ pub fn post_json(base: &str, path: &str, body: &Value, headers: &[(String, Strin
                         return Err(last_err.unwrap());
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) if !hedged => {
-                    hedged = true;
+                Err(mpsc::RecvTimeoutError::Timeout) if hedges < 2 => {
+                    hedges += 1;
                     in_flight += 1;
-                    eprintln!("[hedge] no answer after {hedge:.0}s: a second identical request is in flight");
+                    eprintln!("[hedge] no answer after {:.0}s: duplicate request {hedges} is in flight", started.elapsed().as_secs_f64());
                     launch(tx.clone());
                 }
                 Err(_) => return Err(last_err.unwrap_or_else(|| transport_error(&"hedged request timed out", &base))),

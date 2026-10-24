@@ -108,7 +108,8 @@ export class QueueHost {
       role: "dispatcher",
       specs: ["mini.yaml", "dispatcher.yaml"],
       // Writing a brief needs little reasoning: a small thinking budget keeps the turn short.
-      env: { ...this.#queueEnv(), MINI_AGENT_TOOLSET: "dispatcher", MINI_AGENT_GOAL_ORACLE: "off", MINI_AGENT_CACHE_WARMER: "off", XIAOMI_THINKING_BUDGET: "256" },
+      // Its normal call writes a few hundred tokens (5-10 s): a duplicate only after 25 s of silence.
+      env: { ...this.#queueEnv(), MINI_AGENT_TOOLSET: "dispatcher", MINI_AGENT_GOAL_ORACLE: "off", MINI_AGENT_CACHE_WARMER: "off", XIAOMI_THINKING_BUDGET: "256", MINI_AGENT_HEDGE_S: process.env.MINI_AGENT_HEDGE_S ?? "25" },
     };
   }
 
@@ -116,13 +117,13 @@ export class QueueHost {
     // The worker's own verification is its closure: the model judge doubled short tasks and could
     // reject a correct answer into a loop (measured on the pi-vs-mini corpus). MINITUI_WORKER_JUDGE=1
     // turns it back on.
-    const judge = process.env.MINITUI_WORKER_JUDGE === "1" ? {} : { MINI_AGENT_GOAL_ORACLE: "off" };
+    const judge: Record<string, string> = process.env.MINITUI_WORKER_JUDGE === "1" ? {} : { MINI_AGENT_GOAL_ORACLE: "off" };
     return { role: "worker", specs: [], env: { ...this.#queueEnv(), ...judge, MINI_AGENT_TOOLSET: "worker", MINITUI_TASK_ID: task.id, MINI_AGENT_CACHE_WARMER: "off", MINI_AGENT_THINKING: process.env.MINI_AGENT_THINKING ?? "adaptive" } };
   }
 
   #queueEnv(): Record<string, string> {
     // A provider call stuck far past its usual latency gets a duplicate in flight (first wins).
-    return { MINITUI_QUEUE_URL: this.#o.url(), MINITUI_QUEUE_TOKEN: QUEUE_TOKEN, MINI_AGENT_ORCHESTRATOR: "0", MINI_AGENT_HEDGE_S: process.env.MINI_AGENT_HEDGE_S ?? "15" };
+    return { MINITUI_QUEUE_URL: this.#o.url(), MINITUI_QUEUE_TOKEN: QUEUE_TOKEN, MINI_AGENT_ORCHESTRATOR: "0", MINI_AGENT_HEDGE_S: process.env.MINI_AGENT_HEDGE_S ?? "12" };
   }
 
   /** The run profile of a session after a restart: the chat, a task's worker, or none. */

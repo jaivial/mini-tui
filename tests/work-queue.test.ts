@@ -156,11 +156,11 @@ describe("dirIn", () => {
   });
 });
 
-describe("@MESSAGE in a brief", () => {
+describe("@MESSAGE in a part's brief", () => {
   test("is the human's message, verbatim", async () => {
-    const h = harness(1);
-    h.q.create({ spec: spec("fix the parser", "Goal: fix it.\n\n@MESSAGE\n\nVerify: run tests"), message: "the parser drops `a\\nb` lines" });
-    expect(h.q.get("t1")!.prompt).toBe("Goal: fix it.\n\nthe parser drops `a\\nb` lines\n\nVerify: run tests");
+    const h = harness(2);
+    h.q.create({ spec: { tasks: [spec("part one", "Do part one of:\n@MESSAGE"), spec("part two", "do part two")] } as never, message: "the parser drops `a\\nb` lines" });
+    expect(h.q.get("t1")!.prompt).toBe("Do part one of:\nthe parser drops `a\\nb` lines");
   });
 });
 
@@ -169,5 +169,27 @@ describe("the worker's directory", () => {
     const h = harness(1);
     h.q.create({ spec: spec("count words", "count the words in logs/app.log"), message: "Working directory: /tmp\n\ncount the words" });
     expect(h.q.get("t1")!.cwd).toBe("/tmp");
+  });
+});
+
+describe("a single task without a prompt", () => {
+  test("runs on the human's message verbatim plus the dispatcher's notes", () => {
+    const h = harness(1);
+    const r = h.q.create({ spec: { title: "fix limiter", description: "fix it", notes: "Verify: node --test" }, message: "the limiter in `lib.js` leaks a slot" });
+    expect(r.ok).toBe(true);
+    expect(h.q.get("t1")!.prompt).toBe("the limiter in `lib.js` leaks a slot\n\nVerify: node --test");
+  });
+  test("several tasks each need their own prompt", () => {
+    const h = harness(1);
+    const r = h.q.create({ spec: { tasks: [{ title: "a", description: "a" }, { title: "b", description: "b", prompt: "do b" }] } as never, message: "do a and b" });
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("a single task WITH a prompt", () => {
+  test("still runs on the human's words first; the prompt becomes notes", () => {
+    const h = harness(1);
+    h.q.create({ spec: { title: "fix", description: "fix", prompt: "Fix the limiter by picking the highest tier" }, message: "fix the limiter" });
+    expect(h.q.get("t1")!.prompt).toBe("fix the limiter\n\nDispatcher notes:\nFix the limiter by picking the highest tier");
   });
 });

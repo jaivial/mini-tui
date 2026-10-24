@@ -38,7 +38,8 @@ def run(task, rundir, tag, extra):
            "MINI_AGENT_TOOLSET": "worker", "MINI_AGENT_GOAL_ORACLE": "off", "MINI_AGENT_CACHE_WARMER": "off",
            "MINI_AGENT_ORCHESTRATOR": "0", **extra}
     t0 = time.time()
-    p = subprocess.run([BIN, "-y", "--exit-immediately", "-o", traj, "-m", MODEL, "-t", f"Working directory: {work}\n\n{text}"],
+    specs = sum((["-c", c] for c in os.environ.get("WORKER_SPECS", "").split(",") if c), [])
+    p = subprocess.run([BIN, "-y", "--exit-immediately", "-o", traj, "-m", MODEL, *specs, "-t", f"Working directory: {work}\n\n{text}"],
                        cwd=work, env=env, capture_output=True, text=True, timeout=900)
     wall = round(time.time() - t0, 1)
     v, _ = rb.verify(work)
