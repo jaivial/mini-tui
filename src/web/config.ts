@@ -24,6 +24,7 @@ import { loadLastModel } from "../lastModel";
 import { MODELS } from "../models";
 import { connectionModelOptions } from "../providers";
 import { writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { clampConcurrency, MAX_CONCURRENCY } from "./workQueue";
 import { dirname } from "node:path";
 
 /** "sk-…a1b2": enough to recognise a key, never enough to use it. */
@@ -273,10 +274,12 @@ export interface SettingsView extends Settings {
   lastModel: string;
   outputModes: typeof OUTPUT_MODES;
   liveScreen: LiveScreenView;
+  maxQueueConcurrency: number;
 }
 
 export function settingsView(): SettingsView {
-  return { ...loadSettings(), lastModel: loadLastModel(), outputModes: OUTPUT_MODES, liveScreen: liveScreenView() };
+  const settings = loadSettings();
+  return { ...settings, queueConcurrency: clampConcurrency(settings.queueConcurrency), maxQueueConcurrency: MAX_CONCURRENCY, lastModel: loadLastModel(), outputModes: OUTPUT_MODES, liveScreen: liveScreenView() };
 }
 
 /** Only known keys with valid values are applied; anything else is ignored, not stored. */
@@ -295,6 +298,7 @@ export function patchSettings(patch: Record<string, unknown>): SettingsView {
   // it off the router is not consulted at all, so the manual selector is the only
   // thing that picks a model. Only an explicit boolean flips it.
   if (typeof patch.modelRouterEnabled === "boolean") next.modelRouterEnabled = patch.modelRouterEnabled;
+  if (typeof patch.queueConcurrency === "number" && Number.isFinite(patch.queueConcurrency)) next.queueConcurrency = clampConcurrency(patch.queueConcurrency);
   saveSettings(next);
   return settingsView();
 }

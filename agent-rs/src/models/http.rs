@@ -276,9 +276,51 @@ fn interruptible<T: Send + 'static>(
 }
 
 /// POST `body` as JSON and parse the JSON reply (interruptible by a stop signal).
+///
+/// Hedged (`MINI_AGENT_HEDGE_S`, seconds; 0 = off): a call with no answer after that long gets an
+/// identical second request in flight, and the first reply to arrive wins. Measured on the
+/// pi-vs-mini corpus (MiMo token plan): the same 17-token turn that normally answers in ~2 s
+/// occasionally sat 100+ s at the provider; the duplicate answers in the usual time.
 pub fn post_json(base: &str, path: &str, body: &Value, headers: &[(String, String)], timeout: f64) -> Result<Value, ModelError> {
+    let hedge: f64 = std::env::var("MINI_AGENT_HEDGE_S").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let (base, path, body, headers) = (base.to_string(), path.to_string(), body.clone(), headers.to_vec());
-    interruptible(&mut None, move |_| post_json_blocking(&base, &path, &body, &headers, timeout))
+    if hedge <= 0.0 {
+        return interruptible(&mut None, move |_| post_json_blocking(&base, &path, &body, &headers, timeout));
+    }
+    interruptible(&mut None, move |_| {
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel::<Result<Value, ModelError>>();
+        let launch = |tx: mpsc::Sender<Result<Value, ModelError>>| {
+            let (base, path, body, headers) = (base.clone(), path.clone(), body.clone(), headers.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(post_json_blocking(&base, &path, &body, &headers, timeout));
+            });
+        };
+        launch(tx.clone());
+        let mut in_flight = 1;
+        let mut hedged = false;
+        let mut last_err = None;
+        loop {
+            let wait = if hedged { Duration::from_secs_f64(timeout.max(1.0)) } else { Duration::from_secs_f64(hedge) };
+            match rx.recv_timeout(wait) {
+                Ok(Ok(v)) => return Ok(v),
+                Ok(Err(e)) => {
+                    in_flight -= 1;
+                    last_err = Some(e);
+                    if in_flight == 0 {
+                        return Err(last_err.unwrap());
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) if !hedged => {
+                    hedged = true;
+                    in_flight += 1;
+                    eprintln!("[hedge] no answer after {hedge:.0}s: a second identical request is in flight");
+                    launch(tx.clone());
+                }
+                Err(_) => return Err(last_err.unwrap_or_else(|| transport_error(&"hedged request timed out", &base))),
+            }
+        }
+    })
 }
 
 fn post_json_blocking(base: &str, path: &str, body: &Value, headers: &[(String, String)], timeout: f64) -> Result<Value, ModelError> {

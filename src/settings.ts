@@ -28,6 +28,8 @@ export interface Settings {
    * the circuit breaker — see `src/router/`.
    */
   modelRouterEnabled?: boolean;
+  /** Work queue: how many background tasks run at once (1..300, default 300). */
+  queueConcurrency?: number;
 }
 
 export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description: string }> = [
@@ -108,6 +110,7 @@ export function loadSettings(): Settings {
         jevEnabled: jev,
         jevVerifierEnabled: verifier,
         modelRouterEnabled: router,
+        ...(typeof data?.queueConcurrency === "number" ? { queueConcurrency: data.queueConcurrency } : {}),
       };
     }
   } catch {

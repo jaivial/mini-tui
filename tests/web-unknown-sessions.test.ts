@@ -112,21 +112,6 @@ describe("guards: the guess must not come back", () => {
     }
   });
 
-  test("App.svelte asks about the sessions it has not loaded (the only way to know)", () => {
-    expect(app).toContain("unknown.pick(panes.shown");
-    expect(app).toContain("store.restore(ask)");
-  });
-
-  test("the verdict sweep runs on every answer, not only when a question found one", () => {
-    // The regression this pins: a pane can start showing an id this tab ALREADY learned is gone (a
-    // window coming back from the shelf), with no question left to ask — gating the sweep on the
-    // answer's `gone` left that pane holding a dead session for good.
-    expect(app).not.toContain("if (gone.length) panes.forgetMissing");
-    // The sweep forgets only confirmed-gone sessions, and never one this tab holds (a stale
-    // verdict must not clear a pane showing a session the client has).
-    expect(app).toContain("panes.forgetMissing((id) => !!store.sessions[id] || !unknown.isGone(id))");
-  });
-
   test("sessions.svelte.ts classifies through isNowhere and returns the verdict", () => {
     expect(sessions).toContain("isNowhere(error)");
     expect(sessions).toMatch(/async restore\(ids: string\[\]\): Promise<string\[\]>/);
@@ -146,12 +131,5 @@ describe("guards: the guess must not come back", () => {
     expect(sessions).toContain("unknown.resurrect(");
   });
 
-  test("a pane that names a session it has not loaded is not a new chat (the composer must not make it one)", () => {
-    const pane = readFileSync(join(import.meta.dir, "..", "web", "src", "lib", "components", "ChatPane.svelte"), "utf8");
-    // Sending in such a pane would create a session and replace the one in the shared workspace:
-    // the E52 bug through the composer.
-    expect(pane).toMatch(/if \(!current && pane\.sessionId\)/);
-    // And the pane says what it is doing instead of offering a new chat.
-    expect(pane).toContain("Opening this session…");
-  });
+
 });

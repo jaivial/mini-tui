@@ -39,6 +39,7 @@ import { layaHealth } from "../router/laya";
 import type { RouteLevel } from "../router/audit";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
+import { QueueHost, QUEUE_TOKEN, concurrency as queueConcurrency } from "./queueHost";
 import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
 import { bodyRefusal, BodyTimeout, BodyTooLarge, EmptyBody, readBody, readJsonBody, type BodyOutcome } from "./bodyRead";
@@ -190,10 +191,30 @@ function broadcast(event: { type: string; [key: string]: unknown }): void {
 const feed = new SessionFeed();
 // The right sidebar's socket hub (one socket per tab). Notes are read and written only through it.
 let hub: Hub;
-const sessions = new SessionManager((session) => {
+const sessions: SessionManager = new SessionManager((session) => {
   broadcast({ type: "session", session: summarize(session) });
   feed.publish(session);
-}, { mirror: mirrorLoader });
+}, {
+  mirror: mirrorLoader,
+  profileOf: (id) => queueHost?.profileOf(id),
+  onRunExit: (id, status) => queueHost?.runExited(id, status),
+});
+
+// The work queue: the one chat dispatches tasks, each runs as a background worker session.
+// Queue changes reach every tab through the shared stream (`queue` events, debounced).
+let queueTimer: ReturnType<typeof setTimeout> | undefined;
+function queueChanged(): void {
+  if (queueTimer) return;
+  queueTimer = setTimeout(() => {
+    queueTimer = undefined;
+    broadcast({ type: "queue", tasks: queueHost.queue.list(), main: queueHost.mainId(), concurrency: queueConcurrency() });
+  }, 50);
+}
+const queueHost: QueueHost = new QueueHost({
+  sessions: () => sessions,
+  url: () => `http://127.0.0.1:${PORT}/api/queue-agent`,
+  onChange: queueChanged,
+});
 
 // Terminals start where the session works: its folder on this machine, or an ssh shell on its host.
 const terminals = new Terminals();
@@ -1009,6 +1030,76 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         return json({ error: "websocket upgrade failed" }, 400);
       }
 
+      // ------------------------------------------------------------ work queue
+      // The agents' side (their queue tools): loopback only, and only with the per-process token
+      // the server handed to the agents it spawned. A page cannot reach these.
+      if (path.startsWith("/queue-agent/") && request.method === "POST") {
+        if (request.headers.get("x-queue-token") !== QUEUE_TOKEN) return json({ ok: false, error: "forbidden" }, 403);
+        const agentBody = await readJsonOrRefuse(request);
+        if (!agentBody.ok) return agentBody.response;
+        const body = agentBody.body;
+        const q = queueHost.queue;
+        const sub = path.slice("/queue-agent".length);
+        if (sub === "/tasks") {
+          const r = q.create({ spec: (body.spec ?? {}) as Record<string, unknown>, message: queueHost.lastMessage });
+          log("queue.create", { ok: r.ok, n: r.ok ? r.tasks.length : 0, dup: r.ok ? "" : (r.duplicateOf ?? "") });
+          return json({ ok: r.ok, text: r.text, tasks: r.ok ? r.tasks.map((t) => t.id) : [] });
+        }
+        if (sub === "/status") return json({ ok: true, text: q.statusText(String(body.id ?? "").trim() || undefined) });
+        const m = sub.match(/^\/tasks\/([\w-]+)\/(redirect|cancel|update|notify)$/);
+        if (m) {
+          const [, id, verb] = m as unknown as [string, string, string];
+          let r: { ok: boolean; text: string };
+          if (verb === "redirect") r = await q.redirect(id, String(body.message ?? ""));
+          else if (verb === "cancel") r = q.cancel(id);
+          else if (verb === "update") r = q.update(id, String(body.description ?? ""));
+          else {
+            r = q.notify(id, String(body.message ?? ""));
+            const t = q.get(id);
+            if (r.ok && t) queueHost.notifyChat(`✉ ${t.id} · ${t.title}: ${String(body.message ?? "").slice(0, 400)}`);
+          }
+          log("queue." + verb, { id, ok: r.ok });
+          return json(r);
+        }
+        return json({ ok: false, error: "not found" }, 404);
+      }
+      // The UI's side: the chat, the task list, cancel / redirect / new chat.
+      if (path === "/queue" && request.method === "GET") {
+        return json({ tasks: queueHost.queue.list(), main: queueHost.mainId(), concurrency: queueConcurrency() });
+      }
+      if (path === "/queue/prompt" && request.method === "POST") {
+        const { limited: turnLimit, key: turnKey } = charged("prompt", request, srv);
+        if (turnLimit) return turnLimit;
+        const turnBody = await readJsonOrRefuse(request, LIMITS.prompt, turnKey);
+        if (!turnBody.ok) return turnBody.response;
+        const body = turnBody.body;
+        const prompt = String(body.prompt ?? "").trim();
+        if (!prompt) return json({ error: "a prompt is required" }, 400);
+        try {
+          const session = await queueHost.prompt({ prompt, model: body.model ? String(body.model) : undefined, attachments: body.attachments });
+          queueChanged();
+          return json(toWire(session));
+        } catch (error) {
+          return json({ error: (error as Error).message }, 409);
+        }
+      }
+      if (path === "/queue/new" && request.method === "POST") {
+        queueHost.newChat();
+        queueChanged();
+        return json({ ok: true });
+      }
+      const queueTaskMatch = path.match(/^\/queue\/tasks\/([\w-]+)\/(cancel|redirect)$/);
+      if (queueTaskMatch && request.method === "POST") {
+        const id = queueTaskMatch[1] as string;
+        if (queueTaskMatch[2] === "cancel") {
+          const r = queueHost.queue.cancel(id);
+          return json(r, r.ok ? 200 : 409);
+        }
+        const redirectBody = await readJsonOrRefuse(request);
+        if (!redirectBody.ok) return redirectBody.response;
+        const r = await queueHost.queue.redirect(id, String(redirectBody.body.message ?? ""));
+        return json(r, r.ok ? 200 : 409);
+      }
       if (path === "/kanban" && request.method === "GET") return json(allCards(sessions.db(), 2000));
       if (path === "/orchestration/graph" && request.method === "GET") {
         try {
@@ -1369,7 +1460,11 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         // absence has to be visible.
         const patchBody = await readJsonOrRefuse(request);
         if (!patchBody.ok) return patchBody.response;
-        return json(patchSettings(patchBody.body));
+        const patched = patchSettings(patchBody.body);
+        // More (or fewer) slots: the queue starts waiting work now.
+        queueHost.queue.resize();
+        queueChanged();
+        return json(patched);
       }
 
       // ------------------------------------------------------------ providers
@@ -1466,4 +1561,8 @@ console.log(existsSync(STATIC_DIR) ? `serving the web app from ${STATIC_DIR}` : 
 
 // After module initialization: openHistory reads mirrorCtx and broadcasts through the live hub.
 // Running this beside the manager declaration hit uninitialized bindings and discarded markers.
-void sessions.rehydrate().catch((error) => log("session.rehydrate", { error: String(error) }));
+void sessions
+  .rehydrate()
+  .catch((error) => log("session.rehydrate", { error: String(error) }))
+  // Work that was running when the server stopped goes back to the queue and continues.
+  .finally(() => queueHost.queue.recover());

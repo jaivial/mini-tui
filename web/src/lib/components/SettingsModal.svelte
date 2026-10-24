@@ -47,6 +47,22 @@
     });
   });
 
+  // ---- work queue concurrency
+  let concurrencyDraft = $state<number | null>(null);
+  async function setConcurrency(value: number) {
+    const max = catalog.settings?.maxQueueConcurrency ?? 300;
+    const n = Math.max(1, Math.min(max, Math.round(value) || 1));
+    concurrencyDraft = n;
+    try {
+      catalog.settings = await api.patchSettings({ queueConcurrency: n });
+      toasts.push(`${n} task${n === 1 ? "" : "s"} at once`, { tone: "info" });
+    } catch (error) {
+      toasts.push("Could not save", { detail: (error as Error).message, tone: "err" });
+    } finally {
+      concurrencyDraft = null;
+    }
+  }
+
   // ---- providers: one connect form at a time
   let connecting = $state<ProviderCatalogEntry | null>(null);
   let key = $state("");
@@ -154,6 +170,35 @@
 
     {#if tab === "general"}
       <div role="tabpanel" id="{uid}-panel-general" aria-labelledby="{uid}-tab-general" class="flex flex-col gap-6">
+        <fieldset class="flex flex-col gap-2">
+          <legend class="mb-1 text-[13px] font-medium text-ink">Work queue</legend>
+          <p class="-mt-1 text-[12.5px] text-ink-muted" id="{uid}-conc-help">How many tasks run at the same time. The rest wait in the queue and start as soon as a slot frees up (1–{catalog.settings?.maxQueueConcurrency ?? 300}).</p>
+          {#if catalog.settings}
+            <div class="flex items-center gap-2">
+              <input
+                type="range"
+                min="1"
+                max={catalog.settings.maxQueueConcurrency ?? 300}
+                class="flex-1 accent-[var(--color-brand)]"
+                aria-describedby="{uid}-conc-help"
+                aria-label="Tasks at once (slider)"
+                value={concurrencyDraft ?? catalog.settings.queueConcurrency ?? 300}
+                oninput={(e) => (concurrencyDraft = Number((e.currentTarget as HTMLInputElement).value))}
+                onchange={(e) => void setConcurrency(Number((e.currentTarget as HTMLInputElement).value))}
+              />
+              <input
+                type="number"
+                min="1"
+                max={catalog.settings.maxQueueConcurrency ?? 300}
+                class="tnum h-8 w-20 rounded-md border border-line bg-canvas px-2 text-ink pointer-coarse:h-11"
+                aria-label="Tasks at once"
+                value={concurrencyDraft ?? catalog.settings.queueConcurrency ?? 300}
+                onchange={(e) => void setConcurrency(Number((e.currentTarget as HTMLInputElement).value))}
+              />
+            </div>
+          {/if}
+        </fieldset>
+
         <fieldset class="flex flex-col gap-2">
           <legend class="mb-1 text-[13px] font-medium text-ink">Appearance</legend>
           <div class="flex flex-wrap gap-2" role="group" aria-label="Color mode">

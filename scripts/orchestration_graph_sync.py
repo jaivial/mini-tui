@@ -52,6 +52,15 @@ def snapshot(c):
   node('MiniCard',cid,session_id=sid,**d);edge(sid,bid,'HAS_BOARD');edge(bid,cid,'HAS_CARD')
   if d['assignee']:edge(cid,sid+'~'+d['assignee'],'ASSIGNED_TO')
  for row in c.execute('select a,b,kind from kanban_links'):edge(row[0],row[1],'RELATED_TO')
+ # Work-queue tasks: one node per task (title, description, brief, result), the worker session
+ # that ran it, and the task-to-task relations the queue computed (similarity, redirects).
+ try:
+  for row in c.execute('select id,title,description,prompt,status,session_id,result,related,cwd,updated_at from queue_tasks'):
+   d=dict(row);qid='queue:'+d.pop('id');rel=d.pop('related') or '[]'
+   node('MiniTask',qid,session_id=d.get('session_id',''),title=d['title'],description=d['description'],task=d['prompt'][:1800],result=d['result'],status=d['status'],project_cwd=d['cwd'],updated_at=d['updated_at'])
+   if d.get('session_id'):edge(d['session_id'],qid,'HAS_TASK')
+   for r in json.loads(rel):edge(qid,'queue:'+r['id'],'RELATED_TO')
+ except sqlite3.OperationalError:pass
  try:
   for row in c.execute('select * from orchestration_events'):
    d=dict(row);seq=d.pop('seq');entity=d.pop('entity_id');node('MiniEvent','event:'+str(seq),entity_id=entity,**d);edge(entity,'event:'+str(seq),'HAS_EVENT')
@@ -80,7 +89,7 @@ def run(once=False):
     if cursor.get(id)!=digest:changed.append((n,digest))
    edgehash=hashlib.sha256(json.dumps(edges,sort_keys=True).encode()).hexdigest()
    with driver.session() as s:
-    for label in ['MiniAgent','MiniTask','MiniBoard','MiniCard','MiniEvent']:
+    for label in ['MiniAgent','MiniTask','MiniBoard','MiniCard','MiniEvent']:  # queue tasks are MiniTask too
      rows=[dict(id=n['id'],props=n['props'],digest=h) for n,h in changed if n['label']==label]
      for i in range(0,len(rows),100):
       batch=rows[i:i+100]
