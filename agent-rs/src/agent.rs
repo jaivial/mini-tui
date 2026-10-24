@@ -206,6 +206,8 @@ pub struct Agent {
     initial_files_capped: bool,
     /// Small codejs state belongs to this agent run, never a global process or repo.
     codejs_store: Obj,
+    /// Models the fallback chain already moved through in this run (never twice).
+    fallbacks_tried: std::collections::HashSet<String>,
 }
 
 impl Agent {
@@ -261,6 +263,7 @@ impl Agent {
             initial_manifest: None,
             initial_files_capped: false,
             codejs_store: Obj::new(),
+            fallbacks_tried: std::collections::HashSet::new(),
         }
     }
 
@@ -482,6 +485,20 @@ impl Agent {
 
     fn parent_model_name(&self) -> String {
         if self.requested_model.is_empty() { self.model.model_name() } else { self.requested_model.clone() }
+    }
+
+    /// The next model of the fallback chain after the current one (`MINI_AGENT_MODEL_FALLBACKS`,
+    /// comma-separated ids in order of preference). The current model's place in the chain is
+    /// found by name; a model that is not in the chain starts it from the top. Models already
+    /// tried in this run are skipped, so a chain never loops.
+    fn next_fallback_model(&mut self) -> Option<String> {
+        let chain: Vec<String> = std::env::var("MINI_AGENT_MODEL_FALLBACKS").ok()?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let current = self.parent_model_name();
+        self.fallbacks_tried.insert(current.clone());
+        let at = chain.iter().position(|m| *m == current).map(|i| i + 1).unwrap_or(0);
+        chain.into_iter().skip(at).find(|m| !self.fallbacks_tried.contains(m)).inspect(|m| {
+            self.fallbacks_tried.insert(m.clone());
+        })
     }
 
     fn apply_model_switch(&mut self, name: Option<String>) {
@@ -1469,8 +1486,39 @@ impl Agent {
         self.last_view_ms = view_ms;
         let reply = match self.model_query(&view) {
             Ok(r) => r,
+            Err(e) if !cmp::is_context_overflow(&e.kind, &e.message) => {
+                // A provider failure the retry policy gave up on: the next model of the fallback
+                // chain (`MINI_AGENT_MODEL_FALLBACKS`) takes over THIS call, with the whole
+                // conversation, and the run goes on. Only when the chain is exhausted is the
+                // error fatal.
+                let mut err = e;
+                loop {
+                    let Some(next) = self.next_fallback_model() else { return Err(Flow::Fatal(err)) };
+                    let note = format!("provider failure on {}: {} -> continuing on {next}", self.model.model_name(), err.message.chars().take(200).collect::<String>());
+                    eprintln!("[fallback] {note}");
+                    match get_model(Some(&next), &Obj::new()) {
+                        Ok(m) => {
+                            self.model = m;
+                            self.requested_model = next.clone();
+                            self.control_model = Some(next.clone());
+                            self.journal_note(&json!({"t": "fallback", "model": next, "reason": err.message}));
+                            self.messages.push(json!({"role": "user", "content": format!("[Model switched to {next} after a provider failure. Continue the task where you left off.]"), "extra": {"interrupt_type": "ModelFallback"}}));
+                            view = self.context_messages();
+                        }
+                        Err(e2) => {
+                            eprintln!("[fallback] cannot use {next}: {e2}");
+                            continue;
+                        }
+                    }
+                    match self.model_query(&view) {
+                        Ok(r) => break r,
+                        Err(e2) if cmp::is_context_overflow(&e2.kind, &e2.message) => return Err(Flow::Fatal(e2)),
+                        Err(e2) => err = e2,
+                    }
+                }
+            }
             Err(e) => {
-                if !self.config.compaction_enabled || !cmp::is_context_overflow(&e.kind, &e.message) {
+                if !self.config.compaction_enabled {
                     return Err(Flow::Fatal(e));
                 }
                 cmp::learn_window(&self.model.model_name(), &e.message);

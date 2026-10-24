@@ -96,8 +96,9 @@ fn dispatcher_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "task_status",
-            "Read the queue: every task with its status, description and result. Only when the human asks about a task \
-             in more detail than <queue_state> already gives.",
+            "Read the queue, or one task in detail. For a RUNNING task it returns the worker's live progress: its last \
+             commands and their results, what it is writing right now, model calls and time so far. Use it whenever the \
+             human asks how a task is going, what a worker is doing, or whether it is stuck.",
             json!({
                 "type": "object",
                 "properties": {"id": {"type": "string", "description": "optional: one task's full detail"}}
@@ -116,6 +117,22 @@ fn worker_specs() -> Vec<(&'static str, &'static str, Value)> {
                 "type": "object",
                 "properties": {"description": {"type": "string", "description": "the new description, one sentence"}},
                 "required": ["description"]
+            }),
+        ),
+        (
+            "task_show_browser",
+            "Show the human your browser. Opens the app's browser panel on the given cu tab, live, so the human can look \
+             (\"here is how the page looks\") or intervene with their own mouse and keyboard: solve a captcha, scan a QR \
+             code, approve a login or a 2FA prompt. Say in `message` what you need them to do; with `wait_seconds` the \
+             call returns once the human says they are done (or the time is up), so you can continue.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tab": {"type": "string", "description": "the cu tab id (from `cu tabs` / `tab open`)"},
+                    "message": {"type": "string", "description": "what the human should look at or do"},
+                    "wait_seconds": {"type": "number", "description": "wait up to this long for the human to finish (0 = do not wait)"}
+                },
+                "required": ["tab", "message"]
             }),
         ),
         (
@@ -140,7 +157,7 @@ fn specs() -> Vec<(&'static str, &'static str, Value)> {
 }
 
 pub fn is_tool(name: &str) -> bool {
-    matches!(name, "task_create" | "task_redirect" | "task_cancel" | "task_status" | "task_update" | "task_notify")
+    matches!(name, "task_create" | "task_redirect" | "task_cancel" | "task_status" | "task_update" | "task_notify" | "task_show_browser")
         && specs().iter().any(|(n, _, _)| *n == name)
 }
 
@@ -157,14 +174,18 @@ pub fn anthropic_tools() -> Vec<Value> {
 }
 
 fn post(path: &str, body: &Value) -> Result<Value, String> {
+    // The queue answers in milliseconds; a server that hangs must not hold the worker's turn.
+    post_timeout(path, body, 10.0)
+}
+
+fn post_timeout(path: &str, body: &Value, timeout_s: f64) -> Result<Value, String> {
     let base = queue_url().ok_or("the work queue is not reachable from this run (MINITUI_QUEUE_URL is not set)")?;
     let url = format!("{base}{path}");
     let token = std::env::var("MINITUI_QUEUE_TOKEN").unwrap_or_default();
     let resp = ureq::post(&url)
         .set("Content-Type", "application/json")
         .set("x-queue-token", &token)
-        // The queue answers in milliseconds; a server that hangs must not hold the worker's turn.
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs_f64(timeout_s.max(1.0)))
         .send_string(&body.to_string());
     let text = match resp {
         Ok(r) => r.into_string().map_err(|e| e.to_string())?,
@@ -197,6 +218,10 @@ pub fn outcome(name: &str, args: &Value) -> Value {
         "task_status" => post("/status", &json!({"id": id(args)})),
         "task_update" => post(&format!("/tasks/{}/update", task_id()), &json!({"description": args.get("description").cloned().unwrap_or(Value::Null)})),
         "task_notify" => post(&format!("/tasks/{}/notify", task_id()), &json!({"message": args.get("message").cloned().unwrap_or(Value::Null)})),
+        "task_show_browser" => {
+            let wait = args.get("wait_seconds").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 1800.0);
+            post_timeout(&format!("/tasks/{}/browser", task_id()), &json!({"tab": args.get("tab").cloned().unwrap_or(Value::Null), "message": args.get("message").cloned().unwrap_or(Value::Null), "wait_seconds": wait}), wait + 15.0)
+        }
         _ => Err(format!("unknown queue tool {name}")),
     };
     match result {

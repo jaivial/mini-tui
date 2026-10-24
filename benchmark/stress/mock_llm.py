@@ -83,8 +83,9 @@ def dispatcher(messages):
             tag = re.search(r"tag=(\S+)", opts)
             cwd = re.search(r"cwd=(\S+)", opts)
             fail = " fail" in opts
+            browser = re.search(r"browser=(\S+)", opts)
             for i in range(n):
-                directive = f"SLEEP={sleep.group(1) if sleep else 0}" + (" FAIL" if fail else "") + " UPDATE"
+                directive = f"SLEEP={sleep.group(1) if sleep else 0}" + (" FAIL" if fail else "") + " UPDATE" + (f" BROWSER={browser.group(1)}" if browser else "")
                 spec = {"title": f"{tag.group(1) if tag else 'job'} {i} {uuid.uuid4().hex[:6]}", "description": f"stress task {i}",
                         "prompt": f"{directive}\nunique {uuid.uuid4().hex}"}
                 if cwd:
@@ -122,6 +123,9 @@ def worker(messages):
         plan.append(tool_call("task_update", {"description": "working on it (mock)"}))
     if "NOTIFY" in brief:
         plan.append(tool_call("task_notify", {"message": "mock worker note"}))
+    m = re.search(r"BROWSER=(\S+)", brief)
+    if m:
+        plan.append(tool_call("task_show_browser", {"tab": m.group(1), "message": "please solve the captcha", "wait_seconds": 30}))
     plan.append(tool_call("bash", {"command": "echo done"}))
     if tool_turns < len(plan):
         return reply(None, [plan[tool_turns]])

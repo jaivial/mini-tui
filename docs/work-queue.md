@@ -29,6 +29,44 @@ sidebar, no panes and no kanban. Everything sent to the chat becomes work in a q
 5. When a worker ends, its task becomes `done` or `error` with the final answer as its result, and
    a one-line notice lands in the chat.
 
+## Models
+
+A task runs on the model the chat had **when the task was created**: changing the chat's model
+(the picker, `/model`) applies to the dispatcher and to tasks created from then on; tasks already
+launched keep the model they started with.
+
+**Fallback order** (Settings → General → Model fallback order): models in order of preference,
+chosen from the connected providers. A worker (or the dispatcher) whose model fails at the
+provider — any error the retries could not fix: a dead gateway, auth, quota, 5xx — continues
+the same run on the next model in the list, with its whole conversation; the card and the chat say
+`continuing on <model>`. The task stops only when every model in the list has failed. With a chain
+behind it, a call gives up on a failing provider after ~20 s instead of 2 min
+(`MINI_AGENT_MODEL_FALLBACKS` in the agent; credentials come from `providers.json`).
+
+## Asking a worker how it is going
+
+The dispatcher's `task_status` (for a task, or the whole queue) reads the worker's LIVE session:
+its last commands and their results, what it is writing right now, model calls and time so far.
+"How is t3 going?" / "is it stuck?" is answered from that.
+
+## The browser
+
+The agents share the persistent `cu` daemon. The **Browser** panel (globe button, `/browser`)
+lists its tabs and shows the chosen one as a screenshot or as the live stream relayed by the
+server (the daemon's token never reaches the page). **Take control** sends the human's taps,
+scrolling and typing to that tab.
+
+- A task about how a page LOOKS: the worker takes a `shot` and names the PNG in its result; the
+  chat shows the image.
+- A page that needs a human (captcha, QR, login, 2FA, consent): the worker calls
+  `task_show_browser {tab, message, wait_seconds}`. The chat gets the request, the panel opens
+  live on that tab with a **Done** button, and the worker's call returns when the human presses
+  it (or the wait runs out). Workers never try to defeat a captcha or guess credentials.
+
+Routes: `GET /api/browser/tabs`, `GET /api/browser/tabs/:id/shot` (PNG),
+`WS /api/browser/tabs/:id/live?control=1`, `POST /api/browser/tabs/:id/input` (tap / scroll /
+type / press), `POST /api/queue/tasks/:id/browser-done`.
+
 ## Folders
 
 Two tasks working in the same folder (or one inside the other) never run at the same time: the

@@ -299,6 +299,15 @@ export function patchSettings(patch: Record<string, unknown>): SettingsView {
   // thing that picks a model. Only an explicit boolean flips it.
   if (typeof patch.modelRouterEnabled === "boolean") next.modelRouterEnabled = patch.modelRouterEnabled;
   if (typeof patch.queueConcurrency === "number" && Number.isFinite(patch.queueConcurrency)) next.queueConcurrency = clampConcurrency(patch.queueConcurrency);
+  // The fallback chain: known model ids only, each once, at most 20.
+  if (Array.isArray(patch.modelFallbacks)) {
+    const known = new Set(connectionModelOptions().map((o) => o.value).concat(MODELS.map((m) => m.value)));
+    const seen = new Set<string>();
+    next.modelFallbacks = (patch.modelFallbacks as unknown[])
+      .filter((m): m is string => typeof m === "string" && /^[\w.:/-]{1,120}$/.test(m) && (known.has(m) || known.size === 0))
+      .filter((m) => !seen.has(m) && seen.add(m))
+      .slice(0, 20);
+  }
   saveSettings(next);
   return settingsView();
 }
@@ -324,6 +333,7 @@ export const COMMANDS: CommandInfo[] = [
   { name: "new", insert: "/new", detail: "Start a new chat (the queue and its tasks stay)", kind: "client" },
   { name: "model", insert: "/model", detail: "Switch the model for the chat and new tasks", args: "[id]", kind: "client" },
   { name: "tasks", insert: "/tasks", detail: "Show or hide the task panel", kind: "client" },
+  { name: "browser", insert: "/browser", detail: "Show the agents' browser (screenshots or live)", kind: "client" },
   { name: "compact", insert: "/compact", detail: "Summarize the conversation to free context", kind: "client" },
   { name: "connect", insert: "/connect", detail: "Connect a provider with your API key", kind: "client" },
   { name: "settings", insert: "/settings", detail: "Open settings (tasks at once, providers…)", kind: "client" },

@@ -30,6 +30,12 @@ export interface Settings {
   modelRouterEnabled?: boolean;
   /** Work queue: how many background tasks run at once (1..300, default 300). */
   queueConcurrency?: number;
+  /**
+   * Work queue: models in order of preference (ids as `provider/model`). A worker whose model
+   * fails at the provider continues the same task on the next one in this list; the task
+   * stops only when every model failed. Empty = no fallback.
+   */
+  modelFallbacks?: string[];
 }
 
 export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description: string }> = [
@@ -111,6 +117,7 @@ export function loadSettings(): Settings {
         jevVerifierEnabled: verifier,
         modelRouterEnabled: router,
         ...(typeof data?.queueConcurrency === "number" ? { queueConcurrency: data.queueConcurrency } : {}),
+        ...(Array.isArray(data?.modelFallbacks) ? { modelFallbacks: (data.modelFallbacks as unknown[]).filter((m): m is string => typeof m === "string") } : {}),
       };
     }
   } catch {

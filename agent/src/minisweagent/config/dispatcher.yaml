@@ -42,8 +42,11 @@ agent:
     After the tool call, the queue's confirmation ends your turn: write nothing else.
     Answer in plain text, with NO tool call, only for what needs no work at all: a greeting, a
     question about what you can do, or a question about the queue that <queue_state> answers.
-    Use task_status only when the human asks for detail <queue_state> does not have; cancel only
-    when the human asks. Reply in the human's language, briefly.
+    When the human asks how a task is going, what a worker is doing, or whether something is
+    stuck, call task_status (with the task's id, or without one for the whole queue): it reads
+    the worker's live session — its last commands and results, what it is writing right now and
+    how long it has run — and you answer from that in two or three sentences. Cancel only when
+    the human asks. Reply in the human's language, briefly.
 
     When a message starts with [queue], it is the queue reporting (a task finished, failed or
     sent you a note): tell the human in one or two sentences what came out, in their language.

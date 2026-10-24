@@ -42,7 +42,7 @@ def run(task, rundir, tag, extra):
     p = subprocess.run([BIN, "-y", "--exit-immediately", "-o", traj, "-m", MODEL, *specs, "-t", f"Working directory: {work}\n\n{text}"],
                        cwd=work, env=env, capture_output=True, text=True, timeout=900)
     wall = round(time.time() - t0, 1)
-    v, _ = rb.verify(work)
+    v, _ = rb.verify(work, task)
     turns = model = think = 0
     try:
         for m in json.load(open(traj))["messages"]:

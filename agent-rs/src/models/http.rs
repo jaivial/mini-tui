@@ -548,7 +548,10 @@ pub fn with_retry<T>(call: impl FnMut() -> Result<T, ModelError>) -> Result<T, M
     // so a slot frees within seconds, and the exponential curve's 8-17 s waits were the wall time
     // of whole waves (measured, speed8 t08: 37-39 s tails behind 8.9/11.6/17.6 s retries).
     let max_wait: f64 = std::env::var("MINI_AGENT_RETRY_MAX_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(f64::INFINITY);
-    let budget: f64 = std::env::var("MINI_AGENT_RETRY_BUDGET_S").ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_RETRY_BUDGET_S);
+    // With a fallback chain behind this call (`MINI_AGENT_MODEL_FALLBACKS`), the next model is
+    // a better use of two minutes than retrying the one that is failing: a short budget here.
+    let has_fallback = std::env::var("MINI_AGENT_MODEL_FALLBACKS").map(|v| v.contains(',')).unwrap_or(false);
+    let budget: f64 = std::env::var("MINI_AGENT_RETRY_BUDGET_S").ok().and_then(|s| s.parse().ok()).unwrap_or(if has_fallback { 20.0 } else { DEFAULT_RETRY_BUDGET_S });
     retry_within(call, attempts, min_wait, max_wait, budget)
 }
 

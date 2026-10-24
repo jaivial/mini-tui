@@ -206,6 +206,8 @@ export interface SettingsView {
   /** Work queue: background tasks at once (1..maxQueueConcurrency). */
   queueConcurrency?: number;
   maxQueueConcurrency?: number;
+  /** Models in order of preference for the fallback chain (see docs/work-queue.md). */
+  modelFallbacks?: string[];
   /** The live cu screen. Operator config only: the client cannot change it. */
   liveScreen?: { enabled: boolean; origin: string | null; viewerUrl: string | null; loginUrl: string | null; controlUrl?: string | null };
 }
@@ -335,7 +337,17 @@ export interface QueueTask {
   notes: Array<{ at: number; from: "worker" | "dispatcher" | "queue"; text: string }>;
   attempts: number;
   workSeconds: number;
+  /** The worker is waiting for the human in its browser tab. */
+  browser?: { tab: string; message: string; since: number };
 }
+/** One tab of the agents' persistent cu browser. */
+export interface CuTab {
+  id: string;
+  url: string;
+  title: string;
+  default: boolean;
+}
+
 export interface QueueView {
   tasks: QueueTask[];
   /** The chat's session id ("" before the first message). */

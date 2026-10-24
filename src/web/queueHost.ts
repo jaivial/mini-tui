@@ -11,6 +11,7 @@ import type { RunEvent } from "../traj/schema";
 import { clampConcurrency, WorkQueue, type QueueTask } from "./workQueue";
 import type { LiveSession, RunProfile, SessionManager, SessionStatus } from "./sessions";
 import { saveTask } from "../sessions";
+import { registerFile } from "./attachments";
 import { log } from "./log";
 
 /** The secret the agents' queue tools present; a page cannot know it. */
@@ -95,6 +96,7 @@ export class QueueHost {
         },
       },
     });
+    this.queue.progress = (sessionId) => this.liveProgress(sessionId);
   }
 
   // ---- the one chat
@@ -112,17 +114,21 @@ export class QueueHost {
     this.queue.setMeta("main_session", id);
   }
 
-  dispatcherProfile(): RunProfile {
+  /** The fallback chain for a run on `model`: the model first, then the preference list. */
+  #fallbackEnv(model: string): Record<string, string> {
+    const chain = (loadSettings().modelFallbacks ?? []).filter((m) => m !== model);
+    return chain.length ? { MINI_AGENT_MODEL_FALLBACKS: [model, ...chain].join(",") } : {};
+  }
+
+  dispatcherProfile(model = this.mainSession()?.model || loadLastModel() || DEFAULT_MODEL): RunProfile {
     return {
       role: "dispatcher",
       specs: ["mini.yaml", "dispatcher.yaml"],
-      // Writing a brief needs little reasoning: a small thinking budget keeps the turn short.
-      // Its normal call writes a few hundred tokens (5-10 s): a duplicate only after 25 s of silence.
-      env: { ...this.#queueEnv(), MINI_AGENT_TOOLSET: "dispatcher", MINI_AGENT_GOAL_ORACLE: "off", MINI_AGENT_CACHE_WARMER: "off", XIAOMI_THINKING_BUDGET: "256", MINI_AGENT_HEDGE_S: process.env.MINI_AGENT_HEDGE_S ?? "25" },
+      env: { ...this.#queueEnv(), ...this.#fallbackEnv(model), MINI_AGENT_TOOLSET: "dispatcher", MINI_AGENT_GOAL_ORACLE: "off", MINI_AGENT_CACHE_WARMER: "off", XIAOMI_THINKING_BUDGET: "256", MINI_AGENT_HEDGE_S: process.env.MINI_AGENT_HEDGE_S ?? "25" },
     };
   }
 
-  workerProfile(task: Pick<QueueTask, "id">): RunProfile {
+  workerProfile(task: Pick<QueueTask, "id" | "model">): RunProfile {
     // The worker's own verification is its closure: the model judge doubled short tasks and could
     // reject a correct answer into a loop (measured on the pi-vs-mini corpus). MINITUI_WORKER_JUDGE=1
     // turns it back on.
@@ -135,7 +141,9 @@ export class QueueHost {
         return {};
       }
     })();
-    return { role: "worker", specs: [], env: { ...extra, ...this.#queueEnv(), ...judge, MINI_AGENT_TOOLSET: "worker", MINITUI_TASK_ID: task.id, MINI_AGENT_CACHE_WARMER: "off", MINI_AGENT_THINKING: process.env.MINI_AGENT_THINKING ?? "adaptive" } };
+    // The fallback chain. The worker switches model inside its own process and reads each
+    // model's credentials from providers.json itself (models/connections.rs).
+    return { role: "worker", specs: [], env: { ...extra, ...this.#fallbackEnv(task.model), ...this.#queueEnv(), ...judge, MINI_AGENT_TOOLSET: "worker", MINITUI_TASK_ID: task.id, MINI_AGENT_CACHE_WARMER: "off", MINI_AGENT_THINKING: process.env.MINI_AGENT_THINKING ?? "adaptive" } };
   }
 
   #queueEnv(): Record<string, string> {
@@ -186,7 +194,7 @@ export class QueueHost {
       return sm.get(id)!;
     }
     if (main) sm.close(main.id);
-    const created = await sm.create({ prompt: text, model: body.model, target: "local", attachments: body.attachments, profile: this.dispatcherProfile(), agentSuffix: suffix });
+    const created = await sm.create({ prompt: text, model: body.model, target: "local", attachments: body.attachments, profile: this.dispatcherProfile(body.model || undefined), agentSuffix: suffix });
     this.setMain(created.id);
     return created;
   }
@@ -222,6 +230,11 @@ export class QueueHost {
     if (!after) return;
     const first = after.result.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
     this.notifyChat(`${after.status === "done" ? "✓" : "✗"} ${after.id} · ${after.title} — ${after.status}${first ? `: ${first.slice(0, 240)}` : ""}`);
+    // Screenshots the worker took (cu `shot`, computer_use) and named in its result show in the
+    // chat as images: "here is how the page looks" needs no extra step from the human.
+    const shots = [...new Set(after.result.match(/(?:^|[\s(`"'])(\/[\w.@+\/-]+\.(?:png|jpe?g|webp))(?=$|[\s)`"'.,;:!?])/gm)?.map((m) => m.trim().replace(/^[(`"']/, "")) ?? [])].slice(0, 4);
+    const images = shots.map((p) => registerFile(p)).filter((a): a is NonNullable<typeof a> => !!a);
+    if (images.length) this.notifyChat(images.map((a) => `![${a.name}](${a.url})`).join("\n"));
     this.#release(sessionId);
   }
 
@@ -240,6 +253,38 @@ export class QueueHost {
     }, 2_000).unref?.();
   }
 
+
+  /** A worker switched model after a provider failure: the card and the chat say so. */
+  modelFellBack(sessionId: string, model: string): void {
+    const task = this.queue.bySession(sessionId);
+    if (!task) return;
+    this.queue.setModel(task.id, model, `provider failure: continuing on ${model}`);
+    this.notifyChat(`↷ ${task.id} · ${task.title} — continuing on ${model} after a provider failure`);
+  }
+
+  /**
+   * What a worker is doing right now, from its live session: the last steps it took (commands
+   * and short results), what it is writing, and how long it has run. For the dispatcher's
+   * `task_status` and the chat's "how is X going?".
+   */
+  liveProgress(sessionId: string, steps = 6): string {
+    const s = this.#o.sessions().get(sessionId);
+    if (!s) return "";
+    const lines: string[] = [];
+    const recent = s.events.slice(-40);
+    const calls = recent.filter((e) => e.type === "tool_call").slice(-steps);
+    for (const c of calls) {
+      if (c.type !== "tool_call") continue;
+      const obs = recent.find((e) => e.type === "observation" && e.toolCallId === c.id);
+      const out = obs && obs.type === "observation" ? obs.output.replace(/\s+/g, " ").trim().slice(0, 120) : "";
+      lines.push(`  $ ${c.command.replace(/\s+/g, " ").slice(0, 140)}${out ? `\n    → ${out}` : ""}`);
+    }
+    const lastSaid = [...recent].reverse().find((e) => e.type === "assistant" || e.type === "thinking");
+    if (lastSaid && (lastSaid.type === "assistant" || lastSaid.type === "thinking")) lines.push(`  last thought: ${lastSaid.text.replace(/\s+/g, " ").slice(0, 200)}`);
+    if (s.partial?.text || s.partial?.thinking) lines.push(`  writing now: ${(s.partial.text || s.partial.thinking).replace(/\s+/g, " ").slice(-160)}`);
+    if (s.status === "running") lines.push(`  running for ${Math.round((Date.now() - s.startedAt) / 1000)}s, ${s.apiCalls} model calls`);
+    return lines.join("\n");
+  }
 
   notifyChat(text: string): void {
     const id = this.mainId();

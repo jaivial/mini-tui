@@ -13,7 +13,7 @@ import json, os, subprocess, sys, threading, time, urllib.request, uuid
 PORT = os.environ.get("MINITUI_WEB_PORT", "4402")
 BASE = f"http://127.0.0.1:{PORT}/api"
 MOCK = "http://127.0.0.1:4499"
-MODEL = "openai/mock"
+MODEL = "mockp/m"
 FAILS = []
 
 

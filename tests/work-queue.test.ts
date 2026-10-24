@@ -283,3 +283,27 @@ describe("one running task per directory tree", () => {
     expect(h.q.get("t2")!.status).toBe("running");
   });
 });
+
+describe("the model a task runs on", () => {
+  test("is the chat's model when the task is created; tasks already launched keep theirs", async () => {
+    let current = "a/one";
+    const started: string[] = [];
+    const host = {
+      startWorker: async (t: QueueTask) => (started.push(t.model), "s" + started.length),
+      continueWorker: async () => {},
+      workerRunning: () => true,
+      messageWorker: () => {},
+      stopWorker: () => {},
+      workerResult: () => ({ text: "", ok: true }),
+      saveCard: () => {},
+    };
+    const q = new WorkQueue({ db: new Database(":memory:"), host, concurrency: () => 5, model: () => current });
+    q.create({ spec: spec("first job") });
+    current = "b/two";
+    q.create({ spec: spec("second job") });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(q.get("t1")!.model).toBe("a/one");
+    expect(q.get("t2")!.model).toBe("b/two");
+    expect(started).toEqual(["a/one", "b/two"]);
+  });
+});

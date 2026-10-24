@@ -40,6 +40,7 @@ import type { RouteLevel } from "../router/audit";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { QueueHost, QUEUE_TOKEN, concurrency as queueConcurrency } from "./queueHost";
+import { input as browserInput, listTabs, relayStream, screenshot as browserShot } from "./browser";
 import type { QueueTask } from "./workQueue";
 import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
@@ -160,7 +161,8 @@ function levelParam(url: URL): RouteLevel | undefined {
 /** A per-session transcript socket, or the one hub socket of a tab. */
 type SocketData =
   | { kind: "session"; id: string; sub?: { unsubscribe: () => void; resync: () => void; ping: () => void } }
-  | { kind: "hub"; client?: HubClient };
+  | { kind: "hub"; client?: HubClient }
+  | { kind: "browser"; tab: string; control: boolean; relay?: { up(data: string): void; close(): void } };
 const listeners = new Set<Listener>();
 
 // Queue event readers do not launch workers, migrate schemas or call models.
@@ -199,6 +201,7 @@ const sessions: SessionManager = new SessionManager((session) => {
   mirror: mirrorLoader,
   profileOf: (id) => queueHost?.profileOf(id),
   onRunExit: (id, status) => queueHost?.runExited(id, status),
+  onModelFallback: (id, model) => queueHost?.modelFellBack(id, model),
 });
 
 // The work queue: the one chat dispatches tasks, each runs as a background worker session.
@@ -679,6 +682,15 @@ const server = Bun.serve({
     idleTimeout: 120,
     sendPings: true,
     async open(ws: import("bun").ServerWebSocket<SocketData>) {
+      if (ws.data.kind === "browser") {
+        const relay = relayStream(ws.data.tab, ws.data.control, { send: (d) => void ws.send(d), close: (c, r) => ws.close(c, r) });
+        if (!relay) {
+          ws.close(4404, "no browser daemon");
+          return;
+        }
+        ws.data.relay = relay;
+        return;
+      }
       if (ws.data.kind === "hub") {
         const client: HubClient = { send: (msg) => ws.send(JSON.stringify(msg)) !== 0 };
         ws.data.client = client;
@@ -703,6 +715,10 @@ const server = Bun.serve({
     },
     message(ws: import("bun").ServerWebSocket<SocketData>, raw) {
       if (typeof raw !== "string") return;
+      if (ws.data.kind === "browser") {
+        ws.data.relay?.up(raw);
+        return;
+      }
       if (ws.data.kind === "hub") {
         if (ws.data.client) hub.handle(ws.data.client, raw);
         return;
@@ -717,6 +733,10 @@ const server = Bun.serve({
       else if (msg.t === "ping") ws.data.sub?.ping();
     },
     close(ws: import("bun").ServerWebSocket<SocketData>) {
+      if (ws.data.kind === "browser") {
+        ws.data.relay?.close();
+        return;
+      }
       if (ws.data.kind === "hub") {
         if (ws.data.client) hub.leave(ws.data.client);
         return;
@@ -1046,6 +1066,37 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         return json({ error: "websocket upgrade failed" }, 400);
       }
 
+      // -------------------------------------------------------------- browser
+      // The agents' persistent cu browser, shown in the app: the tabs, a screenshot of one, and a
+      // live stream relayed from the daemon (its token never reaches the page).
+      if (path === "/browser/tabs" && request.method === "GET") {
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
+        const tabs = await listTabs();
+        return json({ available: tabs !== null, tabs: tabs ?? [] });
+      }
+      const shotMatch = path.match(/^\/browser\/tabs\/([A-Za-z0-9_-]{4,80})\/shot$/);
+      if (shotMatch && request.method === "GET") {
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
+        const png = await browserShot(shotMatch[1] as string);
+        if (!png) return json({ error: "could not capture that tab" }, 503);
+        return new Response(png as unknown as BodyInit, { headers: { "content-type": "image/png", "cache-control": "no-store", ...corsHeaders(request) } });
+      }
+      const inputMatch = path.match(/^\/browser\/tabs\/([A-Za-z0-9_-]{4,80})\/input$/);
+      if (inputMatch && request.method === "POST") {
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
+        const inputBody = await readJsonOrRefuse(request);
+        if (!inputBody.ok) return inputBody.response;
+        const r = await browserInput(inputMatch[1] as string, inputBody.body);
+        return json(r, r.ok ? 200 : 400);
+      }
+      const liveMatch = path.match(/^\/browser\/tabs\/([A-Za-z0-9_-]{4,80})\/live$/);
+      if (liveMatch && request.method === "GET") {
+        if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "expected a websocket upgrade" }, 426);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin websocket refused" }, 403);
+        const control = url.searchParams.get("control") === "1";
+        if (srv.upgrade(request, { data: { kind: "browser", tab: liveMatch[1] as string, control } satisfies SocketData })) return undefined as unknown as Response;
+        return json({ error: "websocket upgrade failed" }, 400);
+      }
       // ------------------------------------------------------------ work queue
       // The agents' side (their queue tools): loopback only, and only with the per-process token
       // the server handed to the agents it spawned. A page cannot reach these.
@@ -1062,11 +1113,24 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
           return json({ ok: r.ok, text: r.text, tasks: r.ok ? r.tasks.map((t) => t.id) : [] });
         }
         if (sub === "/status") return json({ ok: true, text: q.statusText(String(body.id ?? "").trim() || undefined) });
-        const m = sub.match(/^\/tasks\/([\w-]+)\/(redirect|cancel|update|notify)$/);
+        const m = sub.match(/^\/tasks\/([\w-]+)\/(redirect|cancel|update|notify|browser)$/);
         if (m) {
           const [, id, verb] = m as unknown as [string, string, string];
           let r: { ok: boolean; text: string };
-          if (verb === "redirect") r = await q.redirect(id, String(body.message ?? ""));
+          if (verb === "browser") {
+            // The worker needs the human in its browser tab: the chat shows the request (the
+            // marker opens the panel on that tab), and the call waits for the human's "Done".
+            const tab = typeof body.tab === "string" && /^[A-Za-z0-9_-]{4,80}$/.test(body.tab) ? body.tab : "";
+            if (!tab) return json({ ok: false, text: "a cu tab id is required" });
+            r = q.askHuman(id, tab, String(body.message ?? ""));
+            if (r.ok) {
+              const t = q.get(id);
+              queueHost.notifyChat(`🖥 ${id} · ${t?.title ?? ""} needs you in the browser: ${String(body.message ?? "").slice(0, 400)} [[browser:${tab}]]`);
+              const wait = Math.max(0, Math.min(1800, Number(body.wait_seconds) || 0));
+              const how = await q.humanDone(id, wait);
+              r = { ok: true, text: how === "done" ? "The human says they are done in the browser: check the page and continue." : how === "timeout" ? `The human did not answer within ${wait}s. Check the page; if it is still blocked, task_notify the dispatcher and finish with what you have.` : "The human was asked (not waited for). Check the page when you need it." };
+            }
+          } else if (verb === "redirect") r = await q.redirect(id, String(body.message ?? ""));
           else if (verb === "cancel") r = q.cancel(id);
           else if (verb === "update") r = q.update(id, String(body.description ?? ""));
           else {
@@ -1106,9 +1170,13 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         queueChanged();
         return json({ ok: true });
       }
-      const queueTaskMatch = path.match(/^\/queue\/tasks\/([\w-]+)\/(cancel|redirect)$/);
+      const queueTaskMatch = path.match(/^\/queue\/tasks\/([\w-]+)\/(cancel|redirect|browser-done)$/);
       if (queueTaskMatch && request.method === "POST") {
         const id = queueTaskMatch[1] as string;
+        if (queueTaskMatch[2] === "browser-done") {
+          // The human finished what the worker asked for in the browser.
+          return json({ ok: queueHost.queue.resolveHuman(id) });
+        }
         if (queueTaskMatch[2] === "cancel") {
           const r = queueHost.queue.cancel(id);
           return json(r, r.ok ? 200 : 409);

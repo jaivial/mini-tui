@@ -56,6 +56,8 @@ export interface QueueTask {
   attempts: number;
   /** Seconds the worker spent on it, summed over attempts. */
   workSeconds: number;
+  /** The worker is waiting for the human in its browser tab (a captcha, a QR, a login). */
+  browser?: { tab: string; message: string; since: number };
 }
 
 export const MAX_CONCURRENCY = 300;
@@ -144,6 +146,7 @@ interface Row {
   work_seconds: number;
   redirects_seen: number;
   redirects_at_start: number;
+  browser: string;
 }
 
 function parseList<T>(raw: string): T[] {
@@ -178,6 +181,7 @@ function fromRow(r: Row): QueueTask {
     workSeconds: r.work_seconds,
     redirectsSeen: r.redirects_seen ?? 0,
     redirectsAtStart: r.redirects_at_start ?? 0,
+    ...(r.browser ? { browser: JSON.parse(r.browser) as QueueTask["browser"] } : {}),
   };
 }
 
@@ -186,6 +190,7 @@ export function ensureQueueSchema(db: Database): void {
   const cols = (db.query("PRAGMA table_info(queue_tasks)").all() as Array<{ name: string }>).map((c) => c.name);
   if (!cols.includes("redirects_seen")) db.exec("ALTER TABLE queue_tasks ADD COLUMN redirects_seen INTEGER NOT NULL DEFAULT 0");
   if (!cols.includes("redirects_at_start")) db.exec("ALTER TABLE queue_tasks ADD COLUMN redirects_at_start INTEGER NOT NULL DEFAULT 0");
+  if (!cols.includes("browser")) db.exec("ALTER TABLE queue_tasks ADD COLUMN browser TEXT NOT NULL DEFAULT ''");
 }
 
 function ensureTables(db: Database): void {
@@ -376,15 +381,15 @@ export class WorkQueue {
     t.updatedAt = Math.max(Date.now(), t.updatedAt + 1);
     this.#db
       .query(
-        `INSERT INTO queue_tasks (id, seq, title, description, prompt, cwd, model, status, session_id, result, created_at, started_at, finished_at, updated_at, redirects, related, notes, attempts, work_seconds, redirects_seen, redirects_at_start)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO queue_tasks (id, seq, title, description, prompt, cwd, model, status, session_id, result, created_at, started_at, finished_at, updated_at, redirects, related, notes, attempts, work_seconds, redirects_seen, redirects_at_start, browser)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET title=excluded.title, description=excluded.description, prompt=excluded.prompt, cwd=excluded.cwd, model=excluded.model,
            status=excluded.status, session_id=excluded.session_id, result=excluded.result, started_at=excluded.started_at, finished_at=excluded.finished_at,
-           updated_at=excluded.updated_at, redirects=excluded.redirects, related=excluded.related, notes=excluded.notes, attempts=excluded.attempts, work_seconds=excluded.work_seconds, redirects_seen=excluded.redirects_seen, redirects_at_start=excluded.redirects_at_start`,
+           updated_at=excluded.updated_at, redirects=excluded.redirects, related=excluded.related, notes=excluded.notes, attempts=excluded.attempts, work_seconds=excluded.work_seconds, redirects_seen=excluded.redirects_seen, redirects_at_start=excluded.redirects_at_start, browser=excluded.browser`,
       )
       .run(
         t.id, t.seq, t.title, t.description, t.prompt, t.cwd, t.model, t.status, t.sessionId, t.result, t.createdAt, t.startedAt, t.finishedAt, t.updatedAt,
-        JSON.stringify(t.redirects), JSON.stringify(t.related), JSON.stringify(t.notes.slice(-50)), t.attempts, t.workSeconds, t.redirectsSeen, t.redirectsAtStart,
+        JSON.stringify(t.redirects), JSON.stringify(t.related), JSON.stringify(t.notes.slice(-50)), t.attempts, t.workSeconds, t.redirectsSeen, t.redirectsAtStart, t.browser ? JSON.stringify(t.browser) : "",
       );
   }
 
@@ -553,6 +558,68 @@ export class WorkQueue {
     this.pump();
   }
 
+  /** The model a task's worker is on now (a fallback moved it), with a note. */
+  setModel(id: string, model: string, why: string): void {
+    const task = this.get(id);
+    if (!task || task.model === model) return;
+    task.model = model;
+    task.notes.push({ at: Date.now(), from: "queue", text: why });
+    this.#save(task);
+    this.#changed();
+  }
+
+  /**
+   * A worker asked the human to look at (or act in) its browser tab. The request is noted on the
+   * task; the caller waits on `humanDone(id)` while the panel's "Done" button (or a timeout)
+   * resolves it.
+   */
+  #waiting = new Map<string, (how: string) => void>();
+  askHuman(id: string, tab: string, message: string): { ok: boolean; text: string } {
+    const task = this.get(id);
+    if (!task) return { ok: false, text: `no task ${id}` };
+    const text = clean(message, 2000);
+    if (!text) return { ok: false, text: "say what the human should do" };
+    task.notes.push({ at: Date.now(), from: "worker", text: `needs you in the browser (tab ${tab}): ${text}` });
+    task.browser = { tab, message: text, since: Date.now() };
+    this.#save(task);
+    this.#changed();
+    return { ok: true, text: "the human was asked" };
+  }
+
+  /** Resolves when the human marks the browser request done, or after `seconds`. */
+  humanDone(id: string, seconds: number): Promise<string> {
+    return new Promise((resolve) => {
+      const finish = (how: string) => {
+        if (this.#waiting.get(id) !== finish) return;
+        this.#waiting.delete(id);
+        const task = this.get(id);
+        if (task?.browser) {
+          task.browser = undefined;
+          task.notes.push({ at: Date.now(), from: "queue", text: how === "done" ? "the human finished in the browser" : "the human did not answer in time" });
+          this.#save(task);
+          this.#changed();
+        }
+        resolve(how);
+      };
+      this.#waiting.set(id, finish);
+      if (seconds > 0) setTimeout(() => finish("timeout"), seconds * 1000).unref?.();
+      else finish("not-waited");
+    });
+  }
+
+  /** The panel's "Done": the human finished what the worker asked for in the browser. */
+  resolveHuman(id: string): boolean {
+    const finish = this.#waiting.get(id);
+    if (finish) finish("done");
+    const task = this.get(id);
+    if (task?.browser && !finish) {
+      task.browser = undefined;
+      this.#save(task);
+      this.#changed();
+    }
+    return !!finish || !!task;
+  }
+
   /** The worker's own card update: the description only (the title is the dispatcher's). */
   update(id: string, description: string): { ok: boolean; text: string } {
     const task = this.get(id);
@@ -577,14 +644,19 @@ export class WorkQueue {
     return { ok: true, text: "the dispatcher was notified" };
   }
 
+  /** Live detail of a running worker, supplied by the host (the session layer). */
+  progress: (sessionId: string) => string = () => "";
+
   statusText(id?: string): string {
     if (id) {
       const t = this.get(id);
       if (!t) return `no task ${id}`;
+      const live = t.status === "running" && t.sessionId ? this.progress(t.sessionId) : "";
       return [
-        `${t.id} "${t.title}" — ${t.status}${t.attempts > 1 ? ` (run ${t.attempts})` : ""}`,
+        `${t.id} "${t.title}" — ${t.status}${t.attempts > 1 ? ` (run ${t.attempts})` : ""} on ${t.model}`,
         `description: ${t.description}`,
         `cwd: ${t.cwd}`,
+        live ? `live progress:\n${live}` : "",
         t.redirects.length ? `redirects:\n${t.redirects.map((r) => `- ${r}`).join("\n")}` : "",
         t.notes.length ? `notes:\n${t.notes.slice(-8).map((n) => `- [${n.from}] ${n.text}`).join("\n")}` : "",
         t.result ? `result:\n${t.result}` : "",
@@ -596,7 +668,11 @@ export class WorkQueue {
     if (!all.length) return "The queue is empty.";
     return all
       .slice(0, 60)
-      .map((t) => `${t.id} [${t.status}] ${t.title} — ${t.description}${t.result ? ` | result: ${t.result.slice(0, 160).replace(/\s+/g, " ")}` : ""}`)
+      .map((t) => {
+        const live = t.status === "running" && t.sessionId ? this.progress(t.sessionId) : "";
+        const base = `${t.id} [${t.status}] ${t.title} — ${t.description}${t.result ? ` | result: ${t.result.slice(0, 160).replace(/\s+/g, " ")}` : ""}`;
+        return live ? `${base}\n${live}` : base;
+      })
       .join("\n");
   }
 

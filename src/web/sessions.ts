@@ -405,6 +405,8 @@ export class SessionManager {
   #profileOf?: (sessionId: string) => RunProfile | undefined;
   /** Told when a session's own agent process ends (the work queue frees the slot). */
   #onRunExit?: (sessionId: string, status: SessionStatus) => void;
+  /** Told when a session's agent fell back to another model. */
+  #onModelFallback?: (sessionId: string, model: string) => void;
 
   constructor(
     onChange: (session: LiveSession) => void,
@@ -413,11 +415,13 @@ export class SessionManager {
       mirror?: (sessionId: string, existing: readonly RunEvent[]) => RunEvent[];
       profileOf?: (sessionId: string) => RunProfile | undefined;
       onRunExit?: (sessionId: string, status: SessionStatus) => void;
+      onModelFallback?: (sessionId: string, model: string) => void;
     } = {},
   ) {
     this.#onChange = onChange;
     this.#profileOf = options.profileOf;
     this.#onRunExit = options.onRunExit;
+    this.#onModelFallback = options.onModelFallback;
     this.#syncEvery = options.syncMs ?? SYNC_MS;
     this.#mirror = options.mirror;
     this.#scheduleSync();
@@ -1003,6 +1007,12 @@ export class SessionManager {
     entry.session.apiCalls = info.apiCalls;
     entry.session.cost = info.cost;
     if (info.exitStatus) entry.session.exitStatus = info.exitStatus;
+    // The agent moved to another model on its own (the fallback chain): the session says so.
+    const switched = [...fresh].reverse().find((event) => event.type === "notice" && event.interruptType === "ModelFallback");
+    if (switched && info.model && info.model !== entry.session.model) {
+      entry.session.model = info.model;
+      this.#onModelFallback?.(entry.session.id, info.model);
+    }
 
     const exit = [...fresh].reverse().find((event) => event.type === "exit");
     // A turn this server did not start (a prompt typed in the terminal that owns the agent): its

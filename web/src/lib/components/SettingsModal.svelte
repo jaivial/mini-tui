@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { Eye, EyeOff, KeyRound, Plug, Trash2, Minus, Plus, RotateCcw, ChevronDown, RefreshCw } from "@lucide/svelte";
+  import { Eye, EyeOff, KeyRound, Plug, Trash2, Minus, Plus, RotateCcw, ChevronDown, ChevronUp, RefreshCw, X } from "@lucide/svelte";
   import { TEXT_SCALES, UI_SCALES, percent, stepScale } from "../scale";
   import Modal from "./Modal.svelte";
   import Tabs from "./Tabs.svelte";
@@ -12,6 +12,7 @@
   import UsageSection from "./UsageSection.svelte";
   import RouterSection from "./RouterSection.svelte";
   import { catalog } from "../stores/catalog.svelte";
+  import { models } from "../stores/models.svelte";
   import { ui, PALETTES } from "../stores/ui.svelte";
   import { toasts } from "../stores/toast.svelte";
   import { api } from "../api";
@@ -42,10 +43,28 @@
     // Only `open` and `tab` decide when to load; what the loaders read must not re-trigger this.
     untrack(() => {
       void catalog.loadSettings();
+      if (t === "general") void models.load();
       if (t === "providers") void catalog.loadProviders();
       if (t === "skills") void catalog.loadSkills();
     });
   });
+
+  // ---- model fallback order
+  const fallbacks = $derived(catalog.settings?.modelFallbacks ?? []);
+  let fallbackPick = $state("");
+  async function setFallbacks(list: string[]) {
+    try {
+      catalog.settings = await api.patchSettings({ modelFallbacks: list });
+    } catch (error) {
+      toasts.push("Could not save", { detail: (error as Error).message, tone: "err" });
+    }
+  }
+  function moveFallback(i: number, by: number) {
+    const next = [...fallbacks];
+    const [m] = next.splice(i, 1);
+    next.splice(i + by, 0, m!);
+    void setFallbacks(next);
+  }
 
   // ---- work queue concurrency
   let concurrencyDraft = $state<number | null>(null);
@@ -195,6 +214,34 @@
                 value={concurrencyDraft ?? catalog.settings.queueConcurrency ?? 300}
                 onchange={(e) => void setConcurrency(Number((e.currentTarget as HTMLInputElement).value))}
               />
+            </div>
+          {/if}
+        </fieldset>
+
+        <fieldset class="flex flex-col gap-2">
+          <legend class="mb-1 text-[13px] font-medium text-ink">Model fallback order</legend>
+          <p class="-mt-1 text-[12.5px] text-ink-muted">When a task's model fails at its provider (any error the retries could not fix), the task continues on the next model in this list, without stopping. Only when every model has failed does the task stop. Order is preference.</p>
+          {#if catalog.settings}
+            <ol class="flex flex-col gap-1" aria-label="Fallback models, in order">
+              {#each fallbacks as id, i (id)}
+                <li class="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-[12.5px]">
+                  <span class="tnum w-5 text-ink-faint">{i + 1}</span>
+                  <span class="min-w-0 flex-1 truncate font-mono text-[12px]">{id}</span>
+                  <Button variant="ghost" size="icon-sm" icon={ChevronUp} aria-label="Move {id} up" title="Up" disabled={i === 0} onclick={() => moveFallback(i, -1)} />
+                  <Button variant="ghost" size="icon-sm" icon={ChevronDown} aria-label="Move {id} down" title="Down" disabled={i === fallbacks.length - 1} onclick={() => moveFallback(i, 1)} />
+                  <Button variant="ghost" size="icon-sm" icon={X} aria-label="Remove {id}" title="Remove" onclick={() => setFallbacks(fallbacks.filter((m) => m !== id))} />
+                </li>
+              {/each}
+              {#if !fallbacks.length}<li class="text-[12.5px] text-ink-faint">No fallback: a provider error stops the task.</li>{/if}
+            </ol>
+            <div class="flex items-center gap-2">
+              <select class="h-8 min-w-0 flex-1 cursor-pointer rounded-md border border-line bg-canvas px-2 text-[12.5px] text-ink pointer-coarse:h-11" aria-label="Add a fallback model" bind:value={fallbackPick}>
+                <option value="">Add a model…</option>
+                {#each models.list.filter((m) => !fallbacks.includes(m.id)) as m (m.id)}
+                  <option value={m.id}>{m.name}</option>
+                {/each}
+              </select>
+              <Button variant="outline" size="sm" disabled={!fallbackPick} onclick={() => { if (fallbackPick) setFallbacks([...fallbacks, fallbackPick]); fallbackPick = ""; }}>Add</Button>
             </div>
           {/if}
         </fieldset>

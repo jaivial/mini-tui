@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { ArrowDown, ListTodo, SquarePen, Settings, Keyboard, WifiOff, ArrowLeft } from "@lucide/svelte";
+  import { ArrowDown, ListTodo, SquarePen, Settings, Keyboard, WifiOff, ArrowLeft, Globe } from "@lucide/svelte";
   import Button from "./lib/components/Button.svelte";
   import Transcript from "./lib/components/Transcript.svelte";
   import Composer from "./lib/components/Composer.svelte";
@@ -9,6 +9,7 @@
   import PixelLoader from "./lib/components/PixelLoader.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
   import QueuePanel from "./lib/components/QueuePanel.svelte";
+  import BrowserPanel from "./lib/components/BrowserPanel.svelte";
   import { catalog } from "./lib/stores/catalog.svelte";
   import { store } from "./lib/stores/sessions.svelte";
   import { queue } from "./lib/stores/queue.svelte";
@@ -30,6 +31,27 @@
   const NARROW = 900;
   let narrow = $state(false);
   let panelOpen = $state(true);
+  /** What the right panel shows: the task queue, or the agents' browser. */
+  let panelTab = $state<"tasks" | "browser">("tasks");
+  let browserTab = $state("");
+  let browserLive = $state(false);
+  function showBrowser(tab = "") {
+    browserLive = !!tab;
+    if (tab) browserTab = tab;
+    panelTab = "browser";
+    panelOpen = true;
+  }
+  // A worker that needs a human in the browser (a captcha, a QR, a login): the panel opens on
+  // its tab. The chat's notice carries the marker; see queueHost.ts.
+  $effect(() => {
+    const id = queue.main;
+    const events = id ? (store.sessions[id]?.events ?? []) : [];
+    const last = events[events.length - 1];
+    if (last && last.type === "notice" && last.interruptType === "queue" && /\[\[browser(?::([A-Za-z0-9_-]+))?\]\]/.test(last.text)) {
+      const m = /\[\[browser(?::([A-Za-z0-9_-]+))?\]\]/.exec(last.text);
+      untrack(() => showBrowser(m?.[1] ?? ""));
+    }
+  });
   $effect(() => {
     const apply = () => {
       const was = narrow;
@@ -140,7 +162,12 @@
     return text.replace(/\s*<queue_state>[\s\S]*?<\/queue_state>\s*$/, "");
   }
   const events = $derived(
-    (session?.events ?? []).map((e) => (e.type === "task" && e.text.includes("<queue_state>") ? { ...e, text: stripQueueState(e.text) } : e)),
+    (session?.events ?? []).map((e) => {
+      if (e.type === "task" && e.text.includes("<queue_state>")) return { ...e, text: stripQueueState(e.text) };
+      // The browser marker is for the panel, not for reading.
+      if (e.type === "notice" && e.text.includes("[[browser")) return { ...e, text: e.text.replace(/\s*\[\[browser(?::[A-Za-z0-9_-]+)?\]\]/g, "") + " — open the Browser panel." };
+      return e;
+    }),
   );
 
   async function newChat() {
@@ -173,7 +200,11 @@
       settingsTab = "providers";
       settingsOpen = true;
     } else if (cmd.name === "help") helpOpen = true;
-    else if (cmd.name === "tasks") panelOpen = !panelOpen;
+    else if (cmd.name === "tasks") {
+      panelOpen = !(panelOpen && panelTab === "tasks");
+      panelTab = "tasks";
+    }
+    else if (cmd.name === "browser") showBrowser();
     else toasts.push(`/${cmd.name} is not available here`, { tone: "info" });
     prompt = "";
     chips = [];
@@ -271,7 +302,8 @@
       <Button variant="ghost" size="icon-sm" icon={SquarePen} title="New chat (Ctrl/⌘ K)" aria-label="New chat" onclick={newChat} />
       <Button variant="ghost" size="icon-sm" icon={Settings} title="Settings (Ctrl/⌘ ,)" aria-label="Settings" onclick={() => { settingsTab = "general"; settingsOpen = true; }} />
       <Button variant="ghost" size="icon-sm" icon={Keyboard} title="Help" aria-label="Help" onclick={() => (helpOpen = true)} />
-      <Button variant="ghost" size="icon-sm" icon={ListTodo} title="Tasks (Ctrl/⌘ B)" aria-label="Toggle tasks" active={panelOpen} onclick={() => (panelOpen = !panelOpen)} />
+      <Button variant="ghost" size="icon-sm" icon={Globe} title="Browser" aria-label="Toggle browser" active={panelOpen && panelTab === "browser"} onclick={() => { if (panelOpen && panelTab === "browser") panelOpen = false; else showBrowser(); }} />
+      <Button variant="ghost" size="icon-sm" icon={ListTodo} title="Tasks (Ctrl/⌘ B)" aria-label="Toggle tasks" active={panelOpen && panelTab === "tasks"} onclick={() => { if (panelOpen && panelTab === "tasks") panelOpen = false; else { panelTab = "tasks"; panelOpen = true; } }} />
       {#if queue.counts.running}<span class="tnum -ml-1 text-[11px] text-live" aria-label="{queue.counts.running} running">{queue.counts.running}</span>{/if}
     </header>
 
@@ -352,7 +384,11 @@
       aria-modal={narrow ? "true" : undefined}
       aria-label={narrow ? "Tasks" : undefined}
     >
-      <QueuePanel onclose={() => (panelOpen = false)} onopen={openWorker} />
+      {#if panelTab === "browser"}
+        <BrowserPanel bind:tab={browserTab} live={browserLive} onclose={() => (panelOpen = false)} />
+      {:else}
+        <QueuePanel onclose={() => (panelOpen = false)} onopen={openWorker} />
+      {/if}
     </div>
   {/if}
 </div>

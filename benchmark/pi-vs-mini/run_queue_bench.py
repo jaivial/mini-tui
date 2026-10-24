@@ -11,7 +11,7 @@ Tasks are interleaved (mini, pi, mini, pi...) so provider drift hits both arms a
 Usage:
     python3 run_queue_bench.py [--reps N] [--mini-only|--pi-only] [task ...]
 """
-import json, os, shutil, statistics, sys, time, urllib.request
+import hashlib, json, os, shutil, statistics, subprocess, sys, time, urllib.request
 
 sys.argv, _argv = sys.argv[:1], sys.argv
 import run_bench as rb  # noqa: E402  (fixtures, verify, run_pi, task list)
@@ -22,7 +22,7 @@ BASE = f"http://127.0.0.1:{PORT}/api"
 MODEL = os.environ.get("BENCH_MODEL", "xiaomi/mimo-v2.6-flash")
 rb.PI_PROVIDER = os.environ.get("BENCH_PI_PROVIDER", "xiaomi-anthropic")
 rb.PI_MODEL = os.environ.get("BENCH_PI_MODEL", "mimo-v2.6-flash")
-TIMEOUT = 900
+TIMEOUT = int(os.environ.get("BENCH_TIMEOUT", "900"))
 
 
 def call(method, path, body=None):
@@ -67,23 +67,35 @@ def run_mini_queue(task, rundir, log, tag):
             qt, status = new[0], "done" if all(t["status"] == "done" for t in new) else "error"
             break
     e2e = round(time.time() - t0, 1)
-    if qt is None:
-        new = [t for t in call("GET", "/queue")["tasks"] if t["id"] not in before]
-        qt = new[0] if new else {}
-        for t in new:
-            if t["status"] in ("queued", "running"):
-                call("POST", f"/queue/tasks/{t['id']}/cancel")
-    v, vout = rb.verify(work)
-    worker = round(qt.get("workSeconds") or 0, 1)
-    started = (qt.get("startedAt") or 0) / 1000
+    new = [t for t in call("GET", "/queue")["tasks"] if t["id"] not in before]
+    qt = new[0] if new else {}
+    for t in new:
+        if t["status"] in ("queued", "running"):
+            call("POST", f"/queue/tasks/{t['id']}/cancel")
+    v, vout = rb.verify(work, task)
+    # One card keeps the historical assigned-work time. A fanned-out request is measured from
+    # its first worker start to its last worker finish: looking only at card #1 would hide most
+    # of the wave and make delegation look artificially fast.
+    starts = [t.get("startedAt") or 0 for t in new if t.get("startedAt")]
+    finishes = [t.get("finishedAt") or 0 for t in new if t.get("finishedAt")]
+    if len(new) > 1 and starts and finishes:
+        worker = round((max(finishes) - min(starts)) / 1000, 1)
+    else:
+        worker = round(qt.get("workSeconds") or 0, 1)
+    started = min(starts) / 1000 if starts else 0
     dispatch = round(started - t0, 1) if started else None
-    n_tasks = len([t for t in call("GET", "/queue")["tasks"] if t["id"] not in before])
-    traj = traj_of_session(qt.get("sessionId", ""))
+    workers = []
+    for t in new:
+        traj = traj_of_session(t.get("sessionId", ""))
+        workers.append({**{k: t.get(k) for k in ("id", "title", "sessionId", "attempts", "cwd", "status", "workSeconds")},
+                        "traj": traj, "mini_info": rb.mini_info({}, traj)})
+    traj = workers[0]["traj"] if workers else None
+    n_tasks = len(new)
     log(f"  mini worker={worker}s e2e={e2e}s dispatch={dispatch}s tasks={n_tasks} status={status} verify={v}")
     return {"task": task, "harness": "mini", "wall": worker, "e2e": e2e, "dispatch": dispatch, "queue_tasks": n_tasks,
             "status": status, "verify": v, "verify_out": vout, "verifier_tampered": getattr(rb.verify, "tampered", False),
             "work": work, "queue_task": {k: qt.get(k) for k in ("id", "title", "sessionId", "attempts", "cwd")},
-            "traj": traj, "mini_info": rb.mini_info({}, traj)}
+            "workers": workers, "traj": traj, "mini_info": rb.mini_info({}, traj)}
 
 
 def main():
@@ -102,6 +114,18 @@ def main():
     stamp = time.strftime("%Y%m%d-%H%M%S")
     rundir = os.path.join(rb.BASE, "runs", f"queue-{stamp}")
     os.makedirs(rundir)
+    repo = os.path.abspath(os.path.join(rb.BASE, "..", ".."))
+    binary = os.environ.get("MINITUI_AGENT_BIN", os.path.join(repo, "agent-rs", "target", "release", "mini-agent-rs"))
+    provenance = {
+        "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "model": MODEL, "pi_provider": rb.PI_PROVIDER, "pi_model": rb.PI_MODEL,
+        "tasks_dir": rb.TASKS_DIR, "tasks": todo, "reps": reps, "timeout_seconds": TIMEOUT,
+        "repo_head": subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
+        "repo_dirty": bool(subprocess.run(["git", "-C", repo, "status", "--porcelain"], capture_output=True, text=True).stdout.strip()),
+        "agent_binary": binary,
+        "agent_binary_sha256": hashlib.sha256(open(binary, "rb").read()).hexdigest() if os.path.isfile(binary) else None,
+    }
+    json.dump(provenance, open(os.path.join(rundir, "methodology.json"), "w"), indent=1)
     logf = open(os.path.join(rundir, "bench.log"), "w")
 
     def log(m):
@@ -117,13 +141,15 @@ def main():
             for h in (harnesses if rep % 2 == 0 else harnesses[::-1]):
                 log(f"== {task} / {h} / rep {rep + 1}")
                 try:
-                    r = run_mini_queue(task, rundir, log, f".r{rep + 1}") if h == "mini" else rb.run_pi(task, rundir, log)
+                    r = run_mini_queue(task, rundir, log, f".r{rep + 1}") if h == "mini" else rb.run_pi(task, rundir, log, f".r{rep + 1}")
                 except Exception as e:  # a failed run is a FAIL row, never a lost one
                     log(f"  {h} FAILED: {e}")
                     r = {"task": task, "harness": h, "wall": 0, "status": f"error: {e}", "verify": "FAIL"}
                 r["rep"] = rep + 1
                 rows.append(r)
                 json.dump(rows, open(os.path.join(rundir, "summary.json"), "w"), indent=1)
+                if h == "pi" and (r.get("returncode") not in (0, None) or r.get("turns") == 0):
+                    raise RuntimeError(f"invalid pi runtime on {task} rep {rep + 1}: {r.get('status')}; {r.get('stderr', '')[-500:]}")
     summarize(rows, log)
     log(f"run dir: {rundir}")
 

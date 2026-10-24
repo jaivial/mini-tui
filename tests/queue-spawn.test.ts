@@ -186,6 +186,7 @@ describe("there is only one place that spawns a queue command", () => {
       "channels/queueBridge.ts",
       "mini/spawn.ts",
       "proc/spawnBounded.ts",
+      "web/browser.ts", // `cu shot` for the browser panel: a screenshot, not a queue launch
       "web/ssh.ts",
       "web/terminals.ts",
     ]);
