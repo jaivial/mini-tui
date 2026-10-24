@@ -35,8 +35,16 @@ export function daemonInfo(): Daemon | null {
   }
 }
 
-function cuBin(): string {
-  return process.env.MINITUI_CU_BIN || join(homedir(), ".cargo", "bin", "cu");
+/**
+ * The cu CLI: `MINITUI_CU_BIN`, else `~/.local/bin/cu`, else `~/.cargo/bin/cu`, else PATH. The
+ * same resolution as the agent's `computer_use` tool. `~/.local/bin/cu` comes first because it
+ * is a wrapper that carries its own glibc: the bare cargo binary does not load inside the Docker
+ * image (Debian 12, glibc 2.36 vs the 2.39 the binary needs), the wrapper does.
+ */
+export function cuBin(): string {
+  if (process.env.MINITUI_CU_BIN) return process.env.MINITUI_CU_BIN;
+  for (const p of [join(homedir(), ".local", "bin", "cu"), join(homedir(), ".cargo", "bin", "cu")]) if (existsSync(p)) return p;
+  return "cu";
 }
 
 /** The daemon's open tabs (minus chrome:// pages), or null when no daemon runs. */
@@ -59,10 +67,11 @@ const TAB_ID = /^[A-Za-z0-9_-]{4,80}$/;
 
 /** A PNG of one tab, through the cu CLI (which talks to the same daemon). */
 export async function screenshot(tab: string): Promise<Uint8Array | null> {
-  if (!TAB_ID.test(tab) || !existsSync(cuBin())) return null;
+  if (!TAB_ID.test(tab)) return null;
   const file = join(process.env.TMPDIR ?? "/tmp", `mini-shot-${process.pid}-${Date.now()}.png`);
   try {
-    const proc = Bun.spawn({ cmd: [cuBin(), "shot", file, "--png", "--tab", tab], stdout: "pipe", stderr: "pipe", env: { ...process.env, DISPLAY: process.env.DISPLAY ?? ":0" } });
+    // `cu shot` talks to the running daemon over its socket: no display of its own is needed.
+    const proc = Bun.spawn({ cmd: [cuBin(), "shot", file, "--png", "--tab", tab], stdout: "pipe", stderr: "pipe", env: process.env });
     const code = await Promise.race([proc.exited, new Promise<number>((r) => setTimeout(() => (proc.kill(), r(-1)), 15_000))]);
     if (code !== 0) return null;
     const bytes = new Uint8Array(await Bun.file(file).arrayBuffer());

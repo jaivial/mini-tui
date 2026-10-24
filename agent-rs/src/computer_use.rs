@@ -47,8 +47,19 @@ const START_TIMEOUT_MS: u64 = 30_000;
 const OUTPUT_MAX_BYTES: usize = 30 * 1024;
 const IMAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
+/// `MINITUI_CU_BIN`, else `~/.local/bin/cu` (a wrapper with its own glibc: the one that loads
+/// inside the Docker image too), else `~/.cargo/bin/cu`, else `cu` on PATH.
 fn cu_bin() -> PathBuf {
-    std::env::var("MINITUI_CU_BIN").map(PathBuf::from).unwrap_or_else(|_| crate::config::home().join(".local/bin/cu"))
+    if let Ok(p) = std::env::var("MINITUI_CU_BIN").map(PathBuf::from) {
+        return p;
+    }
+    let home = crate::config::home();
+    for p in [home.join(".local/bin/cu"), home.join(".cargo/bin/cu")] {
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from("cu")
 }
 
 fn idle_secs() -> u64 {

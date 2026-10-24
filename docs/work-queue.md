@@ -63,6 +63,13 @@ scrolling and typing to that tab.
   live on that tab with a **Done** button, and the worker's call returns when the human presses
   it (or the wait runs out). Workers never try to defeat a captcha or guess credentials.
 
+The `cu` CLI is found as `MINITUI_CU_BIN`, else `~/.local/bin/cu`, else `~/.cargo/bin/cu`, else
+PATH — for the panel's screenshots and for the agents' `cu` / `computer_use` tools alike.
+`~/.local/bin/cu` first on purpose: it is a wrapper that ships its own glibc, the only one that
+loads inside the Docker image (Debian 12). The daemon itself runs on the host (`cu-daemon`
+systemd user unit); the container reaches it through the host netns and `~/.cu/daemon/server.json`
+in the mounted home. No `DISPLAY` is needed in the container: the CLI talks to the daemon.
+
 Routes: `GET /api/browser/tabs`, `GET /api/browser/tabs/:id/shot` (PNG),
 `WS /api/browser/tabs/:id/live?control=1`, `POST /api/browser/tabs/:id/input` (tap / scroll /
 type / press), `POST /api/queue/tasks/:id/browser-done`.
