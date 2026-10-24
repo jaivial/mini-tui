@@ -163,7 +163,8 @@ fn post(path: &str, body: &Value) -> Result<Value, String> {
     let resp = ureq::post(&url)
         .set("Content-Type", "application/json")
         .set("x-queue-token", &token)
-        .timeout(Duration::from_secs(30))
+        // The queue answers in milliseconds; a server that hangs must not hold the worker's turn.
+        .timeout(Duration::from_secs(10))
         .send_string(&body.to_string());
     let text = match resp {
         Ok(r) => r.into_string().map_err(|e| e.to_string())?,
@@ -246,12 +247,46 @@ pub fn dispatcher_closing_text(message: &Value, outputs: &[Value]) -> Option<Str
     Some(text)
 }
 
+/// Tests that set the process environment run one at a time.
+#[cfg(test)]
+pub static TEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn a_dead_or_hung_queue_is_an_observation_not_a_stall() {
+        let _g = TEST_ENV.lock().unwrap();
+        std::env::set_var("MINI_AGENT_TOOLSET", "worker");
+        std::env::set_var("MINITUI_TASK_ID", "t1");
+        // Nothing listens: refused at once.
+        std::env::set_var("MINITUI_QUEUE_URL", "http://127.0.0.1:1");
+        let out = outcome("task_update", &json!({"description": "x"}));
+        assert_eq!(out["returncode"], 1);
+        // Accepts and never answers: bounded by the timeout.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let _held: Vec<_> = listener.incoming().take(1).collect();
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        std::env::set_var("MINITUI_QUEUE_URL", format!("http://127.0.0.1:{port}"));
+        let t0 = std::time::Instant::now();
+        let out = outcome("task_notify", &json!({"message": "x"}));
+        assert_eq!(out["returncode"], 1);
+        assert!(t0.elapsed() < Duration::from_secs(15), "took {:?}", t0.elapsed());
+        // No env at all: a clear message, not a panic.
+        std::env::remove_var("MINITUI_QUEUE_URL");
+        assert!(outcome("task_update", &json!({"description": "x"}))["output"].as_str().unwrap().contains("MINITUI_QUEUE_URL"));
+        for k in ["MINI_AGENT_TOOLSET", "MINITUI_TASK_ID"] {
+            std::env::remove_var(k);
+        }
+    }
+
+    #[test]
     fn profiles_offer_their_own_tools_only() {
+        let _g = TEST_ENV.lock().unwrap();
         std::env::set_var("MINI_AGENT_TOOLSET", "dispatcher");
         assert!(is_tool("task_create") && !is_tool("task_update"));
         assert_eq!(chat_tools().len(), 4);

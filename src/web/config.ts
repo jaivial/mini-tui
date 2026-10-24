@@ -321,16 +321,12 @@ export interface CommandInfo {
  * not copied blindly: each entry here is something the web UI actually does.
  */
 export const COMMANDS: CommandInfo[] = [
-  { name: "new", insert: "/new", detail: "Start a new chat", kind: "client" },
-  { name: "model", insert: "/model", detail: "Switch the model for this chat", args: "[id]", kind: "client" },
-  { name: "resume", insert: "/resume", detail: "Reopen a saved session and continue it", kind: "client" },
-  { name: "split", insert: "/split", detail: "Open a new pane beside this one (down: below it)", args: "[right|down]", kind: "client" },
-  { name: "notes", insert: "/notes", detail: "Open this session's notes", kind: "client" },
-  { name: "terminal", insert: "/terminal", detail: "Open a terminal in this session's folder", kind: "client" },
+  { name: "new", insert: "/new", detail: "Start a new chat (the queue and its tasks stay)", kind: "client" },
+  { name: "model", insert: "/model", detail: "Switch the model for the chat and new tasks", args: "[id]", kind: "client" },
+  { name: "tasks", insert: "/tasks", detail: "Show or hide the task panel", kind: "client" },
   { name: "compact", insert: "/compact", detail: "Summarize the conversation to free context", kind: "client" },
-  { name: "subagents", insert: "/subagents", detail: "List the subagents this session started, or open one", args: "[name]", kind: "client" },
   { name: "connect", insert: "/connect", detail: "Connect a provider with your API key", kind: "client" },
-  { name: "settings", insert: "/settings", detail: "Open settings", kind: "client" },
+  { name: "settings", insert: "/settings", detail: "Open settings (tasks at once, providers…)", kind: "client" },
   { name: "skills", insert: "/skills", detail: "Browse skills you can reference with $name", kind: "client" },
   { name: "help", insert: "/help", detail: "Commands and keyboard shortcuts", kind: "client" },
 ];

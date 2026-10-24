@@ -193,3 +193,63 @@ describe("a single task WITH a prompt", () => {
     expect(h.q.get("t1")!.prompt).toBe("fix the limiter\n\nDispatcher notes:\nFix the limiter by picking the highest tier");
   });
 });
+
+describe("malformed input from a model", () => {
+  test("non-text fields are not coerced into text", () => {
+    const h = harness(1);
+    expect(h.q.create({ spec: { title: 42, description: {}, prompt: ["a"] } as never }).ok).toBe(false);
+    expect(h.q.create({ spec: { tasks: [null, 5] } as never }).ok).toBe(false);
+    expect(h.q.create({ spec: { tasks: "not a list", title: "t", description: "d", prompt: "p" } as never }).ok).toBe(true);
+  });
+  test("a redirect with no text, or to an unknown task, is refused", async () => {
+    const h = harness(1);
+    h.q.create({ spec: spec("index docs") });
+    expect((await h.q.redirect("t1", "")).ok).toBe(false);
+    expect((await h.q.redirect("nope", "x")).ok).toBe(false);
+  });
+  test("over 100 tasks in one call is refused", () => {
+    const h = harness(1);
+    const tasks = Array.from({ length: 101 }, (_, i) => spec(`t${i} unique words ${i}`));
+    expect(h.q.create({ spec: { tasks } as never }).ok).toBe(false);
+  });
+});
+
+describe("cancel while a worker is still starting", () => {
+  test("the worker is stopped once its session exists, and the task stays cancelled", async () => {
+    let release: (id: string) => void = () => {};
+    const stopped: string[] = [];
+    const host = {
+      startWorker: () => new Promise<string>((r) => (release = r)),
+      continueWorker: async () => {},
+      workerRunning: () => true,
+      messageWorker: () => {},
+      stopWorker: (id: string) => void stopped.push(id),
+      workerResult: () => ({ text: "", ok: true }),
+      saveCard: () => {},
+    };
+    const q = new WorkQueue({ db: new Database(":memory:"), host, concurrency: () => 1, model: () => "m" });
+    q.create({ spec: spec("slow start") });
+    expect(q.get("t1")!.status).toBe("running");
+    q.cancel("t1");
+    release("s-late");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(q.get("t1")!.status).toBe("cancelled");
+    expect(stopped).toEqual(["s-late"]);
+  });
+
+  test("a worker that ends before its session id is saved still settles its task", async () => {
+    const host = {
+      startWorker: async () => "s-fast",
+      continueWorker: async () => {},
+      workerRunning: () => false,
+      messageWorker: () => {},
+      stopWorker: () => {},
+      workerResult: () => ({ text: "all done", ok: true }),
+      saveCard: () => {},
+    };
+    const q = new WorkQueue({ db: new Database(":memory:"), host, concurrency: () => 1, model: () => "m" });
+    q.create({ spec: spec("fast one") });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(q.get("t1")!).toMatchObject({ status: "done", result: "all done" });
+  });
+});

@@ -21,6 +21,8 @@ export interface QueueHostOptions {
   /** Where the agents reach the queue API (loopback). */
   url: () => string;
   onChange: () => void;
+  /** How many tabs are streaming this session right now. */
+  watchers?: (sessionId: string) => number;
 }
 
 export function concurrency(): number {
@@ -31,14 +33,21 @@ export function concurrency(): number {
 export function finalText(session: LiveSession | undefined): { text: string; ok: boolean } {
   if (!session) return { text: "", ok: false };
   const events = session.events;
+  // The run's own error card says WHY it failed; the exit status alone ("ProviderAbortError")
+  // tells the human nothing they can act on.
+  const error = [...events].reverse().find((e): e is Extract<RunEvent, { type: "error" }> => e.type === "error");
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i] as RunEvent;
-    if (e.type === "exit") return { text: e.submission || e.exitStatus, ok: e.exitStatus === "Submitted" };
+    if (e.type === "exit") {
+      const ok = e.exitStatus === "Submitted";
+      if (ok) return { text: e.submission || e.exitStatus, ok };
+      return { text: error ? error.text : e.submission || e.exitStatus, ok };
+    }
   }
+  if (error) return { text: error.text, ok: false };
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i] as RunEvent;
     if (e.type === "assistant" && e.text.trim()) return { text: e.text, ok: session.exitStatus === "Submitted" };
-    if (e.type === "error") return { text: e.text, ok: false };
   }
   return { text: session.exitStatus || "", ok: session.exitStatus === "Submitted" };
 }
@@ -137,7 +146,16 @@ export class QueueHost {
   /** The human's last message to the chat: what `@MESSAGE` in a brief expands to. */
   lastMessage = "";
 
-  async prompt(body: { prompt: string; model?: string; attachments?: unknown }): Promise<LiveSession> {
+  /** Prompts are handled one at a time: two arriving together must not each create a chat. */
+  #chain: Promise<unknown> = Promise.resolve();
+
+  prompt(body: { prompt: string; model?: string; attachments?: unknown }): Promise<LiveSession> {
+    const run = this.#chain.then(() => this.#prompt(body));
+    this.#chain = run.catch(() => {});
+    return run;
+  }
+
+  async #prompt(body: { prompt: string; model?: string; attachments?: unknown }): Promise<LiveSession> {
     const sm = this.#o.sessions();
     const text = body.prompt.trim();
     this.lastMessage = text;
@@ -151,7 +169,10 @@ export class QueueHost {
       }
     }
     const main = id ? sm.get(id) : undefined;
-    if (main && main.messages.length) {
+    // The chat exists: the message goes to it, whether its agent is still starting (no saved
+    // message yet: it reads the control file), running, or idle. Replacing a chat that merely
+    // had not saved anything yet threw away the messages sent while it was starting.
+    if (main && (main.messages.length || sm.agentRunning(main.id))) {
       if (body.model && body.model !== main.model) sm.setModel(id, body.model);
       await sm.send(id, text, body.attachments, suffix);
       return sm.get(id)!;
@@ -171,16 +192,46 @@ export class QueueHost {
 
   // ---- worker → chat
 
+  /** On boot, after the open sessions came back: workers of settled tasks are let go. */
+  releaseSettled(): void {
+    for (const s of this.#o.sessions().list()) {
+      const task = this.queue.bySession(s.id);
+      if (task && task.status !== "running" && task.status !== "queued" && !this.#o.sessions().agentRunning(s.id)) this.#o.sessions().close(s.id);
+    }
+  }
+
   /** A session's agent ended: if it was a worker, its task settles and the chat hears about it. */
   runExited(sessionId: string, status: SessionStatus): void {
     const before = this.queue.bySession(sessionId);
-    if (!before || before.status !== "running") return;
+    if (!before) return;
+    if (before.status !== "running") {
+      // Cancelled (or otherwise settled) while its worker was stopping: nothing to report.
+      if (before.status !== "queued") this.#release(sessionId);
+      return;
+    }
     this.queue.workerExited(sessionId, status === "running" || status === "idle" ? "done" : status);
     const after = this.queue.get(before.id);
     if (!after) return;
     const first = after.result.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
     this.notifyChat(`${after.status === "done" ? "✓" : "✗"} ${after.id} · ${after.title} — ${after.status}${first ? `: ${first.slice(0, 240)}` : ""}`);
+    this.#release(sessionId);
   }
+
+  /**
+   * A finished worker's session leaves the server's memory and its open list: it is saved, the
+   * task card keeps its result, and opening it from the panel (or a redirect) brings it back.
+   * Kept held, every task ever run stayed in memory and was restored at every restart.
+   */
+  #release(sessionId: string): void {
+    // After the exit handlers that are still running for it (usage, persistence) have finished.
+    setTimeout(() => {
+      const task = this.queue.bySession(sessionId);
+      if (task && (task.status === "running" || task.status === "queued")) return; // re-opened meanwhile
+      if (this.#o.watchers?.(sessionId)) return; // a tab is reading it
+      this.#o.sessions().close(sessionId);
+    }, 2_000).unref?.();
+  }
+
 
   notifyChat(text: string): void {
     const id = this.mainId();

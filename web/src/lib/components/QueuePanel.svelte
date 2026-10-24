@@ -22,7 +22,15 @@
   let redirectText = $state("");
   let busy = $state(false);
 
-  const shown = $derived(queue.tasks.filter((t) => matches(t.status, filter)));
+  /** Rows drawn: hundreds of finished tasks must not become thousands of DOM nodes at once. */
+  const PAGE = 100;
+  let limit = $state(PAGE);
+  $effect(() => {
+    filter;
+    limit = PAGE;
+  });
+  const matching = $derived(queue.tasks.filter((t) => matches(t.status, filter)));
+  const shown = $derived(matching.slice(0, limit));
   const running = $derived(queue.tasks.some((t) => t.status === "running"));
   $effect(() => {
     if (running) return clock.watchAge("elapsed", Date.now() - 1000);
@@ -182,6 +190,11 @@
           </li>
         {/each}
       </ul>
+      {#if matching.length > shown.length}
+        <button type="button" class="interactive m-3 cursor-pointer rounded-md border border-line px-3 py-1.5 text-[12.5px] text-ink-muted hover:text-ink" onclick={() => (limit += PAGE)}>
+          Show {Math.min(PAGE, matching.length - shown.length)} more of {matching.length - shown.length}
+        </button>
+      {/if}
     {/if}
   </div>
 </aside>

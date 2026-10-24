@@ -173,6 +173,7 @@
       settingsTab = "providers";
       settingsOpen = true;
     } else if (cmd.name === "help") helpOpen = true;
+    else if (cmd.name === "tasks") panelOpen = !panelOpen;
     else toasts.push(`/${cmd.name} is not available here`, { tone: "info" });
     prompt = "";
     chips = [];
@@ -247,6 +248,10 @@
     } else if (mod && !event.shiftKey && event.key.toLowerCase() === "b") {
       event.preventDefault();
       panelOpen = !panelOpen;
+    } else if (event.key === "Escape" && narrow && panelOpen && !settingsOpen && !helpOpen) {
+      // On a phone the panel covers the chat: Escape is its way out.
+      event.preventDefault();
+      panelOpen = false;
     }
   }
 </script>
@@ -341,7 +346,12 @@
   </div>
 
   {#if panelOpen}
-    <div class={narrow ? "absolute inset-0 z-50 bg-surface" : "relative w-[min(26rem,38%)] shrink-0"}>
+    <div
+      class={narrow ? "absolute inset-0 z-50 bg-surface pt-[env(safe-area-inset-top)]" : "relative w-[min(26rem,38%)] shrink-0"}
+      role={narrow ? "dialog" : undefined}
+      aria-modal={narrow ? "true" : undefined}
+      aria-label={narrow ? "Tasks" : undefined}
+    >
       <QueuePanel onclose={() => (panelOpen = false)} onopen={openWorker} />
     </div>
   {/if}

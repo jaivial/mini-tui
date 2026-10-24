@@ -45,6 +45,10 @@ export interface QueueTask {
   updatedAt: number;
   /** Redirect messages, in order (what the dispatcher added after the task was created). */
   redirects: string[];
+  /** How many of `redirects` its worker has already been given (in its brief or as a message). */
+  redirectsSeen: number;
+  /** `redirects.length` when the current attempt started: the ones after it went by message. */
+  redirectsAtStart: number;
   /** Tasks this one is close to (TF-IDF cosine), strongest first. */
   related: Array<{ id: string; score: number }>;
   notes: QueueNote[];
@@ -60,6 +64,8 @@ export const DEFAULT_CONCURRENCY = 300;
 export const DUPLICATE_SCORE = 0.72;
 /** At or above this a task is listed as related (a hint for the dispatcher, which decides). */
 export const RELATED_SCORE = 0.15;
+/** Relations look at the most recent tasks only: TF-IDF over the whole history is O(n) per request. */
+const RELATED_WINDOW = 500;
 const RESULT_MAX = 6000;
 const PROMPT_MAX = 40_000;
 
@@ -136,6 +142,8 @@ interface Row {
   notes: string;
   attempts: number;
   work_seconds: number;
+  redirects_seen: number;
+  redirects_at_start: number;
 }
 
 function parseList<T>(raw: string): T[] {
@@ -168,10 +176,19 @@ function fromRow(r: Row): QueueTask {
     notes: parseList<QueueNote>(r.notes),
     attempts: r.attempts,
     workSeconds: r.work_seconds,
+    redirectsSeen: r.redirects_seen ?? 0,
+    redirectsAtStart: r.redirects_at_start ?? 0,
   };
 }
 
 export function ensureQueueSchema(db: Database): void {
+  ensureTables(db);
+  const cols = (db.query("PRAGMA table_info(queue_tasks)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!cols.includes("redirects_seen")) db.exec("ALTER TABLE queue_tasks ADD COLUMN redirects_seen INTEGER NOT NULL DEFAULT 0");
+  if (!cols.includes("redirects_at_start")) db.exec("ALTER TABLE queue_tasks ADD COLUMN redirects_at_start INTEGER NOT NULL DEFAULT 0");
+}
+
+function ensureTables(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS queue_tasks (
       id TEXT PRIMARY KEY,
@@ -195,6 +212,8 @@ export function ensureQueueSchema(db: Database): void {
       work_seconds REAL NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_tasks (status, seq);
+    CREATE INDEX IF NOT EXISTS idx_queue_updated ON queue_tasks (updated_at);
+    CREATE INDEX IF NOT EXISTS idx_queue_session ON queue_tasks (session_id);
     CREATE TABLE IF NOT EXISTS queue_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
 }
@@ -231,7 +250,8 @@ export type CreateResult =
   | { ok: true; tasks: QueueTask[]; text: string }
   | { ok: false; text: string; duplicateOf?: string };
 
-const clean = (v: unknown, max: number) => String(v ?? "").replace(/\r\n/g, "\n").trim().slice(0, max);
+/** Text fields only: a number, object or array from a model is not coerced into "[object Object]". */
+const clean = (v: unknown, max: number) => (typeof v === "string" ? v : "").replace(/\r\n/g, "\n").trim().slice(0, max);
 const oneLine = (v: unknown, max: number) => clean(v, max * 2).replace(/\s+/g, " ").slice(0, max);
 
 function expandCwd(raw: string, fallback: string): string {
@@ -300,6 +320,12 @@ export class WorkQueue {
     return (this.#db.query("SELECT * FROM queue_tasks ORDER BY seq DESC").all() as Row[]).map(fromRow);
   }
 
+  /** Tasks updated at or after `since` (ms), oldest change first. Inclusive: a task saved in the
+   * same millisecond as the last push is sent again rather than missed (merging is idempotent). */
+  changedSince(since: number): QueueTask[] {
+    return (this.#db.query("SELECT * FROM queue_tasks WHERE updated_at >= ? ORDER BY updated_at ASC").all(since) as Row[]).map(fromRow);
+  }
+
   get(id: string): QueueTask | undefined {
     const row = this.#db.query("SELECT * FROM queue_tasks WHERE id = ?").get(id) as Row | null;
     return row ? fromRow(row) : undefined;
@@ -331,15 +357,15 @@ export class WorkQueue {
     t.updatedAt = Math.max(Date.now(), t.updatedAt + 1);
     this.#db
       .query(
-        `INSERT INTO queue_tasks (id, seq, title, description, prompt, cwd, model, status, session_id, result, created_at, started_at, finished_at, updated_at, redirects, related, notes, attempts, work_seconds)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO queue_tasks (id, seq, title, description, prompt, cwd, model, status, session_id, result, created_at, started_at, finished_at, updated_at, redirects, related, notes, attempts, work_seconds, redirects_seen, redirects_at_start)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET title=excluded.title, description=excluded.description, prompt=excluded.prompt, cwd=excluded.cwd, model=excluded.model,
            status=excluded.status, session_id=excluded.session_id, result=excluded.result, started_at=excluded.started_at, finished_at=excluded.finished_at,
-           updated_at=excluded.updated_at, redirects=excluded.redirects, related=excluded.related, notes=excluded.notes, attempts=excluded.attempts, work_seconds=excluded.work_seconds`,
+           updated_at=excluded.updated_at, redirects=excluded.redirects, related=excluded.related, notes=excluded.notes, attempts=excluded.attempts, work_seconds=excluded.work_seconds, redirects_seen=excluded.redirects_seen, redirects_at_start=excluded.redirects_at_start`,
       )
       .run(
         t.id, t.seq, t.title, t.description, t.prompt, t.cwd, t.model, t.status, t.sessionId, t.result, t.createdAt, t.startedAt, t.finishedAt, t.updatedAt,
-        JSON.stringify(t.redirects), JSON.stringify(t.related), JSON.stringify(t.notes.slice(-50)), t.attempts, t.workSeconds,
+        JSON.stringify(t.redirects), JSON.stringify(t.related), JSON.stringify(t.notes.slice(-50)), t.attempts, t.workSeconds, t.redirectsSeen, t.redirectsAtStart,
       );
   }
 
@@ -350,6 +376,12 @@ export class WorkQueue {
 
   /** Active tasks related to `text`, strongest first (the dispatcher's hint, and the duplicate gate). */
   relatedTo(text: string, among: QueueTask[] = this.list()): Array<{ task: QueueTask; score: number }> {
+    // Active tasks always count; past that, the most recent ones.
+    if (among.length > RELATED_WINDOW) {
+      const active = among.filter((t) => t.status === "queued" || t.status === "running");
+      const recent = among.filter((t) => t.status !== "queued" && t.status !== "running").sort((a, b) => b.seq - a.seq).slice(0, Math.max(0, RELATED_WINDOW - active.length));
+      among = active.concat(recent);
+    }
     if (!among.length || !terms(text).length) return [];
     const scores = similarity(text, among.map(docOf));
     return among
@@ -360,7 +392,9 @@ export class WorkQueue {
 
   create(input: { spec?: TaskSpec & { tasks?: unknown; new_task?: unknown }; message?: string }): CreateResult {
     const spec = input.spec ?? {};
-    const raw: TaskSpec[] = Array.isArray(spec.tasks) && spec.tasks.length ? (spec.tasks as TaskSpec[]) : [spec];
+    const listed = Array.isArray(spec.tasks) ? spec.tasks : [];
+    if (listed.some((t) => !t || typeof t !== "object" || Array.isArray(t))) return { ok: false, text: "every entry of `tasks` must be an object {title, description, prompt}" };
+    const raw: TaskSpec[] = listed.length ? (listed as TaskSpec[]) : [spec];
     const force = spec.new_task === true;
     // `@MESSAGE` in a brief is the human's own message, pasted verbatim (the dispatcher need not copy it).
     const message = input.message ?? "";
@@ -368,8 +402,8 @@ export class WorkQueue {
     // intact, no output tokens spent copying it), plus the dispatcher's short notes.
     const single = raw.length === 1 && !!message.trim();
     const briefOf = (s: TaskSpec) => {
-      const own = String(s.prompt ?? "").trim().split("@MESSAGE").join(message);
-      const notes = String(s.notes ?? "").trim();
+      const own = (typeof s.prompt === "string" ? s.prompt : "").trim().split("@MESSAGE").join(message);
+      const notes = (typeof s.notes === "string" ? s.notes : "").trim();
       // A single task from a message: the message IS the brief. A prompt the dispatcher wrote
       // anyway is kept below it as its notes, never in place of the human's words.
       if (single) return [message, own && own !== message ? `Dispatcher notes:\n${own}` : "", notes].filter(Boolean).join("\n\n");
@@ -383,7 +417,7 @@ export class WorkQueue {
     }));
     const bad = specs.findIndex((s) => !s.prompt || !s.title);
     if (bad >= 0) return { ok: false, text: `task ${bad + 1} needs a title and a prompt (only a single task may omit its prompt)` };
-    if (specs.length > 1 && raw.some((s) => !String(s.prompt ?? "").trim())) return { ok: false, text: "with several tasks, each one needs its own prompt" };
+    if (specs.length > 1 && raw.some((s) => !(typeof s.prompt === "string" ? s.prompt : "").trim())) return { ok: false, text: "with several tasks, each one needs its own prompt" };
     if (specs.length > 100) return { ok: false, text: "at most 100 tasks per call" };
     const existing = this.list();
     const active = existing.filter((t) => t.status === "queued" || t.status === "running");
@@ -426,6 +460,8 @@ export class WorkQueue {
         notes: [],
         attempts: 0,
         workSeconds: 0,
+        redirectsSeen: 0,
+        redirectsAtStart: 0,
       };
       seq += 1;
       this.#save(task);
@@ -455,6 +491,7 @@ export class WorkQueue {
     }
     if (task.status === "running" && task.sessionId && this.#host.workerRunning(task.sessionId)) {
       this.#host.messageWorker(task.sessionId, note);
+      task.redirectsSeen = task.redirects.length;
       this.#save(task);
       this.#changed();
       return { ok: true, text: `${task.id} is running: its agent reads the redirect before its next step.` };
@@ -482,6 +519,19 @@ export class WorkQueue {
     this.#changed();
     this.pump();
     return { ok: true, text: `${task.id} cancelled.` };
+  }
+
+  /** A worker's session was closed or deleted by hand: its active task is cancelled, saying why. */
+  sessionGone(sessionId: string, why: string): void {
+    const task = this.bySession(sessionId);
+    if (!task || (task.status !== "running" && task.status !== "queued")) return;
+    task.status = "cancelled";
+    task.finishedAt = Date.now();
+    task.result ||= `cancelled: ${why}`;
+    task.notes.push({ at: Date.now(), from: "queue", text: `cancelled: ${why}` });
+    this.#save(task);
+    this.#changed();
+    this.pump();
   }
 
   /** The worker's own card update: the description only (the title is the dispatcher's). */
@@ -588,35 +638,64 @@ export class WorkQueue {
   }
 
   async #start(task: QueueTask): Promise<void> {
+    // The row says `running` from here on, so `counts().running` already holds this slot:
+    // `#starting` only guards against a second pump picking the same row before it is saved.
     this.#starting.add(task.id);
+    task.status = "running";
+    task.startedAt = Date.now();
+    task.finishedAt = 0;
+    task.attempts += 1;
+    const unseenAtStart = task.redirects.slice(task.redirectsSeen);
+    task.redirectsSeen = task.redirects.length;
+    task.redirectsAtStart = task.redirects.length;
+    this.#save(task);
+    this.#starting.delete(task.id);
+    this.#changed();
+    let sessionId = task.sessionId;
+    let failure = "";
     try {
-      task.status = "running";
-      task.startedAt = Date.now();
-      task.finishedAt = 0;
-      task.attempts += 1;
-      this.#save(task);
-      this.#changed();
       if (task.sessionId && task.attempts > 1) {
-        // A re-opened task (a redirect after it ended, or a restart) continues its own session.
-        const pending = task.redirects.length ? task.redirects[task.redirects.length - 1]! : "Continue the task where you left off and finish it.";
-        await this.#host.continueWorker(task.sessionId, `[redirect from the dispatcher] ${pending}`);
+        // A re-opened task continues its own session: with the redirects it has not seen yet, or
+        // (a restart cut it off) with a plain "carry on".
+        const unseen = unseenAtStart;
+        const message = unseen.length
+          ? unseen.map((r) => `[redirect from the dispatcher] ${r}`).join("\n\n")
+          : "[the server restarted while you worked] Continue the task where you left off and finish it.";
+        await this.#host.continueWorker(task.sessionId, message);
       } else {
         const brief = task.redirects.length ? `${task.prompt}\n\nAdditional requirements added after the task was written:\n${task.redirects.map((r) => `- ${r}`).join("\n")}` : task.prompt;
-        task.sessionId = await this.#host.startWorker(task, brief);
-        this.#save(task);
-        this.#host.saveCard(task.sessionId, task.title, task.description);
+        sessionId = await this.#host.startWorker(task, brief);
       }
     } catch (error) {
-      task.status = "error";
-      task.finishedAt = Date.now();
-      task.result = `could not start the worker: ${(error as Error).message}`;
-      this.#save(task);
-    } finally {
-      this.#starting.delete(task.id);
-      this.#changed();
+      failure = (error as Error).message;
     }
-    // A failed start frees its slot at once.
-    if (task.status === "error") this.pump();
+    // Re-read: while the worker was starting the task may have been cancelled or redirected, and
+    // writing back the copy from before the await would undo that.
+    const now = this.get(task.id);
+    if (!now) return;
+    if (failure) {
+      if (now.status === "running") {
+        now.status = "error";
+        now.finishedAt = Date.now();
+        now.result = `could not start the worker: ${failure}`;
+        this.#save(now);
+        this.#changed();
+        this.pump(); // a failed start frees its slot at once
+      }
+      return;
+    }
+    if (sessionId && now.sessionId !== sessionId) {
+      now.sessionId = sessionId;
+      this.#save(now);
+      this.#host.saveCard(sessionId, now.title, now.description);
+    }
+    if (now.status === "cancelled" && sessionId) {
+      this.#host.stopWorker(sessionId); // cancelled while it was starting
+    } else if (now.status === "running" && sessionId && !this.#host.workerRunning(sessionId)) {
+      // The worker ended before its session id was on the row (a very fast run): settle it now.
+      this.workerExited(sessionId, this.#host.workerResult(sessionId).ok ? "done" : "error");
+    }
+    this.#changed();
   }
 
   /** A worker's agent process ended: settle its task and hand the slot on. */
@@ -652,6 +731,10 @@ export class WorkQueue {
     for (const row of stuck) {
       const task = fromRow(row);
       task.status = "queued";
+      // Redirects handed to the dead worker's control file may never have been read: they are
+      // given again with the resume (a worker reading one twice applies the same change twice,
+      // which is harmless; one never read is a lost instruction).
+      task.redirectsSeen = Math.min(task.redirectsSeen, task.redirectsAtStart);
       task.notes.push({ at: Date.now(), from: "queue", text: "the server restarted while this task ran: it continues its session" });
       this.#save(task);
     }

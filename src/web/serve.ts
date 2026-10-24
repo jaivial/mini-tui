@@ -40,6 +40,7 @@ import type { RouteLevel } from "../router/audit";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
 import { QueueHost, QUEUE_TOKEN, concurrency as queueConcurrency } from "./queueHost";
+import type { QueueTask } from "./workQueue";
 import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
 import { bodyRefusal, BodyTimeout, BodyTooLarge, EmptyBody, readBody, readJsonBody, type BodyOutcome } from "./bodyRead";
@@ -202,18 +203,30 @@ const sessions: SessionManager = new SessionManager((session) => {
 
 // The work queue: the one chat dispatches tasks, each runs as a background worker session.
 // Queue changes reach every tab through the shared stream (`queue` events, debounced).
+// A push carries only the tasks that changed since the last one (a full list of hundreds of tasks
+// on every card update was ~400 KB per tab, up to 20 times a second). The client merges by id;
+// `GET /api/queue` and every new stream start with the full list.
 let queueTimer: ReturnType<typeof setTimeout> | undefined;
+let queuePushedAt = 0;
 function queueChanged(): void {
   if (queueTimer) return;
   queueTimer = setTimeout(() => {
     queueTimer = undefined;
-    broadcast({ type: "queue", tasks: queueHost.queue.list(), main: queueHost.mainId(), concurrency: queueConcurrency() });
-  }, 50);
+    const since = queuePushedAt;
+    const changed = queueHost.queue.changedSince(since);
+    queuePushedAt = changed.reduce((m, t) => Math.max(m, t.updatedAt), since);
+    broadcast({ type: "queue", delta: true, tasks: changed.map(wireTask), main: queueHost.mainId(), concurrency: queueConcurrency() });
+  }, 100);
+}
+/** What a tab needs of a task: the result and brief are cut (the panel opens the session for more). */
+function wireTask(t: QueueTask): QueueTask {
+  return { ...t, prompt: t.prompt.length > 4000 ? `${t.prompt.slice(0, 4000)}…` : t.prompt, result: t.result.length > 2000 ? `${t.result.slice(0, 2000)}…` : t.result, notes: t.notes.slice(-6) };
 }
 const queueHost: QueueHost = new QueueHost({
   sessions: () => sessions,
   url: () => `http://127.0.0.1:${PORT}/api/queue-agent`,
   onChange: queueChanged,
+  watchers: (id) => feed.count(id),
 });
 
 // Terminals start where the session works: its folder on this machine, or an ssh shell on its host.
@@ -467,6 +480,7 @@ async function heldOrError(id: string): Promise<{ session: Awaited<ReturnType<ty
 }
 
 function dropSession(id: string): void {
+  queueHost.queue.sessionGone(id, "its session was closed");
   sessions.close(id);
   feed.gone(id);
   broadcast({ type: "session-gone", id });
@@ -883,6 +897,8 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
               }
             };
             send({ type: "hello" });
+            // The full queue on every (re)connect: deltas missed while disconnected are covered.
+            send({ type: "queue", tasks: queueHost.queue.list().map(wireTask), main: queueHost.mainId(), concurrency: queueConcurrency() });
             send({ type: "hosts", hosts: loadHosts().map(hostToApi) });
             for (const session of sessions.list()) send({ type: "session", session: summarize(session) });
             const listener: Listener = send;
@@ -1065,7 +1081,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       }
       // The UI's side: the chat, the task list, cancel / redirect / new chat.
       if (path === "/queue" && request.method === "GET") {
-        return json({ tasks: queueHost.queue.list(), main: queueHost.mainId(), concurrency: queueConcurrency() });
+        return json({ tasks: queueHost.queue.list().map(wireTask), main: queueHost.mainId(), concurrency: queueConcurrency() });
       }
       if (path === "/queue/prompt" && request.method === "POST") {
         const { limited: turnLimit, key: turnKey } = charged("prompt", request, srv);
@@ -1073,7 +1089,9 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         const turnBody = await readJsonOrRefuse(request, LIMITS.prompt, turnKey);
         if (!turnBody.ok) return turnBody.response;
         const body = turnBody.body;
-        const prompt = String(body.prompt ?? "").trim();
+        if (typeof body.prompt !== "string") return json({ error: "prompt must be a string" }, 400);
+        if (body.model !== undefined && typeof body.model !== "string") return json({ error: "model must be a string" }, 400);
+        const prompt = body.prompt.trim();
         if (!prompt) return json({ error: "a prompt is required" }, 400);
         try {
           const session = await queueHost.prompt({ prompt, model: body.model ? String(body.model) : undefined, attachments: body.attachments });
@@ -1097,7 +1115,8 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         }
         const redirectBody = await readJsonOrRefuse(request);
         if (!redirectBody.ok) return redirectBody.response;
-        const r = await queueHost.queue.redirect(id, String(redirectBody.body.message ?? ""));
+        if (typeof redirectBody.body.message !== "string") return json({ ok: false, error: "message must be a string" }, 400);
+        const r = await queueHost.queue.redirect(id, redirectBody.body.message);
         return json(r, r.ok ? 200 : 409);
       }
       if (path === "/kanban" && request.method === "GET") return json(allCards(sessions.db(), 2000));
@@ -1315,6 +1334,8 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         }
         if (request.method === "DELETE") {
           // Deleting is permanent and separate from closing: it removes the saved conversation.
+          // A worker's session deleted under its task: the task is cancelled, with the reason.
+          queueHost.queue.sessionGone(id, "its session was deleted");
           const existed = sessions.deleteHistory(id);
           feed.gone(id);
           // Its note went with it: anyone watching it sees it empty, instead of keeping stale text.
@@ -1565,4 +1586,7 @@ void sessions
   .rehydrate()
   .catch((error) => log("session.rehydrate", { error: String(error) }))
   // Work that was running when the server stopped goes back to the queue and continues.
-  .finally(() => queueHost.queue.recover());
+  .finally(() => {
+    queueHost.releaseSettled();
+    queueHost.queue.recover();
+  });

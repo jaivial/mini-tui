@@ -480,6 +480,28 @@ pub fn text_of(content: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The dispatcher has no shell: bash, cu and the file tools are refused before anything runs,
+    /// and the subagent tools are not offered to either queue profile.
+    #[test]
+    fn queue_profiles_gate_the_tools() {
+        let _g = crate::queue_tools::TEST_ENV.lock().unwrap();
+        std::env::set_var("MINITUI_AGENT_TOOLS", "1");
+        std::env::set_var("MINI_AGENT_TOOLSET", "dispatcher");
+        for (name, args) in [("bash", json!({"command": "touch /tmp/x"})), ("cu", json!({"args": "snapshot"})), ("write", json!({"path": "a", "content": "b"})), ("agent_delegate", json!({"task": "t"}))] {
+            assert!(command_for(name, &args).is_err(), "{name} must be refused for the dispatcher");
+        }
+        assert!(command_for("task_create", &json!({"title": "t"})).is_ok());
+        std::env::set_var("MINI_AGENT_TOOLSET", "worker");
+        std::env::set_var("MINITUI_TASK_ID", "t1");
+        assert!(command_for("bash", &json!({"command": "ls"})).is_ok());
+        assert!(command_for("agent_delegate", &json!({"task": "t"})).is_err(), "workers do not delegate");
+        assert!(command_for("task_create", &json!({"title": "t"})).is_err(), "workers do not create tasks");
+        assert!(command_for("task_update", &json!({"description": "d"})).is_ok());
+        for k in ["MINI_AGENT_TOOLSET", "MINITUI_TASK_ID", "MINITUI_AGENT_TOOLS"] {
+            std::env::remove_var(k);
+        }
+    }
+
     use super::*;
 
     const TPL: &str = "{{error}}|{{has_tool_calls}}";

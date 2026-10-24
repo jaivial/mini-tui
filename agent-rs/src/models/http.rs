@@ -681,6 +681,51 @@ pub fn usage_of(response: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    /// A tiny HTTP server: the first `slow` connections hang for `hang` before answering, the
+    /// rest answer at once. Returns the base url and the connection counter.
+    fn flaky_server(slow: usize, hang: std::time::Duration, status: u16) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = n.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let k = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 65536];
+                    let _ = s.read(&mut buf);
+                    if k < slow {
+                        std::thread::sleep(hang);
+                    }
+                    let body = format!("{{\"n\":{k}}}");
+                    let _ = write!(s, "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                });
+            }
+        });
+        (base, n)
+    }
+
+    #[test]
+    fn hedging_gets_the_duplicates_answer_and_a_fast_error_is_not_hedged() {
+        let _g = crate::queue_tools::TEST_ENV.lock().unwrap();
+        std::env::set_var("MINI_AGENT_HEDGE_S", "1");
+        // The original hangs 20 s; the first duplicate answers at once.
+        let (base, n) = flaky_server(1, std::time::Duration::from_secs(20), 200);
+        let t0 = std::time::Instant::now();
+        let v = post_json(&base, "/x", &json!({}), &[], 60.0).unwrap();
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t0.elapsed());
+        assert_eq!(v["n"], 1);
+        assert_eq!(n.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // A 400 comes back at once: no duplicate is sent for it.
+        let (base, n) = flaky_server(0, std::time::Duration::ZERO, 400);
+        assert!(post_json(&base, "/x", &json!({}), &[], 60.0).is_err());
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(n.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::env::remove_var("MINI_AGENT_HEDGE_S");
+    }
+
     use super::*;
 
     #[test]

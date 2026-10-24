@@ -341,6 +341,8 @@ export interface QueueView {
   /** The chat's session id ("" before the first message). */
   main: string;
   concurrency: number;
+  /** A push with only the tasks that changed (merged by id), not the whole list. */
+  delta?: boolean;
 }
 
 export interface ServerEvent {

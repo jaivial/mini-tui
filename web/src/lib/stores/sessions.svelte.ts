@@ -106,7 +106,7 @@ class SessionStore {
     };
     source.onmessage = (message) => {
       this.#r.delivered();
-      let payload: { type: string; session?: SessionMeta; id?: string; hosts?: RemoteHost[]; tasks?: QueueView["tasks"]; main?: string; concurrency?: number };
+      let payload: { type: string; session?: SessionMeta; id?: string; hosts?: RemoteHost[]; tasks?: QueueView["tasks"]; main?: string; concurrency?: number; delta?: boolean };
       try {
         payload = JSON.parse(message.data);
       } catch {
@@ -126,7 +126,7 @@ class SessionStore {
       } else if (payload.type === "hosts" && payload.hosts) {
         this.hosts = payload.hosts;
       } else if (payload.type === "queue" && payload.tasks) {
-        for (const listener of this.#queueListeners) listener({ tasks: payload.tasks, main: payload.main ?? "", concurrency: payload.concurrency ?? 0 });
+        for (const listener of this.#queueListeners) listener({ tasks: payload.tasks, main: payload.main ?? "", concurrency: payload.concurrency ?? 0, delta: payload.delta });
       }
     };
   }

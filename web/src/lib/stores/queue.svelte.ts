@@ -36,7 +36,11 @@ class QueueStore {
   }
 
   apply(view: QueueView) {
-    this.tasks = view.tasks;
+    if (view.delta) {
+      const byId = new Map(this.tasks.map((t) => [t.id, t]));
+      for (const t of view.tasks) byId.set(t.id, t);
+      this.tasks = [...byId.values()].sort((a, b) => b.seq - a.seq);
+    } else this.tasks = view.tasks;
     this.main = view.main;
     if (view.concurrency) this.concurrency = view.concurrency;
     this.loaded = true;
