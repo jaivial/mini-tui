@@ -127,7 +127,15 @@ export class QueueHost {
     // reject a correct answer into a loop (measured on the pi-vs-mini corpus). MINITUI_WORKER_JUDGE=1
     // turns it back on.
     const judge: Record<string, string> = process.env.MINITUI_WORKER_JUDGE === "1" ? {} : { MINI_AGENT_GOAL_ORACLE: "off" };
-    return { role: "worker", specs: [], env: { ...this.#queueEnv(), ...judge, MINI_AGENT_TOOLSET: "worker", MINITUI_TASK_ID: task.id, MINI_AGENT_CACHE_WARMER: "off", MINI_AGENT_THINKING: process.env.MINI_AGENT_THINKING ?? "adaptive" } };
+    // MINITUI_WORKER_ENV (JSON, test harnesses only): extra environment for workers alone.
+    const extra = (() => {
+      try {
+        return JSON.parse(process.env.MINITUI_WORKER_ENV ?? "{}") as Record<string, string>;
+      } catch {
+        return {};
+      }
+    })();
+    return { role: "worker", specs: [], env: { ...extra, ...this.#queueEnv(), ...judge, MINI_AGENT_TOOLSET: "worker", MINITUI_TASK_ID: task.id, MINI_AGENT_CACHE_WARMER: "off", MINI_AGENT_THINKING: process.env.MINI_AGENT_THINKING ?? "adaptive" } };
   }
 
   #queueEnv(): Record<string, string> {

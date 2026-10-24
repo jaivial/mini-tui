@@ -81,11 +81,15 @@ def dispatcher(messages):
             n, opts = int(m.group(1)), m.group(2)
             sleep = re.search(r"sleep=([\d.]+)", opts)
             tag = re.search(r"tag=(\S+)", opts)
+            cwd = re.search(r"cwd=(\S+)", opts)
             fail = " fail" in opts
             for i in range(n):
                 directive = f"SLEEP={sleep.group(1) if sleep else 0}" + (" FAIL" if fail else "") + " UPDATE"
-                tasks.append({"title": f"{tag.group(1) if tag else 'job'} {i} {uuid.uuid4().hex[:6]}", "description": f"stress task {i}",
-                              "prompt": f"{directive}\nunique {uuid.uuid4().hex}"})
+                spec = {"title": f"{tag.group(1) if tag else 'job'} {i} {uuid.uuid4().hex[:6]}", "description": f"stress task {i}",
+                        "prompt": f"{directive}\nunique {uuid.uuid4().hex}"}
+                if cwd:
+                    spec["cwd"] = cwd.group(1)
+                tasks.append(spec)
         return reply(None, [tool_call("task_create", {"tasks": tasks} if len(tasks) > 1 else tasks[0])])
     h = last_human(messages)
     m = re.match(r"DUP (.*)", h, re.S)

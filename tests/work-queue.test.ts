@@ -253,3 +253,33 @@ describe("cancel while a worker is still starting", () => {
     expect(q.get("t1")!).toMatchObject({ status: "done", result: "all done" });
   });
 });
+
+describe("one running task per directory tree", () => {
+  test("overlaps: same dir and nested dirs overlap; home, /tmp and / overlap nothing", async () => {
+    const { overlaps } = await import("../src/web/workQueue");
+    const { homedir } = await import("node:os");
+    expect(overlaps("/srv/app", "/srv/app")).toBe(true);
+    expect(overlaps("/srv/app", "/srv/app/web")).toBe(true);
+    expect(overlaps("/srv/app/", "/srv/app")).toBe(true);
+    expect(overlaps("/srv/app", "/srv/application")).toBe(false);
+    expect(overlaps(homedir(), `${homedir()}/proj`)).toBe(false);
+    expect(overlaps("/tmp", "/tmp/x")).toBe(false);
+    expect(overlaps(homedir(), homedir())).toBe(false);
+  });
+
+  test("a task in a busy directory waits; one elsewhere goes past it", async () => {
+    const { mkdirSync } = await import("node:fs");
+    for (const d of ["/tmp/wq-a", "/tmp/wq-a/sub", "/tmp/wq-b"]) mkdirSync(d, { recursive: true });
+    const h = harness(5);
+    h.q.create({ spec: { tasks: [
+      { title: "edit a", description: "a", prompt: "edit things", cwd: "/tmp/wq-a" },
+      { title: "edit a sub", description: "a/sub", prompt: "edit other things", cwd: "/tmp/wq-a/sub" },
+      { title: "edit b", description: "b", prompt: "edit more", cwd: "/tmp/wq-b" },
+    ] } as never });
+    await h.settle();
+    expect([h.q.get("t1")!.status, h.q.get("t2")!.status, h.q.get("t3")!.status]).toEqual(["running", "queued", "running"]);
+    h.finish(h.q.get("t1")!);
+    await h.settle();
+    expect(h.q.get("t2")!.status).toBe("running");
+  });
+});

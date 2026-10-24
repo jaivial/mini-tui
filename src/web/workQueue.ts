@@ -284,6 +284,21 @@ export function dirIn(text: string): string {
   return "";
 }
 
+/**
+ * Whether two working directories overlap (one is, or contains, the other). The home directory,
+ * /tmp and / are where tasks land when nothing better was named: they overlap nothing.
+ */
+export function overlaps(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const norm = (p: string) => (p.endsWith("/") && p.length > 1 ? p.slice(0, -1) : p);
+  const x = norm(a), y = norm(b);
+  // Broad defaults (where a task lands when no directory was named) never serialise anything:
+  // otherwise every task without a directory would wait for every other one.
+  const broad = (p: string) => p === "/" || p === norm(homedir()) || p === "/tmp";
+  if (broad(x) || broad(y)) return false;
+  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
 export class WorkQueue {
   #db: Database;
   #host: WorkerHost;
@@ -295,6 +310,7 @@ export class WorkQueue {
   #starting = new Set<string>();
   #pumping = false;
   #again = false;
+  #exclusive: () => boolean;
 
   constructor(options: {
     db: Database;
@@ -304,6 +320,8 @@ export class WorkQueue {
     model: () => string;
     defaultCwd?: () => string;
     onChange?: () => void;
+    /** One running task per directory tree (default on). */
+    exclusiveDirs?: () => boolean;
   }) {
     this.#db = options.db;
     ensureQueueSchema(this.#db);
@@ -312,6 +330,7 @@ export class WorkQueue {
     this.#model = options.model;
     this.#defaultCwd = options.defaultCwd ?? (() => homedir());
     this.#onChange = options.onChange ?? (() => {});
+    this.#exclusive = options.exclusiveDirs ?? (() => true);
   }
 
   // ---- reads
@@ -597,7 +616,11 @@ export class WorkQueue {
     const lines: string[] = [`concurrency ${this.#concurrency()} · running ${c.running} · queued ${c.queued} · done ${c.done} · error ${c.error}`];
     if (active.length) {
       lines.push("active:");
-      for (const t of active.slice(0, 40)) lines.push(`- ${t.id} [${t.status}] ${t.title} — ${t.description} (in ${t.cwd})`);
+      const busy = active.filter((t) => t.status === "running");
+      for (const t of active.slice(0, 40)) {
+        const blocker = t.status === "queued" ? busy.find((b) => overlaps(b.cwd, t.cwd)) : undefined;
+        lines.push(`- ${t.id} [${t.status}] ${t.title} — ${t.description} (in ${t.cwd})${blocker ? ` — waits for ${blocker.id} (same directory)` : ""}`);
+      }
     }
     if (recent.length) {
       lines.push("finished since your last turn:");
@@ -623,12 +646,20 @@ export class WorkQueue {
     try {
       do {
         this.#again = false;
-        const slots = this.#concurrency() - this.counts().running - this.#starting.size;
+        let slots = this.#concurrency() - this.counts().running - this.#starting.size;
         if (slots <= 0) break;
-        const next = this.#db.query("SELECT * FROM queue_tasks WHERE status = 'queued' ORDER BY seq ASC LIMIT ?").all(slots) as Row[];
-        for (const row of next) {
+        // Directories in use: two workers editing the same tree at once overwrite each other's
+        // files (measured: two "rewrite calc.py" tasks, one clobbered the other and had to redo
+        // its change). A task whose directory overlaps a running one waits; others go past it.
+        const busy = (this.#db.query("SELECT cwd FROM queue_tasks WHERE status = 'running'").all() as Array<{ cwd: string }>).map((r) => r.cwd);
+        const queued = this.#db.query("SELECT * FROM queue_tasks WHERE status = 'queued' ORDER BY seq ASC").all() as Row[];
+        for (const row of queued) {
+          if (slots <= 0) break;
           const task = fromRow(row);
           if (this.#starting.has(task.id)) continue;
+          if (this.#exclusive() && busy.some((cwd) => overlaps(cwd, task.cwd))) continue;
+          busy.push(task.cwd);
+          slots -= 1;
           void this.#start(task);
         }
       } while (this.#again);

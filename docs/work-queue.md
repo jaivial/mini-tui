@@ -29,6 +29,14 @@ sidebar, no panes and no kanban. Everything sent to the chat becomes work in a q
 5. When a worker ends, its task becomes `done` or `error` with the final answer as its result, and
    a one-line notice lands in the chat.
 
+## Folders
+
+Two tasks working in the same folder (or one inside the other) never run at the same time: the
+later one waits, and tasks in other folders go past it. Measured: two parallel "rewrite calc.py"
+tasks overwrote each other's change until the second redid it. Home, `/tmp` and `/` (where a
+task lands when no folder was named) are exempt, or every such task would wait for the others.
+The panel and the dispatcher's `<queue_state>` say what a waiting task waits for.
+
 ## Relations and redirection
 
 Each task stores the tasks it is related to (TF-IDF cosine over title, description and brief).
@@ -49,11 +57,28 @@ The task nodes and their `RELATED_TO` edges are projected into the graph by
 `scripts/orchestration_graph_sync.py` (label `MiniTask`, id `queue:<task>`), where the graph RAG
 indexes them with the rest of the sessions.
 
+## Robustness (stress-tested)
+
+`benchmark/stress/mock_llm.py` is a scripted OpenAI-compatible model (no API spend);
+`stress_queue.py` runs 20 scenarios against a test server: the concurrency cap under load
+(30 tasks at 5, 300 at 300), raising/lowering the cap mid-run, worker failures, cancel (single,
+100 at once — every worker process and its commands stop), redirects to running / queued /
+finished tasks, redirect bursts and races at random moments of short runs, a redirect followed by
+a server restart, restarts mid-run, 10 prompts at once to the chat, malformed and oversized
+input, a stopped chat, a worker session deleted by hand, and same-folder serialisation.
+`dispatcher_cases.py` checks the dispatcher's decisions with a real model (greeting, multi-part
+split, redirect vs new work, status, cancel, prompt injection, literals kept verbatim).
+
+Memory: finished and cancelled worker sessions are released from the server (the task keeps the
+result; opening the session or redirecting the task brings it back). Queue pushes are deltas,
+with the full list on every stream (re)connect. The panel draws 100 rows at a time.
+
 ## API
 
-UI (same-origin): `GET /api/queue`, `POST /api/queue/prompt {prompt, model?, attachments?}`,
+UI (same-origin; string fields only, anything else is a 400): `GET /api/queue`, `POST /api/queue/prompt {prompt, model?, attachments?}`,
 `POST /api/queue/new`, `POST /api/queue/tasks/:id/cancel`, `POST /api/queue/tasks/:id/redirect {message}`.
-Queue changes are pushed on `/api/stream` as `{type: "queue", tasks, main, concurrency}`.
+Queue changes are pushed on `/api/stream` as `{type: "queue", delta: true, tasks, main, concurrency}`
+(only the tasks that changed; the stream's first frame is the full list).
 
 Agents (loopback, `x-queue-token` = a per-process secret handed only to agents the server spawned):
 `POST /api/queue-agent/tasks`, `/status`, `/tasks/:id/{redirect,cancel,update,notify}`.

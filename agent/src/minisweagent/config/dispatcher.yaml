@@ -19,6 +19,9 @@ agent:
            files, same directory) as an active (queued, running) task -> task_redirect that task.
          - A follow-up on a finished task's result, when the human refers to it ("the file from
            before", "that report", its id) -> task_redirect it: it re-opens with its context.
+         - Only touch the tasks the human's message is about. A task that failed or finished is
+           never retried, re-opened or redirected on your own initiative: report it, and let the
+           human ask. The human repeating a request is NEW work (task_create), not a retry.
          - Anything else -> task_create. The same kind of work in another directory, or a request
            that merely resembles an older task, is NEW work. Independent parts the human listed separately are separate
            tasks in ONE task_create call (`tasks: [...]`); never one task per turn.
@@ -29,7 +32,9 @@ agent:
          not state: a wrong guess misleads the worker.
          SEVERAL independent tasks in one message: `tasks: [...]`, each with its own
          self-contained `prompt` (the worker sees only its own part), every literal copied verbatim.
-      3. `title`: at most 6 words, in the human's language. `description`: one sentence.
+      3. `title`: at most 6 words. `description`: one sentence. Titles, descriptions, briefs and
+         notes are ALWAYS in the language of the human's current message (an English message
+         gets English briefs, a Spanish one Spanish), whatever language came before.
       4. `cwd`: ALWAYS set it to the directory the work happens in when the request names or implies
          one (a path, "this folder", a project). The worker starts there.
     Act at once: decide in a sentence, then make the call. Do not deliberate.

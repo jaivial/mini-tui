@@ -404,6 +404,22 @@ def s_redirect_race():
     check(not lost, f"every redirect reached its worker ({len(lost)} lost: {lost[:5]})")
 
 
+def s_same_directory():
+    """Tasks in the same folder run one at a time; tasks elsewhere are not held up by them."""
+    os.makedirs("/tmp/ms/proj/sub", exist_ok=True)
+    os.makedirs("/tmp/ms/other", exist_ok=True)
+    set_conc(10)
+    before = {t["id"] for t in queue()["tasks"]}
+    prompt_and_wait("CREATE 3 sleep=2 tag=same cwd=/tmp/ms/proj")
+    prompt_and_wait("CREATE 3 sleep=2 tag=other cwd=/tmp/ms/other/x")
+    ids = set(new_ids(before))
+    tasks, _ = wait_terminal(ids, timeout=120)
+    same = sorted([t for t in tasks if t["title"].startswith("same")], key=lambda t: t["startedAt"])
+    overlapping = any(a["finishedAt"] > b["startedAt"] for a, b in zip(same, same[1:]))
+    check(not overlapping, "same-folder tasks never overlap")
+    check(all(t["status"] == "done" for t in tasks), "all done")
+
+
 def s_chat_plain_and_new():
     """Plain answers create nothing; /queue/new starts a new chat and keeps the tasks."""
     before = {t["id"] for t in queue()["tasks"]}

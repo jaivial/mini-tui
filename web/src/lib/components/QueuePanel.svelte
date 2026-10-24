@@ -45,6 +45,14 @@
   };
   const LABEL: Record<QueueTask["status"], string> = { running: "working", queued: "queued", done: "completed", error: "error", cancelled: "cancelled" };
 
+  /** The running task a queued one waits for (one task per folder at a time). */
+  function blockerOf(t: QueueTask): string {
+    const broad = (p: string) => p === "/" || p === "/tmp" || /^\/home\/[^/]+\/?$/.test(p) || p === "/root";
+    if (broad(t.cwd)) return "";
+    const inside = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+    return queue.tasks.find((o) => o.status === "running" && !broad(o.cwd) && inside(o.cwd, t.cwd))?.id ?? "";
+  }
+
   function elapsed(t: QueueTask): string {
     if (t.status === "running") return duration(Math.max(0, clock.now - t.startedAt) + t.workSeconds * 1000);
     if (t.workSeconds > 0) return duration(t.workSeconds * 1000);
@@ -126,6 +134,9 @@
                   <span class="truncate text-[13px] font-medium text-ink">{t.title}</span>
                 </span>
                 <span class="mt-0.5 line-clamp-2 block text-[12px] text-ink-muted">{t.description}</span>
+                {#if t.status === "queued" && blockerOf(t)}
+                  <span class="mt-0.5 block text-[11.5px] text-ink-faint">waits for {blockerOf(t)} — same folder</span>
+                {/if}
               </span>
               <span class="flex shrink-0 flex-col items-end gap-1">
                 <Badge tone={TONE[t.status]} dot>{LABEL[t.status]}</Badge>
