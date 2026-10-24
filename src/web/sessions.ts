@@ -103,6 +103,15 @@ export interface LiveSession {
   subagents?: SubagentView[];
   /** The session that started this one as a subagent. */
   parentId?: string;
+  /** Work-queue role: the one chat (`dispatcher`) or a background task (`worker`). */
+  role?: "dispatcher" | "worker";
+}
+
+/** How a session's agent is launched: extra environment and config files (the queue roles). */
+export interface RunProfile {
+  env: Record<string, string>;
+  specs: string[];
+  role: "dispatcher" | "worker";
 }
 
 export interface RemoteHostRecord {
@@ -231,6 +240,8 @@ interface Internal {
   routerModel?: string;
   /** v6-C: a decision is already in flight for this entry (one at a time). */
   routerBusy?: boolean;
+  /** The queue role this session's agent runs with (kept for every later turn). */
+  profile?: RunProfile;
 }
 
 /** How often held sessions are checked for agents and saves made by other UIs (a terminal). */
@@ -390,8 +401,27 @@ export class SessionManager {
   /** Durable mirror source (espejo): absent when no channel store exists. */
   #mirror?: (sessionId: string, existing: readonly RunEvent[]) => RunEvent[];
 
-  constructor(onChange: (session: LiveSession) => void, options: { syncMs?: number; mirror?: (sessionId: string, existing: readonly RunEvent[]) => RunEvent[] } = {}) {
+  /** The run profile of a session this server did not start in this process (after a restart). */
+  #profileOf?: (sessionId: string) => RunProfile | undefined;
+  /** Told when a session's own agent process ends (the work queue frees the slot). */
+  #onRunExit?: (sessionId: string, status: SessionStatus) => void;
+  /** Told when a session's agent fell back to another model. */
+  #onModelFallback?: (sessionId: string, model: string) => void;
+
+  constructor(
+    onChange: (session: LiveSession) => void,
+    options: {
+      syncMs?: number;
+      mirror?: (sessionId: string, existing: readonly RunEvent[]) => RunEvent[];
+      profileOf?: (sessionId: string) => RunProfile | undefined;
+      onRunExit?: (sessionId: string, status: SessionStatus) => void;
+      onModelFallback?: (sessionId: string, model: string) => void;
+    } = {},
+  ) {
     this.#onChange = onChange;
+    this.#profileOf = options.profileOf;
+    this.#onRunExit = options.onRunExit;
+    this.#onModelFallback = options.onModelFallback;
     this.#syncEvery = options.syncMs ?? SYNC_MS;
     this.#mirror = options.mirror;
     this.#scheduleSync();
@@ -977,6 +1007,12 @@ export class SessionManager {
     entry.session.apiCalls = info.apiCalls;
     entry.session.cost = info.cost;
     if (info.exitStatus) entry.session.exitStatus = info.exitStatus;
+    // The agent moved to another model on its own (the fallback chain): the session says so.
+    const switched = [...fresh].reverse().find((event) => event.type === "notice" && event.interruptType === "ModelFallback");
+    if (switched && info.model && info.model !== entry.session.model) {
+      entry.session.model = info.model;
+      this.#onModelFallback?.(entry.session.id, info.model);
+    }
 
     const exit = [...fresh].reverse().find((event) => event.type === "exit");
     // A turn this server did not start (a prompt typed in the terminal that owns the agent): its
@@ -1016,9 +1052,15 @@ export class SessionManager {
     hostId?: string;
     /** Files already uploaded (POST /attachments); only ids travel the wire. */
     attachments?: unknown;
+    /** A work-queue role for the agent (dispatcher or worker). */
+    profile?: RunProfile;
+    /** Appended to what the AGENT receives, never to the transcript (the queue state). */
+    agentSuffix?: string;
+    /** A title chosen by the caller (a queue task's): no AI title is generated. */
+    title?: string;
   }): Promise<LiveSession> {
     const id = newId();
-    const title = titleFor(options.prompt);
+    const title = options.title?.trim() || titleFor(options.prompt);
     // v6-C level 1: when the router is on and the operator did not pin a model
     // for this chat, the task text decides it. Awaited here — a decision is a
     // few hundred ms at worst, and the run must start on the chosen model rather
@@ -1041,7 +1083,7 @@ export class SessionManager {
     // starts from the web therefore begins at ~, which is what they expect.
     const cwd = options.cwd?.trim() ? expandLocal(options.cwd) : homedir();
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`${cwd} is not a folder on this machine`);
-    return this.#createLocal(id, title, cwd, model, options.prompt, atts);
+    return this.#createLocal(id, title, cwd, model, options.prompt, atts, options.profile, options.agentSuffix ?? "", !options.title);
   }
 
   #createLocal(
@@ -1051,17 +1093,21 @@ export class SessionManager {
     model: string,
     prompt: string,
     atts: Attachment[] = [],
+    profile?: RunProfile,
+    agentSuffix = "",
+    aiTitle = true,
   ): LiveSession {
     // A connected provider's key is injected only for a model that belongs to it, exactly as the
     // terminal UI does; without this a BYOK model has no credentials in a web session.
     const effective = model || DEFAULT_MODEL || loadLastModel();
     const expanded = expandSkills(prompt);
     const run = spawnMini({
-      task: atts.length ? `${expanded.task}\n\n${attachmentAgentBlock(atts)}` : expanded.task,
+      task: (atts.length ? `${expanded.task}\n\n${attachmentAgentBlock(atts)}` : expanded.task) + agentSuffix,
       model: effective || undefined,
       // The agent fills this session's task card (`mini-tui tasks set`): it must know which session
       // it is, and this is the one place that knows.
-      env: sessionRunEnv(modelEnv(effective), id),
+      env: { ...sessionRunEnv(modelEnv(effective), id), ...(profile?.env ?? {}) },
+      specs: profile?.specs,
       cwd,
       // The control channel stays on: follow-ups continue the same conversation.
       control: true,
@@ -1084,6 +1130,7 @@ export class SessionManager {
       apiCalls: 0,
       cost: 0,
       exitStatus: "",
+      ...(profile ? { role: profile.role } : {}),
     };
     const entry: Internal = {
       session,
@@ -1091,6 +1138,7 @@ export class SessionManager {
       trajPath: run.session.trajPath,
       consumed: 0,
       parseState: createParseState(),
+      profile,
     };
     this.#live.set(id, entry);
     this.#markOpen(id);
@@ -1107,10 +1155,11 @@ export class SessionManager {
     } catch {
       // the /resume history is best-effort
     }
-    ensureGroupForSession(id, title); // WhatsApp group for this chat (best effort, no-op when not connected)
+    // A queue worker is not a chat: no WhatsApp group, and its title is the task's.
+    if (profile?.role !== "worker") ensureGroupForSession(id, title); // WhatsApp group for this chat (best effort, no-op when not connected)
     // v5-A: the fallback title is already stored; a better one is generated
     // with the model, best-effort, and replaces it while the session runs.
-    this.#scheduleAiTitle(id, title, prompt, effective);
+    if (aiTitle) this.#scheduleAiTitle(id, title, prompt, effective);
     this.#announce(entry, run);
 
     entry.watch = watchTrajectory(run.session.trajPath, (traj) => this.#ingest(entry, traj));
@@ -1126,6 +1175,7 @@ export class SessionManager {
       // is the consequence of that signal, not a failure.
       const interrupted = session.status === "interrupted";
       session.partial = undefined; // nothing is in flight once the process is gone
+      if (!interrupted && code === 0 && this.#resumeUnread(entry, run)) return;
       this.#finish(entry, interrupted ? "interrupted" : code === 0 ? "done" : "error", code);
     });
 
@@ -1284,6 +1334,30 @@ export class SessionManager {
     }
     this.#persist(entry);
     this.#emit(entry);
+    try {
+      this.#onRunExit?.(session.id, status);
+    } catch (error) {
+      log("session.exit-hook", { id: session.id, error: (error as Error).message });
+    }
+  }
+
+  /** This session's own agent process is alive (not attached to another UI's). */
+  agentRunning(id: string): boolean {
+    const entry = this.#live.get(id);
+    return !!entry?.run && !entry.exited;
+  }
+
+  /** Hand a message to the running agent (read before its next step). False when none runs. */
+  messageAgent(id: string, text: string): boolean {
+    const entry = this.#live.get(id);
+    if (!entry?.run || entry.exited) return false;
+    entry.run.sendUserMessage(text);
+    return true;
+  }
+
+  /** A queue note in the chat: shown in the transcript, never a turn of the agent. */
+  injectNotice(id: string, text: string): boolean {
+    return this.injectChannel(id, { type: "notice", text, interruptType: "queue" });
   }
 
   /**
@@ -1531,7 +1605,7 @@ export class SessionManager {
   }
 
   /** Follow-up: continues the same conversation through the control channel. */
-  async send(id: string, prompt: string, attachments?: unknown): Promise<void> {
+  async send(id: string, prompt: string, attachments?: unknown, agentSuffix = ""): Promise<void> {
     const entry = this.#live.get(id);
     if (!entry) throw new Error("unknown session");
     const text = prompt.trim();
@@ -1555,7 +1629,7 @@ export class SessionManager {
     // attachments block behind it; the transcript shows the prompt as typed plus the
     // files as download links (the parser collapses both blocks again on replay).
     const expanded = expandSkills(text);
-    const task = atts.length ? `${expanded.task}\n\n${attachmentAgentBlock(atts)}` : expanded.task;
+    const task = (atts.length ? `${expanded.task}\n\n${attachmentAgentBlock(atts)}` : expanded.task) + agentSuffix;
     entry.session.events.push({ type: "task", text: atts.length ? `${text}\n\n${attachmentLinksLine(atts)}` : text, attachments: atts.length ? atts.map(transcriptAttachment) : undefined });
     (entry.pendingTasks ??= []).push(text);
     if (expanded.missing.length) {
@@ -1635,9 +1709,43 @@ export class SessionManager {
       if (final) this.#ingest(entry, final);
       const interrupted = session.status === "interrupted";
       session.partial = undefined;
+      if (!interrupted && code === 0 && this.#resumeUnread(entry, run)) return;
       this.#finish(entry, interrupted ? "interrupted" : code === 0 ? "done" : "error", code);
     });
     this.#emit(entry);
+  }
+
+  /**
+   * Prompts that reached the control file after the agent's last read: the agent ended its turn
+   * without seeing them. They are a turn of their own, so the session continues with them.
+   */
+  #resumeUnread(entry: Internal, run: MiniRun): boolean {
+    let raw = "";
+    try {
+      raw = readFileSync(run.session.controlPath, "utf8");
+    } catch {
+      return false;
+    }
+    const texts: string[] = [];
+    for (const line of raw.split("\n")) {
+      if (!line.startsWith("MESSAGE ")) continue;
+      const payload = line.slice(8).trim();
+      try {
+        const v = JSON.parse(payload);
+        texts.push(typeof v === "string" ? v : String(v));
+      } catch {
+        texts.push(payload);
+      }
+    }
+    if (!texts.length || !entry.session.messages.length) return false;
+    try {
+      writeFileSync(run.session.controlPath, "");
+    } catch {
+      return false;
+    }
+    log("session.unread-resume", { id: entry.session.id, n: texts.length });
+    this.#resumeLocal(entry, texts.join("\n\n"));
+    return true;
   }
 
   /**
@@ -1663,10 +1771,13 @@ export class SessionManager {
     }
     const model = session.model || DEFAULT_MODEL || loadLastModel();
     const recoveryPaths = this.trajsOf(session.id);
+    const profile = (entry.profile ??= this.#profileOf?.(session.id));
+    if (profile) session.role = profile.role;
     const run = spawnMini({
       task,
       model: model || undefined,
-      env: sessionRunEnv(modelEnv(model), session.id, recoveryPaths),
+      env: { ...sessionRunEnv(modelEnv(model), session.id, recoveryPaths), ...(profile?.env ?? {}) },
+      specs: profile?.specs,
       cwd,
       resumePath,
       control: true,

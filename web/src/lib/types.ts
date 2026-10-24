@@ -127,6 +127,8 @@ export interface SessionState extends SessionSummary {
   subagents?: SubagentView[];
   /** The session that started this one as a subagent. */
   parentId?: string;
+  /** Work-queue role: the chat (`dispatcher`) or a background task (`worker`). */
+  role?: "dispatcher" | "worker";
 }
 
 /** A subagent as its parent session lists it. */
@@ -201,6 +203,11 @@ export interface SettingsView {
    * existed before the router, which is why the flag is optional here.
    */
   modelRouterEnabled?: boolean;
+  /** Work queue: background tasks at once (1..maxQueueConcurrency). */
+  queueConcurrency?: number;
+  maxQueueConcurrency?: number;
+  /** Models in order of preference for the fallback chain (see docs/work-queue.md). */
+  modelFallbacks?: string[];
   /** The live cu screen. Operator config only: the client cannot change it. */
   liveScreen?: { enabled: boolean; origin: string | null; viewerUrl: string | null; loginUrl: string | null; controlUrl?: string | null };
 }
@@ -308,8 +315,50 @@ export type Frame =
   | { t: "gone"; id: string }
   | { t: "pong"; id: string };
 
+/** One task of the work queue (see src/web/workQueue.ts). */
+export type QueueStatus = "queued" | "running" | "done" | "error" | "cancelled";
+export interface QueueTask {
+  id: string;
+  seq: number;
+  title: string;
+  description: string;
+  prompt: string;
+  cwd: string;
+  model: string;
+  status: QueueStatus;
+  sessionId: string;
+  result: string;
+  createdAt: number;
+  startedAt: number;
+  finishedAt: number;
+  updatedAt: number;
+  redirects: string[];
+  related: Array<{ id: string; score: number }>;
+  notes: Array<{ at: number; from: "worker" | "dispatcher" | "queue"; text: string }>;
+  attempts: number;
+  workSeconds: number;
+  /** The worker is waiting for the human in its browser tab. */
+  browser?: { tab: string; message: string; since: number };
+}
+/** One tab of the agents' persistent cu browser. */
+export interface CuTab {
+  id: string;
+  url: string;
+  title: string;
+  default: boolean;
+}
+
+export interface QueueView {
+  tasks: QueueTask[];
+  /** The chat's session id ("" before the first message). */
+  main: string;
+  concurrency: number;
+  /** A push with only the tasks that changed (merged by id), not the whole list. */
+  delta?: boolean;
+}
+
 export interface ServerEvent {
-  type: "hello" | "session" | "session-gone" | "hosts" | "pong";
+  type: "hello" | "session" | "session-gone" | "hosts" | "pong" | "queue";
   session?: SessionMeta;
   id?: string;
   hosts?: RemoteHost[];

@@ -1,7 +1,6 @@
 import { mount } from "svelte";
 import "./app.css";
 import { ui } from "./lib/stores/ui.svelte";
-import { workspace } from "./lib/workspace";
 
 ui.apply();
 
@@ -21,9 +20,6 @@ window.addEventListener("vite:preloadError", (event) => {
   reloadForNewBuild();
 });
 
-// The windows, panes and sidebar are shared by every device: wait for the server's copy (briefly, so
-// an offline tab still opens) before the stores that read it are created.
-await workspace.whenReady();
 let App: typeof import("./App.svelte").default;
 try {
   ({ default: App } = await import("./App.svelte"));

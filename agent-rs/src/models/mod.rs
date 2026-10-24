@@ -105,6 +105,22 @@ pub trait Model {
 
 /// `GLOBAL_MODEL_STATS` (`MSWEA_GLOBAL_COST_LIMIT` / `MSWEA_GLOBAL_CALL_LIMIT`): every model call
 /// of the process counts, whatever the model; past a limit the call is an error, as in Python.
+/// Adaptive thinking (`MINI_AGENT_THINKING=adaptive`): the agent loop says, before each call,
+/// whether this turn needs reasoning. Routine steps (read, write, run the check, answer) go out
+/// with thinking disabled; the turn after a failure (a non-zero exit, a format error, a repeated
+/// action) gets the model's configured thinking back. Measured on the pi-vs-mini corpus: thinking
+/// off made 9 of 10 tasks ~2x faster, and the 10th looped without it on a failing fix.
+static THINK_NEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_think_next(on: bool) {
+    THINK_NEXT.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// True when this call must go out with thinking disabled.
+pub fn thinking_suppressed() -> bool {
+    std::env::var("MINI_AGENT_THINKING").as_deref() == Ok("adaptive") && !THINK_NEXT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 pub fn global_stats_add(cost: f64) -> Result<(), ModelError> {
     use std::sync::Mutex;
     static STATS: Mutex<(f64, i64)> = Mutex::new((0.0, 0));

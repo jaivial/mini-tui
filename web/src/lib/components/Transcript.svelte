@@ -331,6 +331,9 @@
           </summary>
           <p class="mt-3 whitespace-pre-wrap break-words text-xs text-ink-muted">{row.event.text}</p>
         </details>
+      {:else if row.event.interruptType === "queue" && row.event.text.startsWith("![")}
+        <!-- Screenshots a task left: shown as images, not as a line of markdown. -->
+        <div class="cv-row px-2.5 {gap}"><Markdown text={row.event.text} /></div>
       {:else}
         <div class="cv-row px-2.5 read-[11.5px] text-ink-faint {gap}">{row.event.text}</div>
       {/if}

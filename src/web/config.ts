@@ -24,6 +24,7 @@ import { loadLastModel } from "../lastModel";
 import { MODELS } from "../models";
 import { connectionModelOptions } from "../providers";
 import { writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { clampConcurrency, MAX_CONCURRENCY } from "./workQueue";
 import { dirname } from "node:path";
 
 /** "sk-…a1b2": enough to recognise a key, never enough to use it. */
@@ -273,10 +274,12 @@ export interface SettingsView extends Settings {
   lastModel: string;
   outputModes: typeof OUTPUT_MODES;
   liveScreen: LiveScreenView;
+  maxQueueConcurrency: number;
 }
 
 export function settingsView(): SettingsView {
-  return { ...loadSettings(), lastModel: loadLastModel(), outputModes: OUTPUT_MODES, liveScreen: liveScreenView() };
+  const settings = loadSettings();
+  return { ...settings, queueConcurrency: clampConcurrency(settings.queueConcurrency), maxQueueConcurrency: MAX_CONCURRENCY, lastModel: loadLastModel(), outputModes: OUTPUT_MODES, liveScreen: liveScreenView() };
 }
 
 /** Only known keys with valid values are applied; anything else is ignored, not stored. */
@@ -295,6 +298,16 @@ export function patchSettings(patch: Record<string, unknown>): SettingsView {
   // it off the router is not consulted at all, so the manual selector is the only
   // thing that picks a model. Only an explicit boolean flips it.
   if (typeof patch.modelRouterEnabled === "boolean") next.modelRouterEnabled = patch.modelRouterEnabled;
+  if (typeof patch.queueConcurrency === "number" && Number.isFinite(patch.queueConcurrency)) next.queueConcurrency = clampConcurrency(patch.queueConcurrency);
+  // The fallback chain: known model ids only, each once, at most 20.
+  if (Array.isArray(patch.modelFallbacks)) {
+    const known = new Set(connectionModelOptions().map((o) => o.value).concat(MODELS.map((m) => m.value)));
+    const seen = new Set<string>();
+    next.modelFallbacks = (patch.modelFallbacks as unknown[])
+      .filter((m): m is string => typeof m === "string" && /^[\w.:/-]{1,120}$/.test(m) && (known.has(m) || known.size === 0))
+      .filter((m) => !seen.has(m) && seen.add(m))
+      .slice(0, 20);
+  }
   saveSettings(next);
   return settingsView();
 }
@@ -317,16 +330,13 @@ export interface CommandInfo {
  * not copied blindly: each entry here is something the web UI actually does.
  */
 export const COMMANDS: CommandInfo[] = [
-  { name: "new", insert: "/new", detail: "Start a new chat", kind: "client" },
-  { name: "model", insert: "/model", detail: "Switch the model for this chat", args: "[id]", kind: "client" },
-  { name: "resume", insert: "/resume", detail: "Reopen a saved session and continue it", kind: "client" },
-  { name: "split", insert: "/split", detail: "Open a new pane beside this one (down: below it)", args: "[right|down]", kind: "client" },
-  { name: "notes", insert: "/notes", detail: "Open this session's notes", kind: "client" },
-  { name: "terminal", insert: "/terminal", detail: "Open a terminal in this session's folder", kind: "client" },
+  { name: "new", insert: "/new", detail: "Start a new chat (the queue and its tasks stay)", kind: "client" },
+  { name: "model", insert: "/model", detail: "Switch the model for the chat and new tasks", args: "[id]", kind: "client" },
+  { name: "tasks", insert: "/tasks", detail: "Show or hide the task panel", kind: "client" },
+  { name: "browser", insert: "/browser", detail: "Show the agents' browser (screenshots or live)", kind: "client" },
   { name: "compact", insert: "/compact", detail: "Summarize the conversation to free context", kind: "client" },
-  { name: "subagents", insert: "/subagents", detail: "List the subagents this session started, or open one", args: "[name]", kind: "client" },
   { name: "connect", insert: "/connect", detail: "Connect a provider with your API key", kind: "client" },
-  { name: "settings", insert: "/settings", detail: "Open settings", kind: "client" },
+  { name: "settings", insert: "/settings", detail: "Open settings (tasks at once, providers…)", kind: "client" },
   { name: "skills", insert: "/skills", detail: "Browse skills you can reference with $name", kind: "client" },
   { name: "help", insert: "/help", detail: "Commands and keyboard shortcuts", kind: "client" },
 ];

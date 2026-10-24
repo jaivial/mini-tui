@@ -22,6 +22,8 @@ import type {
   AgentsView,
   AgentsBrief,
   AgentDef,
+  QueueView,
+  CuTab,
 } from "./types";
 
 /**
@@ -69,6 +71,20 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  /** The agents' browser: its tabs (available=false when no cu daemon runs). */
+  browserTabs: () => call<{ available: boolean; tabs: CuTab[] }>("/browser/tabs"),
+  /** The human's input on a tab (tap, scroll, type, press), while they hold control. */
+  browserInput: (tab: string, body: Record<string, unknown>) => call<{ ok: boolean }>(`/browser/tabs/${encodeURIComponent(tab)}/input`, { method: "POST", body: JSON.stringify(body) }),
+  /** The work queue: the chat's session id and every task. */
+  queue: () => call<QueueView>("/queue"),
+  /** A message to the queue's one chat (creates it on the first message). */
+  queuePrompt: (prompt: string, model?: string, attachments?: AttachmentRef[]) =>
+    call<WireSession>("/queue/prompt", { method: "POST", body: JSON.stringify({ prompt, model, attachments }) }),
+  queueNew: () => call<{ ok: true }>("/queue/new", { method: "POST" }),
+  queueBrowserDone: (id: string) => call<{ ok: boolean }>(`/queue/tasks/${encodeURIComponent(id)}/browser-done`, { method: "POST" }),
+  queueCancel: (id: string) => call<{ ok: boolean; text: string }>(`/queue/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  queueRedirect: (id: string, message: string) =>
+    call<{ ok: boolean; text: string }>(`/queue/tasks/${encodeURIComponent(id)}/redirect`, { method: "POST", body: JSON.stringify({ message }) }),
   /** A session's agent tree, the messages between its agents, and the agent definitions. */
   /** `init` lets a caller carry its own deadline: a poll that is abandoned must be abortable. */
   agents: (id: string, init?: RequestInit) => call<AgentsView>(`/sessions/${encodeURIComponent(id)}/agents`, init),

@@ -33,7 +33,7 @@ function read(...parts: string[]): string {
     .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
-const pane = read("web", "src", "lib", "components", "ChatPane.svelte");
+const pane = read("web", "src", "App.svelte");
 const geometry = (scrollTop: number, scrollHeight = 2865, clientHeight = 838) => ({ scrollHeight, scrollTop, clientHeight });
 
 describe("is the reader at the bottom", () => {
@@ -156,7 +156,7 @@ describe("one pass of the pin effect", () => {
   });
 });
 
-describe("ChatPane actually calls the rule (a rule nothing uses ships the same defect)", () => {
+describe("App.svelte actually calls the rule (a rule nothing uses ships the same defect)", () => {
   test("the pin effect no longer assigns scrollTop unconditionally", () => {
     // The defect, verbatim: `session?.events.length; if (scroller) scroller.scrollTop = scroller.scrollHeight;`
     expect(pane).not.toMatch(/\$effect\(\(\)\s*=>\s*\{\s*session\?\.events\.length;\s*if \(scroller\) scroller\.scrollTop = scroller\.scrollHeight;\s*\}\)/);
@@ -193,7 +193,7 @@ describe("ChatPane actually calls the rule (a rule nothing uses ships the same d
   });
 
   test("the jump button still hangs off the same flag the rule maintains", () => {
-    expect(pane).toContain("{#if !atBottom && session.events.length}");
+    expect(pane).toContain("!atBottom && session.events.length}");
   });
 
   test("the pass runs AFTER the DOM is flushed, or it measures geometry that is not on screen", () => {

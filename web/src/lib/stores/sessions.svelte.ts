@@ -16,7 +16,7 @@ import { SessionSocket, type SocketState } from "../session-socket";
 import { shallowEqual } from "../equal";
 import { isNowhere, unknown } from "../unknownSessions";
 import { markArrival, markCallEnd, markCallStart } from "../toolTimings";
-import type { Frame, RemoteHost, SessionMeta, SessionState, WireSession } from "../types";
+import type { Frame, QueueView, RemoteHost, SessionMeta, SessionState, WireSession } from "../types";
 
 export type Link = "idle" | "connecting" | "live" | "reconnecting" | "gone";
 
@@ -35,6 +35,12 @@ class SessionStore {
   hydrated = $state<Record<string, boolean>>({});
 
   #source: EventSource | null = null;
+  #queueListeners = new Set<(view: QueueView) => void>();
+  /** Queue pushes on the shared stream (the work queue store listens here). */
+  onQueue(listener: (view: QueueView) => void): () => void {
+    this.#queueListeners.add(listener);
+    return () => this.#queueListeners.delete(listener);
+  }
   /** The one backoff policy (E50), shared with the sockets: a stream that merely OPENED is not proof. */
   #r = new Reconnect({ baseDelay: 1_000, maxDelay: 15_000 });
   #sockets = new Map<string, SessionSocket>();
@@ -100,7 +106,7 @@ class SessionStore {
     };
     source.onmessage = (message) => {
       this.#r.delivered();
-      let payload: { type: string; session?: SessionMeta; id?: string; hosts?: RemoteHost[] };
+      let payload: { type: string; session?: SessionMeta; id?: string; hosts?: RemoteHost[]; tasks?: QueueView["tasks"]; main?: string; concurrency?: number; delta?: boolean };
       try {
         payload = JSON.parse(message.data);
       } catch {
@@ -119,6 +125,8 @@ class SessionStore {
         this.#drop(payload.id);
       } else if (payload.type === "hosts" && payload.hosts) {
         this.hosts = payload.hosts;
+      } else if (payload.type === "queue" && payload.tasks) {
+        for (const listener of this.#queueListeners) listener({ tasks: payload.tasks, main: payload.main ?? "", concurrency: payload.concurrency ?? 0, delta: payload.delta });
       }
     };
   }

@@ -31,6 +31,7 @@ mod graph_embed;
 mod graph_queue;
 mod graph_retrieval;
 mod subagents;
+mod queue_tools;
 mod templates;
 mod cache_warmer;
 mod timings;

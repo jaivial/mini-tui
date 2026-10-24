@@ -276,9 +276,54 @@ fn interruptible<T: Send + 'static>(
 }
 
 /// POST `body` as JSON and parse the JSON reply (interruptible by a stop signal).
+///
+/// Hedged (`MINI_AGENT_HEDGE_S`, seconds; 0 = off): a call with no answer after that long gets an
+/// identical second request in flight, and the first reply to arrive wins. Measured on the
+/// pi-vs-mini corpus (MiMo token plan): the same 17-token turn that normally answers in ~2 s
+/// occasionally sat 100+ s at the provider; the duplicate answers in the usual time.
 pub fn post_json(base: &str, path: &str, body: &Value, headers: &[(String, String)], timeout: f64) -> Result<Value, ModelError> {
+    let hedge: f64 = std::env::var("MINI_AGENT_HEDGE_S").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let (base, path, body, headers) = (base.to_string(), path.to_string(), body.clone(), headers.to_vec());
-    interruptible(&mut None, move |_| post_json_blocking(&base, &path, &body, &headers, timeout))
+    if hedge <= 0.0 {
+        return interruptible(&mut None, move |_| post_json_blocking(&base, &path, &body, &headers, timeout));
+    }
+    interruptible(&mut None, move |_| {
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel::<Result<Value, ModelError>>();
+        let launch = |tx: mpsc::Sender<Result<Value, ModelError>>| {
+            let (base, path, body, headers) = (base.clone(), path.clone(), body.clone(), headers.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(post_json_blocking(&base, &path, &body, &headers, timeout));
+            });
+        };
+        launch(tx.clone());
+        // Up to two duplicates, each after another `hedge` seconds of silence: a request that
+        // sat at the provider measured 100+ s, and so did its first copy once.
+        let mut in_flight = 1;
+        let mut hedges = 0;
+        let mut last_err = None;
+        let started = std::time::Instant::now();
+        loop {
+            let wait = if hedges < 2 { Duration::from_secs_f64(hedge) } else { Duration::from_secs_f64((timeout - started.elapsed().as_secs_f64()).max(1.0)) };
+            match rx.recv_timeout(wait) {
+                Ok(Ok(v)) => return Ok(v),
+                Ok(Err(e)) => {
+                    in_flight -= 1;
+                    last_err = Some(e);
+                    if in_flight == 0 {
+                        return Err(last_err.unwrap());
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) if hedges < 2 => {
+                    hedges += 1;
+                    in_flight += 1;
+                    eprintln!("[hedge] no answer after {:.0}s: duplicate request {hedges} is in flight", started.elapsed().as_secs_f64());
+                    launch(tx.clone());
+                }
+                Err(_) => return Err(last_err.unwrap_or_else(|| transport_error(&"hedged request timed out", &base))),
+            }
+        }
+    })
 }
 
 fn post_json_blocking(base: &str, path: &str, body: &Value, headers: &[(String, String)], timeout: f64) -> Result<Value, ModelError> {
@@ -503,7 +548,10 @@ pub fn with_retry<T>(call: impl FnMut() -> Result<T, ModelError>) -> Result<T, M
     // so a slot frees within seconds, and the exponential curve's 8-17 s waits were the wall time
     // of whole waves (measured, speed8 t08: 37-39 s tails behind 8.9/11.6/17.6 s retries).
     let max_wait: f64 = std::env::var("MINI_AGENT_RETRY_MAX_WAIT").ok().and_then(|s| s.parse().ok()).unwrap_or(f64::INFINITY);
-    let budget: f64 = std::env::var("MINI_AGENT_RETRY_BUDGET_S").ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_RETRY_BUDGET_S);
+    // With a fallback chain behind this call (`MINI_AGENT_MODEL_FALLBACKS`), the next model is
+    // a better use of two minutes than retrying the one that is failing: a short budget here.
+    let has_fallback = std::env::var("MINI_AGENT_MODEL_FALLBACKS").map(|v| v.contains(',')).unwrap_or(false);
+    let budget: f64 = std::env::var("MINI_AGENT_RETRY_BUDGET_S").ok().and_then(|s| s.parse().ok()).unwrap_or(if has_fallback { 20.0 } else { DEFAULT_RETRY_BUDGET_S });
     retry_within(call, attempts, min_wait, max_wait, budget)
 }
 
@@ -636,6 +684,51 @@ pub fn usage_of(response: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    /// A tiny HTTP server: the first `slow` connections hang for `hang` before answering, the
+    /// rest answer at once. Returns the base url and the connection counter.
+    fn flaky_server(slow: usize, hang: std::time::Duration, status: u16) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = n.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let k = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 65536];
+                    let _ = s.read(&mut buf);
+                    if k < slow {
+                        std::thread::sleep(hang);
+                    }
+                    let body = format!("{{\"n\":{k}}}");
+                    let _ = write!(s, "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                });
+            }
+        });
+        (base, n)
+    }
+
+    #[test]
+    fn hedging_gets_the_duplicates_answer_and_a_fast_error_is_not_hedged() {
+        let _g = crate::queue_tools::TEST_ENV.lock().unwrap();
+        std::env::set_var("MINI_AGENT_HEDGE_S", "1");
+        // The original hangs 20 s; the first duplicate answers at once.
+        let (base, n) = flaky_server(1, std::time::Duration::from_secs(20), 200);
+        let t0 = std::time::Instant::now();
+        let v = post_json(&base, "/x", &json!({}), &[], 60.0).unwrap();
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t0.elapsed());
+        assert_eq!(v["n"], 1);
+        assert_eq!(n.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // A 400 comes back at once: no duplicate is sent for it.
+        let (base, n) = flaky_server(0, std::time::Duration::ZERO, 400);
+        assert!(post_json(&base, "/x", &json!({}), &[], 60.0).is_err());
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(n.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::env::remove_var("MINI_AGENT_HEDGE_S");
+    }
+
     use super::*;
 
     #[test]

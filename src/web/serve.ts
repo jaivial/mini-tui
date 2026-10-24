@@ -39,6 +39,9 @@ import { layaHealth } from "../router/laya";
 import type { RouteLevel } from "../router/audit";
 import { sshArgs } from "./ssh";
 import { log } from "./log";
+import { QueueHost, QUEUE_TOKEN, concurrency as queueConcurrency } from "./queueHost";
+import { input as browserInput, listTabs, relayStream, screenshot as browserShot } from "./browser";
+import type { QueueTask } from "./workQueue";
 import { RateLimiter } from "./rateLimit";
 import { ATTACH_ACCEPT, ATTACH_MAX_BYTES, AttachError, getAttachment, saveAttachment } from "./attachments";
 import { bodyRefusal, BodyTimeout, BodyTooLarge, EmptyBody, readBody, readJsonBody, type BodyOutcome } from "./bodyRead";
@@ -158,7 +161,8 @@ function levelParam(url: URL): RouteLevel | undefined {
 /** A per-session transcript socket, or the one hub socket of a tab. */
 type SocketData =
   | { kind: "session"; id: string; sub?: { unsubscribe: () => void; resync: () => void; ping: () => void } }
-  | { kind: "hub"; client?: HubClient };
+  | { kind: "hub"; client?: HubClient }
+  | { kind: "browser"; tab: string; control: boolean; relay?: { up(data: string): void; close(): void } };
 const listeners = new Set<Listener>();
 
 // Queue event readers do not launch workers, migrate schemas or call models.
@@ -190,10 +194,43 @@ function broadcast(event: { type: string; [key: string]: unknown }): void {
 const feed = new SessionFeed();
 // The right sidebar's socket hub (one socket per tab). Notes are read and written only through it.
 let hub: Hub;
-const sessions = new SessionManager((session) => {
+const sessions: SessionManager = new SessionManager((session) => {
   broadcast({ type: "session", session: summarize(session) });
   feed.publish(session);
-}, { mirror: mirrorLoader });
+}, {
+  mirror: mirrorLoader,
+  profileOf: (id) => queueHost?.profileOf(id),
+  onRunExit: (id, status) => queueHost?.runExited(id, status),
+  onModelFallback: (id, model) => queueHost?.modelFellBack(id, model),
+});
+
+// The work queue: the one chat dispatches tasks, each runs as a background worker session.
+// Queue changes reach every tab through the shared stream (`queue` events, debounced).
+// A push carries only the tasks that changed since the last one (a full list of hundreds of tasks
+// on every card update was ~400 KB per tab, up to 20 times a second). The client merges by id;
+// `GET /api/queue` and every new stream start with the full list.
+let queueTimer: ReturnType<typeof setTimeout> | undefined;
+let queuePushedAt = 0;
+function queueChanged(): void {
+  if (queueTimer) return;
+  queueTimer = setTimeout(() => {
+    queueTimer = undefined;
+    const since = queuePushedAt;
+    const changed = queueHost.queue.changedSince(since);
+    queuePushedAt = changed.reduce((m, t) => Math.max(m, t.updatedAt), since);
+    broadcast({ type: "queue", delta: true, tasks: changed.map(wireTask), main: queueHost.mainId(), concurrency: queueConcurrency() });
+  }, 100);
+}
+/** What a tab needs of a task: the result and brief are cut (the panel opens the session for more). */
+function wireTask(t: QueueTask): QueueTask {
+  return { ...t, prompt: t.prompt.length > 4000 ? `${t.prompt.slice(0, 4000)}…` : t.prompt, result: t.result.length > 2000 ? `${t.result.slice(0, 2000)}…` : t.result, notes: t.notes.slice(-6) };
+}
+const queueHost: QueueHost = new QueueHost({
+  sessions: () => sessions,
+  url: () => `http://127.0.0.1:${PORT}/api/queue-agent`,
+  onChange: queueChanged,
+  watchers: (id) => feed.count(id),
+});
 
 // Terminals start where the session works: its folder on this machine, or an ssh shell on its host.
 const terminals = new Terminals();
@@ -446,6 +483,7 @@ async function heldOrError(id: string): Promise<{ session: Awaited<ReturnType<ty
 }
 
 function dropSession(id: string): void {
+  queueHost.queue.sessionGone(id, "its session was closed");
   sessions.close(id);
   feed.gone(id);
   broadcast({ type: "session-gone", id });
@@ -644,6 +682,15 @@ const server = Bun.serve({
     idleTimeout: 120,
     sendPings: true,
     async open(ws: import("bun").ServerWebSocket<SocketData>) {
+      if (ws.data.kind === "browser") {
+        const relay = relayStream(ws.data.tab, ws.data.control, { send: (d) => void ws.send(d), close: (c, r) => ws.close(c, r) });
+        if (!relay) {
+          ws.close(4404, "no browser daemon");
+          return;
+        }
+        ws.data.relay = relay;
+        return;
+      }
       if (ws.data.kind === "hub") {
         const client: HubClient = { send: (msg) => ws.send(JSON.stringify(msg)) !== 0 };
         ws.data.client = client;
@@ -668,6 +715,10 @@ const server = Bun.serve({
     },
     message(ws: import("bun").ServerWebSocket<SocketData>, raw) {
       if (typeof raw !== "string") return;
+      if (ws.data.kind === "browser") {
+        ws.data.relay?.up(raw);
+        return;
+      }
       if (ws.data.kind === "hub") {
         if (ws.data.client) hub.handle(ws.data.client, raw);
         return;
@@ -682,6 +733,10 @@ const server = Bun.serve({
       else if (msg.t === "ping") ws.data.sub?.ping();
     },
     close(ws: import("bun").ServerWebSocket<SocketData>) {
+      if (ws.data.kind === "browser") {
+        ws.data.relay?.close();
+        return;
+      }
       if (ws.data.kind === "hub") {
         if (ws.data.client) hub.leave(ws.data.client);
         return;
@@ -862,6 +917,8 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
               }
             };
             send({ type: "hello" });
+            // The full queue on every (re)connect: deltas missed while disconnected are covered.
+            send({ type: "queue", tasks: queueHost.queue.list().map(wireTask), main: queueHost.mainId(), concurrency: queueConcurrency() });
             send({ type: "hosts", hosts: loadHosts().map(hostToApi) });
             for (const session of sessions.list()) send({ type: "session", session: summarize(session) });
             const listener: Listener = send;
@@ -1009,6 +1066,127 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         return json({ error: "websocket upgrade failed" }, 400);
       }
 
+      // -------------------------------------------------------------- browser
+      // The agents' persistent cu browser, shown in the app: the tabs, a screenshot of one, and a
+      // live stream relayed from the daemon (its token never reaches the page).
+      if (path === "/browser/tabs" && request.method === "GET") {
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
+        const tabs = await listTabs();
+        return json({ available: tabs !== null, tabs: tabs ?? [] });
+      }
+      const shotMatch = path.match(/^\/browser\/tabs\/([A-Za-z0-9_-]{4,80})\/shot$/);
+      if (shotMatch && request.method === "GET") {
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
+        const png = await browserShot(shotMatch[1] as string);
+        if (!png) return json({ error: "could not capture that tab" }, 503);
+        return new Response(png as unknown as BodyInit, { headers: { "content-type": "image/png", "cache-control": "no-store", ...corsHeaders(request) } });
+      }
+      const inputMatch = path.match(/^\/browser\/tabs\/([A-Za-z0-9_-]{4,80})\/input$/);
+      if (inputMatch && request.method === "POST") {
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin request refused" }, 403);
+        const inputBody = await readJsonOrRefuse(request);
+        if (!inputBody.ok) return inputBody.response;
+        const r = await browserInput(inputMatch[1] as string, inputBody.body);
+        return json(r, r.ok ? 200 : 400);
+      }
+      const liveMatch = path.match(/^\/browser\/tabs\/([A-Za-z0-9_-]{4,80})\/live$/);
+      if (liveMatch && request.method === "GET") {
+        if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "expected a websocket upgrade" }, 426);
+        if (!sameOrigin(request.headers, HOST_RULES)) return json({ error: "cross-origin websocket refused" }, 403);
+        const control = url.searchParams.get("control") === "1";
+        if (srv.upgrade(request, { data: { kind: "browser", tab: liveMatch[1] as string, control } satisfies SocketData })) return undefined as unknown as Response;
+        return json({ error: "websocket upgrade failed" }, 400);
+      }
+      // ------------------------------------------------------------ work queue
+      // The agents' side (their queue tools): loopback only, and only with the per-process token
+      // the server handed to the agents it spawned. A page cannot reach these.
+      if (path.startsWith("/queue-agent/") && request.method === "POST") {
+        if (request.headers.get("x-queue-token") !== QUEUE_TOKEN) return json({ ok: false, error: "forbidden" }, 403);
+        const agentBody = await readJsonOrRefuse(request);
+        if (!agentBody.ok) return agentBody.response;
+        const body = agentBody.body;
+        const q = queueHost.queue;
+        const sub = path.slice("/queue-agent".length);
+        if (sub === "/tasks") {
+          const r = q.create({ spec: (body.spec ?? {}) as Record<string, unknown>, message: queueHost.lastMessage });
+          log("queue.create", { ok: r.ok, n: r.ok ? r.tasks.length : 0, dup: r.ok ? "" : (r.duplicateOf ?? "") });
+          return json({ ok: r.ok, text: r.text, tasks: r.ok ? r.tasks.map((t) => t.id) : [] });
+        }
+        if (sub === "/status") return json({ ok: true, text: q.statusText(String(body.id ?? "").trim() || undefined) });
+        const m = sub.match(/^\/tasks\/([\w-]+)\/(redirect|cancel|update|notify|browser)$/);
+        if (m) {
+          const [, id, verb] = m as unknown as [string, string, string];
+          let r: { ok: boolean; text: string };
+          if (verb === "browser") {
+            // The worker needs the human in its browser tab: the chat shows the request (the
+            // marker opens the panel on that tab), and the call waits for the human's "Done".
+            const tab = typeof body.tab === "string" && /^[A-Za-z0-9_-]{4,80}$/.test(body.tab) ? body.tab : "";
+            if (!tab) return json({ ok: false, text: "a cu tab id is required" });
+            r = q.askHuman(id, tab, String(body.message ?? ""));
+            if (r.ok) {
+              const t = q.get(id);
+              queueHost.notifyChat(`🖥 ${id} · ${t?.title ?? ""} needs you in the browser: ${String(body.message ?? "").slice(0, 400)} [[browser:${tab}]]`);
+              const wait = Math.max(0, Math.min(1800, Number(body.wait_seconds) || 0));
+              const how = await q.humanDone(id, wait);
+              r = { ok: true, text: how === "done" ? "The human says they are done in the browser: check the page and continue." : how === "timeout" ? `The human did not answer within ${wait}s. Check the page; if it is still blocked, task_notify the dispatcher and finish with what you have.` : "The human was asked (not waited for). Check the page when you need it." };
+            }
+          } else if (verb === "redirect") r = await q.redirect(id, String(body.message ?? ""));
+          else if (verb === "cancel") r = q.cancel(id);
+          else if (verb === "update") r = q.update(id, String(body.description ?? ""));
+          else {
+            r = q.notify(id, String(body.message ?? ""));
+            const t = q.get(id);
+            if (r.ok && t) queueHost.notifyChat(`✉ ${t.id} · ${t.title}: ${String(body.message ?? "").slice(0, 400)}`);
+          }
+          log("queue." + verb, { id, ok: r.ok });
+          return json(r);
+        }
+        return json({ ok: false, error: "not found" }, 404);
+      }
+      // The UI's side: the chat, the task list, cancel / redirect / new chat.
+      if (path === "/queue" && request.method === "GET") {
+        return json({ tasks: queueHost.queue.list().map(wireTask), main: queueHost.mainId(), concurrency: queueConcurrency() });
+      }
+      if (path === "/queue/prompt" && request.method === "POST") {
+        const { limited: turnLimit, key: turnKey } = charged("prompt", request, srv);
+        if (turnLimit) return turnLimit;
+        const turnBody = await readJsonOrRefuse(request, LIMITS.prompt, turnKey);
+        if (!turnBody.ok) return turnBody.response;
+        const body = turnBody.body;
+        if (typeof body.prompt !== "string") return json({ error: "prompt must be a string" }, 400);
+        if (body.model !== undefined && typeof body.model !== "string") return json({ error: "model must be a string" }, 400);
+        const prompt = body.prompt.trim();
+        if (!prompt) return json({ error: "a prompt is required" }, 400);
+        try {
+          const session = await queueHost.prompt({ prompt, model: body.model ? String(body.model) : undefined, attachments: body.attachments });
+          queueChanged();
+          return json(toWire(session));
+        } catch (error) {
+          return json({ error: (error as Error).message }, 409);
+        }
+      }
+      if (path === "/queue/new" && request.method === "POST") {
+        queueHost.newChat();
+        queueChanged();
+        return json({ ok: true });
+      }
+      const queueTaskMatch = path.match(/^\/queue\/tasks\/([\w-]+)\/(cancel|redirect|browser-done)$/);
+      if (queueTaskMatch && request.method === "POST") {
+        const id = queueTaskMatch[1] as string;
+        if (queueTaskMatch[2] === "browser-done") {
+          // The human finished what the worker asked for in the browser.
+          return json({ ok: queueHost.queue.resolveHuman(id) });
+        }
+        if (queueTaskMatch[2] === "cancel") {
+          const r = queueHost.queue.cancel(id);
+          return json(r, r.ok ? 200 : 409);
+        }
+        const redirectBody = await readJsonOrRefuse(request);
+        if (!redirectBody.ok) return redirectBody.response;
+        if (typeof redirectBody.body.message !== "string") return json({ ok: false, error: "message must be a string" }, 400);
+        const r = await queueHost.queue.redirect(id, redirectBody.body.message);
+        return json(r, r.ok ? 200 : 409);
+      }
       if (path === "/kanban" && request.method === "GET") return json(allCards(sessions.db(), 2000));
       if (path === "/orchestration/graph" && request.method === "GET") {
         try {
@@ -1224,6 +1402,8 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         }
         if (request.method === "DELETE") {
           // Deleting is permanent and separate from closing: it removes the saved conversation.
+          // A worker's session deleted under its task: the task is cancelled, with the reason.
+          queueHost.queue.sessionGone(id, "its session was deleted");
           const existed = sessions.deleteHistory(id);
           feed.gone(id);
           // Its note went with it: anyone watching it sees it empty, instead of keeping stale text.
@@ -1369,7 +1549,11 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         // absence has to be visible.
         const patchBody = await readJsonOrRefuse(request);
         if (!patchBody.ok) return patchBody.response;
-        return json(patchSettings(patchBody.body));
+        const patched = patchSettings(patchBody.body);
+        // More (or fewer) slots: the queue starts waiting work now.
+        queueHost.queue.resize();
+        queueChanged();
+        return json(patched);
       }
 
       // ------------------------------------------------------------ providers
@@ -1466,4 +1650,11 @@ console.log(existsSync(STATIC_DIR) ? `serving the web app from ${STATIC_DIR}` : 
 
 // After module initialization: openHistory reads mirrorCtx and broadcasts through the live hub.
 // Running this beside the manager declaration hit uninitialized bindings and discarded markers.
-void sessions.rehydrate().catch((error) => log("session.rehydrate", { error: String(error) }));
+void sessions
+  .rehydrate()
+  .catch((error) => log("session.rehydrate", { error: String(error) }))
+  // Work that was running when the server stopped goes back to the queue and continues.
+  .finally(() => {
+    queueHost.releaseSettled();
+    queueHost.queue.recover();
+  });

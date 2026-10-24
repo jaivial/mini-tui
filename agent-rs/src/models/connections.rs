@@ -46,8 +46,13 @@ pub fn model_env(model: &str, connections: &Value) -> Vec<(String, String)> {
 pub fn apply(model: &str) {
     let Ok(text) = std::fs::read_to_string(connections_path()) else { return };
     let Ok(connections) = serde_json::from_str::<Value>(&text) else { return };
-    for (key, value) in model_env(model, &connections) {
-        if std::env::var(&key).map_or(true, |v| v.is_empty()) {
+    let env = model_env(model, &connections);
+    // Two OpenAI-compatible connections share the generic `OPENAI_*` slot: the connection that
+    // serves THIS model must win over what an earlier model (a fallback chain, a switch) left
+    // there, or every openai-compat model after the first talks to the first one's gateway.
+    let generic = env.iter().any(|(k, _)| k == "OPENAI_API_BASE");
+    for (key, value) in env {
+        if generic || std::env::var(&key).map_or(true, |v| v.is_empty()) {
             std::env::set_var(key, value);
         }
     }

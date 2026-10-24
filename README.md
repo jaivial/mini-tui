@@ -15,18 +15,19 @@
 
 ## What mini-tui is now
 
-mini-tui started as a terminal UI for the [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)
-coding agent. It is now a different thing: **a team of bots that plan and organize, with workers that
-do**. The bot does not write all the code itself. It turns what you ask into cards on a durable
-task graph, hands them to workers, checks the evidence, and reports back in the thread you started.
+**One chat in front of a work queue.** You send work; the chat's agent (the *dispatcher*) turns
+each request into a better-written task and queues it. Every task runs as its own background
+mini session, up to the concurrency you set (Settings → General → Work queue, 1–300, default 300);
+the rest wait and start as slots free up. The panel on the right lists the tasks by state —
+working, queued, completed, error — with each one's result.
 
-| | Before | Now |
-| --- | --- | --- |
-| Who works | One agent that types code | Bots that write a board, and workers that take cards |
-| Where you talk | A terminal prompt | The web app, the terminal, or a WhatsApp group per bot |
-| What "done" means | The agent says it is done | A closure check reads the goal against the diff and the logs |
-| How it looks | Panes of transcripts | Silver-metal web app: bots in the sidebar, a kanban, a team map |
-| Can it look at a page | No | Yes, through [cu](https://github.com/jaivial/cu): a real browser, with screenshots in the chat |
+- The dispatcher has no shell: it never researches, it only writes the brief and queues it.
+- Workers keep their card's description current and can notify the dispatcher mid-task.
+- A request close to a task already in flight **redirects** that task instead of starting a
+  near-copy; a finished task re-opens on its own session. Task relations go to the graph RAG.
+
+Details: [`docs/work-queue.md`](docs/work-queue.md). The sections below describe the earlier
+board/bot features that still live in the codebase (terminal UI, channels).
 
 ### The board
 

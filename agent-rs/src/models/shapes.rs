@@ -103,6 +103,9 @@ fn action_value(command: &Value, tool_call_id: Value) -> Value {
             if let Some(path) = fields.get("args").and_then(|x| x.get("path")).cloned() {
                 a.insert("command".into(), path);
             }
+            if crate::queue_tools::is_tool(&tool) {
+                a.insert("command".into(), json!(format!("{tool} {}", fields.get("args").map(|v| v.to_string()).unwrap_or_default())));
+            }
         }
         other => {
             a.insert("command".into(), other.clone());
@@ -116,11 +119,20 @@ fn action_value(command: &Value, tool_call_id: Value) -> Value {
 /// `MINITUI_AGENT_TOOLS=1` gate, so a bare run --- and the parity suite --- still sees only
 /// `bash` + `cu`, and a call to any of these without the gate is the usual unknown-tool error.
 pub fn is_native_tool(name: &str) -> bool {
-    (name == "codejs" && crate::codejs::enabled()) || matches!(name, "read") || (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled())
+    crate::queue_tools::is_tool(name) || (name == "codejs" && crate::codejs::enabled()) || matches!(name, "read") || (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled())
         || (name == "computer_use" && crate::computer_use::enabled())
 }
 
 fn command_for(name: &str, args: &Value) -> Result<Value, String> {
+    if crate::queue_tools::is_tool(name) {
+        return Ok(json!({"tool": name, "args": args}));
+    }
+    if crate::queue_tools::active() && crate::agents::is_tool(name) {
+        return Err(format!("Unknown tool '{name}'."));
+    }
+    if crate::queue_tools::dispatcher() {
+        return Err(format!("Unknown tool '{name}'. You have no shell or file tools: create or redirect a task with task_create / task_redirect, or answer in plain text."));
+    }
     if crate::agents::is_tool(name) && crate::agents::tools_enabled() {
         return Ok(crate::agents::command_for(name, args));
     }
@@ -468,6 +480,28 @@ pub fn text_of(content: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The dispatcher has no shell: bash, cu and the file tools are refused before anything runs,
+    /// and the subagent tools are not offered to either queue profile.
+    #[test]
+    fn queue_profiles_gate_the_tools() {
+        let _g = crate::queue_tools::TEST_ENV.lock().unwrap();
+        std::env::set_var("MINITUI_AGENT_TOOLS", "1");
+        std::env::set_var("MINI_AGENT_TOOLSET", "dispatcher");
+        for (name, args) in [("bash", json!({"command": "touch /tmp/x"})), ("cu", json!({"args": "snapshot"})), ("write", json!({"path": "a", "content": "b"})), ("agent_delegate", json!({"task": "t"}))] {
+            assert!(command_for(name, &args).is_err(), "{name} must be refused for the dispatcher");
+        }
+        assert!(command_for("task_create", &json!({"title": "t"})).is_ok());
+        std::env::set_var("MINI_AGENT_TOOLSET", "worker");
+        std::env::set_var("MINITUI_TASK_ID", "t1");
+        assert!(command_for("bash", &json!({"command": "ls"})).is_ok());
+        assert!(command_for("agent_delegate", &json!({"task": "t"})).is_err(), "workers do not delegate");
+        assert!(command_for("task_create", &json!({"title": "t"})).is_err(), "workers do not create tasks");
+        assert!(command_for("task_update", &json!({"description": "d"})).is_ok());
+        for k in ["MINI_AGENT_TOOLSET", "MINITUI_TASK_ID", "MINITUI_AGENT_TOOLS"] {
+            std::env::remove_var(k);
+        }
+    }
+
     use super::*;
 
     const TPL: &str = "{{error}}|{{has_tool_calls}}";

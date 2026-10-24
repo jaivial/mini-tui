@@ -206,6 +206,8 @@ pub struct Agent {
     initial_files_capped: bool,
     /// Small codejs state belongs to this agent run, never a global process or repo.
     codejs_store: Obj,
+    /// Models the fallback chain already moved through in this run (never twice).
+    fallbacks_tried: std::collections::HashSet<String>,
 }
 
 impl Agent {
@@ -261,6 +263,7 @@ impl Agent {
             initial_manifest: None,
             initial_files_capped: false,
             codejs_store: Obj::new(),
+            fallbacks_tried: std::collections::HashSet::new(),
         }
     }
 
@@ -484,6 +487,20 @@ impl Agent {
         if self.requested_model.is_empty() { self.model.model_name() } else { self.requested_model.clone() }
     }
 
+    /// The next model of the fallback chain after the current one (`MINI_AGENT_MODEL_FALLBACKS`,
+    /// comma-separated ids in order of preference). The current model's place in the chain is
+    /// found by name; a model that is not in the chain starts it from the top. Models already
+    /// tried in this run are skipped, so a chain never loops.
+    fn next_fallback_model(&mut self) -> Option<String> {
+        let chain: Vec<String> = std::env::var("MINI_AGENT_MODEL_FALLBACKS").ok()?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let current = self.parent_model_name();
+        self.fallbacks_tried.insert(current.clone());
+        let at = chain.iter().position(|m| *m == current).map(|i| i + 1).unwrap_or(0);
+        chain.into_iter().skip(at).find(|m| !self.fallbacks_tried.contains(m)).inspect(|m| {
+            self.fallbacks_tried.insert(m.clone());
+        })
+    }
+
     fn apply_model_switch(&mut self, name: Option<String>) {
         let Some(name) = name else { return };
         if self.control_model.as_deref() == Some(name.as_str()) {
@@ -567,6 +584,19 @@ impl Agent {
         // with the children it started. Headless runs keep ending at once.
         let hold_for_children = Self::control_file().is_some() && (crate::subagents::live_children() > 0 || crate::subagents::has_notes());
         if !self.config.confirm_exit && !hold_for_children {
+            // A follow-up that arrived during the last step is a turn of its own, not lost: the
+            // run continues with it instead of exiting with it unread in the control file.
+            if Self::control_file().is_some() {
+                let (model, messages) = self.drain_control();
+                self.apply_model_switch(model);
+                if !messages.is_empty() {
+                    for text in messages {
+                        self.add_messages(vec![Self::user_task_message(&text)]);
+                    }
+                    self.save(false);
+                    return Ok(true);
+                }
+            }
             return Ok(false);
         }
         if Self::control_file().is_none() {
@@ -676,10 +706,12 @@ impl Agent {
         // coordinator, worker, handoff and closure judge measured 2.5x the wall of direct
         // execution on the pi-vs-mini corpus (2026-10-20). `MINI_AGENT_ROUTER=0` restores the
         // always-delegate lane.
-        self.orchestrator_lane = match std::env::var("MINI_AGENT_ROUTER").as_deref() {
+        // A work-queue run (dispatcher or worker) never takes the orchestrator lane: the queue is
+        // the parallelism, and a worker executes its task directly.
+        self.orchestrator_lane = if crate::queue_tools::active() { false } else { match std::env::var("MINI_AGENT_ROUTER").as_deref() {
             Ok("0") => true,
             _ => crate::intent::decomposable(&crate::intent::channel_subject(task)),
-        };
+        } };
         // The prompt follows the lane: a direct-lane session gets the worker discipline (a tool
         // call per turn, no delegation bookkeeping), not the orchestrator framing. Measured
         // 2026-10-21: the orchestrator prompt alone cost a unitary task 66.6 s vs 26.5 s for the
@@ -712,7 +744,7 @@ impl Agent {
             // workdir, so it never lists itself; on a kill the small file leaks until the
             // system's tmp cleanup, which is accepted.
             let manifest_path = format!("/tmp/mini-p0-manifest-{}-{:.0}.txt", std::process::id(), now() * 1e9);
-            let snapshot_cmd = format!("find . -name .git -prune -o -name node_modules -prune -o -name .venv -prune -o -name venv -prune -o -name __pycache__ -prune -o -name .next -prune -o -name .cache -prune -o -name .turbo -prune -o -type f -print 2>/dev/null | sort | head -5000 | tee {manifest_path} > /dev/null && wc -l < {manifest_path} && sha256sum < {manifest_path}");
+            let snapshot_cmd = format!("timeout 3 find . -name .git -prune -o -name node_modules -prune -o -name .venv -prune -o -name venv -prune -o -name __pycache__ -prune -o -name .next -prune -o -name .cache -prune -o -name .turbo -prune -o -type f -print 2>/dev/null | sort | head -5000 | tee {manifest_path} > /dev/null && wc -l < {manifest_path} && sha256sum < {manifest_path}");
             match self.env.execute(&snapshot_cmd) {
                 Outcome::Output(v) if v.get("returncode").and_then(Value::as_i64) == Some(0) => {
                     let out = v.get("output").and_then(Value::as_str).unwrap_or("");
@@ -791,7 +823,9 @@ impl Agent {
             // no tool list at all, instead of opening the loop that would have it explore the repo
             // to answer "hola". Anything the fast path cannot answer falls through to the loop
             // with the conversation as it was, so quality never depends on the classifier.
-            let fast = self.try_fast_path(task);
+            // The dispatcher's normal turn is already one call; its fast path could only misread
+            // a short work request as chat and drop the task.
+            let fast = !crate::queue_tools::dispatcher() && self.try_fast_path(task);
             if !fast {
                 self.add_messages(vec![sys, user]);
             }
@@ -836,6 +870,7 @@ impl Agent {
             match stepped {
                 Ok(()) => self.format_errors = 0,
                 Err(Flow::FormatError(msgs)) => {
+                    crate::models::set_think_next(true);
                     self.cost += msgs.first().map(|m| extra(m).get("cost").and_then(Value::as_f64).unwrap_or(0.0)).unwrap_or(0.0);
                     self.format_errors += 1;
                     let limit = self.config.max_consecutive_format_errors;
@@ -1322,9 +1357,31 @@ impl Agent {
                 ));
             }
         }
+        // Adaptive thinking: the next turn reasons only when this one hit a failure or a loop.
+        // A look-around command that found nothing (`ls *.mjs`, `grep` with no match) is not a
+        // failure worth reasoning about; a check, a build or an edit that failed is.
+        let actions: Vec<Value> = message.pointer("/extra/actions").and_then(Value::as_array).cloned().unwrap_or_default();
+        let failed = outputs.iter().enumerate().any(|(i, o)| {
+            let rc = o.get("returncode").and_then(Value::as_i64).unwrap_or(0);
+            if rc == 0 {
+                return false;
+            }
+            let cmd = actions.get(i).and_then(|a| a.get("command")).and_then(Value::as_str).unwrap_or("").trim_start();
+            let lookaround = ["ls", "cat", "grep", "find", "head", "tail", "test", "[", "which", "command", "wc", "file", "stat"]
+                .iter()
+                .any(|c| cmd == *c || cmd.starts_with(&format!("{c} ")));
+            !(lookaround && rc <= 2 && actions.get(i).and_then(|a| a.get("tool")).is_none())
+        });
+        crate::models::set_think_next(failed || self.repeat_streak > 0 || self.fuzzy_streak > 0);
         t.mark("observe");
+        let closing = crate::queue_tools::dispatcher_closing_text(&message, &outputs);
         self.finish_step(&message, outputs)?;
         self.record_timings(&mut t, at);
+        // The dispatcher's turn is over once its tasks are queued: the confirmation IS the
+        // answer, so a second model call to say "done" is skipped.
+        if let Some(text) = closing {
+            return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", &text, &text)]));
+        }
         Ok(())
     }
 
@@ -1429,8 +1486,39 @@ impl Agent {
         self.last_view_ms = view_ms;
         let reply = match self.model_query(&view) {
             Ok(r) => r,
+            Err(e) if !cmp::is_context_overflow(&e.kind, &e.message) => {
+                // A provider failure the retry policy gave up on: the next model of the fallback
+                // chain (`MINI_AGENT_MODEL_FALLBACKS`) takes over THIS call, with the whole
+                // conversation, and the run goes on. Only when the chain is exhausted is the
+                // error fatal.
+                let mut err = e;
+                loop {
+                    let Some(next) = self.next_fallback_model() else { return Err(Flow::Fatal(err)) };
+                    let note = format!("provider failure on {}: {} -> continuing on {next}", self.model.model_name(), err.message.chars().take(200).collect::<String>());
+                    eprintln!("[fallback] {note}");
+                    match get_model(Some(&next), &Obj::new()) {
+                        Ok(m) => {
+                            self.model = m;
+                            self.requested_model = next.clone();
+                            self.control_model = Some(next.clone());
+                            self.journal_note(&json!({"t": "fallback", "model": next, "reason": err.message}));
+                            self.messages.push(json!({"role": "user", "content": format!("[Model switched to {next} after a provider failure. Continue the task where you left off.]"), "extra": {"interrupt_type": "ModelFallback"}}));
+                            view = self.context_messages();
+                        }
+                        Err(e2) => {
+                            eprintln!("[fallback] cannot use {next}: {e2}");
+                            continue;
+                        }
+                    }
+                    match self.model_query(&view) {
+                        Ok(r) => break r,
+                        Err(e2) if cmp::is_context_overflow(&e2.kind, &e2.message) => return Err(Flow::Fatal(e2)),
+                        Err(e2) => err = e2,
+                    }
+                }
+            }
             Err(e) => {
-                if !self.config.compaction_enabled || !cmp::is_context_overflow(&e.kind, &e.message) {
+                if !self.config.compaction_enabled {
                     return Err(Flow::Fatal(e));
                 }
                 cmp::learn_window(&self.model.model_name(), &e.message);
@@ -1466,7 +1554,7 @@ impl Agent {
     fn execute_actions(&mut self, message: &Value) -> Result<Vec<Value>, Flow> {
         let actions: Vec<Value> = message.pointer("/extra/actions").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut outputs = Vec::new();
-        if (std::env::var("MINI_AGENT_ORCHESTRATOR").as_deref() == Ok("1") || std::env::var("MINITUI_WEB").as_deref() == Ok("1")) && Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none() && self.orchestrator_lane {
+        if !crate::queue_tools::active() && (std::env::var("MINI_AGENT_ORCHESTRATOR").as_deref() == Ok("1") || std::env::var("MINITUI_WEB").as_deref() == Ok("1")) && Self::control_file().is_some() && std::env::var_os("MINI_AGENT_DEPTH").is_none() && self.orchestrator_lane {
             let allowed = actions.iter().all(|action| {
                 if let Some(tool) = action.get("tool").and_then(Value::as_str) {
                     return matches!(tool, "agent_delegate" | "agent_message" | "agent_handoff" | "agent_route" | "agent_define");
@@ -1699,6 +1787,9 @@ impl Agent {
         if matches!(tool, "read" | "write" | "edit" | "code" | "codejs") && !self.env.host_filesystem_tools() {
             return Some(json!({"output": format!("Native {tool} cannot access this environment's filesystem. Use bash inside the environment; host filesystem access was refused."),
                 "returncode": 1, "exception_info": "Native filesystem tools are unavailable for this environment."}));
+        }
+        if crate::queue_tools::is_tool(tool) {
+            return Some(crate::queue_tools::outcome(tool, &args));
         }
         let cwd = self.env.working_dir();
         match tool {

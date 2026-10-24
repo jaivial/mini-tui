@@ -63,12 +63,12 @@ def tasks():
     return sorted(d for d in os.listdir(root) if d[:1] in ("t", "p", "h") and os.path.isdir(os.path.join(root, d)))
 
 
-def verify(work):
+def verify(work, task=None):
     # The verifier is harness-owned, not workspace-owned. mini's goal-oracle "cleanup" step
     # deletes verify.sh as if it were a scratch file the agent created (observed 2026-10-20:
     # "verify.sh deleted" after an oracle turn told the worker to remove it), which would score
     # correct work as FAIL. Restore the pristine copy before scoring and record the tampering.
-    task = os.path.basename(work)
+    task = task or os.path.basename(work)
     src = os.path.join(TASKS_DIR, task, "verify.sh")
     dst = os.path.join(work, "verify.sh")
     tampered = False
@@ -184,8 +184,8 @@ def run_mini(task, rundir, log):
             "task": task, "harness": "mini", "work": work}
 
 
-def run_pi(task, rundir, log):
-    work = os.path.join(rundir, "pi", task)
+def run_pi(task, rundir, log, tag=""):
+    work = os.path.join(rundir, "pi", task + tag)
     shutil.rmtree(work, ignore_errors=True)
     shutil.copytree(os.path.join(TASKS_DIR, task), work)
     prompt = open(os.path.join(TASKS_DIR, task, "TASK.md")).read().strip()
@@ -206,7 +206,7 @@ def run_pi(task, rundir, log):
             rc = "timeout"
     wall = round(time.time() - t0, 1)
     p = types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=rc)
-    events = os.path.join(rundir, f"{task}.pi.events.jsonl")
+    events = os.path.join(rundir, f"{task}{tag}.pi.events.jsonl")
     with open(events, "w") as f:
         f.write(p.stdout)
     turns = model_ms = 0
@@ -227,10 +227,11 @@ def run_pi(task, rundir, log):
         if r.get("type") == "message_end" and (r.get("message") or {}).get("role") == "assistant":
             usage = (r["message"].get("usage") or {})
             break
-    v, vout = verify(work)
-    log(f"  pi done wall={wall}s verify={v}")
+    v, vout = verify(work, task)
+    status = "done" if rc == 0 else f"error: pi exited {rc}"
+    log(f"  pi done wall={wall}s rc={rc} verify={v}")
     return {"pid": pid, "turns": turns, "model_ms": model_ms, "usage": usage, "wall": wall,
-            "status": "done", "verify": v, "verify_out": vout,
+            "status": status, "returncode": rc, "stderr": p.stderr[-4000:], "verify": v, "verify_out": vout,
             "verifier_tampered": getattr(verify, "tampered", False),
             "task": task, "harness": "pi", "work": work}
 

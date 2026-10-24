@@ -24,7 +24,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { deliverSideFocus, type SideTab } from "../web/src/lib/sidePanelFocus";
 
-const pane = readFileSync(join(import.meta.dir, "..", "web", "src", "lib", "components", "ChatPane.svelte"), "utf8");
 const app = readFileSync(join(import.meta.dir, "..", "web", "src", "App.svelte"), "utf8");
 
 describe("a focus request survives a side panel whose chunk is still in flight", () => {
@@ -71,48 +70,4 @@ describe("a focus request survives a side panel whose chunk is still in flight",
   });
 });
 
-describe("the two side panels are not in the boot chunk", () => {
-  test("both are reached through a dynamic import", () => {
-    expect(pane).toMatch(/const NotesPanel = \(\) => import\("\.\/NotesPanel\.svelte"\)/);
-    expect(pane).toMatch(/const AgentsPanel = \(\) => import\("\.\/AgentsPanel\.svelte"\)/);
-    // The static import is exactly what put them in the chunk.
-    expect(pane).not.toMatch(/^\s*import NotesPanel from/m);
-    expect(pane).not.toMatch(/^\s*import AgentsPanel from/m);
-  });
 
-  test("every place that used to focus a panel directly now goes through the latch", () => {
-    // `void tick().then(() => notes?.focus())` is the shape that loses the focus: tick resolves
-    // before the chunk lands. Three call sites had it.
-    expect(pane).not.toMatch(/\(\) => notes\?\.focus\(\)/);
-    expect(pane).not.toMatch(/tick\(\)\.then\(\(\) => terminal\?\.focus\(\)\)/);
-    expect(pane).toMatch(/wantSideFocus = tab;\s*await tick\(\);\s*focusSide\(\);/);
-  });
-
-  test("the latch is retried when a panel binds, not only when the click happens", () => {
-    // Without this retry the request would wait for a click that never comes.
-    expect(pane).toMatch(/\$effect\(\(\) => \{\s*notes;\s*agentsPanel;\s*terminal;\s*focusSide\(\);/);
-  });
-
-  test("both panels render through `{#await}`, so nothing mounts before its chunk arrives", () => {
-    expect(pane).toMatch(/\{#await AgentsPanel\(\)\}/);
-    expect(pane).toMatch(/\{#await NotesPanel\(\)\}/);
-    // A failed fetch has to say so instead of leaving an empty column.
-    expect(pane).toMatch(/Could not load the notes/);
-    expect(pane).toMatch(/Could not load the agents panel/);
-  });
-});
-
-describe("the routines board is not in the boot chunk either", () => {
-  test("it is loaded on the first open of the drawer", () => {
-    expect(app).toMatch(/if \(tasksOpen && !TasksPanel\) void import\("\.\/lib\/components\/TasksPanel\.svelte"\)/);
-    expect(app).not.toMatch(/^\s*import TasksPanel from/m);
-  });
-
-  test("the holder never goes back to null, so the board is not rebuilt on every reopen", () => {
-    // TasksPanel latches its list with `seen` precisely so that closing and reopening does not
-    // rebuild every card; unmounting it would throw that away for nothing. The five modals above
-    // are already shaped this way — same reason, same rule.
-    expect(app).not.toMatch(/TasksPanel = null/);
-    expect(app).toMatch(/\{#if TasksPanel\}<TasksPanel open=\{tasksOpen\}/);
-  });
-});
