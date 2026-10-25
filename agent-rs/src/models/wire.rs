@@ -6,7 +6,7 @@ use super::cache_control::set_cache_control;
 use super::http::{post_chat_stream, post_json, usage_of, with_retry};
 use super::prices;
 use super::read_tools as read;
-use super::shapes::{anthropic_bash_tool, anthropic_cu_tool, bash_tool, bash_tool_responses, cu_tool, cu_tool_responses, expand_multimodal, parse_response_actions, parse_toolcall_actions, response_observations, toolcall_observations};
+use super::shapes::{anthropic_bash_tool, anthropic_cu_tool, bash_tool, bash_tool_responses, cu_tool, cu_tool_responses, expand_multimodal, format_error_text, parse_response_actions, parse_toolcall_actions, response_observations, toolcall_observations};
 use super::{DeltaSink, Model, ModelError, Reply};
 use crate::util::{extra, get, get_str, now, Obj};
 use serde_json::{json, Value};
@@ -48,6 +48,22 @@ pub struct WireModel {
 const LITELLM_ONLY: [&str; 5] = ["drop_params", "custom_llm_provider", "api_base", "api_key", "timeout"];
 const WIRE_KEYS: [&str; 5] = ["role", "content", "tool_calls", "tool_call_id", "name"];
 const THINKING: [&str; 2] = ["thinking", "redacted_thinking"];
+const PSEUDO_TOOL_CALL_ERROR: &str = "The response contains an XML-like <tool_call> as text, not a native API tool call. No tool was executed. Retry with the tool call in the provider's native tool-call field; never serialize tool invocations as <tool_call>, <function>, or <parameter> text.";
+
+/// Some models occasionally serialize their intended calls as XML text despite receiving native
+/// tool schemas. Accepting that text as the final answer marks unfinished work done (measured on
+/// Linear task t14: save_issue appeared in the result but no MCP request was made).
+fn pseudo_tool_call_text(text: &str) -> bool {
+    text.contains("<tool_call>") && text.contains("<function=")
+}
+
+fn pseudo_tool_call_content(content: &Value) -> bool {
+    match content {
+        Value::String(text) => pseudo_tool_call_text(text),
+        Value::Array(blocks) => blocks.iter().any(|block| get_str(block, "type") == Some("text") && get_str(block, "text").is_some_and(pseudo_tool_call_text)),
+        _ => false,
+    }
+}
 
 /// Default per-turn output budget, in tokens (pi-parity round 5).
 ///
@@ -423,7 +439,8 @@ impl WireModel {
         let tool_calls = msg.get("tool_calls").and_then(Value::as_array).cloned().unwrap_or_default();
         let content = msg.get("content").cloned().unwrap_or(Value::Null);
         let output_limited = choice.get("finish_reason").and_then(Value::as_str) == Some("length");
-        let final_answer = if output_limited && tool_calls.is_empty() {
+        let pseudo_tool_call = tool_calls.is_empty() && pseudo_tool_call_content(&content);
+        let final_answer = if pseudo_tool_call || (output_limited && tool_calls.is_empty()) {
             None // Messages max_tokens is normalized to length too; never submit its draft.
         } else if self.protocol == Protocol::Messages {
             if tool_calls.is_empty() {
@@ -456,6 +473,11 @@ impl WireModel {
             vec![]
         } else {
             let finish = choice.get("finish_reason").cloned().unwrap_or(Value::Null);
+            if pseudo_tool_call {
+                let text = format_error_text(&self.format_error_template(), PSEUDO_TOOL_CALL_ERROR, false, &finish).unwrap_or_else(|e| e);
+                let error = json!({"role": "user", "content": text, "extra": {"interrupt_type": "FormatError", "cost": cost, "response": response}});
+                return Reply::FormatError(vec![error]);
+            }
             match parse_toolcall_actions(&tool_calls, &self.format_error_template(), &finish) {
                 Ok(a) => a,
                 Err(mut e) => {
@@ -513,12 +535,18 @@ impl WireModel {
                 _ => {}
             }
         }
-        let final_answer = if has_call { None } else { Some(texts.join("\n").trim().to_string()).filter(|t| !t.is_empty()) };
+        let pseudo_tool_call = !has_call && texts.iter().any(|text| pseudo_tool_call_text(text));
+        let final_answer = if has_call || pseudo_tool_call { None } else { Some(texts.join("\n").trim().to_string()).filter(|t| !t.is_empty()) };
         let actions = if final_answer.is_some() {
             vec![]
         } else {
             let status = response.get("status").cloned().unwrap_or(Value::Null);
             let finish = if status.as_str() == Some("incomplete") && response.pointer("/incomplete_details/reason").and_then(Value::as_str) == Some("max_output_tokens") { json!("length") } else { status };
+            if pseudo_tool_call {
+                let text = format_error_text(&self.format_error_template(), PSEUDO_TOOL_CALL_ERROR, false, &finish).unwrap_or_else(|e| e);
+                let error = json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}], "extra": {"interrupt_type": "FormatError", "cost": cost, "response": response}});
+                return Reply::FormatError(vec![error]);
+            }
             match parse_response_actions(&output, &self.format_error_template(), &finish) {
                 Ok(a) => a,
                 Err(mut e) => {
@@ -1005,6 +1033,25 @@ mod tests {
         assert_eq!(n["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"], "{\"command\": \"ls\"}");
         assert_eq!(n["choices"][0]["finish_reason"], "tool_use");
         assert_eq!(n["usage"]["input_tokens"], 5);
+    }
+
+    fn reply_test_model(protocol: Protocol) -> WireModel {
+        WireModel { config: Obj::new(), protocol, flavor: Flavor::Plain, model_type: "test".into(), price_provider: "test".into(), wire_name: "test".into(), api_base: String::new(), api_key: String::new(), length_strikes: 0 }
+    }
+
+    #[test]
+    fn xml_shaped_tool_calls_are_format_errors_not_successful_answers() {
+        let pseudo = "Creo la tarjeta:<tool_call><function=mcp__linear__save_issue><parameter=team>BIZ</parameter></function></tool_call>";
+        for protocol in [Protocol::Chat, Protocol::Messages] {
+            let response = json!({"choices": [{"finish_reason": if protocol == Protocol::Messages { "tool_use" } else { "stop" }, "message": {"content": if protocol == Protocol::Messages { json!([{"type": "text", "text": pseudo}]) } else { json!(pseudo) }, "tool_calls": []}}]});
+            let Reply::FormatError(messages) = reply_test_model(protocol).chat_reply(response, 0.0) else { panic!("pseudo call was accepted as an answer") };
+            assert!(messages[0]["content"].as_str().unwrap().contains("No tool was executed"));
+            assert!(messages[0]["content"].as_str().unwrap().contains("native tool-call field"));
+        }
+        let response = json!({"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": pseudo}]}]});
+        let Reply::FormatError(messages) = reply_test_model(Protocol::Responses).responses_reply(response, 0.0) else { panic!("pseudo call was accepted as an answer") };
+        assert!(messages[0]["content"][0]["text"].as_str().unwrap().contains("No tool was executed"));
+        assert!(!pseudo_tool_call_text("Use `<tool_call>` only as an example, without a function element."));
     }
 
     #[test]

@@ -61,6 +61,13 @@ export const OPENPENCIL_RENDER_HINT = [
   "Check the result with export_image (and lint) before reporting; save with save_file.",
 ].join("\n");
 
+/** Native calls only: XML-shaped pseudo-calls are text and never reach Linear. */
+export const LINEAR_SAVE_ISSUE_HINT = [
+  "Invoke this through the API's native tool-call field, never as textual <tool_call>/<function>/<parameter> XML.",
+  "To file in a project milestone, pass both project and milestone (its id from list_milestones is unambiguous).",
+  "A successful create returns an issue id such as BIZ-123 and a url. Read it back with get_issue or list_issues before reporting it created; a milestone-shaped response is not an issue.",
+].join("\n");
+
 export const MCP_PRESETS: McpPreset[] = [
   // Self-hosted on this machine: deploy/openpencil-mcp.service runs the server + the headless
   // desktop app, with a stable token in ~/.openpencil/token (docs/openpencil.md).
@@ -76,7 +83,7 @@ export const MCP_PRESETS: McpPreset[] = [
     hints: { render: OPENPENCIL_RENDER_HINT },
   },
   { id: "figma", name: "Figma", description: "Design context, code and assets from Figma files", url: "https://mcp.figma.com/mcp", auth: "oauth", clientName: "Claude Code", docs: "https://developers.figma.com/docs/figma-mcp-server/" },
-  { id: "linear", name: "Linear", description: "Issues, projects and comments", url: "https://mcp.linear.app/mcp", auth: "oauth" },
+  { id: "linear", name: "Linear", description: "Issues, projects and comments", url: "https://mcp.linear.app/mcp", auth: "oauth", hints: { save_issue: LINEAR_SAVE_ISSUE_HINT } },
   { id: "notion", name: "Notion", description: "Search and edit pages and databases", url: "https://mcp.notion.com/mcp", auth: "oauth" },
   { id: "atlassian", name: "Atlassian", description: "Jira and Confluence", url: "https://mcp.atlassian.com/v1/mcp", auth: "oauth" },
   { id: "stripe", name: "Stripe", description: "Payments, customers and docs", url: "https://mcp.stripe.com", auth: "oauth" },
@@ -199,7 +206,13 @@ export function markOAuth(id: string, path: string | null = mcpPath()): void {
 export function mcpRunEnv(path: string | null = mcpPath()): Record<string, string> {
   const servers = loadServers(path).filter((s) => !s.disabled && (!s.oauth || s.oauth.tokens));
   if (!servers.length) return {};
-  return { MINI_AGENT_MCP_SERVERS: JSON.stringify(servers.map((s) => ({ name: s.id, url: s.url, headers: authHeaders(s), ...(s.tools?.length ? { tools: s.tools } : {}), ...(s.hints ? { hints: s.hints } : {}) }))) };
+  return { MINI_AGENT_MCP_SERVERS: JSON.stringify(servers.map((s) => {
+    // Preset guidance is applied at spawn as well as install: existing mcp.json files receive
+    // fixes without forcing users to remove and re-authenticate the server. Local edits win.
+    const preset = s.preset ? MCP_PRESETS.find((p) => p.id === s.preset) : undefined;
+    const hints = { ...preset?.hints, ...s.hints };
+    return { name: s.id, url: s.url, headers: authHeaders(s), ...(s.tools?.length ? { tools: s.tools } : {}), ...(Object.keys(hints).length ? { hints } : {}) };
+  })) };
 }
 
 /** Forget the tokens (the registered clients are kept, so the next login skips registration). */
