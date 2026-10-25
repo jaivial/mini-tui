@@ -1,6 +1,9 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { ArrowDown, ListTodo, SquarePen, Settings, Keyboard, WifiOff, ArrowLeft, Globe } from "@lucide/svelte";
+  import { fade } from "svelte/transition";
+  import { dragSize, effectiveWidth, keySize, loadPanelSize, savePanelSize, type PanelSize } from "./lib/panelWidth";
+  import { popIn, pressable, staggerChildren } from "./lib/motion";
   import Button from "./lib/components/Button.svelte";
   import Transcript from "./lib/components/Transcript.svelte";
   import Composer from "./lib/components/Composer.svelte";
@@ -62,6 +65,53 @@
     window.addEventListener("resize", apply);
     return () => window.removeEventListener("resize", apply);
   });
+
+  // ---- the right panel's width: any width up to the whole window (lib/panelWidth.ts)
+  let panelSize = $state<PanelSize>(loadPanelSize());
+  let shell = $state<HTMLElement | null>(null);
+  let shellWidth = $state(0);
+  let resizing = $state(false);
+  const panelPx = $derived(effectiveWidth(panelSize, shellWidth || 1200));
+  const panelFull = $derived(panelSize.full && !narrow);
+  function setPanelSize(next: PanelSize) {
+    panelSize = next;
+    savePanelSize(next);
+  }
+  /** The pointer's x inside the shell, in the shell's own (zoom-corrected) pixels. */
+  function shellX(event: PointerEvent): number {
+    const rect = shell!.getBoundingClientRect();
+    const scale = rect.width / (shell!.offsetWidth || rect.width);
+    return (event.clientX - rect.left) / scale;
+  }
+  function startResize(event: PointerEvent) {
+    if (event.button !== 0 || !shell) return;
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    resizing = true;
+    const move = (e: PointerEvent) => {
+      panelSize = dragSize(shellX(e), shell!.offsetWidth);
+    };
+    const up = () => {
+      resizing = false;
+      savePanelSize(panelSize);
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  }
+  function resizeKey(event: KeyboardEvent) {
+    const next = keySize(event.key, event.shiftKey, panelSize, shellWidth);
+    if (!next) return;
+    event.preventDefault();
+    setPanelSize(next);
+  }
+  function toggleFull() {
+    setPanelSize({ ...panelSize, full: !panelSize.full });
+  }
 
   let loading = $state(true);
   let prompt = $state("");
@@ -196,8 +246,8 @@
     else if (cmd.name === "settings" || cmd.name === "skills") {
       settingsTab = cmd.name === "settings" ? "general" : "skills";
       settingsOpen = true;
-    } else if (cmd.name === "connect") {
-      settingsTab = "providers";
+    } else if (cmd.name === "connect" || cmd.name === "mcp") {
+      settingsTab = cmd.name === "mcp" ? "mcp" : "providers";
       settingsOpen = true;
     } else if (cmd.name === "help") helpOpen = true;
     else if (cmd.name === "tasks") {
@@ -279,6 +329,12 @@
     } else if (mod && !event.shiftKey && event.key.toLowerCase() === "b") {
       event.preventDefault();
       panelOpen = !panelOpen;
+    } else if (mod && event.shiftKey && event.key.toLowerCase() === "f" && panelOpen && !narrow) {
+      event.preventDefault();
+      toggleFull();
+    } else if (event.key === "Escape" && panelFull && panelOpen && !settingsOpen && !helpOpen && !(event.target as HTMLElement)?.closest?.("input,textarea")) {
+      event.preventDefault();
+      toggleFull();
     } else if (event.key === "Escape" && narrow && panelOpen && !settingsOpen && !helpOpen) {
       // On a phone the panel covers the chat: Escape is its way out.
       event.preventDefault();
@@ -289,8 +345,8 @@
 
 <svelte:window onkeydowncapture={onkey} />
 
-<div class="relative flex h-full w-full overflow-hidden bg-canvas text-ink">
-  <div class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)]" inert={narrow && panelOpen}>
+<div bind:this={shell} bind:clientWidth={shellWidth} class="relative flex h-full w-full overflow-hidden bg-canvas text-ink" class:select-none={resizing} class:cursor-col-resize={resizing}>
+  <div class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)]" inert={(narrow || panelFull) && panelOpen} class:hidden={panelFull && panelOpen}>
     <header class="relative z-30 flex min-h-13 shrink-0 items-center gap-1 border-b border-line/80 px-3.5 py-1.5">
       {#if viewing}
         <Button variant="ghost" size="icon-sm" icon={ArrowLeft} title="Back to the chat" aria-label="Back to the chat" onclick={() => (viewing = "")} />
@@ -322,7 +378,7 @@
                 <Transcript {events} partial={session.partial} onsubmit={(m) => send(m)} />
               {/key}
             {:else}
-              <div class="flex flex-col items-center gap-3 py-24 text-center">
+              <div class="flex flex-col items-center gap-3 py-24 text-center" use:staggerChildren={{ step: 0.08, y: 8 }}>
                 <h2 class="text-[20px] font-semibold tracking-tight">What should get done?</h2>
                 <p class="max-w-md text-[13.5px] text-ink-muted">
                   Send work here. Each request becomes a task in the queue and runs in the background, up to
@@ -333,14 +389,18 @@
           </div>
         </main>
         {#if session && !atBottom && session.events.length}
-          <button
-            type="button"
-            class="absolute bottom-3 left-1/2 z-25 grid size-11 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line/60 bg-raised/80 text-ink-muted backdrop-blur-md hover:text-ink"
-            aria-label="Scroll to the latest message"
-            onclick={jumpToLatest}
-          >
-            <ArrowDown size={18} strokeWidth={2} aria-hidden="true" />
-          </button>
+          <div class="pointer-events-none absolute bottom-3 left-1/2 z-25 -translate-x-1/2">
+            <button
+              type="button"
+              transition:popIn={{ y: 8, scale: 0.8 }}
+              use:pressable={0.9}
+              class="pointer-events-auto grid size-11 cursor-pointer place-items-center rounded-full border border-line/60 bg-raised/80 text-ink-muted backdrop-blur-md transition-colors hover:text-ink"
+              aria-label="Scroll to the latest message"
+              onclick={jumpToLatest}
+            >
+              <ArrowDown size={18} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </div>
         {/if}
       </div>
 
@@ -379,20 +439,65 @@
 
   {#if panelOpen}
     <div
-      class={narrow ? "absolute inset-0 z-50 bg-surface pt-[env(safe-area-inset-top)]" : "relative w-[min(26rem,38%)] shrink-0"}
+      class={narrow ? "panel-in absolute inset-0 z-50 bg-surface pt-[env(safe-area-inset-top)]" : `side-panel relative shrink-0 ${panelFull ? "flex-1" : ""}`}
+      class:resizing
+      style={narrow ? undefined : panelFull ? undefined : `width: ${panelPx}px`}
       role={narrow ? "dialog" : undefined}
       aria-modal={narrow ? "true" : undefined}
       aria-label={narrow ? "Tasks" : undefined}
+      in:fade={{ duration: 140 }}
     >
+      {#if !narrow}
+        <!-- Drag to any width; past the left edge it snaps to full screen. Double-click toggles full screen.
+             A focusable separator with a value is the WAI-ARIA window splitter: it IS interactive. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+        <div
+          class="resize-handle group absolute inset-y-0 -left-1.5 z-40 w-3 cursor-col-resize touch-none"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the panel (arrows, Home for full screen)"
+          aria-valuemin={280}
+          aria-valuemax={shellWidth}
+          aria-valuenow={panelPx}
+          tabindex="0"
+          onpointerdown={startResize}
+          ondblclick={toggleFull}
+          onkeydown={resizeKey}
+        >
+          <span class="grip absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-[background-color,width] duration-150 group-hover:w-0.5 group-hover:bg-brand group-focus-visible:w-0.5 group-focus-visible:bg-brand" class:active-grip={resizing}></span>
+          <span class="pill pointer-events-none absolute top-1/2 left-1/2 h-8 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-line-strong opacity-0 transition-opacity duration-150 group-hover:opacity-100"></span>
+        </div>
+      {/if}
       {#if panelTab === "browser"}
-        <BrowserPanel bind:tab={browserTab} live={browserLive} onclose={() => (panelOpen = false)} />
+        <BrowserPanel bind:tab={browserTab} live={browserLive} onclose={() => (panelOpen = false)} full={panelFull} onfull={narrow ? undefined : toggleFull} />
       {:else}
-        <QueuePanel onclose={() => (panelOpen = false)} onopen={openWorker} />
+        <QueuePanel onclose={() => (panelOpen = false)} onopen={openWorker} full={panelFull} onfull={narrow ? undefined : toggleFull} />
       {/if}
     </div>
   {/if}
 </div>
 
+{#if resizing}
+  <!-- Over iframes and the browser canvas too: the drag never loses the pointer. -->
+  <div class="fixed inset-0 z-[70] cursor-col-resize" transition:fade={{ duration: 80 }}></div>
+{/if}
+
 {#if SettingsModal}<SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />{/if}
 {#if HelpModal}<HelpModal bind:open={helpOpen} />{/if}
 <Toasts />
+
+<style>
+  .side-panel {
+    transition: width 220ms var(--ease-emphasized);
+  }
+  .side-panel.resizing {
+    transition: none;
+  }
+  .active-grip {
+    width: 2px;
+    background: var(--color-brand);
+  }
+  .panel-in {
+    animation: sheet-in var(--duration-base) var(--ease-emphasized) both;
+  }
+</style>

@@ -1,4 +1,5 @@
-//! Minimal MCP Streamable HTTP client for one opt-in server (`MINI_AGENT_MCP_URL`).
+//! Minimal MCP Streamable HTTP client: one opt-in server (`MINI_AGENT_MCP_URL`) and/or the servers
+//! installed through mini-tui (`MINI_AGENT_MCP_SERVERS`).
 //!
 //! The default is deliberately off: normal coding runs pay no connection, schema or prompt cost.
 //! It supports initialize + session IDs, JSON and SSE responses, paginated tools/list and
@@ -26,11 +27,68 @@ struct Registry {
     tools: Vec<RemoteTool>,
 }
 
-static REGISTRY: OnceLock<Result<Registry, String>> = OnceLock::new();
+/// One server to connect. The legacy single server (`MINI_AGENT_MCP_URL`) keeps its tool names;
+/// servers installed through mini-tui (`MINI_AGENT_MCP_SERVERS`, a JSON array of
+/// `{"name","url","headers"}`) are namespaced `mcp__<server>__<tool>`, as Claude Code does, so two
+/// servers can both expose `search`.
+struct ServerSpec {
+    name: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    prefixed: bool,
+}
+
+static REGISTRY: OnceLock<Result<Vec<Registry>, String>> = OnceLock::new();
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn configured() -> bool {
     std::env::var("MINI_AGENT_MCP_URL").map(|v| !v.trim().is_empty()).unwrap_or(false)
+        || std::env::var("MINI_AGENT_MCP_SERVERS").map(|v| v.trim().starts_with('[') && v.trim() != "[]").unwrap_or(false)
+}
+
+/// Tool-name-safe server name: `[A-Za-z0-9_-]`, never empty.
+fn server_slug(name: &str) -> String {
+    let slug: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    let slug = slug.trim_matches('_').chars().take(24).collect::<String>();
+    if slug.is_empty() { "mcp".into() } else { slug }
+}
+
+fn json_headers(value: Option<&Value>) -> Vec<(String, String)> {
+    match value {
+        Some(Value::Object(map)) => map.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect(),
+        _ => vec![],
+    }
+}
+
+fn specs_from(servers_json: Option<&str>) -> Vec<ServerSpec> {
+    let Some(raw) = servers_json else { return vec![] };
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(raw) else {
+        eprintln!("[mcp] MINI_AGENT_MCP_SERVERS is not a JSON array; ignored");
+        return vec![];
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let url = item.get("url").and_then(Value::as_str)?.trim().trim_end_matches('/').to_string();
+            if url.is_empty() {
+                return None;
+            }
+            let name = server_slug(item.get("name").and_then(Value::as_str).unwrap_or("mcp"));
+            Some(ServerSpec { name, url, headers: json_headers(item.get("headers")), prefixed: true })
+        })
+        .collect()
+}
+
+fn specs() -> Vec<ServerSpec> {
+    let mut out = Vec::new();
+    if let Ok(url) = std::env::var("MINI_AGENT_MCP_URL") {
+        if !url.trim().is_empty() {
+            let name = std::env::var("MINI_AGENT_MCP_NAME").unwrap_or_else(|_| "composio".into());
+            out.push(ServerSpec { name, url: url.trim().trim_end_matches('/').to_string(), headers: headers(), prefixed: false });
+        }
+    }
+    out.extend(specs_from(std::env::var("MINI_AGENT_MCP_SERVERS").ok().as_deref()));
+    out
 }
 
 fn safe_url(url: &str) -> String {
@@ -53,7 +111,11 @@ fn reserved(name: &str) -> bool {
 }
 
 fn exposed_name(original: &str, server: &str) -> String {
-    let mut name = if reserved(original) { format!("mcp__{server}__{original}") } else { original.to_string() };
+    exposed_name_for(original, server, false)
+}
+
+fn exposed_name_for(original: &str, server: &str, prefixed: bool) -> String {
+    let mut name = if prefixed || reserved(original) { format!("mcp__{server}__{original}") } else { original.to_string() };
     if name.len() > 64 {
         // OpenAI-compatible providers commonly cap function names at 64 bytes. Keep the
         // readable prefix and a deterministic suffix instead of colliding after truncation.
@@ -134,9 +196,9 @@ fn post(client: &Registry, payload: &Value) -> Result<(Option<String>, Value), S
     Ok((session, value.get("result").cloned().unwrap_or(value)))
 }
 
-fn initialize(url: String, headers: Vec<(String, String)>) -> Result<Registry, String> {
+fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>) -> Result<Registry, String> {
     let protocol = "2024-11-05".to_string();
-    let mut client = Registry { url, headers, session: None, protocol: protocol.clone(), tools: vec![] };
+    let mut client = Registry { url: spec.url.clone(), headers: spec.headers.clone(), session: None, protocol: protocol.clone(), tools: vec![] };
     let (session, initialized) = post(&client, &json!({
         "jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "initialize",
         "params": {"protocolVersion": protocol, "capabilities": {}, "clientInfo": {"name": "mini-agent-rs", "version": crate::agent::VERSION}}
@@ -148,7 +210,6 @@ fn initialize(url: String, headers: Vec<(String, String)>) -> Result<Registry, S
     // initialized is a notification (no id and normally 202/empty). Some compatible servers
     // return 200 instead; both are accepted by post().
     let _ = post(&client, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
-    let server = std::env::var("MINI_AGENT_MCP_NAME").unwrap_or_else(|_| "composio".into());
     let mut raw_tools = Vec::new();
     let mut cursor = Value::Null;
     for _ in 0..20 {
@@ -159,10 +220,9 @@ fn initialize(url: String, headers: Vec<(String, String)>) -> Result<Registry, S
         let Some(next) = next else { break };
         cursor = next;
     }
-    let mut exposed = std::collections::HashSet::new();
     for tool in raw_tools {
         let Some(original) = tool.get("name").and_then(Value::as_str) else { continue };
-        let name = exposed_name(original, &server);
+        let name = exposed_name_for(original, &spec.name, spec.prefixed);
         if !exposed.insert(name.clone()) {
             return Err(format!("MCP tool name collision after normalization: {name}"));
         }
@@ -176,14 +236,34 @@ fn initialize(url: String, headers: Vec<(String, String)>) -> Result<Registry, S
     Ok(client)
 }
 
-fn registry() -> Result<&'static Registry, String> {
+/// Every configured server, connected once. The legacy server failing is an error (the benchmark
+/// relies on it); an installed server failing is reported and skipped, so one server whose login
+/// expired does not take the others down.
+fn registry() -> Result<&'static Vec<Registry>, String> {
     if !configured() {
-        return Err("MINI_AGENT_MCP_URL is not set".into());
+        return Err("no MCP server configured (MINI_AGENT_MCP_URL / MINI_AGENT_MCP_SERVERS)".into());
     }
     REGISTRY.get_or_init(|| {
-        let url = std::env::var("MINI_AGENT_MCP_URL").unwrap().trim().trim_end_matches('/').to_string();
-        initialize(url, headers())
+        let mut exposed = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for spec in specs() {
+            match initialize(&spec, &mut exposed) {
+                Ok(registry) => out.push(registry),
+                Err(error) if !spec.prefixed => return Err(error),
+                Err(error) => eprintln!("[mcp] {}: {error}", spec.name),
+            }
+        }
+        Ok(out)
     }).as_ref().map_err(Clone::clone)
+}
+
+fn find_tool(name: &str) -> Result<(&'static Registry, &'static RemoteTool), String> {
+    for registry in registry()? {
+        if let Some(tool) = registry.tools.iter().find(|tool| tool.exposed == name) {
+            return Ok((registry, tool));
+        }
+    }
+    Err(format!("unknown MCP tool {name}"))
 }
 
 fn tool_values(tool: &RemoteTool, protocol: &str) -> Value {
@@ -199,7 +279,7 @@ pub fn tools(protocol: &str) -> Vec<Value> {
         return vec![];
     }
     match registry() {
-        Ok(registry) => registry.tools.iter().map(|tool| tool_values(tool, protocol)).collect(),
+        Ok(registries) => registries.iter().flat_map(|registry| registry.tools.iter().map(|tool| tool_values(tool, protocol))).collect(),
         Err(error) => {
             eprintln!("[mcp] {error}");
             vec![]
@@ -208,16 +288,15 @@ pub fn tools(protocol: &str) -> Vec<Value> {
 }
 
 pub fn tool_names() -> Result<Vec<String>, String> {
-    Ok(registry()?.tools.iter().map(|tool| tool.exposed.clone()).collect())
+    Ok(registry()?.iter().flat_map(|registry| registry.tools.iter().map(|tool| tool.exposed.clone())).collect())
 }
 
 pub fn is_tool(name: &str) -> bool {
-    configured() && registry().map(|registry| registry.tools.iter().any(|tool| tool.exposed == name)).unwrap_or(false)
+    configured() && find_tool(name).is_ok()
 }
 
 pub fn outcome(name: &str, args: &Value) -> Value {
-    let result = registry().and_then(|registry| {
-        let tool = registry.tools.iter().find(|tool| tool.exposed == name).ok_or_else(|| format!("unknown MCP tool {name}"))?;
+    let result = find_tool(name).and_then(|(registry, tool)| {
         let (_, result) = post(registry, &json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/call", "params": {"name": tool.original, "arguments": args}}))?;
         Ok(result)
     });
@@ -276,6 +355,21 @@ mod tests {
         assert!(first.len() <= 64);
         assert_eq!(first, exposed_name(&long, "mock"));
         assert!(exposed_name("task_update", "mock").starts_with("mcp__mock__"));
+    }
+
+    #[test]
+    fn installed_servers_are_parsed_and_namespaced() {
+        let specs = specs_from(Some(r#"[{"name":"Figma Dev","url":"https://mcp.figma.com/mcp/","headers":{"Authorization":"Bearer t"}},{"name":"x"},{"url":""}]"#));
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "Figma_Dev");
+        assert_eq!(specs[0].url, "https://mcp.figma.com/mcp");
+        assert_eq!(specs[0].headers, vec![("Authorization".to_string(), "Bearer t".to_string())]);
+        assert!(specs[0].prefixed);
+        assert_eq!(exposed_name_for("get_code", "figma", true), "mcp__figma__get_code");
+        assert_eq!(exposed_name_for("get_code", "figma", false), "get_code");
+        assert!(exposed_name_for(&"x".repeat(80), "figma", true).len() <= 64);
+        assert!(specs_from(Some("not json")).is_empty());
+        assert_eq!(server_slug("  "), "mcp");
     }
 
     #[test]

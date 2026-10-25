@@ -22,6 +22,10 @@ import { Modal } from "./components/Modal";
 import { SessionModal } from "./components/SessionModal";
 import { CommandPalette, PALETTE_ROWS, buildOptions, matchOptions, type CommandOption } from "./components/CommandPalette";
 import { ConnectWizard } from "./components/ConnectWizard";
+import { McpPanel } from "./components/McpPanel";
+import { addRows, type McpStep } from "../mcpPanel";
+import * as mcp from "../mcp/index";
+import { openUrl } from "../openUrl";
 import type { ConnectStep } from "../connect";
 import { filterModels, filterProviders } from "../connect";
 import {
@@ -141,6 +145,10 @@ export interface AppProps {
   onInterrupt?: () => void;
   /** Override the provider connection test (tests); defaults to a real one-token query. */
   testModel?: (modelName: string, key: string) => Promise<boolean>;
+  /** Override opening a URL in the browser (tests); returns the opener used, "" when none. */
+  onOpenUrl?: (url: string) => string;
+  /** MCP store file (tests); defaults to `~/.config/mini-tui/mcp.json`. */
+  mcpPath?: string | null;
   onQuit?: () => void;
 }
 
@@ -236,7 +244,7 @@ export function App(props: AppProps) {
   const settingsRef = useRef<Settings>(settings);
   settingsRef.current = settings;
   const [inputFocused, setInputFocusedState] = useState(true);
-  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help" | "resume" | "connect">("none");
+  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help" | "resume" | "connect" | "mcp">("none");
   /** ctrl+c was pressed once: the prompt placeholder says a second press closes. */
   const [closeArmed, setCloseArmed] = useState(false);
   const [promptText, setPromptTextState] = useState("");
@@ -253,10 +261,17 @@ export function App(props: AppProps) {
   const [resumePreview, setResumePreviewState] = useState<SessionRecord | null>(null);
   const [connectStep, setConnectStepState] = useState<ConnectStep | null>(null);
   const [connections, setConnections] = useState(() => loadConnections());
+  const mcpFile = props.mcpPath === undefined ? mcp.mcpPath() : props.mcpPath;
+  const [mcpStep, setMcpStepState] = useState<McpStep | null>(null);
+  const mcpRef = useRef<McpStep | null>(null);
+  const [mcpServers, setMcpServers] = useState<mcp.McpServerView[]>([]);
+  const mcpServersRef = useRef<mcp.McpServerView[]>([]);
+  const mcpLoginUnsub = useRef<(() => void) | null>(null);
+  const [mcpNow, setMcpNow] = useState(() => Date.now());
   // Key handlers can fire several times before React re-renders; mirror what they
   // read/write into refs so state is never stale inside a batch of keystrokes.
   const inputRefocus = useRef(true);
-  const overlayRef = useRef<"none" | "model" | "settings" | "help" | "resume" | "connect">("none");
+  const overlayRef = useRef<"none" | "model" | "settings" | "help" | "resume" | "connect" | "mcp">("none");
   const exitedRef = useRef(false);
   const interruptedRef = useRef(false);
   /** Prompt focus before the first Esc of a pair, restored by the second (see `escapePress`). */
@@ -290,14 +305,31 @@ export function App(props: AppProps) {
   const commandOptionsRef = useRef<CommandOption[]>([]);
   const branch = useMemo(() => gitBranch(props.cwd), [props.cwd]);
 
+  const setMcpStep = (value: McpStep | null) => {
+    mcpRef.current = value;
+    setMcpStepState(value);
+  };
+  const reloadMcp = () => {
+    const views = mcp.listViews(mcpFile);
+    mcpServersRef.current = views;
+    setMcpServers(views);
+    return views;
+  };
   const setInputFocused = (value: boolean) => {
     inputRefocus.current = value;
     setInputFocusedState(value);
   };
-  const setOverlay = (value: "none" | "model" | "settings" | "help" | "resume" | "connect") => {
+  const setOverlay = (value: "none" | "model" | "settings" | "help" | "resume" | "connect" | "mcp") => {
     overlayRef.current = value;
     setOverlayState(value);
     if (value !== "resume") setResumePreview(null); // /resume always reopens on its list
+    if (value !== "mcp") {
+      // Leaving the panel cancels a login still waiting for the browser (its listener goes away).
+      const step = mcpRef.current;
+      if (step?.kind === "login" && (step.login.status === "pending")) mcp.cancelLogin(step.login.id);
+      mcpLoginUnsub.current?.();
+      mcpLoginUnsub.current = null;
+    }
   };
   const setPromptText = (value: string) => {
     promptRef.current = value;
@@ -968,6 +1000,11 @@ export function App(props: AppProps) {
       setConnectStep({ kind: "provider", index: 0, query: "" });
       return setOverlay("connect");
     }
+    if (command === "mcp") {
+      reloadMcp();
+      setMcpStep({ kind: "list", index: 0 });
+      return setOverlay("mcp");
+    }
     if (command === "quit" || command === "exit" || command === "q") return quit();
     if (command === "new" || command === "clear") return newSession();
     if (command.startsWith("model ")) {
@@ -1136,6 +1173,193 @@ export function App(props: AppProps) {
 
   /** What ctrl+v/shift+insert read (tests override via `onPasteText`). */
   const readClipboard = () => (props.onPasteText ?? pasteText)();
+  // ---------------------------------------------------------------- /mcp
+  // The login countdown ticks only while a login is on screen.
+  useEffect(() => {
+    if (mcpStep?.kind !== "login") return;
+    const timer = setInterval(() => setMcpNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [mcpStep?.kind]);
+  // Tokens are refreshed in the background, so a long session's runs keep a valid one.
+  useEffect(() => (props.persistSettings === false ? undefined : mcp.startTokenRefresher()), []);
+  /** Follow a login in the background: the panel moves on by itself when the browser comes back. */
+  const watchLogin = (login: mcp.LoginView) => {
+    mcpLoginUnsub.current?.();
+    setMcpStep({ kind: "login", login });
+    mcpLoginUnsub.current = mcp.subscribeLogin(login.id, (view) => {
+      const step = mcpRef.current;
+      if (step?.kind !== "login" || step.login.id !== view.id) return;
+      if (view.status === "done") {
+        reloadMcp();
+        setMcpStep({ kind: "done", name: view.serverName, tools: view.toolCount ?? 0 });
+      } else if (view.status === "error") {
+        if (view.error !== "cancelled") setMcpStep({ kind: "error", message: view.error ?? "the login failed", serverId: view.serverId });
+      } else setMcpStep({ ...step, login: view });
+    });
+  };
+
+  const mcpLogin = (serverId: string) => {
+    const step = mcpRef.current;
+    setMcpStep(step?.kind === "list" ? { ...step, busy: "starting the login…", note: undefined } : { kind: "list", index: 0, busy: "starting the login…" });
+    mcp.markOAuth(serverId, mcpFile);
+    void mcp
+      .startLogin({ serverId, loopback: true, path: mcpFile })
+      .then((login) => {
+        if (overlayRef.current !== "mcp") return mcp.cancelLogin(login.id);
+        watchLogin(login);
+      })
+      .catch((error: Error) => overlayRef.current === "mcp" && setMcpStep({ kind: "error", message: error.message, serverId }));
+  };
+
+  /** Enter on a server: log in when it needs it, otherwise prove it works. */
+  const mcpActivate = (server: mcp.McpServerView) => {
+    if (server.state === "needs-login" || server.state === "expired") return mcpLogin(server.id);
+    const step = mcpRef.current;
+    if (step?.kind !== "list") return;
+    setMcpStep({ ...step, busy: `testing ${server.name}…`, note: undefined });
+    void mcp.probeStored(server.id, mcpFile).then((result) => {
+      const now = mcpRef.current;
+      if (now?.kind !== "list") return;
+      if (result.needsAuth) {
+        mcp.markOAuth(server.id, mcpFile);
+        reloadMcp();
+        return mcpLogin(server.id);
+      }
+      setMcpStep({ ...now, busy: undefined, note: result.ok ? `✓ ${server.name}: ${result.tools?.length ?? 0} tools` : `✗ ${server.name}: ${result.error}` });
+    });
+  };
+
+  const mcpInstall = (input: mcp.AddInput) => {
+    let record: mcp.McpServerRecord;
+    try {
+      record = mcp.addServer(input, mcpFile);
+    } catch (error) {
+      if (mcpRef.current?.kind === "url") setMcpStep({ ...(mcpRef.current as Extract<McpStep, { kind: "url" }>), error: (error as Error).message });
+      else setMcpStep({ kind: "error", message: (error as Error).message });
+      return;
+    }
+    const views = reloadMcp();
+    setMcpStep({ kind: "list", index: Math.max(0, views.findIndex((v) => v.id === record.id)), busy: `connecting to ${record.name}…` });
+    void mcp.probe(record).then((result) => {
+      if (overlayRef.current !== "mcp") return;
+      if (result.needsAuth) {
+        mcp.markOAuth(record.id, mcpFile);
+        reloadMcp();
+        return mcpLogin(record.id);
+      }
+      const now = mcpRef.current;
+      if (now?.kind === "list") setMcpStep({ ...now, busy: undefined, note: result.ok ? `✓ ${record.name}: ${result.tools?.length ?? 0} tools` : `✗ ${result.error}` });
+    });
+  };
+
+  const mcpCopy = (text: string) => {
+    if (props.onCopy) props.onCopy(text);
+    else copyText(text);
+  };
+
+  const mcpKey = (key: { name: string; sequence?: string; ctrl?: boolean; meta?: boolean; shift?: boolean }) => {
+    const step = mcpRef.current;
+    if (!step) return;
+    const typed = !key.ctrl && !key.meta && key.sequence && key.sequence.length === 1 && key.sequence >= " " ? key.sequence : "";
+    const isEnter = key.name === "return" || key.name === "enter" || key.name === "kpenter";
+    const paste = (key.ctrl && key.name === "v") || (key.shift && key.name === "insert");
+    const servers = mcpServersRef.current;
+
+    if (step.kind === "list") {
+      if (key.name === "escape") return setOverlay("none");
+      const count = servers.length + 1;
+      if (key.name === "up" || key.name === "k") return setMcpStep({ ...step, index: (step.index - 1 + count) % count });
+      if (key.name === "down" || key.name === "j") return setMcpStep({ ...step, index: (step.index + 1) % count });
+      const server = servers[step.index];
+      if (key.name === "a" || (isEnter && !server)) return setMcpStep({ kind: "add", index: 0, query: "" });
+      if (!server) return;
+      if (isEnter) return mcpActivate(server);
+      if (key.name === "d" || key.name === "delete") {
+        mcp.removeServer(server.id, mcpFile);
+        const views = reloadMcp();
+        return setMcpStep({ kind: "list", index: Math.min(step.index, views.length), note: `removed ${server.name}` });
+      }
+      if (key.name === "l" && server.oauth) {
+        mcp.logoutServer(server.id, mcpFile);
+        reloadMcp();
+        return setMcpStep({ ...step, note: `logged out of ${server.name}` });
+      }
+      if (key.name === "x") {
+        mcp.setDisabled(server.id, !server.disabled, mcpFile);
+        reloadMcp();
+        return setMcpStep({ ...step, note: `${server.name} ${server.disabled ? "enabled" : "disabled"}` });
+      }
+      return;
+    }
+
+    if (step.kind === "add") {
+      const rows = addRows(mcp.MCP_PRESETS, step.query, servers.map((s) => s.preset ?? ""));
+      if (key.name === "escape") return setMcpStep({ kind: "list", index: 0 });
+      if (key.name === "up") return setMcpStep({ ...step, index: Math.max(0, step.index - 1) });
+      if (key.name === "down") return setMcpStep({ ...step, index: Math.min(rows.length - 1, step.index + 1) });
+      if (key.name === "backspace") return setMcpStep({ ...step, query: step.query.slice(0, -1), index: 0 });
+      if (isEnter || key.name === "tab") {
+        const row = rows[Math.min(step.index, rows.length - 1)];
+        if (row === "custom") return setMcpStep({ kind: "url", value: "" });
+        if (row) return mcpInstall({ preset: row.id });
+        return;
+      }
+      if (typed) return setMcpStep({ ...step, query: step.query + typed, index: 0 });
+      return;
+    }
+
+    if (step.kind === "url") {
+      if (key.name === "escape") return setMcpStep({ kind: "add", index: 0, query: "" });
+      if (key.name === "backspace") return setMcpStep({ ...step, value: step.value.slice(0, -1), error: undefined });
+      if (paste) return setMcpStep({ ...step, value: step.value + pastedToken(readClipboard()), error: undefined });
+      if (isEnter) return step.value.trim() ? mcpInstall({ url: step.value.trim() }) : undefined;
+      const chunk = pastedSequence(key) || typed;
+      if (chunk) return setMcpStep({ ...step, value: step.value + chunk.trim(), error: undefined });
+      return;
+    }
+
+    if (step.kind === "login") {
+      if (step.pasting !== undefined) {
+        // The redirect URL field: a browser elsewhere ends on a localhost page that cannot load.
+        if (key.name === "escape") return setMcpStep({ ...step, pasting: undefined, pasteError: undefined });
+        if (key.name === "backspace") return setMcpStep({ ...step, pasting: step.pasting.slice(0, -1), pasteError: undefined });
+        if (paste) return setMcpStep({ ...step, pasting: step.pasting + pastedToken(readClipboard()), pasteError: undefined });
+        if (isEnter) {
+          const text = step.pasting;
+          void mcp.completeFromPaste(step.login.id, text).catch((error: Error) => {
+            const now = mcpRef.current;
+            if (now?.kind === "login") setMcpStep({ ...now, pasteError: error.message });
+          });
+          return;
+        }
+        const chunk = pastedSequence(key) || typed;
+        if (chunk) return setMcpStep({ ...step, pasting: step.pasting + chunk.trim(), pasteError: undefined });
+        return;
+      }
+      if (key.name === "escape") {
+        mcp.cancelLogin(step.login.id);
+        return setMcpStep({ kind: "list", index: 0, note: "login cancelled" });
+      }
+      if (key.name === "c" || key.name === "y") {
+        mcpCopy(step.login.url);
+        return setMcpStep({ ...step, copied: true });
+      }
+      if (key.name === "o" || isEnter) {
+        const opener = (props.onOpenUrl ?? openUrl)(step.login.url);
+        if (!opener) mcpCopy(step.login.url);
+        return setMcpStep({ ...step, opened: opener || undefined, copied: opener ? step.copied : true, pasteError: opener ? undefined : "no browser here: the link was copied, open it anywhere" });
+      }
+      if (key.name === "p") return setMcpStep({ ...step, pasting: "", pasteError: undefined });
+      return;
+    }
+
+    if (step.kind === "error" && key.name === "r" && step.serverId) return mcpLogin(step.serverId);
+    if (key.name === "escape" || isEnter) {
+      reloadMcp();
+      return setMcpStep({ kind: "list", index: 0 });
+    }
+  };
+
   /** The pasted text of a key event that carries some (non-bracketed paste fallback). */
   const pastedSequence = (key: { sequence?: string; ctrl?: boolean; meta?: boolean }) => {
     const ch = key.sequence ?? "";
@@ -1146,6 +1370,17 @@ export function App(props: AppProps) {
   // PasteEvents. The wizard's and session browser's inputs are display-only, so wire them
   // by hand — the prompt textarea pastes natively and is left alone.
   usePaste((event) => {
+    if (overlayRef.current === "mcp") {
+      const step = mcpRef.current;
+      const text = pastedToken(new TextDecoder().decode(event.bytes));
+      if (!text || !step) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (step.kind === "url") setMcpStep({ ...step, value: step.value + text, error: undefined });
+      else if (step.kind === "login") setMcpStep({ ...step, pasting: (step.pasting ?? "") + text, pasteError: undefined });
+      else if (step.kind === "add") setMcpStep({ ...step, query: step.query + text, index: 0 });
+      return;
+    }
     if (overlayRef.current === "connect") {
       const step = connectRef.current;
       if (!step) return;
@@ -1168,6 +1403,7 @@ export function App(props: AppProps) {
   });
 
   useKeyboard((key) => {
+    if (overlayRef.current === "mcp") return mcpKey(key);
     if (overlayRef.current === "connect") {
       // the BYOK wizard owns the keys (its inputs are display-only)
       const step = connectRef.current;
@@ -1526,6 +1762,8 @@ export function App(props: AppProps) {
         onPick={applyModel}
         onCancel={() => setOverlay("none")}
       />
+    ) : overlayState === "mcp" && mcpStep ? (
+      <McpPanel step={mcpStep} servers={mcpServers} presets={mcp.MCP_PRESETS} areaHeight={modalAreaHeight} now={mcpNow} />
     ) : overlayState === "connect" && connectStep ? (
       <ConnectWizard step={connectStep} providers={PROVIDERS} areaHeight={modalAreaHeight} />
     ) : overlayState === "settings" ? (

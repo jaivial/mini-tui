@@ -2,6 +2,7 @@
   import type { Snippet } from "svelte";
   import type { Component } from "svelte";
   import Spinner from "./Spinner.svelte";
+  import { pressable } from "../motion";
 
   type Variant = "primary" | "secondary" | "ghost" | "outline" | "subtle" | "danger";
   type Size = "xs" | "sm" | "md" | "icon" | "icon-sm";
@@ -70,6 +71,7 @@
 
 <button
   {...rest}
+  use:pressable={staticPress ? 1 : size.startsWith("icon") ? 0.9 : 0.96}
   {title}
   aria-label={ariaLabel ?? (children ? undefined : title)}
   disabled={disabled || loading}
@@ -95,9 +97,12 @@
 </button>
 
 <style>
-  /* Scale on press: 0.96 exactly, and always with a static cue too. */
-  button:not(.active-0):active {
-    transform: scale(0.96);
+  /* The press itself is a Motion spring (lib/motion.ts `pressable`); a static cue stays for
+     reduced motion, where the spring is off. */
+  @media (prefers-reduced-motion: reduce) {
+    button:not(.active-0):active {
+      filter: brightness(0.94);
+    }
   }
   button[data-active] {
     background: var(--color-brand-soft);

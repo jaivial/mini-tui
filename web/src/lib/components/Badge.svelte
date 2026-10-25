@@ -32,8 +32,8 @@
 </script>
 
 <span
-  class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] leading-5 font-medium whitespace-nowrap {TONES[tone]} {klass}"
+  class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] leading-5 font-medium whitespace-nowrap transition-colors duration-200 {TONES[tone]} {klass}"
 >
-  {#if dot}<span class="size-1.5 shrink-0 rounded-full {DOTS[tone]}"></span>{/if}
+  {#if dot}<span class="size-1.5 shrink-0 rounded-full {DOTS[tone]} {tone === 'live' ? 'pulse-live' : ''}"></span>{/if}
   {@render children?.()}
 </span>

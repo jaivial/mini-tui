@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 
 import { miniBin, createSessionDir, type SessionPaths } from "../config";
 import { gitIdentityEnv } from "../gitIdentity";
+import { mcpRunEnv } from "../mcp/index";
 import { resolveCommand, resolvePython } from "../helpers";
 import { log } from "../web/log";
 
@@ -229,6 +230,9 @@ export function buildRunEnv(
 ): Record<string, string> {
   return {
     ...process.env,
+    // MCP servers installed with /mcp (web Settings → MCP), with their current tokens. An explicit
+    // MINI_AGENT_MCP_SERVERS from the caller or the environment wins.
+    ...(process.env.MINI_AGENT_MCP_SERVERS || extra.MINI_AGENT_MCP_SERVERS ? {} : mcpRunEnv()),
     // Commits made by the agent are authored by the user's gh/git identity, never "claude".
     ...gitIdentityEnv({ ...process.env, ...extra }),
     ...extra,

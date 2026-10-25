@@ -1,6 +1,11 @@
 <script lang="ts">
   import { CheckCircle2, AlertCircle, Info, X } from "@lucide/svelte";
+  import { fly } from "svelte/transition";
+  import { flip } from "svelte/animate";
+  import { backOut, cubicIn } from "svelte/easing";
   import { toasts } from "../stores/toast.svelte";
+  import { reducedMotion } from "../motion";
+  const still = reducedMotion();
 
   const ICONS = { ok: CheckCircle2, err: AlertCircle, info: Info };
   const TONE = {
@@ -18,6 +23,9 @@
   {#each toasts.items as toast (toast.id)}
     {@const IconCmp = ICONS[toast.tone]}
     <div
+      in:fly={{ x: still ? 0 : 28, duration: still ? 0 : 320, easing: backOut, opacity: 0 }}
+      out:fly={{ x: still ? 0 : 36, duration: still ? 0 : 180, easing: cubicIn }}
+      animate:flip={{ duration: still ? 0 : 220 }}
       class="toast elev-pop pointer-events-auto flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 {TONE[toast.tone]}"
       role="group"
       aria-label={toast.title}

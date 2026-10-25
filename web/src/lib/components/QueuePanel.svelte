@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { X, CornerDownRight, Ban, ChevronDown, ChevronRight, Link2 } from "@lucide/svelte";
+  import { X, CornerDownRight, Ban, ChevronRight, Link2, Maximize2, Minimize2 } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import Badge from "./Badge.svelte";
   import Markdown from "./Markdown.svelte";
+  import { slide } from "svelte/transition";
+  import { flip } from "svelte/animate";
+  import { reducedMotion } from "../motion";
+  const still = reducedMotion();
   import { queue, FILTERS, matches, type QueueFilter } from "../stores/queue.svelte";
   import { clock } from "../stores/clock.svelte";
   import { duration } from "../format";
@@ -15,7 +19,7 @@
    * state (working, queued, completed, error). A task opens to its brief, its result, the notes
    * its worker sent and the tasks it is related to; it can be redirected or cancelled from here.
    */
-  let { onclose, onopen }: { onclose?: () => void; onopen?: (sessionId: string) => void } = $props();
+  let { onclose, onopen, full = false, onfull }: { onclose?: () => void; onopen?: (sessionId: string) => void; full?: boolean; onfull?: () => void } = $props();
 
   let filter = $state<QueueFilter>("all");
   let openId = $state("");
@@ -90,6 +94,7 @@
   <header class="flex min-h-13 shrink-0 items-center gap-2 border-b border-line/80 px-3.5">
     <h2 class="flex-1 text-[13.5px] font-semibold">Tasks</h2>
     <span class="tnum text-[11.5px] text-ink-faint" title="Running now / at most at once">{queue.counts.running}/{queue.concurrency || "—"} running</span>
+    {#if onfull}<Button variant="ghost" size="icon-sm" icon={full ? Minimize2 : Maximize2} title={full ? "Exit full screen (Esc · Ctrl/⌘ ⇧ F)" : "Full screen (Ctrl/⌘ ⇧ F)"} aria-label={full ? "Exit full screen" : "Full screen"} aria-pressed={full} onclick={onfull} />{/if}
     {#if onclose}<Button variant="ghost" size="icon-sm" icon={X} aria-label="Hide tasks" title="Hide tasks" onclick={onclose} />{/if}
   </header>
 
@@ -100,7 +105,7 @@
         role="tab"
         aria-selected={filter === f.id}
         class="interactive flex min-h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] pointer-coarse:min-h-10
-          {filter === f.id ? 'bg-raised text-ink' : 'text-ink-muted hover:text-ink'}"
+          {filter === f.id ? 'bg-raised text-ink shadow-[inset_0_0_0_1px_var(--color-line)]' : 'text-ink-muted hover:bg-raised/50 hover:text-ink'}"
         onclick={() => (filter = f.id)}
       >
         {f.label}<span class="tnum text-[11px] text-ink-faint">{queue.counts[f.id]}</span>
@@ -117,7 +122,7 @@
       <ul class="flex flex-col">
         {#each shown as t (t.id)}
           {@const open = openId === t.id}
-          <li class="border-b border-line/60" data-task={t.id} data-status={t.status}>
+          <li class="task-row border-b border-line/60" data-task={t.id} data-status={t.status} animate:flip={{ duration: still ? 0 : 240 }} in:slide={{ duration: still ? 0 : 200 }}>
             <button
               type="button"
               class="interactive flex w-full cursor-pointer items-start gap-2 px-3 py-2.5 text-left hover:bg-raised/60"
@@ -127,7 +132,7 @@
                 redirectText = "";
               }}
             >
-              <span class="mt-0.5 text-ink-faint">{#if open}<ChevronDown size={13} />{:else}<ChevronRight size={13} />{/if}</span>
+              <span class="mt-0.5 text-ink-faint transition-transform duration-200 ease-(--ease-emphasized) {open ? 'rotate-90' : ''}"><ChevronRight size={13} /></span>
               <span class="min-w-0 flex-1">
                 <span class="flex items-center gap-2">
                   <span class="tnum shrink-0 text-[11px] text-ink-faint">{t.id}</span>
@@ -144,7 +149,7 @@
               </span>
             </button>
             {#if open}
-              <div class="flex flex-col gap-3 px-3 pb-3 pl-8 text-[12.5px]">
+              <div class="flex flex-col gap-3 px-3 pb-3 pl-8 text-[12.5px]" transition:slide={{ duration: still ? 0 : 200 }}>
                 {#if t.result}
                   <section>
                     <h3 class="mb-1 text-[11px] font-semibold tracking-wide text-ink-faint uppercase">Result</h3>

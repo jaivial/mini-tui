@@ -11,6 +11,7 @@
   import WhatsAppConnect from "./WhatsAppConnect.svelte";
   import UsageSection from "./UsageSection.svelte";
   import RouterSection from "./RouterSection.svelte";
+  import McpSection from "./McpSection.svelte";
   import { catalog } from "../stores/catalog.svelte";
   import { models } from "../stores/models.svelte";
   import { ui, PALETTES } from "../stores/ui.svelte";
@@ -31,6 +32,7 @@
     { id: "general", label: "General" },
     { id: "channels", label: "Canales" },
     { id: "providers", label: "Providers" },
+    { id: "mcp", label: "MCP" },
     // v6-C: the model router's switch, its circuits and its decision trail.
     { id: "router", label: "Router" },
     { id: "skills", label: "Skills" },
@@ -186,6 +188,7 @@
 <Modal bind:open title="Settings" description="How mini-tui looks and which providers it can use." width="max-w-2xl" {onclose}>
   <div class="flex flex-col gap-5">
     <Tabs tabs={TABS} bind:value={tab} idBase={uid} label="Settings sections" />
+    {#key tab}<div class="tab-in flex flex-col gap-5">
 
     {#if tab === "general"}
       <div role="tabpanel" id="{uid}-panel-general" aria-labelledby="{uid}-tab-general" class="flex flex-col gap-6">
@@ -511,6 +514,10 @@
           {/if}
         </section>
       </div>
+    {:else if tab === "mcp"}
+      <div role="tabpanel" id="{uid}-panel-mcp" aria-labelledby="{uid}-tab-mcp">
+        <McpSection {open} />
+      </div>
     {:else if tab === "router"}
       <div role="tabpanel" id="{uid}-panel-router" aria-labelledby="{uid}-tab-router" class="flex flex-col gap-3">
         <RouterSection />
@@ -554,10 +561,15 @@
         {/if}
       </div>
     {/if}
+    </div>{/key}
   </div>
 </Modal>
 
 <style>
+  /* A tab's content arrives with a short rise, so the switch reads as motion, not a jump. */
+  .tab-in {
+    animation: rise-sm var(--duration-base) var(--ease-emphasized) both;
+  }
   .field {
     height: 2.25rem;
     border-radius: var(--radius-md);

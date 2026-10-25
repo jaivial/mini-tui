@@ -23,6 +23,7 @@ export function buildOptions(models: SelectOption[]): CommandOption[] {
     { insert: "/new", label: "/new", detail: "start a new session (stops the current run)" },
     { insert: "/resume", label: "/resume", detail: "browse sessions saved in this folder" },
     { insert: "/connect", label: "/connect", detail: "connect a provider with your own API key" },
+    { insert: "/mcp", label: "/mcp", detail: "install MCP servers and log in to them (Figma, Linear…)" },
     { insert: "/help", label: "/help", detail: "commands and keys" },
     { insert: "/quit", label: "/quit", detail: "close mini-tui" },
     { insert: "/exit", label: "/exit", detail: "close mini-tui" },

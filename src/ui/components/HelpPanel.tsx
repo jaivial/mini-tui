@@ -3,10 +3,11 @@ import { colors } from "../theme";
 /** `/help` — commands and keys at a glance. */
 export function HelpPanel() {
   const rows: Array<[string, string]> = [
-    ["/model [id]", "switch model — picker, or straight to <id> (new terminals start on it)"],
+    ["/model [id]", "switch model — picker, or straight to <id>"],
     ["/new", "start a new session without restarting mini-tui"],
     ["/resume", "browse sessions saved in this folder (search, pages · → preview read-only)"],
     ["/connect", "connect a BYOK provider (key → model → connection test)"],
+    ["/mcp", "MCP servers: install, OAuth login (c copy · o open), test"],
     ["/settings", "output display · theme · jev toggles (Tab ×3)"],
     ["/compact", "summarize the conversation now (frees context; auto at 80 %)"],
     ["$skill (anywhere)", "reference skills in the prompt — $ opens the list, Enter/Tab inserts"],
