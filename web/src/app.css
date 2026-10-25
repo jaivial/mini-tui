@@ -214,58 +214,41 @@
 /* Dark mode: the cool deep-space ladder this app wore before the light
    redesign — kept as a switchable theme, same roles. */
 :root.dark {
-  --color-canvas: #121319;
-  --color-surface: #181a21;
-  --color-raised: #21242d;
-  --color-overlay: #262a34;
+  /* Straw / Nero: the product's dark palette. Warm yellow is an accent, never a
+     full-surface wash; neutral steps do the structural work. */
+  --color-canvas: #131313;       /* Cursed Black */
+  --color-surface: #1b1b1a;
+  --color-raised: #262625;       /* Nero */
+  --color-overlay: #292928;
 
-  --color-line: #2d3140;
-  --color-line-strong: #41485c;
+  --color-line: #4b4a48;         /* Private Black */
+  --color-line-strong: #777674;  /* Steel Wool */
 
-  --color-ink: #f3f4f8;
-  --color-ink-muted: #a7acbc;
-  /* Same audit as light: on the raised/overlay surfaces #838a9c reads 4.49:1 / 4.16:1, just under
-     AA. #8c93a6 holds 5.05:1 on raised, 4.67:1 on overlay (its lightest background) and 6.04:1 on
-     the canvas. */
-  --color-ink-faint: #8c93a6;
+  --color-ink: #ebe9e4;
+  --color-ink-muted: #a4a4a4;    /* Rainy Grey */
+  --color-ink-faint: #8b8a88;
 
-  /* Brand is silver now. silver-300 carries 9.2:1 on the darkest surface
-     (overlay) and 11.9:1 on the canvas, so it holds AA as body text and
-     as a 3:1 UI boundary everywhere in the ladder. */
-  --color-brand: var(--color-silver-300);
-  /* The ink ON brand inverted with it: the old violet-on-silver pairing
-     put a near-black violet on a light violet and only survived by
-     accident. Graphite on silver-300 is 11.9:1 — measured, not guessed. */
-  --color-brand-ink: var(--color-on-silver);
-  --color-brand-soft: rgb(203 208 212 / 0.15);
+  --color-brand: #efd395;        /* Straw Yellow */
+  --color-brand-ink: #131313;
+  --color-brand-soft: rgb(239 211 149 / 0.11);
+  --color-silver: #a4a4a4;
+  --color-silver-soft: rgb(164 164 164 / 0.12);
 
-  /* Silver steps for the dark ladder: the accents above sit on a near-black
-     canvas, so they take the bright end of the ramp. */
-  --color-silver: var(--color-silver-400);
-  --color-silver-soft: rgb(179 184 189 / 0.14);
+  --color-live: #efd395;
+  --color-live-soft: rgb(239 211 149 / 0.12);
+  --color-ok: #b8cbaa;
+  --color-err: #e59a91;
+  --color-warn: #efd395;
 
-  --color-live: #ffa14a;
-  --color-live-soft: rgb(255 161 74 / 0.16);
-
-  --color-ok: #46c99a;
-  --color-err: #ff6b8a;
-  --color-warn: #e0a03c;
-
-  /* Bubbles invert: the user speaks in near-white, the bot in a raised grey. */
-  --color-bubble-user: #f3f4f8;
-  --color-bubble-user-ink: #17171d;
-  --color-bubble-bot: #262a34;
-
-  /* La burbuja se vuelve casi blanca, asi que su paleta interior tiene que
-     volverse con ella: los chips son ahora una mezcla de TINTA sobre claro, no
-     de blanco sobre negro. Enlace 6.10:1, cita 7.52:1, marca 7.12:1 — medidos
-     sobre `--color-bubble-user` de este bloque, no copiados del de arriba. */
-  --color-bubble-user-link: #1d4ed8;      /* 6.10:1 */
-  --color-bubble-user-quote: #4e4e54;    /* 7.52:1 */
-  --color-bubble-user-chip: rgb(0 0 0 / 0.08);
-  --color-bubble-user-pre: rgb(0 0 0 / 0.07);
-  --color-bubble-user-pre-line: rgb(0 0 0 / 0.14);
-  --color-bubble-user-mirror: rgb(21 94 52); /* 7.12:1 */
+  --color-bubble-user: #efd395;
+  --color-bubble-user-ink: #131313;
+  --color-bubble-bot: #262625;
+  --color-bubble-user-link: #41330f;
+  --color-bubble-user-quote: #4b4a48;
+  --color-bubble-user-chip: rgb(19 19 19 / 0.08);
+  --color-bubble-user-pre: rgb(19 19 19 / 0.07);
+  --color-bubble-user-pre-line: rgb(19 19 19 / 0.16);
+  --color-bubble-user-mirror: #4b4a48;
 }
 
 /* Dark-mode theme accents. Same three themes as above, bright end of the

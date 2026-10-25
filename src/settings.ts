@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { EffortLevel } from "./effort";
 
 export type OutputMode = "collapsed" | "trim" | "expanded";
 
@@ -36,6 +37,8 @@ export interface Settings {
    * stops only when every model failed. Empty = no fallback.
    */
   modelFallbacks?: string[];
+  /** Reasoning effort per fully-qualified model id. "auto" sends no override. */
+  modelEfforts?: Record<string, EffortLevel>;
 }
 
 export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description: string }> = [
@@ -118,6 +121,7 @@ export function loadSettings(): Settings {
         modelRouterEnabled: router,
         ...(typeof data?.queueConcurrency === "number" ? { queueConcurrency: data.queueConcurrency } : {}),
         ...(Array.isArray(data?.modelFallbacks) ? { modelFallbacks: (data.modelFallbacks as unknown[]).filter((m): m is string => typeof m === "string") } : {}),
+        ...(data?.modelEfforts && typeof data.modelEfforts === "object" && !Array.isArray(data.modelEfforts) ? { modelEfforts: data.modelEfforts as Record<string, EffortLevel> } : {}),
       };
     }
   } catch {

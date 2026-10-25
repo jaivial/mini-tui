@@ -321,9 +321,14 @@ impl WireModel {
     }
 
     fn query_responses(&mut self, messages: &[Value]) -> Result<Value, ModelError> {
-        let (params, mut headers) = self.params();
+        let (mut params, mut headers) = self.params();
         headers.extend(self.auth_headers());
         let mut body = json!({"model": self.wire_name, "input": self.responses_input(messages), "tools": tool_list(Protocol::Responses)});
+        // Responses calls this reasoning.effort; Chat Completions calls it reasoning_effort.
+        // Keep one model-independent setting in model_kwargs and translate at the protocol edge.
+        if let Some(effort) = params.shift_remove("reasoning_effort") {
+            body["reasoning"] = json!({"effort": effort});
+        }
         for (k, v) in params {
             body[k] = v;
         }

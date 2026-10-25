@@ -45,6 +45,8 @@ class ResponsesCompatModel(OpenaiCompatModel):
     def _query(self, messages: list[dict], **kwargs):
         params = {k: v for k, v in (self.config.model_kwargs | kwargs).items() if k not in _LITELLM_ONLY_KWARGS}
         headers = params.pop("extra_headers", None) or {}
+        if "reasoning_effort" in params:
+            params["reasoning"] = {"effort": params.pop("reasoning_effort")}
         body = {"model": self._wire_model_name(), "input": messages, "tools": [BASH_TOOL_RESPONSE_API, CU_TOOL_RESPONSE_API], **params}
         data = self._post("/responses", body, headers=headers)
         return _wrap(data)

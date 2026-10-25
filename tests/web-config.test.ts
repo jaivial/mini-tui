@@ -218,6 +218,16 @@ describe("settings", () => {
     cfg.patchSettings({ modelRouterEnabled: false });
     expect(cfg.settingsView().modelRouterEnabled).toBe(false);
   });
+  test("model efforts are validated per model and persist", () => {
+    const view = cfg.patchSettings({ modelEfforts: {
+      "zai/glm-5.3": "low",
+      "openai/gpt-6-astra": "off",
+      "unknown/model": "max",
+      "minimax/MiniMax-M3": "high",
+    } });
+    expect(view.modelEfforts).toEqual({ "zai/glm-5.3": "low" });
+    expect(cfg.settingsView().modelEfforts?.["zai/glm-5.3"]).toBe("low");
+  });
   test("a broken settings file falls back to defaults", () => {
     writeFileSync(join(dir, "settings.json"), "{not json");
     expect(cfg.settingsView().outputMode).toBe("collapsed");

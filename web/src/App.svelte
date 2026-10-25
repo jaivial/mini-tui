@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { ArrowDown, ListTodo, SquarePen, Settings, Keyboard, WifiOff, ArrowLeft, Globe } from "@lucide/svelte";
+  import { ArrowDown, ListTodo, SquarePen, Settings, Keyboard, WifiOff, ArrowLeft, Globe, Sparkles, ArrowUpRight } from "@lucide/svelte";
   import { fade } from "svelte/transition";
   import { dragSize, effectiveWidth, keySize, loadPanelSize, savePanelSize, type PanelSize } from "./lib/panelWidth";
   import { popIn, pressable, staggerChildren } from "./lib/motion";
@@ -23,6 +23,7 @@
   import { followTranscript, isAtBottom } from "./lib/threadScroll";
   import type { AttachmentRef } from "./lib/attachments";
   import type { Chip } from "./lib/chips";
+  import type { EffortLevel } from "../../src/effort";
 
   /**
    * The whole app: ONE chat and the task queue beside it.
@@ -121,6 +122,7 @@
   let modelOpen = $state(false);
   let draftModel = $state("");
   let switchingModel = $state(false);
+  let effortBusy = $state(false);
   const memory = new PromptMemory();
   let composer = $state<{ focus: () => void } | null>(null);
   let scroller = $state<HTMLElement | null>(null);
@@ -302,6 +304,19 @@
     }
   }
 
+  async function pickEffort(model: string, effort: EffortLevel) {
+    if (effortBusy) return;
+    effortBusy = true;
+    try {
+      const modelEfforts = { ...(catalog.settings?.modelEfforts ?? {}), [model]: effort };
+      catalog.settings = await api.patchSettings({ modelEfforts });
+    } catch (error) {
+      toasts.push("Could not save reasoning effort", { detail: (error as Error).message, tone: "err" });
+    } finally {
+      effortBusy = false;
+    }
+  }
+
   async function interrupt() {
     if (!session) return;
     await api.interrupt(session.id).catch((e) => toasts.push("Could not stop", { detail: (e as Error).message, tone: "err" }));
@@ -345,15 +360,20 @@
 
 <svelte:window onkeydowncapture={onkey} />
 
-<div bind:this={shell} bind:clientWidth={shellWidth} class="relative flex h-full w-full overflow-hidden bg-canvas text-ink" class:select-none={resizing} class:cursor-col-resize={resizing}>
+<div bind:this={shell} bind:clientWidth={shellWidth} class="app-shell relative flex h-full w-full overflow-hidden bg-canvas text-ink" class:select-none={resizing} class:cursor-col-resize={resizing}>
   <div class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)]" inert={(narrow || panelFull) && panelOpen} class:hidden={panelFull && panelOpen}>
-    <header class="relative z-30 flex min-h-13 shrink-0 items-center gap-1 border-b border-line/80 px-3.5 py-1.5">
+    <header class="app-header relative z-30 flex min-h-16 shrink-0 items-center gap-1.5 border-b border-line/65 px-4 py-2">
       {#if viewing}
         <Button variant="ghost" size="icon-sm" icon={ArrowLeft} title="Back to the chat" aria-label="Back to the chat" onclick={() => (viewing = "")} />
         <h1 class="min-w-0 flex-1 truncate px-1 text-[13.5px] font-semibold">{session?.title || "Task"} <span class="font-normal text-ink-faint">· worker</span></h1>
       {:else}
-        <h1 class="min-w-0 flex-1 truncate px-1 text-[13.5px] font-semibold">mini</h1>
-        {#if session?.status === "running"}<span class="flex items-center gap-1.5 text-[11.5px] text-live"><span class="pulse-live size-1.5 rounded-full bg-live"></span>dispatching</span>{/if}
+        <div class="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
+          <span class="brand-mark grid size-8 shrink-0 place-items-center rounded-[10px] border border-brand/25 bg-brand-soft text-brand"><Sparkles size={15} strokeWidth={1.8} aria-hidden="true" /></span>
+          <div class="min-w-0">
+            <h1 class="font-display text-[13px] font-semibold leading-4 tracking-[-0.01em]">mini <span class="font-normal text-ink-faint">/ workspace</span></h1>
+            {#if session?.status === "running"}<p class="mt-0.5 flex items-center gap-1.5 text-[9.5px] text-brand"><span class="pulse-live size-1 rounded-full bg-brand"></span>Dispatching work</p>{:else}<p class="mt-0.5 text-[9.5px] text-ink-faint">Plan, delegate, ship</p>{/if}
+          </div>
+        </div>
       {/if}
       <Button variant="ghost" size="icon-sm" icon={SquarePen} title="New chat (Ctrl/⌘ K)" aria-label="New chat" onclick={newChat} />
       <Button variant="ghost" size="icon-sm" icon={Settings} title="Settings (Ctrl/⌘ ,)" aria-label="Settings" onclick={() => { settingsTab = "general"; settingsOpen = true; }} />
@@ -378,12 +398,14 @@
                 <Transcript {events} partial={session.partial} onsubmit={(m) => send(m)} />
               {/key}
             {:else}
-              <div class="flex flex-col items-center gap-3 py-24 text-center" use:staggerChildren={{ step: 0.08, y: 8 }}>
-                <h2 class="text-[20px] font-semibold tracking-tight">What should get done?</h2>
-                <p class="max-w-md text-[13.5px] text-ink-muted">
-                  Send work here. Each request becomes a task in the queue and runs in the background, up to
-                  {queue.concurrency || "the configured number of"} at once. Follow them on the right.
-                </p>
+              <div class="empty-workspace relative mx-auto flex max-w-lg flex-col items-center gap-4 overflow-hidden rounded-2xl border border-line/60 px-7 py-12 text-center" use:staggerChildren={{ step: 0.08, y: 8 }}>
+                <span class="empty-icon grid size-12 place-items-center rounded-2xl border border-brand/25 bg-brand-soft text-brand"><ArrowUpRight size={21} strokeWidth={1.6} aria-hidden="true" /></span>
+                <div>
+                  <p class="mb-2 text-[9px] font-semibold tracking-[0.18em] text-brand uppercase">Your agent workspace</p>
+                  <h2 class="font-display text-[23px] font-semibold tracking-[-0.025em]">What should get done?</h2>
+                </div>
+                <p class="max-w-sm text-[12.5px] leading-5.5 text-ink-muted">Describe the outcome. Mini turns it into background tasks, coordinates the workers and keeps every step in view.</p>
+                <div class="mt-1 flex flex-wrap items-center justify-center gap-1.5 text-[9.5px] text-ink-faint"><span class="rounded-full border border-line/70 bg-canvas/40 px-2 py-1">Parallel workers</span><span class="rounded-full border border-line/70 bg-canvas/40 px-2 py-1">Live progress</span><span class="rounded-full border border-line/70 bg-canvas/40 px-2 py-1">Your models</span></div>
               </div>
             {/if}
           </div>
@@ -431,6 +453,9 @@
           onsend={send}
           oninterrupt={interrupt}
           onmodel={pickModel}
+          oneffort={pickEffort}
+          modelEfforts={catalog.settings?.modelEfforts ?? {}}
+          {effortBusy}
           {memory}
         />
       {/if}
@@ -487,6 +512,16 @@
 <Toasts />
 
 <style>
+  .app-shell {
+    background-image:
+      radial-gradient(ellipse 60% 45% at 20% -10%, rgb(239 211 149 / 0.035), transparent),
+      linear-gradient(var(--color-canvas), var(--color-canvas));
+  }
+  .app-header { background: color-mix(in oklab, var(--color-canvas) 88%, transparent); }
+  .brand-mark { box-shadow: inset 0 1px 0 rgb(239 211 149 / 0.12), 0 4px 16px rgb(0 0 0 / 0.16); }
+  .empty-workspace { margin-top: clamp(2rem, 9vh, 6rem); background: linear-gradient(145deg, color-mix(in oklab, var(--color-raised) 58%, transparent), color-mix(in oklab, var(--color-surface) 45%, transparent)); }
+  .empty-workspace::before { content: ""; position: absolute; width: 15rem; height: 10rem; top: -7rem; left: 50%; translate: -50% 0; background: var(--color-brand); opacity: 0.06; filter: blur(45px); pointer-events: none; }
+  .empty-icon { box-shadow: 0 8px 30px rgb(239 211 149 / 0.07); }
   .side-panel {
     transition: width 220ms var(--ease-emphasized);
   }

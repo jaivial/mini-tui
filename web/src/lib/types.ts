@@ -4,6 +4,7 @@
  */
 import type { RunEvent, RunInfo, TrajectoryMessage } from "../../../src/traj/schema";
 import type { AttachmentRef } from "./attachments";
+import type { EffortCapability, EffortLevel } from "../../../src/effort";
 
 export type { RunEvent, RunInfo, TrajectoryMessage };
 
@@ -208,6 +209,8 @@ export interface SettingsView {
   maxQueueConcurrency?: number;
   /** Models in order of preference for the fallback chain (see docs/work-queue.md). */
   modelFallbacks?: string[];
+  /** Reasoning effort per fully-qualified model id. */
+  modelEfforts?: Record<string, EffortLevel>;
   /** The live cu screen. Operator config only: the client cannot change it. */
   liveScreen?: { enabled: boolean; origin: string | null; viewerUrl: string | null; loginUrl: string | null; controlUrl?: string | null };
 }
@@ -369,6 +372,8 @@ export interface ModelInfo {
   id: string;
   name: string;
   description: string;
+  /** Absent only when talking to an older server; the picker then shows Auto. */
+  effort?: EffortCapability;
 }
 
 /** Measured reuse of the inherited prefix: the first call's cached tokens, and the totals. */

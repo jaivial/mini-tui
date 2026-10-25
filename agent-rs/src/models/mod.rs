@@ -13,7 +13,7 @@ pub mod shapes;
 pub mod wire;
 
 use crate::util::Obj;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// Why a model call failed. `abort` errors are not retried (bad key, unknown model, ...).
 #[derive(Debug, Clone)]
@@ -140,6 +140,60 @@ pub fn global_stats_add(cost: f64) -> Result<(), ModelError> {
     Ok(())
 }
 
+/// Apply one abstract UI effort level using the selected provider's actual wire vocabulary.
+/// Unknown/unsupported combinations are ignored: the deny-by-default TypeScript catalogue is
+/// the UI boundary, and this second check keeps hand-written environment settings safe.
+pub fn apply_effort(model: &str, effort: &str, config: &mut Obj) {
+    if effort.is_empty() || effort == "auto" { return; }
+    let lower = model.to_ascii_lowercase();
+    let provider = lower.split('/').next().unwrap_or("");
+    let bare = lower.split_once('/').map(|(_, id)| id).unwrap_or(lower.as_str());
+    // Native Claude Messages takes output_config; cli-proxy's OpenAI-compatible endpoint
+    // instead accepts reasoning_effort and performs the upstream conversion itself.
+    let claude = provider == "anthropic" || (provider == "opencode-go" && bare.contains("claude"));
+    let glm = ["zai", "zhipu"].contains(&provider) || bare.split('/').any(|p| p.starts_with("glm-"));
+    let kimi = ["kimi-coding", "moonshot"].contains(&provider) || bare.contains("kimi-") || bare.split('/').any(|p| p == "k3" || p.starts_with("k3-"));
+    let deepseek = provider == "deepseek" || bare.split('/').any(|p| p.starts_with("deepseek-"));
+    let xiaomi = provider == "xiaomi" || bare.split('/').any(|p| p.starts_with("mimo-"));
+    let kwargs = config.entry("model_kwargs".to_string()).or_insert_with(|| json!({}));
+    let Some(k) = kwargs.as_object_mut() else { return; };
+
+    if claude {
+        if ["low", "medium", "high", "xhigh", "max"].contains(&effort) {
+            k.insert("output_config".into(), json!({"effort": effort}));
+        }
+        return;
+    }
+    if provider == "openrouter" {
+        k.insert("reasoning".into(), if effort == "off" { json!({"enabled": false}) } else { json!({"effort": effort}) });
+        return;
+    }
+    if provider == "ollama" {
+        k.insert("think".into(), if effort == "off" { json!(false) } else { json!(effort) });
+        return;
+    }
+    if glm || kimi || deepseek || xiaomi {
+        // GLM-5.3, Kimi K3 and K2.7-code cannot disable thinking; their catalogue never offers off.
+        if effort == "off" {
+            if !(bare.contains("glm-5.3") || bare.contains("k3") || bare.contains("k2.7-code")) {
+                k.insert("thinking".into(), json!({"type": "disabled"}));
+                k.shift_remove("reasoning_effort");
+            }
+        } else if effort == "on" {
+            k.insert("thinking".into(), json!({"type": "enabled"}));
+        } else if ["low", "medium", "high", "max"].contains(&effort) && !xiaomi {
+            k.insert("thinking".into(), json!({"type": "enabled"}));
+            k.insert("reasoning_effort".into(), json!(effort));
+        }
+        return;
+    }
+    // OpenAI chat, OpenCode Go Responses/Chat, Groq and other OpenAI-compatible routes.
+    // query_responses translates this to reasoning.effort; Chat sends reasoning_effort directly.
+    if ["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&effort) {
+        k.insert("reasoning_effort".into(), json!(if effort == "off" { "none" } else { effort }));
+    }
+}
+
 /// `get_model(name, config)`: the same class choice and defaults as the Python agent.
 pub fn get_model(name: Option<&str>, config: &Obj) -> Result<Box<dyn Model>, String> {
     let mut config = config.clone();
@@ -154,6 +208,13 @@ pub fn get_model(name: Option<&str>, config: &Obj) -> Result<Box<dyn Model>, Str
         },
     };
     config.insert("model_name".into(), Value::String(resolved.clone()));
+    if let Ok(raw) = std::env::var("MINI_AGENT_MODEL_EFFORTS") {
+        if let Ok(map) = serde_json::from_str::<Obj>(&raw) {
+            if let Some(effort) = map.get(&resolved).and_then(Value::as_str) {
+                apply_effort(&resolved, effort, &mut config);
+            }
+        }
+    }
     connections::apply(&resolved);
     let class = config.shift_remove("model_class").and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     catalog::build(&resolved, &class, config)
@@ -162,4 +223,31 @@ pub fn get_model(name: Option<&str>, config: &Obj) -> Result<Box<dyn Model>, Str
 /// The read tool's wire shapes, re-exported for the clients that build tool lists.
 pub mod read_tools {
     pub use crate::tools::{with_read, with_read_anthropic, with_read_responses};
+}
+
+#[cfg(test)]
+mod effort_tests {
+    use super::*;
+
+    fn kwargs(model: &str, effort: &str) -> Obj {
+        let mut config = Obj::new();
+        apply_effort(model, effort, &mut config);
+        config.shift_remove("model_kwargs").unwrap().as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn translates_each_provider_vocabulary() {
+        assert_eq!(kwargs("openai/gpt-6-astra", "high")["reasoning_effort"], json!("high"));
+        assert_eq!(kwargs("anthropic/claude-opus-5-5", "max")["output_config"], json!({"effort":"max"}));
+        assert_eq!(kwargs("cliproxy/claude-opus-5-5", "max")["reasoning_effort"], json!("max"));
+        assert_eq!(kwargs("openrouter/anthropic/claude-opus-5-5", "low")["reasoning"], json!({"effort":"low"}));
+        assert_eq!(kwargs("ollama/gpt-oss", "off")["think"], json!(false));
+    }
+
+    #[test]
+    fn mandatory_reasoning_is_never_disabled() {
+        assert!(!kwargs("zai/glm-5.3", "off").contains_key("thinking"));
+        assert!(!kwargs("moonshot/kimi-k3", "off").contains_key("thinking"));
+        assert_eq!(kwargs("zai/glm-5.3", "low")["reasoning_effort"], json!("low"));
+    }
 }
