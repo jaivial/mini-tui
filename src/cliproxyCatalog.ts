@@ -8,7 +8,22 @@
  * reads the catalog and says "not served" instead of letting a run fail.
  */
 
+import { loadConnections, modelEnv } from "./providers";
+
 const CLIPROXY_PREFIX = "cliproxy/";
+
+/**
+ * The env a `cliproxy/` run gets: the process env, with the connection saved by `/connect` (its
+ * key and base) on top, the same way `modelEnv` hands it to a run. Probing with the process env
+ * alone used the built-in default key, which the gateway rejects (401) as soon as `/connect`
+ * stored the real one: the doctor reported a broken key and the picker an unreachable gateway
+ * while runs were fine.
+ */
+export function cliproxyEnv(env: NodeJS.ProcessEnv = process.env, connections = loadConnections()): NodeJS.ProcessEnv {
+  const saved = modelEnv(`${CLIPROXY_PREFIX}probe`, connections.filter((c) => c.prefix === "cliproxy"));
+  // An explicit variable in the environment still wins: it is what an operator set on purpose.
+  return { ...env, ...Object.fromEntries(Object.entries(saved).filter(([k]) => !env[k])) };
+}
 
 /** mini's model name -> the bare id the gateway knows (`cliproxy/x` -> `x`). */
 export function bareCliproxyId(model: string): string {
@@ -48,7 +63,7 @@ async function fetchCatalog(base: string, key: string): Promise<string[]> {
 }
 
 /** The gateway's catalog, or `ids: null` when it cannot be reached (never throws). */
-export async function loadCliproxyCatalog(env: NodeJS.ProcessEnv = process.env): Promise<CliproxyCatalog> {
+export async function loadCliproxyCatalog(env: NodeJS.ProcessEnv = cliproxyEnv()): Promise<CliproxyCatalog> {
   const base = cliproxyBase(env);
   try {
     return { base, ids: await fetchCatalog(base, apiKey(env)), source: "live" };
@@ -67,13 +82,14 @@ export function gatewayServes(catalog: CliproxyCatalog | null, model: string): b
  * Blocking variant for server-side code (`src/web/config.ts`), which answers a request and cannot
  * await. `spawnSync` keeps it off the event loop's thread; the 3 s timeout bounds a request.
  */
-export function loadCliproxyCatalogSync(env: NodeJS.ProcessEnv = process.env): CliproxyCatalog {
+export function loadCliproxyCatalogSync(env: NodeJS.ProcessEnv = cliproxyEnv()): CliproxyCatalog {
   const base = cliproxyBase(env);
   const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+  // The header goes in through stdin (`-H @-`), not argv: a key in argv is in `ps` for everyone.
   const result = spawnSync(
     "curl",
-    ["-sS", "--max-time", "3", "-H", `Authorization: Bearer ${apiKey(env)}`, `${base.replace(/\/$/, "")}/models`],
-    { encoding: "utf8", timeout: 5000 },
+    ["-sS", "--max-time", "3", "-H", "@-", `${base.replace(/\/$/, "")}/models`],
+    { encoding: "utf8", timeout: 5000, input: `Authorization: Bearer ${apiKey(env)}\n` },
   );
   try {
     const data = JSON.parse(result.stdout || "null") as { data?: Array<{ id?: unknown }> };

@@ -340,15 +340,31 @@ export function connectionEnv(connection: {
   };
 }
 
-/** Env for a run using `modelName`: only its provider's credentials (no collisions). */
+/**
+ * The credentials a run needs for `modelName`: its connection's env.
+ *
+ * Matched by PREFIX, not by the model list saved at connect time. That list is a snapshot of the
+ * provider's catalog, and catalogs grow: a gateway that starts advertising `claude-opus-5-5` after
+ * the connection was saved used to get NO key at all and answer 401 "Invalid API key", while the
+ * models saved in the same connection worked (measured on cliproxy: 10 advertised models missing
+ * from the snapshot, every one of them 401). The prefix already says whose model it is.
+ *
+ * Every native connection's env is included too, so a run that switches model mid-way (`/model`,
+ * the fallback chain) still holds the key of the provider it switches to. Only the matched
+ * connection may set the generic `openai/` slot, which several connections can claim.
+ */
 export function modelEnv(modelName: string, connections: SavedConnection[] = loadConnections()): Record<string, string> {
+  const owns = (connection: SavedConnection) => modelName.startsWith(`${connection.prefix}/`);
+  // The exact model first (several openai-compat connections share the `openai/` prefix), then
+  // the provider by prefix.
+  const match =
+    connections.find((c) => owns(c) && c.models.includes(modelName.slice(c.prefix.length + 1))) ??
+    connections.find((c) => owns(c) && c.route === "native");
+  const env: Record<string, string> = {};
   for (const connection of connections) {
-    const prefix = `${connection.prefix}/`;
-    if (modelName.startsWith(prefix) && connection.models.includes(modelName.slice(prefix.length))) {
-      return connectionEnv(connection);
-    }
+    if (connection.route === "native" && connection !== match) Object.assign(env, connectionEnv(connection));
   }
-  return {};
+  return match ? { ...env, ...connectionEnv(match) } : env;
 }
 
 /** Model ids usable with `mini -m` from every saved connection. */
