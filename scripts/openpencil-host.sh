@@ -47,12 +47,20 @@ OPENPENCIL_MCP_CORS_ORIGIN="tauri://localhost" \
   "$MCP_BIN" &
 pids+=($!)
 
+healthy=0
 for _ in $(seq 1 50); do
-  curl -fsS -m 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break
+  if curl -fsS -m 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then healthy=1; break; fi
+  kill -0 "${pids[0]}" 2>/dev/null || break
   sleep 0.2
 done
+# A server that died (port 7600 taken by another one, say) must fail the unit, not leave the app
+# attaching to somebody else's server with a token we do not hold.
+[ "$healthy" = 1 ] && kill -0 "${pids[0]}" 2>/dev/null || { echo "openpencil-mcp-http did not come up on :$PORT" >&2; exit 1; }
 
-# 2. A virtual screen for the app (no GPU, no session on a server).
+# 2. A virtual screen for the app (no GPU, no session on a server). A lock left by a crashed
+#    Xvfb would make the new one refuse the display: drop it when its process is gone.
+lock="/tmp/.X${DISPLAY_NUM#:}-lock"
+if [ -f "$lock" ] && ! kill -0 "$(tr -d ' ' < "$lock")" 2>/dev/null; then rm -f "$lock" "/tmp/.X11-unix/X${DISPLAY_NUM#:}"; fi
 Xvfb "$DISPLAY_NUM" -screen 0 1600x1000x24 -nolisten tcp &
 pids+=($!)
 sleep 1
