@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+
 import { refreshTokens, isExpiring, safeUrl } from "./oauth";
 import { getServer, loadServers, updateServer, mcpPath, type McpServerRecord, type OAuthClient } from "./store";
 
@@ -48,9 +51,20 @@ export function clientFor(server: McpServerRecord): OAuthClient | undefined {
 /** Headers the agent and the probe send: static ones plus a bearer token, if there is one. */
 export function authHeaders(server: McpServerRecord): Record<string, string> {
   const headers = { ...(server.headers ?? {}) };
-  const token = server.oauth?.tokens?.accessToken;
+  const token = server.oauth?.tokens?.accessToken ?? readTokenFile(server.tokenFile);
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
+}
+
+/** The token a self-hosted server keeps in a file (`~` = home); undefined when it is not there. */
+export function readTokenFile(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  try {
+    const token = readFileSync(path.replace(/^~(?=\/|$)/, homedir()), "utf8").trim();
+    return token && !/[\r\n]/.test(token) ? token : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -105,6 +119,8 @@ export async function probe(server: McpServerRecord, timeoutMs = 15_000): Promis
     const init = await post({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "mini-tui", version: "1" } } });
     if (init.status === 401 || init.status === 403) {
       await init.body?.cancel().catch(() => undefined);
+      // A self-hosted token is not an OAuth login: the fix is the token file, not a browser.
+      if (server.tokenFile) return { ok: false, error: `the server refused the token in ${server.tokenFile} (missing, or the server was started with another one)` };
       return { ok: false, needsAuth: true, error: server.oauth?.tokens ? "the server refused the token: log in again" : "this server needs a login" };
     }
     if (!init.ok) return { ok: false, error: `HTTP ${init.status} from ${safeUrl(url)}` };
@@ -125,9 +141,16 @@ export async function probe(server: McpServerRecord, timeoutMs = 15_000): Promis
       cursor = listed.nextCursor;
       if (!cursor) break;
     }
+    // The probe is done with its session: end it (servers cap them; OpenPencil allows 10).
+    if (session) {
+      await fetch(url, { method: "DELETE", headers: { ...authHeaders(server), "Mcp-Session-Id": session }, signal: AbortSignal.timeout(2000) })
+        .then((r) => r.body?.cancel())
+        .catch(() => undefined);
+    }
     return { ok: true, tools, serverName: result.serverInfo?.name };
   } catch (error) {
-    return { ok: false, error: `cannot reach ${safeUrl(url)}: ${(error as Error).message}` };
+    const hint = server.preset === "openpencil" ? " — start it with `systemctl --user start openpencil-mcp` (docs/openpencil.md)" : "";
+    return { ok: false, error: `cannot reach ${safeUrl(url)}: ${(error as Error).message}${hint}` };
   }
 }
 

@@ -21,6 +21,7 @@ interface Fake {
   codes: Map<string, { challenge: string; redirect: string; clientId: string }>;
   registered: string[];
   tokens: Set<string>;
+  closed: string[];
   refreshed: number;
   stop: () => void;
 }
@@ -29,6 +30,7 @@ function fakeServer(acceptedNames = ["Claude Code"]): Fake {
   const codes = new Map<string, { challenge: string; redirect: string; clientId: string }>();
   const registered: string[] = [];
   const tokens = new Set<string>();
+  const closed: string[] = [];
   const state = { refreshed: 0 };
   const server = Bun.serve({
     port: 0,
@@ -40,6 +42,10 @@ function fakeServer(acceptedNames = ["Claude Code"]): Fake {
         const auth = req.headers.get("authorization") ?? "";
         if (!tokens.has(auth.replace(/^Bearer /, ""))) {
           return new Response("{}", { status: 401, headers: { "www-authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp", scope="mcp:connect"` } });
+        }
+        if (req.method === "DELETE") {
+          closed.push(req.headers.get("mcp-session-id") ?? "");
+          return new Response(null, { status: 204 });
         }
         const body = (await req.json()) as { id?: number; method: string };
         if (body.method === "initialize") return Response.json({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "fake" } } }, { headers: { "mcp-session-id": "s1" } });
@@ -90,6 +96,7 @@ function fakeServer(acceptedNames = ["Claude Code"]): Fake {
     codes,
     registered,
     tokens,
+    closed,
     get refreshed() {
       return state.refreshed;
     },
@@ -160,6 +167,8 @@ describe("the login, completed by the browser", () => {
 
     const done = await waitFor(() => (mcp.getLogin(login.id)?.status === "done" ? mcp.getLogin(login.id) : undefined));
     expect(done.toolCount).toBe(2);
+    // The probe ended its MCP session (servers cap live sessions).
+    expect(fake.closed).toContain("s1");
     expect(seen).toContain("exchanging");
     expect(seen.at(-1)).toBe("done");
 
@@ -277,5 +286,48 @@ describe("input handling", () => {
   test("under test with no explicit path, nothing is read or written", () => {
     expect(mcp.mcpPath({ NODE_ENV: "test" })).toBeNull();
     expect(mcp.loadServers(null)).toEqual([]);
+  });
+});
+
+describe("self-hosted servers (OpenPencil)", () => {
+  test("the preset reads its token from a file at run time and limits the tools the agent gets", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const tokenFile = join(dir, "op-token");
+    writeFileSync(tokenFile, "first-token\n");
+    const s = mcp.addServer({ preset: "openpencil" }, file);
+    expect(s.url).toBe("http://127.0.0.1:7600/mcp");
+    expect(s.oauth).toBeUndefined();
+    expect(s.tools).toContain("render");
+    expect(s.tools).not.toContain("eval");
+    // Point the stored record at the test token file.
+    mcp.updateServer(s.id, (r) => ({ ...r, tokenFile }), file);
+    const read = () => JSON.parse(mcp.mcpRunEnv(file).MINI_AGENT_MCP_SERVERS!)[0];
+    expect(read().headers).toEqual({ Authorization: "Bearer first-token" });
+    expect(read().tools).toEqual(mcp.OPENPENCIL_TOOLS);
+    // The server rotated its token: the next run sees the new one, nothing copied in mcp.json.
+    writeFileSync(tokenFile, "second-token");
+    expect(read().headers.Authorization).toBe("Bearer second-token");
+    expect(readFileSync(file, "utf8")).not.toContain("second-token");
+    const view = mcp.listViews(file)[0]!;
+    expect(view.state).toBe("ready");
+    expect(view.tokenFile).toBe(tokenFile);
+    expect(JSON.stringify(view)).not.toContain("second-token");
+  });
+
+  test("a missing token file sends no Authorization; a down server says how to start it", async () => {
+    const s = mcp.addServer({ preset: "openpencil" }, file);
+    mcp.updateServer(s.id, (r) => ({ ...r, tokenFile: join(dir, "nope"), url: "http://127.0.0.1:1/mcp" }), file);
+    expect(JSON.parse(mcp.mcpRunEnv(file).MINI_AGENT_MCP_SERVERS!)[0].headers).toEqual({});
+    const probe = await mcp.probeStored(s.id, file);
+    expect(probe.ok).toBe(false);
+    expect(probe.error).toContain("systemctl --user start openpencil-mcp");
+  });
+
+  test("a refused self-hosted token is not an OAuth login", async () => {
+    const s = mcp.addServer({ preset: "openpencil" }, file);
+    mcp.updateServer(s.id, (r) => ({ ...r, tokenFile: join(dir, "nope"), url: `${fake.base}/mcp` }), file);
+    const probe = await mcp.probeStored(s.id, file);
+    expect(probe.needsAuth).toBeFalsy();
+    expect(probe.error).toContain("refused the token");
   });
 });

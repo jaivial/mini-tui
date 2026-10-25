@@ -245,6 +245,7 @@ extern "C" fn on_signal(sig: libc::c_int) {
 fn die_by_signal() -> ! {
     // Raising the signal skips destructors: stop the subagents (they save) first.
     subagents::shutdown();
+    mcp::close_sessions();
     let sig = SIGNAL.load(Ordering::SeqCst);
     let sig = if sig == 0 { libc::SIGTERM } else { sig };
     unsafe {
@@ -315,6 +316,7 @@ fn run(o: Options) -> Result<(), String> {
         None => None,
     };
     let result = agent.run(o.task.as_deref().unwrap_or(""), resume, o.compact_only);
+    mcp::close_sessions();
     match result {
         // A deterministic closure rejection is a failed task, not a successful process that the
         // work queue can mislabel as done. The trajectory keeps the checker's output and verdict.
@@ -448,7 +450,9 @@ fn main() {
     }
     if argv.first().map(String::as_str) == Some("mcp-tools") {
         config::load_dotenv();
-        match mcp::tool_names() {
+        let names = mcp::tool_names();
+        mcp::close_sessions();
+        match names {
             Ok(names) => {
                 println!("{}", util::py_json(&Value::Array(names.into_iter().map(Value::String).collect()), false));
                 return;

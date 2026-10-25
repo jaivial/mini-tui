@@ -12,7 +12,13 @@ export interface McpPreset {
   name: string;
   description: string;
   url: string;
-  auth: "oauth" | "none" | "header";
+  auth: "oauth" | "none" | "header" | "local";
+  /** `local` presets: the file the server keeps its bearer token in (read at run time). */
+  tokenFile?: string;
+  /** The tools the agent gets; the rest stay on the server (prompt size). */
+  tools?: string[];
+  /** Appended to these tools' descriptions for the agent. */
+  hints?: Record<string, string>;
   /**
    * `client_name` for dynamic registration. Figma's registration endpoint only accepts the names
    * of the clients it has approved, and answers 403 to any other (measured: "mini-tui",
@@ -23,7 +29,52 @@ export interface McpPreset {
   docs?: string;
 }
 
+/**
+ * The OpenPencil tools a design task needs: documents, reading the tree, `render` (JSX → layers),
+ * the common edits, export to check the result, lint, icons and tokens. 51 of its 132 tools,
+ * ~13.5k tokens of schemas instead of ~31k: every task pays for the list in its prompt. `eval`
+ * stays out (arbitrary code in the app), and so do the niche ones (booleans, paths, comments,
+ * variables CRUD) — editable per server in mcp.json.
+ */
+export const OPENPENCIL_TOOLS = [
+  "list_documents", "new_document", "open_file", "save_file", "activate_document",
+  "list_pages", "switch_page", "create_page", "get_page_tree", "get_selection", "get_node", "find_nodes", "query_nodes", "describe", "get_jsx",
+  "render", "node_replace_with", "update_node", "batch_update", "set_layout", "set_layout_child", "set_fill", "set_stroke", "set_text", "set_font",
+  "set_radius", "set_effects", "delete_node", "clone_node", "node_move", "node_resize", "reparent_node", "arrange", "viewport_zoom_to_fit",
+  "export_image", "export_svg", "lint", "lint_fix", "analyze_overlaps", "search_icons", "fetch_icons", "insert_icon", "list_available_fonts",
+  "get_components", "create_instance", "list_variables", "design_to_tokens", "get_codegen_prompt", "calc", "undo", "redo",
+];
+
+/**
+ * OpenPencil's `render` takes ITS design JSX, not Figma's or React's props. Without this a model
+ * writes `layoutMode="HORIZONTAL"` or `style={{...}}`, the props are dropped with a warning and
+ * the frame collapses to its text (measured: a 400×240 card came out 209×24). Condensed from
+ * @open-pencil/design-jsx's authoring reference.
+ */
+export const OPENPENCIL_RENDER_HINT = [
+  "OpenPencil design JSX (not React/HTML/Figma props). Elements: Frame, Text, Span, Paragraph, Icon, Rect, Ellipse, Line, Component, Instance.",
+  'Layout: flex="row"|"col" enables auto-layout; gap, p/px/py/pt/pr/pb/pl; justify="start|end|center|between"; items="start|end|center|stretch"; grow; wrap; grid columns="1fr 1fr".',
+  'Size: w/h = pixels, "hug" (content) or "fill" (parent space). Fixed-size cards: give w AND h; text in a column: w="fill".',
+  'Paint: bg="#hex" (or fill), stroke="#hex" strokeWidth={1}, rounded={16}, shadow="0 4 12 #0003", opacity; gradients: fills={[linearGradient([["#a",0],["#b",1]])]}.',
+  'Text: <Text size={16} weight={600} font="Inter" color="#fff" textAlign="center" lineHeight={24}>…</Text>. Icons: <Icon name="lucide:check" size={16} color="#fff" />.',
+  'Example: <Frame name="Card" w={400} h={240} flex="col" justify="center" items="center" gap={8} p={24} bg="#0D9488" rounded={16}><Text size={24} weight={700} color="#FFFFFF">Title</Text></Frame>',
+  "Check the result with export_image (and lint) before reporting; save with save_file.",
+].join("\n");
+
 export const MCP_PRESETS: McpPreset[] = [
+  // Self-hosted on this machine: deploy/openpencil-mcp.service runs the server + the headless
+  // desktop app, with a stable token in ~/.openpencil/token (docs/openpencil.md).
+  {
+    id: "openpencil",
+    name: "OpenPencil",
+    description: "Self-hosted design editor: render JSX, edit layers, export (this machine)",
+    url: "http://127.0.0.1:7600/mcp",
+    auth: "local",
+    tokenFile: "~/.openpencil/token",
+    docs: "https://openpencil.dev/programmable/mcp-server",
+    tools: OPENPENCIL_TOOLS,
+    hints: { render: OPENPENCIL_RENDER_HINT },
+  },
   { id: "figma", name: "Figma", description: "Design context, code and assets from Figma files", url: "https://mcp.figma.com/mcp", auth: "oauth", clientName: "Claude Code", docs: "https://developers.figma.com/docs/figma-mcp-server/" },
   { id: "linear", name: "Linear", description: "Issues, projects and comments", url: "https://mcp.linear.app/mcp", auth: "oauth" },
   { id: "notion", name: "Notion", description: "Search and edit pages and databases", url: "https://mcp.notion.com/mcp", auth: "oauth" },
@@ -46,6 +97,8 @@ export interface McpServerView {
   loggedIn: boolean;
   expiresAt?: number;
   headerNames: string[];
+  /** A self-hosted server whose token is read from a file (the file path, never the token). */
+  tokenFile?: string;
   state: McpState;
 }
 
@@ -65,6 +118,7 @@ export function serverView(s: McpServerRecord, now = Date.now()): McpServerView 
     loggedIn: !!tokens,
     ...(tokens?.expiresAt ? { expiresAt: tokens.expiresAt } : {}),
     headerNames: Object.keys(s.headers ?? {}),
+    ...(s.tokenFile ? { tokenFile: s.tokenFile } : {}),
     state,
   };
 }
@@ -111,6 +165,9 @@ export function addServer(input: AddInput, path: string | null = mcpPath()): Mcp
     name,
     url,
     ...(Object.keys(headers).length ? { headers } : {}),
+    ...(preset?.tokenFile ? { tokenFile: preset.tokenFile } : {}),
+    ...(preset?.tools?.length ? { tools: [...preset.tools] } : {}),
+    ...(preset?.hints ? { hints: { ...preset.hints } } : {}),
     ...(preset ? { preset: preset.id } : {}),
     addedAt: Date.now(),
     ...(wantsOAuth
@@ -142,7 +199,7 @@ export function markOAuth(id: string, path: string | null = mcpPath()): void {
 export function mcpRunEnv(path: string | null = mcpPath()): Record<string, string> {
   const servers = loadServers(path).filter((s) => !s.disabled && (!s.oauth || s.oauth.tokens));
   if (!servers.length) return {};
-  return { MINI_AGENT_MCP_SERVERS: JSON.stringify(servers.map((s) => ({ name: s.id, url: s.url, headers: authHeaders(s) }))) };
+  return { MINI_AGENT_MCP_SERVERS: JSON.stringify(servers.map((s) => ({ name: s.id, url: s.url, headers: authHeaders(s), ...(s.tools?.length ? { tools: s.tools } : {}), ...(s.hints ? { hints: s.hints } : {}) }))) };
 }
 
 /** Forget the tokens (the registered clients are kept, so the next login skips registration). */

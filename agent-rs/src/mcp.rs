@@ -36,6 +36,12 @@ struct ServerSpec {
     url: String,
     headers: Vec<(String, String)>,
     prefixed: bool,
+    /// Only these tools are exposed (`"tools": [...]`); empty = all. A server with a hundred
+    /// tools (OpenPencil: 132, ~31k tokens of schemas) would otherwise fill every prompt.
+    allow: Vec<String>,
+    /// Extra guidance appended to one tool's description (`"hints": {"render": "..."}`): what the
+    /// server documents elsewhere and a model would otherwise guess (OpenPencil's JSX props).
+    hints: Vec<(String, String)>,
 }
 
 static REGISTRY: OnceLock<Result<Vec<Registry>, String>> = OnceLock::new();
@@ -74,7 +80,9 @@ fn specs_from(servers_json: Option<&str>) -> Vec<ServerSpec> {
                 return None;
             }
             let name = server_slug(item.get("name").and_then(Value::as_str).unwrap_or("mcp"));
-            Some(ServerSpec { name, url, headers: json_headers(item.get("headers")), prefixed: true })
+            let allow = item.get("tools").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+            let hints = json_headers(item.get("hints"));
+            Some(ServerSpec { name, url, headers: json_headers(item.get("headers")), prefixed: true, allow, hints })
         })
         .collect()
 }
@@ -84,7 +92,7 @@ fn specs() -> Vec<ServerSpec> {
     if let Ok(url) = std::env::var("MINI_AGENT_MCP_URL") {
         if !url.trim().is_empty() {
             let name = std::env::var("MINI_AGENT_MCP_NAME").unwrap_or_else(|_| "composio".into());
-            out.push(ServerSpec { name, url: url.trim().trim_end_matches('/').to_string(), headers: headers(), prefixed: false });
+            out.push(ServerSpec { name, url: url.trim().trim_end_matches('/').to_string(), headers: headers(), prefixed: false, allow: vec![], hints: vec![] });
         }
     }
     out.extend(specs_from(std::env::var("MINI_AGENT_MCP_SERVERS").ok().as_deref()));
@@ -222,6 +230,9 @@ fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>
     }
     for tool in raw_tools {
         let Some(original) = tool.get("name").and_then(Value::as_str) else { continue };
+        if !spec.allow.is_empty() && !spec.allow.iter().any(|a| a == original) {
+            continue;
+        }
         let name = exposed_name_for(original, &spec.name, spec.prefixed);
         if !exposed.insert(name.clone()) {
             return Err(format!("MCP tool name collision after normalization: {name}"));
@@ -229,7 +240,13 @@ fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>
         client.tools.push(RemoteTool {
             exposed: name,
             original: original.to_string(),
-            description: tool.get("description").and_then(Value::as_str).unwrap_or("MCP tool").to_string(),
+            description: {
+                let base = tool.get("description").and_then(Value::as_str).unwrap_or("MCP tool");
+                match spec.hints.iter().find(|(t, _)| t == original) {
+                    Some((_, hint)) => format!("{base}\n\n{hint}"),
+                    None => base.to_string(),
+                }
+            },
             schema: tool.get("inputSchema").cloned().unwrap_or_else(|| json!({"type": "object", "properties": {}})),
         });
     }
@@ -284,6 +301,22 @@ pub fn tools(protocol: &str) -> Vec<Value> {
             eprintln!("[mcp] {error}");
             vec![]
         }
+    }
+}
+
+/// End every MCP session this process opened (HTTP DELETE with its `Mcp-Session-Id`), as the
+/// Streamable HTTP spec asks of a client that is done. Servers cap live sessions (OpenPencil: 10,
+/// idle ones expire after 15 minutes), so a run that just exits holds a slot another worker needs.
+/// Best effort, short timeout, and a no-op when nothing was connected.
+pub fn close_sessions() {
+    let Some(Ok(registries)) = REGISTRY.get() else { return };
+    for registry in registries {
+        let Some(session) = &registry.session else { continue };
+        let mut request = ureq::delete(registry.url.trim_end_matches('/')).set("Mcp-Session-Id", session).timeout(Duration::from_secs(2));
+        for (key, value) in &registry.headers {
+            request = request.set(key, value);
+        }
+        let _ = request.call();
     }
 }
 
@@ -369,6 +402,11 @@ mod tests {
         assert_eq!(exposed_name_for("get_code", "figma", false), "get_code");
         assert!(exposed_name_for(&"x".repeat(80), "figma", true).len() <= 64);
         assert!(specs_from(Some("not json")).is_empty());
+        assert!(specs[0].allow.is_empty());
+        let limited = specs_from(Some(r#"[{"name":"openpencil","url":"http://127.0.0.1:7600/mcp","tools":["render","export_image",3]}]"#));
+        assert_eq!(limited[0].allow, vec!["render".to_string(), "export_image".to_string()]);
+        let hinted = specs_from(Some(r#"[{"name":"op","url":"http://x/mcp","hints":{"render":"Use flex=\"row\"."}}]"#));
+        assert_eq!(hinted[0].hints, vec![("render".to_string(), "Use flex=\"row\".".to_string())]);
         assert_eq!(server_slug("  "), "mcp");
     }
 
@@ -378,7 +416,7 @@ mod tests {
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for index in 0..4 {
+            for index in 0..5 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let raw = request(&mut stream);
                 requests.push(raw.clone());
@@ -399,6 +437,7 @@ mod tests {
         let result = outcome("PING", &json!({"value": "x"}));
         assert_eq!(result["returncode"], 0);
         assert_eq!(result["output"], "pong");
+        close_sessions();
         let requests = handle.join().unwrap();
         assert!(requests[0].contains("initialize"));
         assert!(requests[0].contains("authorization: Bearer secret-test") || requests[0].contains("Authorization: Bearer secret-test"));
@@ -406,6 +445,8 @@ mod tests {
         assert!(requests[2].to_lowercase().contains("mcp-session-id: test-session"));
         assert!(requests[3].contains("tools/call"));
         assert!(requests[3].contains("PING"));
+        assert!(requests[4].starts_with("DELETE "));
+        assert!(requests[4].to_lowercase().contains("mcp-session-id: test-session"));
         std::env::remove_var("MINI_AGENT_MCP_URL");
         std::env::remove_var("MINI_AGENT_MCP_API_KEY");
         std::env::remove_var("MINI_AGENT_MCP_NAME");
