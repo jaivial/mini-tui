@@ -39,7 +39,10 @@ def apply_effort(model: str, effort: str, config: dict[str, Any]) -> None:
         elif effort == "on":
             kwargs["thinking"] = {"type": "enabled"}
         elif effort in ("low", "medium", "high", "max") and not xiaomi:
-            kwargs["thinking"] = {"type": "enabled"}
+            k3 = any(x == "k3" or x.startswith("k3-") for x in parts) or "kimi-k3" in bare
+            # K3 always thinks and only accepts reasoning_effort; thinking.type belongs to K2.x.
+            if not k3:
+                kwargs["thinking"] = {"type": "enabled"}
             kwargs["reasoning_effort"] = effort
         return
     if effort in ("off", "minimal", "low", "medium", "high", "xhigh", "max"):

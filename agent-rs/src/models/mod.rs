@@ -182,7 +182,9 @@ pub fn apply_effort(model: &str, effort: &str, config: &mut Obj) {
         } else if effort == "on" {
             k.insert("thinking".into(), json!({"type": "enabled"}));
         } else if ["low", "medium", "high", "max"].contains(&effort) && !xiaomi {
-            k.insert("thinking".into(), json!({"type": "enabled"}));
+            let k3 = bare.split('/').any(|p| p == "k3" || p.starts_with("k3-")) || bare.contains("kimi-k3");
+            // K3 always thinks and only accepts reasoning_effort; thinking.type belongs to K2.x.
+            if !k3 { k.insert("thinking".into(), json!({"type": "enabled"})); }
             k.insert("reasoning_effort".into(), json!(effort));
         }
         return;
