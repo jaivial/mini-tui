@@ -25,13 +25,13 @@
 
 <aside class="sidebar-shell flex h-full min-h-0 w-full flex-col border-l border-line/80 bg-surface" aria-label="Tasks">
   <header class="sidebar-header relative flex min-h-16 shrink-0 items-center gap-2.5 border-b border-line/80 px-4">
-    <span class="sidebar-mark grid size-8 shrink-0 place-items-center rounded-[10px] border border-brand/25 bg-brand-soft text-brand">
+    <span class="sidebar-mark grid size-8 shrink-0 place-items-center rounded-[10px] border border-brand/25 bg-brand-soft text-brand-fg">
       <ListTodo size={15} strokeWidth={1.9} aria-hidden="true" />
     </span>
     <div class="min-w-0 flex-1">
       <h2 class="font-display text-[13px] font-semibold tracking-[-0.01em] text-ink">Work queue</h2>
       <p class="mt-0.5 flex items-center gap-1.5 text-[10px] text-ink-faint">
-        <Activity size={10} class={running ? "text-brand" : ""} aria-hidden="true" />
+        <Activity size={10} class={running ? "text-brand-fg" : ""} aria-hidden="true" />
         <span class="tnum">{running}/{concurrency || "—"}</span><span>active workers</span>
       </p>
     </div>

@@ -90,7 +90,7 @@
 
 <section class="mb-3 rounded-2xl border border-line/80 bg-surface/70 p-3" aria-label="Uso de modelos">
   <div class="flex items-center gap-2">
-    <span class="grid size-6 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand" aria-hidden="true">
+    <span class="grid size-6 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand-fg" aria-hidden="true">
       <Activity size={13} strokeWidth={1.75} />
     </span>
     <h3 class="min-w-0 flex-1 text-[12.5px] font-semibold tracking-[-0.01em] text-ink">Uso de modelos</h3>
@@ -101,7 +101,7 @@
     {#each USAGE_WINDOWS as w (w.id)}
       <button
         type="button"
-        class="rounded-md px-1.5 py-0.5 text-[10.5px] font-medium {window_ === w.id ? 'bg-brand-soft text-brand' : 'text-ink-muted hover:text-ink'}"
+        class="rounded-md px-1.5 py-0.5 text-[10.5px] font-medium {window_ === w.id ? 'bg-brand-soft text-brand-fg' : 'text-ink-muted hover:text-ink'}"
         aria-pressed={window_ === w.id}
         onclick={() => { window_ = w.id; }}
       >{w.label}</button>

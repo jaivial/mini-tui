@@ -22,7 +22,7 @@
   {#if chip.kind === "command"}
     <SquareSlash size={13} strokeWidth={2} class="shrink-0 text-ink-muted" aria-hidden="true" />
   {:else}
-    <Sparkles size={13} strokeWidth={2} class="shrink-0 text-brand" aria-hidden="true" />
+    <Sparkles size={13} strokeWidth={2} class="shrink-0 text-brand-fg" aria-hidden="true" />
   {/if}
   <span class="min-w-0 truncate font-mono">{chip.name}</span>
   <button

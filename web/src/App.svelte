@@ -368,10 +368,10 @@
         <h1 class="min-w-0 flex-1 truncate px-1 text-[13.5px] font-semibold">{session?.title || "Task"} <span class="font-normal text-ink-faint">· worker</span></h1>
       {:else}
         <div class="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
-          <span class="brand-mark grid size-8 shrink-0 place-items-center rounded-[10px] border border-brand/25 bg-brand-soft text-brand"><Sparkles size={15} strokeWidth={1.8} aria-hidden="true" /></span>
+          <span class="brand-mark grid size-8 shrink-0 place-items-center rounded-[10px] border border-brand/25 bg-brand-soft text-brand-fg"><Sparkles size={15} strokeWidth={1.8} aria-hidden="true" /></span>
           <div class="min-w-0">
             <h1 class="font-display text-[13px] font-semibold leading-4 tracking-[-0.01em]">mini <span class="font-normal text-ink-faint">/ workspace</span></h1>
-            {#if session?.status === "running"}<p class="mt-0.5 flex items-center gap-1.5 text-[9.5px] text-brand"><span class="pulse-live size-1 rounded-full bg-brand"></span>Dispatching work</p>{:else}<p class="mt-0.5 text-[9.5px] text-ink-faint">Plan, delegate, ship</p>{/if}
+            {#if session?.status === "running"}<p class="mt-0.5 flex items-center gap-1.5 text-[9.5px] text-brand-fg"><span class="pulse-live size-1 rounded-full bg-brand"></span>Dispatching work</p>{:else}<p class="mt-0.5 text-[9.5px] text-ink-faint">Plan, delegate, ship</p>{/if}
           </div>
         </div>
       {/if}
@@ -399,9 +399,9 @@
               {/key}
             {:else}
               <div class="empty-workspace relative mx-auto flex max-w-lg flex-col items-center gap-4 overflow-hidden rounded-2xl border border-line/60 px-7 py-12 text-center" use:staggerChildren={{ step: 0.08, y: 8 }}>
-                <span class="empty-icon grid size-12 place-items-center rounded-2xl border border-brand/25 bg-brand-soft text-brand"><ArrowUpRight size={21} strokeWidth={1.6} aria-hidden="true" /></span>
+                <span class="empty-icon grid size-12 place-items-center rounded-2xl border border-brand/25 bg-brand-soft text-brand-fg"><ArrowUpRight size={21} strokeWidth={1.6} aria-hidden="true" /></span>
                 <div>
-                  <p class="mb-2 text-[9px] font-semibold tracking-[0.18em] text-brand uppercase">Your agent workspace</p>
+                  <p class="mb-2 text-[9px] font-semibold tracking-[0.18em] text-brand-fg uppercase">Your agent workspace</p>
                   <h2 class="font-display text-[23px] font-semibold tracking-[-0.025em]">What should get done?</h2>
                 </div>
                 <p class="max-w-sm text-[12.5px] leading-5.5 text-ink-muted">Describe the outcome. Mini turns it into background tasks, coordinates the workers and keeps every step in view.</p>
@@ -514,14 +514,14 @@
 <style>
   .app-shell {
     background-image:
-      radial-gradient(ellipse 60% 45% at 20% -10%, rgb(176 138 99 / 0.035), transparent),
+      radial-gradient(ellipse 60% 45% at 20% -10%, rgb(63 56 48 / 0.18), transparent),
       linear-gradient(var(--color-canvas), var(--color-canvas));
   }
   .app-header { background: color-mix(in oklab, var(--color-canvas) 88%, transparent); }
-  .brand-mark { box-shadow: inset 0 1px 0 rgb(176 138 99 / 0.12), 0 4px 16px rgb(0 0 0 / 0.16); }
+  .brand-mark { box-shadow: inset 0 1px 0 rgb(200 184 166 / 0.12), 0 4px 16px rgb(0 0 0 / 0.16); }
   .empty-workspace { margin-top: clamp(2rem, 9vh, 6rem); background: linear-gradient(145deg, color-mix(in oklab, var(--color-raised) 58%, transparent), color-mix(in oklab, var(--color-surface) 45%, transparent)); }
   .empty-workspace::before { content: ""; position: absolute; width: 15rem; height: 10rem; top: -7rem; left: 50%; translate: -50% 0; background: var(--color-brand); opacity: 0.06; filter: blur(45px); pointer-events: none; }
-  .empty-icon { box-shadow: 0 8px 30px rgb(176 138 99 / 0.07); }
+  .empty-icon { box-shadow: 0 8px 30px rgb(63 56 48 / 0.22); }
   .side-panel {
     transition: width 220ms var(--ease-emphasized);
   }

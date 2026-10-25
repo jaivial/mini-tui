@@ -109,6 +109,7 @@
   --color-ink-faint: #6d6d78;
 
   --color-brand: #2f6bee;
+  --color-brand-fg: var(--color-brand);
   --color-brand-ink: #ffffff;
   --color-brand-soft: rgb(47 107 238 / 0.1);
 
@@ -228,27 +229,28 @@
   --color-ink-muted: #a4a4a4;    /* Rainy Grey */
   --color-ink-faint: #8b8a88;
 
-  --color-brand: #b08a63;        /* Dark Earth */
-  --color-brand-ink: #131313;
-  --color-brand-soft: rgb(176 138 99 / 0.11);
+  --color-brand: #3f3830c7;      /* Dark Earth — requested surface colour */
+  --color-brand-fg: #c8b8a6;     /* Legible earth-derived foreground on Nero */
+  --color-brand-ink: #f4f1ea;    /* White Pearl */
+  --color-brand-soft: rgb(63 56 48 / 0.34);
   --color-silver: #a4a4a4;
   --color-silver-soft: rgb(164 164 164 / 0.12);
 
-  --color-live: #b08a63;
-  --color-live-soft: rgb(176 138 99 / 0.12);
+  --color-live: #c8b8a6;
+  --color-live-soft: rgb(63 56 48 / 0.34);
   --color-ok: #b8cbaa;
   --color-err: #e59a91;
-  --color-warn: #b08a63;
+  --color-warn: #c8b8a6;
 
-  --color-bubble-user: #b08a63;
-  --color-bubble-user-ink: #131313;
+  --color-bubble-user: #3f3830c7;
+  --color-bubble-user-ink: #f4f1ea;
   --color-bubble-bot: #262625;
-  --color-bubble-user-link: #41330f;
-  --color-bubble-user-quote: #4b4a48;
-  --color-bubble-user-chip: rgb(19 19 19 / 0.08);
-  --color-bubble-user-pre: rgb(19 19 19 / 0.07);
-  --color-bubble-user-pre-line: rgb(19 19 19 / 0.16);
-  --color-bubble-user-mirror: #4b4a48;
+  --color-bubble-user-link: #f4f1ea;
+  --color-bubble-user-quote: #d8d0c6;
+  --color-bubble-user-chip: rgb(244 241 234 / 0.12);
+  --color-bubble-user-pre: rgb(244 241 234 / 0.08);
+  --color-bubble-user-pre-line: rgb(244 241 234 / 0.16);
+  --color-bubble-user-mirror: #c8b8a6;
 }
 
 /* Dark-mode theme accents. Same three themes as above, bright end of the
@@ -560,7 +562,7 @@
     overscroll-behavior: none;
   }
   :focus-visible {
-    outline: 2px solid var(--color-brand);
+    outline: 2px solid var(--color-brand-fg, var(--color-brand));
     outline-offset: 2px;
     border-radius: var(--radius-xs);
   }

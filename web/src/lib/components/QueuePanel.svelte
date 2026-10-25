@@ -99,7 +99,7 @@
                   <h3 class="mb-1.5 text-[9px] font-semibold tracking-[0.12em] text-ink-faint uppercase">Worker notes</h3>
                   <ul class="flex flex-col gap-1.5">
                     {#each task.notes.slice(-6) as note (note.at + note.text)}
-                      <li class="text-[11px] leading-4.5 text-ink-muted"><span class="font-mono text-[9.5px] text-brand">[{note.from}]</span> {note.text}</li>
+                      <li class="text-[11px] leading-4.5 text-ink-muted"><span class="font-mono text-[9.5px] text-brand-fg">[{note.from}]</span> {note.text}</li>
                     {/each}
                   </ul>
                 </section>
@@ -107,7 +107,7 @@
               {#if task.related.length}
                 <p class="flex flex-wrap items-center gap-1.5 text-[11px] text-ink-muted">
                   <Link2 size={12} aria-hidden="true" /> Related
-                  {#each task.related as related (related.id)}<button type="button" class="cursor-pointer text-brand underline decoration-dotted" onclick={() => (openId = related.id)}>{related.id}</button>{/each}
+                  {#each task.related as related (related.id)}<button type="button" class="cursor-pointer text-brand-fg underline decoration-dotted" onclick={() => (openId = related.id)}>{related.id}</button>{/each}
                 </p>
               {/if}
               <details class="task-brief rounded-lg border border-line/60 bg-canvas/65 px-2.5 py-2">

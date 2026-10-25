@@ -115,10 +115,10 @@
     {disabled}
     onclick={() => (open ? hide(false) : show())}
   >
-    {#if busy}<Spinner size={13} label="Switching model" />{:else}<BrainCircuit size={14} strokeWidth={1.8} class="shrink-0 text-brand" aria-hidden="true" />{/if}
+    {#if busy}<Spinner size={13} label="Switching model" />{:else}<BrainCircuit size={14} strokeWidth={1.8} class="shrink-0 text-brand-fg" aria-hidden="true" />{/if}
     <span class="min-w-0">
       <span class="block truncate font-mono text-[11.5px] leading-3.5">{label}</span>
-      {#if value && currentEffort !== "auto"}<span class="block text-[9.5px] leading-3 text-brand">{EFFORT_LABELS[currentEffort]} effort</span>{/if}
+      {#if value && currentEffort !== "auto"}<span class="block text-[9.5px] leading-3 text-brand-fg">{EFFORT_LABELS[currentEffort]} effort</span>{/if}
     </span>
     <ChevronDown size={13} strokeWidth={2} class="shrink-0 opacity-60 transition-transform {open ? 'rotate-180' : ''}" aria-hidden="true" />
   </button>
@@ -181,8 +181,8 @@
                   onfocus={() => (active = i)}
                   onclick={() => pick(i)}
                 >
-                  <span class="grid size-6 shrink-0 place-items-center rounded-md border border-line/70 bg-canvas/60 text-ink-faint group-hover:text-brand">
-                    {#if option.id === value}<Check size={13} strokeWidth={2.4} class="text-brand" aria-hidden="true" />{:else}<span class="size-1 rounded-full bg-current opacity-55"></span>{/if}
+                  <span class="grid size-6 shrink-0 place-items-center rounded-md border border-line/70 bg-canvas/60 text-ink-faint group-hover:text-brand-fg">
+                    {#if option.id === value}<Check size={13} strokeWidth={2.4} class="text-brand-fg" aria-hidden="true" />{:else}<span class="size-1 rounded-full bg-current opacity-55"></span>{/if}
                   </span>
                   <span class="min-w-0 flex-1">
                     <span class="block truncate font-mono text-[12px] font-medium text-ink">{option.name}</span>
@@ -195,7 +195,7 @@
           {:else}
             <div class="px-3 py-8 text-center text-[12.5px] text-ink-muted" role="status">
               {#if models.status === "error"}
-                Could not load the model list.<button type="button" class="mt-2 block w-full cursor-pointer text-brand underline underline-offset-2" onclick={() => models.load(true)}>Retry</button>
+                Could not load the model list.<button type="button" class="mt-2 block w-full cursor-pointer text-brand-fg underline underline-offset-2" onclick={() => models.load(true)}>Retry</button>
               {:else}No model matches “{query}”.{/if}
             </div>
           {/each}
@@ -205,11 +205,11 @@
       {#if activeOption}
         <section class="shrink-0 border-t border-line/80 bg-canvas/45 px-3.5 py-3" aria-label="Reasoning effort for {activeOption.name}" onkeydown={(event) => event.stopPropagation()}>
           <div class="mb-2 flex items-center gap-2">
-            <SlidersHorizontal size={13} strokeWidth={1.8} class="text-brand" aria-hidden="true" />
+            <SlidersHorizontal size={13} strokeWidth={1.8} class="text-brand-fg" aria-hidden="true" />
             <h3 class="text-[11px] font-semibold text-ink">Reasoning effort</h3>
             <span class="max-w-36 truncate font-mono text-[9.5px] text-ink-faint">{activeOption.name}</span>
             {#if effortBusy}<Spinner size={11} label="Saving effort" />{/if}
-            {#if capability?.source}<a href={capability.source} target="_blank" rel="noreferrer" class="ml-auto grid size-6 place-items-center rounded text-ink-faint hover:bg-raised hover:text-brand" aria-label="Read the provider's effort documentation" title="Provider documentation"><ExternalLink size={12} /></a>{/if}
+            {#if capability?.source}<a href={capability.source} target="_blank" rel="noreferrer" class="ml-auto grid size-6 place-items-center rounded text-ink-faint hover:bg-raised hover:text-brand-fg" aria-label="Read the provider's effort documentation" title="Provider documentation"><ExternalLink size={12} /></a>{/if}
           </div>
           {#if capability?.levels.length}
             <div class="effort-options flex flex-wrap gap-1" role="group" aria-label="Effort level">
@@ -217,7 +217,7 @@
                 <button
                   type="button"
                   class="effort-chip interactive min-h-7 cursor-pointer rounded-md border px-2 py-1 text-[10.5px] font-medium pointer-coarse:min-h-9
-                    {activeEffort === level ? 'border-brand/45 bg-brand-soft text-brand' : 'border-line/80 bg-surface/60 text-ink-muted hover:border-line-strong hover:text-ink'}"
+                    {activeEffort === level ? 'border-brand/45 bg-brand-soft text-brand-fg' : 'border-line/80 bg-surface/60 text-ink-muted hover:border-line-strong hover:text-ink'}"
                   aria-pressed={activeEffort === level}
                   title={EFFORT_HINTS[level]}
                   disabled={effortBusy || !oneffort}
