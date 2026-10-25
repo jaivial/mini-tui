@@ -1,8 +1,8 @@
 <h1 align="center">mini-tui</h1>
-<p align="center"><b>Talk to a bot. It runs the board.</b></p>
+<p align="center"><b>Assign work. Get proof, 2.43× faster.</b></p>
 <p align="center">
-  A team of bots that organize your work as a kanban, from the web app, the terminal or a WhatsApp group.<br>
-  Workers carry the cards out. A card closes only when the evidence is on it.
+  One chat becomes a durable work queue. A dispatcher routes each task, workers execute in parallel,<br>
+  and the run closes only when its checker passes. v0.45.0 adds eager verification and native MCP.
 </p>
 <p align="center">
   <a href="https://jaivial.github.io/mini-tui/">Landing page</a> ·
@@ -15,75 +15,39 @@
 
 ## What mini-tui is now
 
-**One chat in front of a work queue.** You send work; the chat's agent (the *dispatcher*) turns
-each request into a better-written task and queues it. Every task runs as its own background
-mini session, up to the concurrency you set (Settings → General → Work queue, 1–300, default 300);
-the rest wait and start as slots free up. The panel on the right lists the tasks by state —
-working, queued, completed, error — with each one's result.
+**One chat in front of a work queue.** You describe the outcome; the dispatcher writes the brief and
+creates the right task or tasks. Every task runs as its own background mini session, with live
+status, redirects, cancellation and result history. Small jobs stay direct; independent parts run
+concurrently when their working directories are disjoint. Shared-root work falls back to one worker.
 
-- The dispatcher has no shell: it never researches, it only writes the brief and queues it.
-- Workers keep their card's description current and can notify the dispatcher mid-task.
-- A request close to a task already in flight **redirects** that task instead of starting a
-  near-copy; a finished task re-opens on its own session. Task relations go to the graph RAG.
+- **Eager verification.** As soon as the intact checker passes, the task closes with a factual
+  title/cwd/PASS card. There is no final-summary model turn and no post-PASS exploration.
+- **Strict verdicts.** The checker's SHA-256 is captured at run start. `verify.sh` must return 0
+  and print an independent `PASS` line. Masked failures, tracebacks and checker replacement are
+  rejected; repeated failures become `TaskVerifierFailed`, never a fake success.
+- **Independent fan-out by contract.** `allow_overlap: false` rejects overlapping waves instead of
+  serializing N cold starts. Existing sequential overlap behavior is preserved.
+- **Native MCP, opt-in.** Streamable HTTP initialize/session handling, JSON/SSE responses,
+  paginated `tools/list`, `tools/call`, and schemas for OpenAI chat/Responses and Anthropic.
+  See [`docs/mcp.md`](docs/mcp.md) and verify a server with `mini-agent-rs mcp-tools`.
+- **A browser with a human handoff.** The agent can show a live tab for login, QR, captcha or 2FA,
+  then resume when you press Done. It never defeats a captcha or guesses credentials.
+- **The whole runtime in Docker.** Web, Rust agent, Python, whisper, gh and ssh in one image, with
+  your home mounted for state. The container is not a sandbox: PRs and remote hosts still work.
 
-Details: [`docs/work-queue.md`](docs/work-queue.md). The sections below describe the earlier
-board/bot features that still live in the codebase (terminal UI, channels).
+Details: [`docs/work-queue.md`](docs/work-queue.md), [`docs/mcp.md`](docs/mcp.md),
+[`docs/docker.md`](docs/docker.md), and the [full v0.45.0 analysis](docs/ANALYSIS-mini-x2-20261024.md).
 
-### The board
+### Verified results, not a final-response claim
 
-- Every request becomes **cards with dependencies** on a durable task graph. Workers take a lease on
-  a card, a card in flight is not lost when a lane stops, and an expired lease freezes its project
-  instead of dropping work. See [`docs/task-graph.md`](docs/task-graph.md).
-- Cards from other bots are visible read-only, through a shared graph layer
-  ([`docs/bot-graph-rag.md`](docs/bot-graph-rag.md)).
-- The sidebar is a tree: window, bots, and the delegates each bot started. The **team map** draws
-  the same tree as a live graph.
+The final strict MiMo V2.6 Flash comparison used the same Singapore Anthropic endpoint and the
+same tasks on both harnesses. Mini's assigned worker finished in **163.3 s** against pi's
+**397.6 s**, a **2.43× speedup**, with **10/10 PASS on both**. End to end, including the dispatcher,
+the result is 215.7 s against 397.6 s (**1.84×**).
 
-### WhatsApp groups, synced with the web
-
-- Each bot can have **its own WhatsApp group**. It answers there without a mention, and its avatar
-  becomes the group photo.
-- The thread is **mirrored both ways** between WhatsApp and the web app, with no echo and an origin
-  marker on each bubble. Images and attachments travel too.
-- **Voice notes** are transcribed on your machine, and the state is honest when a transcript fails.
-- The bot reacts with 👀 the moment it hears you, shows a typing indicator, and uses semantic
-  reactions when a card closes. `/newsession` starts a fresh session, and `/rename` renames the
-  session and the group subject.
-- Pair with a phone code or a QR from Settings, Channels.
-  Details: [`docs/channel-multichat.md`](docs/channel-multichat.md),
-  [`docs/channel-mirror.md`](docs/channel-mirror.md), [`docs/channel-consumers.md`](docs/channel-consumers.md).
-
-### Bots that use a browser (cu)
-
-The `computer_use` tool drives a real browser through a reusable pool of [cu](https://github.com/jaivial/cu)
-daemons and posts screenshots to the chat. A bot can open the page it just changed, look at it, and
-file what it found as evidence on the card. Logins live in cu's vault, and the bot never sees a
-password.
-
-### Done means proven
-
-A card moves to Done only after a **closure check** reads the goal against the diff and the logs.
-The default judge is a model. Point it at **Laya**, a small self-hosted classifier, and a clean run
-closes in about a tenth of a second; anything unclear goes to the model judge. A run that the judge
-keeps rejecting for the same reason ends as a stalemate instead of looping.
-
-```bash
-export MINI_AGENT_GOAL_ORACLE=laya
-export MINI_AGENT_GOAL_ORACLE_URL=http://127.0.0.1:8102/v1/systemone
-```
-
-How it works: [`docs/goal-closure.md`](docs/goal-closure.md).
-
-### Also new
-
-One Docker image for the whole runtime (web, agent, whisper, Python), and provider keys that
-connect for real — including Kimi for Coding, whose temperature and message-part constraints the
-connection now handles — with failed connects that say what the provider actually answered.
-Also: model router with three tiers and a persistent fallback breaker, usage metering per model and
-provider, generative UI in the chat (forms, tables and charts), a voice-note recorder and player,
-inline images and attachments, AI session titles, a PWA with cookie login, and a long list of
-hardening passes on the web server (per-IP rate limits, loopback-only CORS, upload sniffing).
-Everything is in the [changelog](CHANGELOG.md).
+The three-repetition eager campaign measured **2.85× worker with 30/30 PASS on both**. These are
+local coding results, not a guarantee for every provider or workload, and not the official
+Composio suite. Complete evidence: [`docs/ANALYSIS-mini-x2-20261024.md`](docs/ANALYSIS-mini-x2-20261024.md).
 
 ## Quick start
 
@@ -107,7 +71,7 @@ and the terminal UI is still there: run `bin/mini-tui`.
 The whole runtime also ships as one image — tools in the image, state in your mounted home:
 
 ```bash
-docker compose up -d                      # the web app on 4317
+docker compose up -d --build mini-tui      # build from this checkout and start the web app on 4317
 docker compose --profile channels up -d   # + the WhatsApp consumer daemon
 docker compose --profile rag up -d        # + RAG server + graph projection
 ```
@@ -119,45 +83,33 @@ have the image). Agent sessions can open PRs and reach your ssh hosts from the c
 
 ## Benchmarks
 
-**Historical closure-check result, 19 October 2026.** Ten tasks, three repetitions, `MiniMax-M3.1-Flash-Preview` on both
-sides, pi and mini interleaved task by task so that API drift hits both alike, mini on the deployed
-binary and config with Laya as the judge.
+**Final strict validation, 24 October 2026.** Ten tasks, one repetition per arm, Xiaomi MiMo V2.6
+Flash on the same Singapore Anthropic endpoint. The final binary captures the checker and requires
+an independent PASS verdict; infrastructure failures are not counted as task failures.
 
-| | pi | mini-tui |
-| --- | --- | --- |
-| Tasks passed | 30/30 | 30/30 |
-| Sum of per-task medians | 145.6 s | **112.9 s** (0.78x) |
-| Tasks where mini is at least as fast | 1/10 | 9/10 |
-| Timeouts | 0 | 0 |
+| measure | pi | mini-tui |
+| --- | ---: | ---: |
+| Tasks passed | 10/10 | 10/10 |
+| Assigned-worker time | 397.6 s | **163.3 s** |
+| End-to-end time | 397.6 s | **215.7 s** |
+| Speedup, worker / E2E | — | **2.43× / 1.84×** |
+| Hedged requests | — | 1 |
 
-Limits: ten tasks, three repetitions, one model, one machine. Recovered from the original completed-run readback; its temporary raw directory is no longer available here. This is not a measurement of the 20 October parity changes. The earlier analysis attributed the gain to a judge that
-closes a clean run in a tenth of a second instead of a model call, with a cap on judge
-rejections. Before that, 7 of 27 runs with the model judge hit the 900 s timeout. Earlier rounds
-were a tie and the report keeps them: [`docs/pi-vs-mini-benchmark.md`](docs/pi-vs-mini-benchmark.md).
+The earlier three-repetition eager campaign measured **2.85× worker with 30/30 PASS on both arms**.
+These are local coding results, not a guarantee for every provider or workload, and not the
+inaccessible official Composio suite. Full methodology and every rejected treatment:
+[`docs/ANALYSIS-mini-x2-20261024.md`](docs/ANALYSIS-mini-x2-20261024.md).
 
 ### Graphics with separate provenance
 
-The 11 October full dev sweep was 62.5% (10/16). A later targeted composite reached
-75% (12/16); it was not a fresh full sweep. The single-run 0.69x speed ratio belongs
-to another experiment and did not hold in the three round-6 repetitions.
+![Final strict MiMo validation: per-task pi / mini worker time, with all ten tasks passing on both](docs/img/mini-final-speedup-20261024.png)
 
-The graphics below keep provenance beside every result. Public leaderboard data uses
-another corpus and is not a like-for-like ranking of mini.
+![Fast close + eager validation: 2.85x worker, 30/30 PASS on both arms](docs/img/mini-eager-speedup-20261024.png)
 
-![Release card: v0.43.0, bots that run your board, with the 19 Oct run's figures and their limits](docs/img/update.png)
-
-![Every mini-vs-pi run as one bar, each with the corpus, model and judge it came from](docs/img/benchmark.png)
-
-![Historical 19 October closure-on result, with evidence limits](docs/img/closure-history-20261019.png)
-
-![Per-task historical medians, with shared zero-based scales](docs/img/closure-tasks-20261019.png)
-
-![Terminal and web implementation changes, without a speedup claim](docs/img/parity-update-20261020.png)
-
-> **Obsolete, kept for context.** `docs/img/time-per-task.png` (11 October dev sweep)
-> carries the earlier dev-sweep framing and is referenced by nothing in this repo. It is
-> not a like-for-like view of the corpus above and should not be quoted; it is kept only
-> as a historical artifact until someone decides to archive or drop it.
+Composio's published charts remain **reference-only**. The private 25-task environment was not
+accessible and `agents.composio.dev` returned 503 during provisioning. mini will be added to those
+charts only after a validated Kimi K3 run on all 25 tasks. See
+[`benchmark/composio-harness/README.md`](benchmark/composio-harness/README.md).
 
 
 ---

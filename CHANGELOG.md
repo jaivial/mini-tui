@@ -2,7 +2,7 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
-## Unreleased
+## 0.45.0 — 2026-10-25
 
 ### Added
 

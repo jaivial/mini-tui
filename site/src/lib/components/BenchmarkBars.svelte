@@ -28,7 +28,7 @@
 
 <figure>
   <svg viewBox="0 0 {W} {H}" class="h-auto w-full" role="img"
-    aria-label="Median seconds per task over four complete runs, mini-tui against the pi harness. mini is faster on {TASKS.filter((t) => t.ratio < 1).length} of {TASKS.length} tasks.">
+    aria-label="Final strict run wall time per task, mini-tui against the pi harness. mini is faster on {TASKS.filter((t) => t.ratio > 1).length} of {TASKS.length} tasks.">
     <!-- Gridlines and the seconds axis -->
     {#each ticks as t (t)}
       <line x1={PAD.left} x2={W - PAD.right} y1={y(t)} y2={y(t)} stroke="var(--border)" stroke-width={t === 0 ? 1.5 : 1} />
@@ -51,9 +51,9 @@
   </svg>
   <figcaption class="mt-3 text-xs text-muted-foreground">
     <span class="inline-flex flex-wrap items-center gap-x-4 gap-y-1.5">
-      <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-[3px] bg-primary" aria-hidden="true"></span>mini-tui, median of 4 runs</span>
+      <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-[3px] bg-primary" aria-hidden="true"></span>mini-tui, final strict run</span>
       <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-[3px] bg-muted-foreground opacity-45" aria-hidden="true"></span>pi harness</span>
-      <span>{TASKS.filter((t) => t.ratio < 1).length} of {TASKS.length} tasks won on the median; the numbers under each pair are mini's median.</span>
+      <span>{TASKS.filter((t) => t.ratio > 1).length} of {TASKS.length} tasks won on this run; the numbers under each pair are mini's seconds.</span>
     </span>
   </figcaption>
 </figure>
