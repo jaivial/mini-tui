@@ -57,6 +57,33 @@ bun run web                   # the web app on http://127.0.0.1:4317
 The web app builds its interface first, then serves everything from one process. To work on it with hot
 reload, use `bun run web:dev`.
 
+## Deploy the whole runtime with Docker
+
+```bash
+docker compose up -d --build mini-tui
+```
+
+The image includes the web app, the Rust agent, Python, whisper, gh and ssh. State stays in your
+mounted home, and the container is **not a sandbox**: GitHub PRs and remote SSH hosts keep working.
+See [Docker deployment](https://github.com/jaivial/mini-tui/blob/main/docs/docker.md).
+
+Workers close eagerly once the intact checker passes. For slow suites, use
+`MINI_AGENT_VERIFIER_EAGER=0`; `MINI_AGENT_VERIFIER_FAST_CLOSE=0` disables fast closure entirely.
+
+## Optional MCP tools
+
+MCP is off by default. To enable one Streamable HTTP server, set its URL and, if needed, its Bearer
+credential, then inspect the tools before starting a task:
+
+```bash
+export MINI_AGENT_MCP_URL="https://mcp.example.com/v1"
+export MINI_AGENT_MCP_API_KEY="project-key"
+mini-agent-rs mcp-tools
+```
+
+`MINI_AGENT_MCP_HEADERS` accepts a JSON object for extra headers, and `MINI_AGENT_MCP_NAME` sets the
+name used for collision handling. See [MCP](https://github.com/jaivial/mini-tui/blob/main/docs/mcp.md).
+
 ## Connect a model
 
 Open `/connect` in the terminal UI, or **Settings, Providers** in the web app. Paste a key and mini-tui

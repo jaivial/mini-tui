@@ -74,7 +74,7 @@ try {
       await page.reload({ waitUntil: "networkidle" });
       check("desktop: the saved theme survives a reload with no flash (class set before paint)", (await page.evaluate(() => document.documentElement.classList.contains("dark"))) === after.dark);
       // FAQ accordion: keyboard operable, and the answer text is in the HTML either way
-      const q = page.getByRole("button", { name: /Does mini-tui cost anything/ });
+      const q = page.getByRole("button", { name: /Does mini-tui require a subscription/ });
       await q.focus(); await page.keyboard.press("Enter");
       check("desktop: a FAQ item opens with the keyboard", (await q.getAttribute("aria-expanded")) === "true");
       check("desktop: the docs page has a table of contents and previous/next links", await (async () => { await page.goto(`http://127.0.0.1:${PORT}${BASE}/docs/web-app/`, { waitUntil: "networkidle" }); return (await page.getByRole("complementary", { name: "On this page" }).count()) === 1 && (await page.getByRole("navigation", { name: "Previous and next" }).getByRole("link").count()) >= 1; })());

@@ -16,59 +16,42 @@
   import { DESCRIPTION, REPO, RELEASE } from "$lib/site";
 </script>
 
-<Seo page={{ path: "/", title: "mini-tui: bots that run your kanban, from the web or WhatsApp", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-10-19" }} />
+<Seo page={{ path: "/", title: "mini-tui: verified work, 2.43× faster", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-10-25" }} />
 
-<!-- Hero: the one <h1>, the primary action, and the product in the first viewport. -->
 <div class="relative overflow-hidden border-b">
   <div class="pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
     <div class="absolute inset-x-0 top-0 h-[640px] bg-[radial-gradient(55%_60%_at_50%_0%,color-mix(in_oklab,var(--ring)_22%,transparent),transparent)]"></div>
     <div class="absolute inset-0 opacity-[0.35] [background-image:linear-gradient(var(--border)_1px,transparent_1px),linear-gradient(90deg,var(--border)_1px,transparent_1px)] [background-size:56px_56px] [mask-image:radial-gradient(70%_55%_at_50%_0%,#000,transparent)]"></div>
   </div>
-  <div class="mx-auto max-w-7xl 2xl:max-w-[90rem] px-4 pt-16 pb-32 text-center sm:px-6 sm:pt-24">
-    <a href={resolve("/changelog/")} class="mb-7 inline-flex items-center gap-2 rounded-full border bg-card/60 px-3.5 py-1.5 font-mono text-xs text-muted-foreground backdrop-blur transition-colors hover:text-foreground">
-      <span class="size-1.5 rounded-full bg-[var(--lime)]"></span> v{RELEASE} · bots, a board, WhatsApp <ArrowRight class="size-3" aria-hidden="true" />
+  <div class="mx-auto max-w-7xl 2xl:max-w-[90rem] px-4 pt-16 pb-28 text-center sm:px-6 sm:pt-24">
+    <a href={resolve("/changelog/")} class="mb-7 inline-flex min-h-11 items-center gap-2 rounded-full border bg-card/60 px-3.5 py-1.5 font-mono text-xs text-muted-foreground backdrop-blur transition-colors hover:text-foreground">
+      <span class="size-1.5 rounded-full bg-[var(--lime)]"></span> {hero.kicker} <ArrowRight class="size-3" aria-hidden="true" />
     </a>
     <h1 class="mx-auto max-w-4xl bg-gradient-to-b from-foreground to-foreground/55 bg-clip-text text-5xl font-semibold tracking-[-0.035em] text-transparent sm:text-7xl">{hero.title}</h1>
     <p class="mx-auto mt-6 max-w-2xl text-base text-muted-foreground sm:text-lg">{hero.sub}</p>
     <div class="mt-9 flex flex-wrap items-center justify-center gap-3">
-      <Button size="lg" href={resolve("/docs/install/")} class="rounded-full px-6">Get started <ArrowRight data-icon="inline-end" aria-hidden="true" /></Button>
-      <Button size="lg" variant="outline" href={REPO} class="rounded-full px-6"><Github data-icon="inline-start" aria-hidden="true" /> Star on GitHub</Button>
+      <Button size="lg" href={resolve("/docs/install/")} class="rounded-full px-6">Start a task <ArrowRight data-icon="inline-end" aria-hidden="true" /></Button>
+      <Button size="lg" variant="outline" href={resolve("/graphics/")} class="rounded-full px-6">See the evidence</Button>
+      <Button size="lg" variant="ghost" href={REPO} class="rounded-full px-6"><Github data-icon="inline-start" aria-hidden="true" /> GitHub</Button>
     </div>
-    <p class="mt-4 font-mono text-xs text-faint">bun run web</p>
-
+    <p class="mt-4 font-mono text-xs text-faint">bun run web · or docker compose up -d --build mini-tui</p>
     <figure class="relative mx-auto mt-14 max-w-5xl">
       <BoardMock />
       <div class="pointer-events-none absolute -right-4 -bottom-24 hidden w-56 lg:block xl:-right-20 xl:w-60"><div class="origin-bottom-right scale-[0.82] [filter:drop-shadow(0_30px_40px_rgb(0_0_0/0.4))]"><PhoneMock /></div></div>
-      <figcaption class="sr-only">The mini-tui web app: a sidebar of bots, a kanban board the bot keeps, and the same project mirrored in a WhatsApp group.</figcaption>
+      <figcaption class="sr-only">The current work queue: dispatcher, parallel workers, verify.sh passing, and a human browser handoff.</figcaption>
     </figure>
   </div>
 </div>
 
-<!-- The real app on demo data: a 16:9 shot on wide screens, a 9:16 phone shot below 768px. -->
-<div class="border-b">
-  <div class="mx-auto max-w-5xl px-4 py-16 text-center sm:px-6 sm:py-20">
-    <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Your bots, in the app</h2>
-    <p class="mx-auto mt-3 max-w-xl text-muted-foreground">Each bot is a chat with its own task card. The sidebar shows who is working, who is finished and how far each card has got.</p>
-    <figure class="mx-auto mt-10 max-w-md overflow-hidden rounded-2xl border shadow-2xl shadow-black/30 md:max-w-none">
-      <picture>
-        <source media="(min-width: 768px)" srcset={asset("/screens/app-bots-desktop.webp")} width="1440" height="810" />
-        <img src={asset("/screens/app-bots-mobile.webp")} width="390" height="693" loading="lazy" decoding="async" class="block h-auto w-full" alt="The mini-tui web app: a sidebar of four bots with progress counts, and the Release bot's chat showing the board it wrote for v0.43" />
-      </picture>
-      <figcaption class="sr-only">The mini-tui web app on demo data.</figcaption>
-    </figure>
-  </div>
-</div>
-
-<!-- The number that matters, up front and with its limits stated below. -->
 <div class="border-b bg-card/40">
   <dl class="mx-auto grid max-w-5xl gap-px px-4 py-10 text-center sm:grid-cols-3 sm:px-6">
-    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Benchmark tasks passed, mini and pi</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">30 / 30</dd></div>
-    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Time vs pi, closure check on</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">{oracleBench.ratio}</dd></div>
-    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Agent runtime</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">1 binary</dd></div>
+    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Tasks passed, mini and pi</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">10 / 10</dd></div>
+    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Assigned-worker speedup</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">2.43×</dd></div>
+    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">End-to-end, dispatcher included</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">1.84×</dd></div>
   </dl>
 </div>
 
-<Section id="how" title="You talk. The bot plans. Workers ship." lede="mini-tui moves the thinking from the agent that types code to a bot that organizes the work.">
+<Section id="how" title="One chat. The right amount of parallelism." lede="mini-tui routes work instead of making every task a monologue. Small jobs stay direct; independent parts fan out safely.">
   <ol use:reveal={{ children: true }} class="grid gap-4 md:grid-cols-3">
     {#each flow as f (f.n)}
       <li class="group relative overflow-hidden rounded-3xl border bg-card p-7 transition-colors hover:bg-accent/40">
@@ -81,7 +64,7 @@
   </ol>
 </Section>
 
-<Section id="whatsapp" title="Your WhatsApp groups, in sync with the web" lede="Start a job from the couch, check the board from your desk. It is the same thread.">
+<Section id="queue" title="A queue you can steer, not a black box" lede="Watch the worker, redirect it with its context intact, or take over the browser when a person is needed.">
   <div use:reveal class="grid min-w-0 items-center gap-12 lg:grid-cols-2">
     <div class="order-2 lg:order-1"><PhoneMock /></div>
     <ul class="order-1 grid gap-4 lg:order-2">
@@ -95,7 +78,7 @@
   </div>
 </Section>
 
-<Section id="cu" title="Bots that can look at the page" lede="The computer-use tool lets a bot open a real browser, click through your app and show you what it found.">
+<Section id="mcp" title="Native MCP, with the human step built in" lede="Remote tools use one protocol. A live browser is there when OAuth, a QR code or a captcha needs a person instead of another retry.">
   <div use:reveal class="grid min-w-0 items-center gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
     <ul class="grid gap-4">
       {#each cuPoints as p (p.title)}
@@ -109,15 +92,15 @@
   </div>
 </Section>
 
-<Section id="proof" title="A closure check, with evidence" lede="A proposed finish is checked against the goal and available evidence. A historical run is shown below, not a guarantee that every task is correct or faster.">
+<Section id="proof" title="2.43× worker speed, with receipts" lede="The final strict comparison uses the same MiMo model, endpoint and verifier on both harnesses. Every PASS is independently checked.">
   <div use:reveal class="mx-auto max-w-3xl overflow-hidden rounded-3xl border bg-card">
     <div class="border-b bg-gradient-to-b from-accent/60 to-transparent p-8 text-center">
-      <p class="text-sm text-muted-foreground">19 October 2026 · ten tasks, same model, pi and mini interleaved</p>
+      <p class="text-sm text-muted-foreground">24 October 2026 · final strict validation · MiMo V2.6 Flash</p>
       <p class="mt-2 font-mono text-4xl font-semibold tracking-tight sm:text-5xl">{oracleBench.headline}</p>
-      <p class="mt-1 text-sm text-muted-foreground">sum of per-task medians, mini first: <span class="font-mono text-foreground">{oracleBench.ratio}</span> of pi's time</p>
+      <p class="mt-1 text-sm text-muted-foreground">sum of per-task times, mini worker first: <span class="font-mono text-foreground">{oracleBench.ratio}</span> of pi's time</p>
     </div>
     <table class="w-full text-sm">
-      <caption class="sr-only">Benchmark results for pi and mini with the closure check on</caption>
+      <caption class="sr-only">Final strict validation for pi and mini-tui</caption>
       <thead><tr class="text-left text-muted-foreground"><th class="px-6 py-3 font-medium" scope="col">Measure</th><th class="px-4 py-3 font-medium" scope="col">pi</th><th class="px-6 py-3 font-medium" scope="col">mini-tui</th></tr></thead>
       <tbody>
         {#each oracleBench.rows as r (r.label)}
@@ -125,11 +108,11 @@
         {/each}
       </tbody>
     </table>
-    <p class="border-t px-6 py-4 text-xs text-muted-foreground">{oracleBench.caveats} <a class="text-foreground underline underline-offset-4" href="{REPO}/blob/main/docs/pi-vs-mini-benchmark.md">Read the evidence notes and historical report</a>.</p>
+    <p class="border-t px-6 py-4 text-xs text-muted-foreground">{oracleBench.caveats} <a class="text-foreground underline underline-offset-4" href="{REPO}/blob/main/docs/ANALYSIS-mini-x2-20261024.md">Read the full analysis and raw run paths</a>.</p>
   </div>
 </Section>
 
-<Section id="features" title="And the rest of the workshop" lede="Everything a team of bots needs to be usable every day.">
+<Section id="features" title="The rest of the production path" lede="The queue is only useful if the whole system is observable, deployable and honest about its limits.">
   <ul use:reveal={{ children: true }} class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
     {#each features as f (f.id)}
       <li>
@@ -143,7 +126,7 @@
   </ul>
 </Section>
 
-<Section id="start" title="Running in four steps" lede="Bun and one binary. No account, no cloud, no Python needed.">
+<Section id="start" title="From clone to queue in four steps" lede="Run the agent yourself, or deploy the complete runtime with Docker. No mini-tui account required.">
   <ol use:reveal={{ children: true }} class="mx-auto grid w-full max-w-4xl gap-6">
     {#each steps as s (s.n)}
       <li class="grid min-w-0 gap-3 sm:grid-cols-[2.5rem_minmax(0,1fr)]">
@@ -172,11 +155,15 @@
 <div class="relative overflow-hidden border-t">
   <div class="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(50%_90%_at_50%_100%,color-mix(in_oklab,var(--ring)_20%,transparent),transparent)]" aria-hidden="true"></div>
   <div class="mx-auto max-w-3xl px-4 py-24 text-center sm:px-6">
-    <h2 class="text-4xl font-semibold tracking-tight sm:text-5xl">Give the board to a bot.</h2>
-    <p class="mt-3 text-muted-foreground">No account, no subscription. Bring your own model key.</p>
+    <h2 class="text-4xl font-semibold tracking-tight sm:text-5xl">Put work on the queue.</h2>
+    <p class="mt-3 text-muted-foreground">Bring your own model. Leave with verified results.</p>
     <div class="mt-8 flex flex-wrap justify-center gap-3">
       <Button size="lg" href={resolve("/docs/install/")} class="rounded-full px-6">Install mini-tui</Button>
-      <Button size="lg" variant="outline" href={resolve("/web-app/")} class="rounded-full px-6">See the web app</Button>
+      <Button size="lg" variant="outline" href="{REPO}/releases/latest" class="rounded-full px-6">Download v{RELEASE}</Button>
     </div>
+    <figure class="mt-12 overflow-hidden rounded-3xl border bg-card shadow-xl shadow-black/20">
+      <img src={asset("/og.png")} alt="The mini-tui work queue with eager verification and the final 2.43x worker speedup" width="1200" height="630" fetchpriority="high" class="block h-auto w-full" />
+      <figcaption class="sr-only">One chat, a durable work queue and an independent PASS for every task.</figcaption>
+    </figure>
   </div>
 </div>

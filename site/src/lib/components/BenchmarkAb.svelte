@@ -24,7 +24,7 @@
 
 <figure>
   <svg viewBox="0 0 {W} {H}" class="h-auto w-full" role="img"
-    aria-label="Median seconds per task in the round 7 system-prompt A/B: without the clause against with it, t10 53.8 against 21.2 seconds, t7 16.6 against 10.1, t5 9.7 against 11.4.">
+    aria-label="Worker-only eager A/B, median seconds per task: fast close only against eager verification, two interleaved repetitions per arm.">
     {#each ticks as t (t)}
       <line x1={PAD.left} x2={W - PAD.right} y1={y(t)} y2={y(t)} stroke="var(--border)" stroke-width={t === 0 ? 1.5 : 1} />
       <text x={PAD.left - 8} y={y(t) + 4} text-anchor="end" class="fill-muted-foreground font-mono text-[11px]">{t}s</text>
@@ -46,8 +46,8 @@
   </svg>
   <figcaption class="mt-3 text-xs text-muted-foreground">
     <span class="inline-flex flex-wrap items-center gap-x-4 gap-y-1.5">
-      <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-[3px] bg-muted-foreground opacity-45" aria-hidden="true"></span>arm A, prompt as shipped before</span>
-      <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-[3px] bg-primary" aria-hidden="true"></span>arm C, with the clause</span>
+      <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-[3px] bg-muted-foreground opacity-45" aria-hidden="true"></span>arm A, fast close only</span>
+      <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-[3px] bg-primary" aria-hidden="true"></span>arm C, eager verification</span>
       <span>The pairs under each group are the paired reps C won.</span>
     </span>
   </figcaption>
