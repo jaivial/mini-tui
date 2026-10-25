@@ -97,7 +97,7 @@
         event.preventDefault(); active = flat.length - 1; break;
       case "Enter": event.preventDefault(); pick(active); break;
       case "Escape": event.preventDefault(); event.stopPropagation(); hide(); break;
-      case "Tab": hide(false); break;
+      case "Tab": break; // Let focus reach the effort editor; Escape remains the dismiss key.
     }
   }
   const indexOf = (id: string) => flat.findIndex((option) => option.id === id);
