@@ -289,6 +289,26 @@ describe("input handling", () => {
   });
 });
 
+describe("Linear preset guidance", () => {
+  test("existing installs inherit native-call and read-back hints without reauthentication", () => {
+    const s = mcp.addServer({ preset: "linear" }, file);
+    // Simulate the record written by the release before preset hints existed.
+    mcp.updateServer(s.id, (r) => ({ ...r, hints: undefined, oauth: { ...r.oauth, tokens: { accessToken: "test-token" } } }), file);
+    const env = JSON.parse(mcp.mcpRunEnv(file).MINI_AGENT_MCP_SERVERS!)[0];
+    expect(env.hints.save_issue).toBe(mcp.LINEAR_SAVE_ISSUE_HINT);
+    expect(env.hints.save_issue).toContain("native tool-call field");
+    expect(env.hints.save_issue).toContain("Read it back");
+    expect(readFileSync(file, "utf8")).not.toContain("native tool-call field"); // runtime migration, not a config rewrite
+  });
+
+  test("a local hint override wins over the preset", () => {
+    const s = mcp.addServer({ preset: "linear" }, file);
+    mcp.updateServer(s.id, (r) => ({ ...r, hints: { save_issue: "custom" }, oauth: { ...r.oauth, tokens: { accessToken: "test-token" } } }), file);
+    const env = JSON.parse(mcp.mcpRunEnv(file).MINI_AGENT_MCP_SERVERS!)[0];
+    expect(env.hints.save_issue).toBe("custom");
+  });
+});
+
 describe("self-hosted servers (OpenPencil)", () => {
   test("the preset reads its token from a file at run time and limits the tools the agent gets", async () => {
     const { writeFileSync } = await import("node:fs");

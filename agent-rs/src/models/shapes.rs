@@ -197,7 +197,7 @@ fn command_for(name: &str, args: &Value) -> Result<Value, String> {
     }
 }
 
-fn format_error_text(template: &str, error: &str, has_tool_calls: bool, finish_reason: &Value) -> Result<String, String> {
+pub(crate) fn format_error_text(template: &str, error: &str, has_tool_calls: bool, finish_reason: &Value) -> Result<String, String> {
     // The model classes always pass `finish_reason` (possibly None), so it is always defined.
     let vars = json!({"error": error, "actions": [], "has_tool_calls": has_tool_calls, "finish_reason": finish_reason});
     render(template, &vars)
