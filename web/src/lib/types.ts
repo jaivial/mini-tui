@@ -459,6 +459,7 @@ export interface McpServerView {
   loggedIn: boolean;
   expiresAt?: number;
   headerNames: string[];
+  tokenFile?: string;
   state: "connected" | "needs-login" | "expired" | "disabled" | "ready";
 }
 
@@ -467,7 +468,7 @@ export interface McpPreset {
   name: string;
   description: string;
   url: string;
-  auth: "oauth" | "none" | "header";
+  auth: "oauth" | "none" | "header" | "local";
   docs?: string;
 }
 

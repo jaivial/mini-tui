@@ -1,0 +1,18 @@
+# The self-hosted OpenPencil MCP that mini-tui's agents use (see docs/openpencil.md).
+# A USER unit: the app is a GUI program and its documents live in the home. Install:
+#   mkdir -p ~/.config/systemd/user && cp deploy/openpencil-mcp.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now openpencil-mcp.service
+#   loginctl enable-linger $USER   # keep it running without a login session
+[Unit]
+Description=OpenPencil MCP server + headless desktop app (127.0.0.1:7600)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/mini-tui/scripts/openpencil-host.sh
+Restart=always
+RestartSec=5
+Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

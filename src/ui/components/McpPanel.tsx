@@ -61,7 +61,7 @@ export function McpPanel(props: { step: McpStep; servers: McpServerView[]; prese
                 <box key={key} flexDirection="row" gap={2}>
                   <text fg={colors.accent}>{selected ? "▸" : " "}</text>
                   <text fg={selected ? colors.text : colors.dim}>{row === "custom" ? "custom URL…" : row.name}</text>
-                  <text fg={colors.faint}>{row === "custom" ? "any Streamable HTTP MCP server" : `${row.description}${row.auth === "oauth" ? " · OAuth" : ""}`}</text>
+                  <text fg={colors.faint}>{row === "custom" ? "any Streamable HTTP MCP server" : `${row.description}${row.auth === "oauth" ? " · OAuth" : row.auth === "local" ? " · local" : ""}`}</text>
                 </box>
               );
             });

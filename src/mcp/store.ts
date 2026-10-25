@@ -57,6 +57,15 @@ export interface McpServerRecord {
   url: string;
   /** Static headers (an API key server); values are secrets. */
   headers?: Record<string, string>;
+  /**
+   * A bearer token read from this file every time it is needed instead of copied in here: a
+   * self-hosted server (OpenPencil) owns its token and may rotate it. `~` is the home.
+   */
+  tokenFile?: string;
+  /** Only these tools reach the agent (empty or absent = every tool the server lists). */
+  tools?: string[];
+  /** Text appended to a tool's description for the agent, by tool name. */
+  hints?: Record<string, string>;
   preset?: string;
   addedAt: number;
   /** Disabled servers stay installed but are not handed to the agent. */

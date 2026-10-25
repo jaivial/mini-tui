@@ -324,7 +324,7 @@
   function initials(name: string): string {
     return name.replace(/[^A-Za-z0-9 ]/g, "").split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase() || "M";
   }
-  const HUE: Record<string, string> = { figma: "#a259ff", linear: "#5e6ad2", notion: "#787774", atlassian: "#2684ff", stripe: "#635bff", vercel: "#888" };
+  const HUE: Record<string, string> = { openpencil: "#0d9488", figma: "#a259ff", linear: "#5e6ad2", notion: "#787774", atlassian: "#2684ff", stripe: "#635bff", vercel: "#888" };
 </script>
 
 <div class="flex flex-col gap-5">
@@ -447,7 +447,7 @@
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="truncate text-[13px] font-medium text-ink">{s.name}</span>
                   <span data-state={s.state} class="inline-flex"><Badge tone={st.tone} dot>{st.label}</Badge></span>
-                  {#if s.oauth}<span class="text-[11px] text-ink-faint">OAuth</span>{/if}
+                  {#if s.oauth}<span class="text-[11px] text-ink-faint">OAuth</span>{:else if s.tokenFile}<span class="text-[11px] text-ink-faint" title="Token read from {s.tokenFile}">self-hosted</span>{/if}
                 </div>
                 <span class="mt-0.5 block truncate font-mono text-[11.5px] text-ink-muted" title={s.url}>{s.url}</span>
               </div>
@@ -558,7 +558,7 @@
               >
                 <span class="grid size-8 shrink-0 place-items-center rounded-lg text-[11px] font-semibold text-white transition-transform duration-200 group-hover:scale-105" style="background: {HUE[p.id] ?? 'var(--color-ink-faint)'}" aria-hidden="true">{initials(p.name)}</span>
                 <span class="min-w-0 flex-1">
-                  <span class="flex items-center gap-1.5 text-[13px] font-medium text-ink">{p.name}{#if p.auth === "oauth"}<span class="rounded bg-raised px-1 text-[10px] font-medium text-ink-faint">OAuth</span>{/if}</span>
+                  <span class="flex items-center gap-1.5 text-[13px] font-medium text-ink">{p.name}{#if p.auth === "oauth"}<span class="rounded bg-raised px-1 text-[10px] font-medium text-ink-faint">OAuth</span>{:else if p.auth === "local"}<span class="rounded bg-ok/12 px-1 text-[10px] font-medium text-ok">this machine</span>{/if}</span>
                   <span class="block truncate text-[12px] text-ink-muted">{p.description}</span>
                 </span>
                 {#if busy[p.id]}<Spinner size={14} label="Installing" />{:else}<Plus size={15} strokeWidth={2} class="shrink-0 text-ink-faint transition-transform duration-200 group-hover:rotate-90 group-hover:text-ink" aria-hidden="true" />{/if}
