@@ -133,6 +133,18 @@ describe("BYOK connections", () => {
     expect(modelEnv("deepseek/deepseek-chat", saved)).toEqual({ CLIPROXY_API_KEY: "gw-key", CLIPROXY_API_BASE: "http://127.0.0.1:8317/v1", XIAOMI_API_KEY: "xk", XIAOMI_API_BASE: "https://x/v1" });
   });
 
+  test("a variable two connections share is never set from the wrong one", () => {
+    const mk = (id: string, keyEnv: string, base: string) => ({ id, name: id, route: "native" as const, keyEnv, extraEnv: { MINIMAX_API_BASE: base }, baseUrl: base, prefix: id, key: `${id}-key`, models: ["m"], defaultModel: "m", addedAt: 1 });
+    const saved = [mk("minimax", "MINIMAX_API_KEY", "https://api.minimax.io/v1"), mk("minimax-cn", "MINIMAX_API_KEY_CN", "https://api.minimaxi.com/v1")];
+    expect(modelEnv("minimax/m", saved).MINIMAX_API_BASE).toBe("https://api.minimax.io/v1");
+    expect(modelEnv("minimax-cn/m", saved).MINIMAX_API_BASE).toBe("https://api.minimaxi.com/v1");
+    // A third provider's run carries both keys, but no ambiguous base.
+    const env = modelEnv("xiaomi/x", saved);
+    expect(env.MINIMAX_API_KEY).toBe("minimax-key");
+    expect(env.MINIMAX_API_KEY_CN).toBe("minimax-cn-key");
+    expect(env.MINIMAX_API_BASE).toBeUndefined();
+  });
+
   test("legacy openai-compat connections keep mapping onto the openai slot", () => {
     rmSync(PATH, { force: true });
     const zai = PROVIDERS.find((p) => p.id === "zai")!;

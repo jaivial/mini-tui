@@ -360,9 +360,14 @@ export function modelEnv(modelName: string, connections: SavedConnection[] = loa
   const match =
     connections.find((c) => owns(c) && c.models.includes(modelName.slice(c.prefix.length + 1))) ??
     connections.find((c) => owns(c) && c.route === "native");
+  // A variable two connections both set (minimax and minimax-cn share MINIMAX_API_BASE) is left
+  // to the matched connection: the others' copy would point a mid-run switch at the wrong host.
+  const others = connections.filter((c) => c.route === "native" && c !== match);
+  const owners = new Map<string, number>();
+  for (const c of others) for (const k of Object.keys(connectionEnv(c))) owners.set(k, (owners.get(k) ?? 0) + 1);
   const env: Record<string, string> = {};
-  for (const connection of connections) {
-    if (connection.route === "native" && connection !== match) Object.assign(env, connectionEnv(connection));
+  for (const c of others) {
+    for (const [k, v] of Object.entries(connectionEnv(c))) if (owners.get(k) === 1) env[k] = v;
   }
   return match ? { ...env, ...connectionEnv(match) } : env;
 }
