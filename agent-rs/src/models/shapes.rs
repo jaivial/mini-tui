@@ -236,7 +236,9 @@ pub fn recover_xml_tool_calls(text: &str) -> Result<Vec<Value>, String> {
     fn value(raw: &str) -> Result<Value, String> {
         let trimmed = raw.trim();
         if trimmed.starts_with('{') || trimmed.starts_with('[') {
-            return serde_json::from_str(trimmed).map_err(|e| format!("invalid JSON parameter: {e}"));
+            // Linear titles commonly start with [GH ...], [DEBUG], [P0], etc. Only valid JSON is
+            // structured; bracketed prose stays a string instead of rejecting the whole tool call.
+            return Ok(serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(raw.to_string())));
         }
         Ok(match trimmed {
             "true" => Value::Bool(true),
@@ -634,6 +636,15 @@ mod tests {
         assert_eq!(args["description"], "Primera línea\nSegunda línea");
         assert_eq!(calls[1]["function"]["name"], "mcp__linear__list_issues");
         assert!(recover_xml_tool_calls("<tool_call><function=bash>").is_err());
+        let from_t14 = "<tool_call><function=mcp__linear__save_issue><parameter=description>Prueba secuencial simple: proyecto y milestone por nombre.</parameter><parameter=milestone>SEO: cimientos técnicos (rastreo, i18n, metadatos, render, medición)</parameter><parameter=project>NewVillacarmen</parameter><parameter=team>BIZ</parameter><parameter=title>[DEBUG3] save_issue con proyecto y milestone</parameter></function></tool_call>";
+        let recovered = recover_xml_tool_calls(from_t14).unwrap();
+        let args: Value = serde_json::from_str(recovered[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["project"], "NewVillacarmen");
+        assert_eq!(args["milestone"], "SEO: cimientos técnicos (rastreo, i18n, metadatos, render, medición)");
+        let gh_title = "<tool_call><function=mcp__linear__save_issue><parameter=project>NewVillacarmen</parameter><parameter=team>BIZ</parameter><parameter=title>[GH preactvillacarmen #191] [P0] Corregir rastreo</parameter></function></tool_call>";
+        let recovered = recover_xml_tool_calls(gh_title).unwrap();
+        let args: Value = serde_json::from_str(recovered[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["title"], "[GH preactvillacarmen #191] [P0] Corregir rastreo");
     }
 
     #[test]
