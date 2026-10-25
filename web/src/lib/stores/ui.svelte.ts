@@ -5,7 +5,7 @@ const THEME_KEY = "minitui.theme";
 const DENSITY_KEY = "minitui.density";
 
 class UiStore {
-  /** "dark" | "light" — Straw/Nero is the default; light remains a saved choice. */
+  /** "dark" | "light" — Earth/Nero is the default; light remains a saved choice. */
   theme = $state<"dark" | "light">(
     (() => {
       try {

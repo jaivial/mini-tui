@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { ChevronRight, Clock3 } from "@lucide/svelte";
+  import { ArrowUpRight, ChevronRight, Clock3 } from "@lucide/svelte";
   import type { QueueTask } from "../../types";
   import { slide } from "svelte/transition";
   import { reducedMotion } from "../../motion";
@@ -15,6 +15,7 @@
     label,
     tone,
     ontoggle,
+    onopen,
     details,
   }: {
     task: QueueTask;
@@ -24,6 +25,8 @@
     label: string;
     tone: "live" | "neutral" | "ok" | "err" | "warn";
     ontoggle: () => void;
+    /** Open the worker session directly, without expanding the task first. */
+    onopen?: (sessionId: string) => void;
     details?: Snippet;
   } = $props();
 
@@ -34,7 +37,7 @@
   <span class="status-rail absolute inset-y-3 left-0 w-0.5 rounded-full" aria-hidden="true"></span>
   <button
     type="button"
-    class="task-toggle interactive group flex w-full cursor-pointer items-start gap-2.5 px-3.5 py-3 text-left hover:bg-raised/45"
+    class="task-toggle interactive group flex w-full cursor-pointer items-start gap-2.5 px-3.5 py-3 text-left hover:bg-raised/45 {task.sessionId && onopen ? 'pr-11' : ''}"
     aria-expanded={open}
     onclick={ontoggle}
   >
@@ -56,6 +59,17 @@
       {#if task.status === "queued" && blocker}<span class="mt-1 block text-[9.5px] text-ink-faint">Waiting for {blocker} · same folder</span>{/if}
     </span>
   </button>
+  {#if task.sessionId && onopen}
+    <button
+      type="button"
+      class="task-open interactive absolute right-2.5 bottom-2.5 grid size-7 cursor-pointer place-items-center rounded-md border border-line/65 bg-surface/80 text-ink-faint hover:border-brand/45 hover:bg-brand-soft hover:text-brand pointer-coarse:size-10"
+      aria-label="Open worker session for {task.id}"
+      title="Open worker session"
+      onclick={() => task.sessionId && onopen?.(task.sessionId)}
+    >
+      <ArrowUpRight size={13} strokeWidth={1.9} aria-hidden="true" />
+    </button>
+  {/if}
   {#if open && details}
     <div class="task-details border-t border-line/55 bg-canvas/25">{@render details()}</div>
   {/if}
@@ -70,6 +84,7 @@
   .status-warn { --status-color: var(--color-warn); }
   .status-neutral .status-rail { opacity: 0; }
   .sidebar-task:has(.task-toggle[aria-expanded="true"]) .status-rail { opacity: 1; }
+  .task-open { box-shadow: 0 2px 8px rgb(0 0 0 / 0.14); }
   .task-details { animation: sidebar-detail 180ms var(--ease-standard) both; }
   @keyframes sidebar-detail { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 </style>

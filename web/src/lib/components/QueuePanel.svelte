@@ -84,6 +84,7 @@
           label={LABEL[task.status]}
           tone={TONE[task.status]}
           ontoggle={() => { openId = openId === task.id ? "" : task.id; redirectText = ""; }}
+          {onopen}
         >
           {#snippet details()}
             <div class="flex flex-col gap-3 px-3.5 py-3.5 pl-11 text-[12px]" transition:slide={{ duration: still ? 0 : 200 }}>
@@ -119,7 +120,6 @@
                 <Button variant="outline" size="icon-sm" icon={CornerDownRight} aria-label="Send redirect" title="Send redirect" disabled={busy || !redirectText.trim()} type="submit" />
                 {#if task.status === "running" || task.status === "queued"}<Button variant="ghost" size="icon-sm" icon={Ban} aria-label="Cancel {task.id}" title="Cancel" disabled={busy} onclick={() => cancel(task)} />{/if}
               </form>
-              {#if task.sessionId && onopen}<button type="button" class="self-start cursor-pointer text-[10.5px] text-brand underline decoration-dotted underline-offset-2 hover:text-ink" onclick={() => onopen?.(task.sessionId)}>Open worker session →</button>{/if}
             </div>
           {/snippet}
         </SidebarTask>

@@ -514,14 +514,14 @@
 <style>
   .app-shell {
     background-image:
-      radial-gradient(ellipse 60% 45% at 20% -10%, rgb(239 211 149 / 0.035), transparent),
+      radial-gradient(ellipse 60% 45% at 20% -10%, rgb(176 138 99 / 0.035), transparent),
       linear-gradient(var(--color-canvas), var(--color-canvas));
   }
   .app-header { background: color-mix(in oklab, var(--color-canvas) 88%, transparent); }
-  .brand-mark { box-shadow: inset 0 1px 0 rgb(239 211 149 / 0.12), 0 4px 16px rgb(0 0 0 / 0.16); }
+  .brand-mark { box-shadow: inset 0 1px 0 rgb(176 138 99 / 0.12), 0 4px 16px rgb(0 0 0 / 0.16); }
   .empty-workspace { margin-top: clamp(2rem, 9vh, 6rem); background: linear-gradient(145deg, color-mix(in oklab, var(--color-raised) 58%, transparent), color-mix(in oklab, var(--color-surface) 45%, transparent)); }
   .empty-workspace::before { content: ""; position: absolute; width: 15rem; height: 10rem; top: -7rem; left: 50%; translate: -50% 0; background: var(--color-brand); opacity: 0.06; filter: blur(45px); pointer-events: none; }
-  .empty-icon { box-shadow: 0 8px 30px rgb(239 211 149 / 0.07); }
+  .empty-icon { box-shadow: 0 8px 30px rgb(176 138 99 / 0.07); }
   .side-panel {
     transition: width 220ms var(--ease-emphasized);
   }
