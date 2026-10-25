@@ -246,9 +246,9 @@ main{max-width:26rem;padding:2rem;text-align:center;animation:in .4s cubic-bezie
 }
 
 function listenLoopback(port: number | undefined, onCallback: (params: URLSearchParams) => { ok: boolean; message: string }): { redirectUri: string; stop: () => void } {
-  const serve = (p: number) =>
+  const serve = (p: number, hostname = "127.0.0.1") =>
     Bun.serve({
-      hostname: "127.0.0.1",
+      hostname,
       port: p,
       fetch(req) {
         const url = new URL(req.url);
@@ -263,8 +263,21 @@ function listenLoopback(port: number | undefined, onCallback: (params: URLSearch
   } catch {
     server = serve(0); // the fixed port is taken (another login, another app): any free one
   }
+  // `localhost` resolves to ::1 first on some systems: listen there too, on the same port.
+  let v6: ReturnType<typeof serve> | undefined;
+  try {
+    v6 = serve(server.port as number, "::1");
+  } catch {
+    // no IPv6 loopback (or the port is taken there): the browser falls back to 127.0.0.1
+  }
   // `localhost`, not 127.0.0.1: some authorization servers only accept that spelling for loopback.
-  return { redirectUri: `http://localhost:${server.port}${CALLBACK_PATH}`, stop: () => server.stop(true) };
+  return {
+    redirectUri: `http://localhost:${server.port}${CALLBACK_PATH}`,
+    stop: () => {
+      server.stop(true);
+      v6?.stop(true);
+    },
+  };
 }
 
 export { RegistrationRefused };

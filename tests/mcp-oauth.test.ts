@@ -146,6 +146,11 @@ describe("the login, completed by the browser", () => {
     expect(params.get("scope")).toBe("mcp:connect");
     expect(login.redirectUri).toMatch(/^http:\/\/localhost:\d+\/callback$/);
 
+    // `localhost` may resolve to ::1: the listener answers there too (a wrong state is refused, not consumed).
+    const port = new URL(login.redirectUri).port;
+    const v6 = await fetch(`http://[::1]:${port}/callback?state=wrong&code=x`).catch(() => null);
+    if (v6) expect(v6.status).toBe(400);
+
     const seen: string[] = [];
     mcp.subscribeLogin(login.id, (v) => seen.push(v.status));
     // The browser: follow the authorization URL to our loopback page.

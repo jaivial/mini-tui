@@ -509,7 +509,7 @@ async function mcpRoute(path: string, request: Request, srv: unknown): Promise<R
     // The page tells its opener (the app) right away; the app's poll is the fallback.
     const page = mcp.callbackPage(ok, message).replace(
       "</body>",
-      `<script>try{window.opener&&window.opener.postMessage(${JSON.stringify({ type: "mcp-login", id: login?.id ?? "", status: login?.status ?? "error" })},location.origin)}catch{}</script></body>`,
+      `<script>try{window.opener&&window.opener.postMessage(${JSON.stringify({ type: "mcp-login", id: login?.id ?? "", status: login?.status ?? "error" }).replace(/</g, "\\u003c")},location.origin)}catch{}</script></body>`,
     );
     return new Response(page, { status: ok ? 200 : 400, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
   }

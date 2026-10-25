@@ -83,22 +83,44 @@
     busy = rest;
   }
 
-  async function install(body: Parameters<typeof api.mcpAdd>[0], label: string) {
+  /**
+   * A popup opened INSIDE the click. Browsers only allow `window.open` during the user's gesture;
+   * after the install and probe round trips (a second or more against Figma) Safari and Firefox
+   * block it. So it opens now, blank with a "connecting" note, and is pointed at the provider later.
+   */
+  function openPopup(name: string): Window | null {
+    const w = window.open("", `mcp-login-${name}`, "popup,width=520,height=720");
+    try {
+      w?.document.write(
+        `<title>Connecting…</title><body style="margin:0;display:grid;place-items:center;height:100vh;font:14px system-ui;color:#5d5d68">Connecting to ${name.replace(/[^\w .-]/g, "")}…</body>`,
+      );
+    } catch {
+      // a cross-origin leftover window: it is navigated anyway
+    }
+    return w;
+  }
+
+  async function install(body: Parameters<typeof api.mcpAdd>[0], label: string, oauth = false) {
     const key = body.preset ?? "custom";
     setBusy(key, "install");
+    const early = oauth ? openPopup(label) : null;
     try {
       const r = await api.mcpAdd(body);
       await load();
       if (r.probe.needsAuth) {
         toasts.push(`${label} installed`, { detail: "Log in to give the agent access.", tone: "info" });
-        await startLogin(r.server);
-      } else if (r.probe.ok) {
+        await startLogin(r.server, early);
+        return true;
+      }
+      early?.close();
+      if (r.probe.ok) {
         toasts.push(`${label} connected`, { detail: `${r.probe.tools} tools available to the agent`, tone: "ok" });
       } else {
         toasts.push(`${label} installed, but not reachable`, { detail: r.probe.error, tone: "err" });
       }
       return true;
     } catch (error) {
+      early?.close();
       if (key === "custom") {
         customError = (error as Error).message;
         shake(customForm);
@@ -140,11 +162,10 @@
   }
 
   // ---------------------------------------------------------------- login
-  async function startLogin(server: McpServerView) {
+  async function startLogin(server: McpServerView, opened: Window | null = null) {
     setBusy(server.id, "login");
-    // The popup must open inside the click (popup blockers), so it opens blank and is pointed
-    // at the provider once the server has the URL.
-    popup = window.open("", `mcp-login-${server.id}`, "popup,width=520,height=720");
+    // Called from a click: open now (see openPopup). From install: the popup it already opened.
+    popup = opened && !opened.closed ? opened : openPopup(server.name);
     try {
       const r = await api.mcpLogin(server.id);
       login = r.login;
@@ -533,7 +554,7 @@
                 class="preset interactive group flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-xl border border-line bg-surface p-3 text-left hover:border-line-strong hover:bg-raised/60"
                 aria-label="Install {p.name}"
                 disabled={!!busy[p.id]}
-                onclick={() => install({ preset: p.id }, p.name)}
+                onclick={() => install({ preset: p.id }, p.name, p.auth === "oauth")}
               >
                 <span class="grid size-8 shrink-0 place-items-center rounded-lg text-[11px] font-semibold text-white transition-transform duration-200 group-hover:scale-105" style="background: {HUE[p.id] ?? 'var(--color-ink-faint)'}" aria-hidden="true">{initials(p.name)}</span>
                 <span class="min-w-0 flex-1">

@@ -1,5 +1,5 @@
 import { refreshTokens, isExpiring, safeUrl } from "./oauth";
-import { getServer, updateServer, mcpPath, type McpServerRecord, type OAuthClient } from "./store";
+import { getServer, loadServers, updateServer, mcpPath, type McpServerRecord, type OAuthClient } from "./store";
 
 /**
  * Just enough of an MCP Streamable HTTP client to answer "does this server work with what we
@@ -73,7 +73,6 @@ export async function ensureFresh(server: McpServerRecord, path: string | null =
 
 /** Refresh every token close to expiring. Run on a timer by the TUI and the web server. */
 export async function refreshDue(path: string | null = mcpPath(), marginMs = 15 * 60_000): Promise<void> {
-  const { loadServers } = await import("./store");
   for (const s of loadServers(path)) {
     if (s.disabled || !s.oauth?.tokens?.refreshToken) continue;
     await ensureFresh(s, path, marginMs).catch(() => undefined);
