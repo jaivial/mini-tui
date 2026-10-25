@@ -5,14 +5,13 @@ const THEME_KEY = "minitui.theme";
 const DENSITY_KEY = "minitui.density";
 
 class UiStore {
-  /** "dark" | "light" — the six palettes ride on top of this. Light is the
-      default: it is the design's home (the mockup), dark is a saved choice. */
+  /** "dark" | "light" — Straw/Nero is the default; light remains a saved choice. */
   theme = $state<"dark" | "light">(
     (() => {
       try {
-        return localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light";
+        return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
       } catch {
-        return "light";
+        return "dark";
       }
     })(),
   );

@@ -50,6 +50,10 @@ def get_model(input_model_name: str | None = None, config: dict | None = None) -
     config = copy.deepcopy(config)
     config["model_name"] = resolved_model_name
 
+    from minisweagent.models.effort import apply_effort_from_env
+
+    apply_effort_from_env(resolved_model_name, config)
+
     from minisweagent.models.connections import apply as apply_connection
 
     apply_connection(resolved_model_name)

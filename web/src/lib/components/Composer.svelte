@@ -10,6 +10,7 @@
   import { skillQueryAt } from "../../../../src/skillMatch";
   import { addChip, announce, composePrompt, hasMessage, removeChip, type Chip as ChipT } from "../chips";
   import { step } from "../models";
+  import type { EffortLevel } from "../../../../src/effort";
   import { fitHeight, MAX_LINES } from "../grow";
   import type { PromptMemory } from "../promptMemory";
   import { humanSize, uploadAttachment, ATTACH_ACCEPT, ATTACH_MAX, type AttachmentRef } from "../attachments";
@@ -47,6 +48,8 @@
     switchingModel = false,
     modelNote = "",
     modelOpen = $bindable(false),
+    modelEfforts = {},
+    effortBusy = false,
     disabled = false,
     /**
      * E39: which conversation this prompt bar is writing for (the pane's session, "" for a
@@ -62,6 +65,7 @@
     onsend,
     oninterrupt,
     onmodel,
+    oneffort,
     memory,
   }: {
     /** ↑/↓ recall of the prompts sent in this chat (see lib/promptMemory.ts). */
@@ -89,6 +93,8 @@
     modelNote?: string;
     /** Bindable so `/model` can open the picker. */
     modelOpen?: boolean;
+    modelEfforts?: Partial<Record<string, EffortLevel>>;
+    effortBusy?: boolean;
     disabled?: boolean;
     /** Render as a floating pill over the content instead of a solid band below the transcript. */
     floating?: boolean;
@@ -96,6 +102,7 @@
     onsend: (text: string) => void;
     oninterrupt: () => void;
     onmodel: (id: string) => void;
+    oneffort?: (model: string, effort: EffortLevel) => void;
   } = $props();
 
   const uid = $props.id();
@@ -658,7 +665,7 @@
         </div>
       {/if}
 
-      <ModelPicker value={model} bind:open={modelOpen} busy={switchingModel} {disabled} note={modelNote} onpick={onmodel} />
+      <ModelPicker value={model} bind:open={modelOpen} busy={switchingModel} {disabled} note={modelNote} efforts={modelEfforts} {effortBusy} onpick={onmodel} {oneffort} />
 
       <div class="ml-auto flex shrink-0 items-center gap-0.5">
         <!-- The mic lives inside the floating pill, next to the paperclip: one

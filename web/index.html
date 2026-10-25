@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en" class="light">
+<html lang="en" class="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#121319" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#131313" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <title>mini-tui</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -18,10 +18,8 @@
     <script>
       // Apply the saved theme before first paint so there is no flash of the wrong one.
       //
-      // The default is LIGHT, matching the app: UiStore reads the same key and only goes dark on an
-      // explicit "dark". The static class above says "light" to match. When the key says nothing,
-      // leave BOTH classes alone — the document then paints what the app will keep, instead of
-      // painting the dark ladder and snapping to white once the bundle boots.
+      // Straw/Nero is the default, matching UiStore. An explicit saved light choice still wins.
+      // The static class above says "dark" so a first paint never flashes the wrong palette.
       try {
         const t = localStorage.getItem("minitui.theme");
         if (t === "dark" || t === "light") {

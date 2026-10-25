@@ -26,6 +26,7 @@ import { connectionModelOptions } from "../providers";
 import { writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { clampConcurrency, MAX_CONCURRENCY } from "./workQueue";
 import { dirname } from "node:path";
+import { effortCapability, isEffortLevel, type EffortCapability, type EffortLevel } from "../effort";
 
 /** "sk-…a1b2": enough to recognise a key, never enough to use it. */
 export function maskKey(key: string): string {
@@ -299,6 +300,16 @@ export function patchSettings(patch: Record<string, unknown>): SettingsView {
   // thing that picks a model. Only an explicit boolean flips it.
   if (typeof patch.modelRouterEnabled === "boolean") next.modelRouterEnabled = patch.modelRouterEnabled;
   if (typeof patch.queueConcurrency === "number" && Number.isFinite(patch.queueConcurrency)) next.queueConcurrency = clampConcurrency(patch.queueConcurrency);
+  // Reasoning preferences are per fully-qualified model, validated against that model's actual
+  // capability map. Invalid levels and unknown ids are ignored instead of reaching the wire.
+  if (patch.modelEfforts && typeof patch.modelEfforts === "object" && !Array.isArray(patch.modelEfforts)) {
+    const nextEfforts: Record<string, EffortLevel> = {};
+    for (const [model, level] of Object.entries(patch.modelEfforts as Record<string, unknown>).slice(0, 250)) {
+      if (!/^[\w][\w.:@/+-]{0,127}$/.test(model) || !isEffortLevel(level)) continue;
+      if (level === "auto" || effortCapability(model).levels.includes(level)) nextEfforts[model] = level;
+    }
+    next.modelEfforts = nextEfforts;
+  }
   // The fallback chain: known model ids only, each once, at most 20.
   if (Array.isArray(patch.modelFallbacks)) {
     const known = new Set(connectionModelOptions().map((o) => o.value).concat(MODELS.map((m) => m.value)));
@@ -361,10 +372,12 @@ export function skillList(dir?: string): SkillInfo[] {
  * left unannotated: the run may still work (another host, a slow start) and the picker must not
  * block one on a probe it cannot trust.
  */
-export function modelCatalog(): { id: string; name: string; description: string }[] {
+export type ModelCatalogEntry = { id: string; name: string; description: string; effort: EffortCapability };
+
+export function modelCatalog(): ModelCatalogEntry[] {
   const all = [...MODELS, ...connectionModelOptions(loadConnections())];
   const seen = new Set<string>();
-  const out: { id: string; name: string; description: string }[] = [];
+  const out: ModelCatalogEntry[] = [];
   let cliproxy: CliproxyCatalog | null = null;
   for (const m of all) {
     const id = String(m.value);
@@ -377,7 +390,7 @@ export function modelCatalog(): { id: string; name: string; description: string 
         description = `${description} — NOT SERVED by cli-proxy (subscription signed out)`;
       }
     }
-    out.push({ id, name: m.name, description });
+    out.push({ id, name: m.name, description, effort: effortCapability(id) });
   }
   return out;
 }

@@ -6,6 +6,8 @@ import type { SelectOption } from "@opentui/core";
 
 import { runHelperScriptCapture } from "./helpers";
 import { rustAgent } from "./mini/spawn";
+import { effortRunEnv } from "./effort";
+import { loadSettings } from "./settings";
 
 /**
  * How the provider reaches the model layer (direct base URLs, no litellm since 0.9):
@@ -369,7 +371,7 @@ export function modelEnv(modelName: string, connections: SavedConnection[] = loa
   for (const c of others) {
     for (const [k, v] of Object.entries(connectionEnv(c))) if (owners.get(k) === 1) env[k] = v;
   }
-  return match ? { ...env, ...connectionEnv(match) } : env;
+  return { ...effortRunEnv(loadSettings().modelEfforts), ...(match ? { ...env, ...connectionEnv(match) } : env) };
 }
 
 /** Model ids usable with `mini -m` from every saved connection. */
