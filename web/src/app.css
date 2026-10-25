@@ -214,8 +214,8 @@
 /* Dark mode: the cool deep-space ladder this app wore before the light
    redesign — kept as a switchable theme, same roles. */
 :root.dark {
-  /* Straw / Nero: the product's dark palette. Warm yellow is an accent, never a
-     full-surface wash; neutral steps do the structural work. */
+  /* Earth / Nero: the product's dark palette. Dark terracotta sand is an accent,
+     never a full-surface wash; neutral steps do the structural work. */
   --color-canvas: #131313;       /* Cursed Black */
   --color-surface: #1b1b1a;
   --color-raised: #262625;       /* Nero */
@@ -228,19 +228,19 @@
   --color-ink-muted: #a4a4a4;    /* Rainy Grey */
   --color-ink-faint: #8b8a88;
 
-  --color-brand: #efd395;        /* Straw Yellow */
+  --color-brand: #b08a63;        /* Dark Earth */
   --color-brand-ink: #131313;
-  --color-brand-soft: rgb(239 211 149 / 0.11);
+  --color-brand-soft: rgb(176 138 99 / 0.11);
   --color-silver: #a4a4a4;
   --color-silver-soft: rgb(164 164 164 / 0.12);
 
-  --color-live: #efd395;
-  --color-live-soft: rgb(239 211 149 / 0.12);
+  --color-live: #b08a63;
+  --color-live-soft: rgb(176 138 99 / 0.12);
   --color-ok: #b8cbaa;
   --color-err: #e59a91;
-  --color-warn: #efd395;
+  --color-warn: #b08a63;
 
-  --color-bubble-user: #efd395;
+  --color-bubble-user: #b08a63;
   --color-bubble-user-ink: #131313;
   --color-bubble-bot: #262625;
   --color-bubble-user-link: #41330f;
