@@ -44,7 +44,8 @@ fn task_schema() -> Value {
             "title": {"type": "string", "description": "short title, at most 6 words, in the user's language"},
             "description": {"type": "string", "description": "one sentence: what this task delivers"},
             "prompt": {"type": "string", "description": "the complete, self-contained brief this part's worker receives (its ONLY input): goal, deliverables, working directory, constraints, every literal from the request copied verbatim, acceptance criteria, how to verify"},
-            "cwd": {"type": "string", "description": "optional working directory (absolute or ~/...) when the request names one"}
+            "cwd": {"type": "string", "description": "optional working directory (absolute or ~/...) when the request names one"},
+            "allow_overlap": {"type": "boolean", "description": "For independent fan-out, set false on EVERY part: the queue then requires disjoint working directories. Omit for sequential work that may share a directory."}
         },
         "required": ["title", "description", "prompt"]
     })

@@ -178,7 +178,15 @@ La imagen en sí no lleva estado: reconstruible con `docker compose build`.
   Las credenciales son las del host porque el estado entra por el bind:
   `~/.config/gh/hosts.yml` (auth de gh), `~/.ssh/config`, claves y `known_hosts`.
   Así `gh pr create` o `ssh kraken` dentro del contenedor son la misma acción
-  que en la terminal de fuera. Ojo: si la clave SSH tiene passphrase y está en
+  que en la terminal de fuera. Matiz importante: el token de gh debe estar en
+  **archivo**, no en el keyring del escritorio — el secret-service no cruza el
+  borde del contenedor (medido: `gh auth status` decía "token invalid" dentro
+  con el login correcto fuera). Si un `gh auth login` normal lo guarda en el
+  keyring, repetir con `gh auth login -h github.com --insecure-storage`; el
+  entrypoint avisa en el log del contenedor si `hosts.yml` llega sin token.
+  Mismo criterio para lo demás: claves SSH en `~/.ssh`, API keys en
+  `providers.json` — todo en el bind, nada en almacenes de sesión del host
+  (keyring, ssh-agent; ver abajo). Ojo: si la clave SSH tiene passphrase y está en
   el `ssh-agent` del host, dentro del contenedor no hay agent — usar clave sin
   passphrase (como las de este host) o montar el socket `SSH_AUTH_SOCK`.
 - **bun del home montado**: `src/mini/spawn.ts` prepende `~/.local/bin:~/.bun/bin`

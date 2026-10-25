@@ -282,6 +282,26 @@ describe("one running task per directory tree", () => {
     await h.settle();
     expect(h.q.get("t2")!.status).toBe("running");
   });
+
+  test("independent fan-out rejects overlapping directories only when allow_overlap is false", async () => {
+    const { mkdirSync } = await import("node:fs");
+    for (const d of ["/tmp/wq-fan-a/sub", "/tmp/wq-fan-b"]) mkdirSync(d, { recursive: true });
+    const h = harness(5);
+    const rejected = h.q.create({ spec: { tasks: [
+      { ...spec("edit part a"), cwd: "/tmp/wq-fan-a", allow_overlap: false },
+      { ...spec("edit part a sub"), cwd: "/tmp/wq-fan-a/sub", allow_overlap: false },
+    ] } as never });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.text).toContain("Create ONE task");
+    expect(h.q.list()).toHaveLength(0);
+    const accepted = h.q.create({ spec: { tasks: [
+      { ...spec("edit part a"), cwd: "/tmp/wq-fan-a", allow_overlap: false },
+      { ...spec("edit part b"), cwd: "/tmp/wq-fan-b", allow_overlap: false },
+    ] } as never });
+    expect(accepted.ok).toBe(true);
+    await h.settle();
+    expect(h.q.counts()).toMatchObject({ running: 2, queued: 0 });
+  });
 });
 
 describe("the model a task runs on", () => {

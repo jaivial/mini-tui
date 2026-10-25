@@ -1,0 +1,74 @@
+[
+  {
+    "name": "Oh My Pi",
+    "tasks_passed": 22,
+    "pass_rate_percent": 88.0,
+    "median_time_seconds": 231.7,
+    "tool_calls": 248,
+    "total_tokens_millions": 9.65,
+    "total_cost_usd": 10.93
+  },
+  {
+    "name": "Kimi Code",
+    "tasks_passed": 21,
+    "pass_rate_percent": 84.0,
+    "median_time_seconds": 281.9,
+    "tool_calls": 301,
+    "total_tokens_millions": 15.27,
+    "total_cost_usd": 12.87
+  },
+  {
+    "name": "Hermes Agent",
+    "tasks_passed": 20,
+    "pass_rate_percent": 80.0,
+    "median_time_seconds": 164.0,
+    "tool_calls": 262,
+    "total_tokens_millions": 10.09,
+    "total_cost_usd": 9.28
+  },
+  {
+    "name": "Claude Code",
+    "tasks_passed": 19,
+    "pass_rate_percent": 76.0,
+    "median_time_seconds": 330.5,
+    "tool_calls": 293,
+    "total_tokens_millions": 15.09,
+    "total_cost_usd": 35.37
+  },
+  {
+    "name": "Pi Agent",
+    "tasks_passed": 18,
+    "pass_rate_percent": 72.0,
+    "median_time_seconds": 156.2,
+    "tool_calls": 223,
+    "total_tokens_millions": 7.59,
+    "total_cost_usd": 9.65
+  },
+  {
+    "name": "OpenCode",
+    "tasks_passed": 18,
+    "pass_rate_percent": 72.0,
+    "median_time_seconds": 270.5,
+    "tool_calls": 299,
+    "total_tokens_millions": 9.5,
+    "total_cost_usd": 12.29
+  },
+  {
+    "name": "Grok Build",
+    "tasks_passed": 18,
+    "pass_rate_percent": 72.0,
+    "median_time_seconds": 196.2,
+    "tool_calls": 402,
+    "total_tokens_millions": 12.62,
+    "total_cost_usd": 11.87
+  },
+  {
+    "name": "Codex",
+    "tasks_passed": 17,
+    "pass_rate_percent": 68.0,
+    "median_time_seconds": 233.4,
+    "tool_calls": 297,
+    "total_tokens_millions": 9.19,
+    "total_cost_usd": 11.28
+  }
+]

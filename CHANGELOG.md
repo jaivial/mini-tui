@@ -2,6 +2,40 @@
 
 All notable changes to mini-tui, newest first. Versions follow [semver](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Deterministic worker closure with fast close + eager verification.** Queue workers capture the
+  supplied checker's SHA-256 and require a real passing verdict before `Submitted`. Eager closes
+  as soon as the deliverable passes, without another model turn. `verify.sh` needs an independent
+  `PASS` line; masked failures, tracebacks and checker replacement are rejected. Opt out with
+  `MINI_AGENT_TASK_VERIFIER=off`, `MINI_AGENT_VERIFIER_EAGER=0` or
+  `MINI_AGENT_VERIFIER_FAST_CLOSE=0`.
+- **Opt-in MCP client.** Streamable HTTP initialize/session handling, JSON/SSE responses,
+  paginated `tools/list`, `tools/call`, and tool schemas for OpenAI chat/Responses and Anthropic.
+  Configure with `MINI_AGENT_MCP_URL`; verify with `mini-agent-rs mcp-tools` (docs/mcp.md).
+- **Kimi K3 and MiMo A/B tooling.** Isolated interleaved queue-vs-pi runners, per-task provenance,
+  strict invalid-run handling, objective PASS gates, local and Composio-style charts, and a
+  validated schema for adding mini's official result once the private benchmark is accessible.
+
+### Fixed
+
+- **Independent fan-out requires disjoint working directories.** `allow_overlap: false` rejects
+  overlapping waves instead of serializing N cold starts; shared-root work falls back to one
+  worker. Sequential work keeps the previous overlap behavior.
+- **Benchmark integrity.** Verifier restoration uses the original task id across `.rN` runs,
+  multi-worker makespan is measured correctly, and infrastructure failures are not scored as
+  ordinary task failures.
+- **Docker GitHub auth diagnosis.** Entrypoint warns when gh credentials are not file-visible,
+  covering desktop keyrings that do not cross the container boundary.
+
+### Measured
+
+- Fast close + eager: **2.85x worker with 30/30 PASS on mini and pi** (`queue-20261024-211031`).
+- Strict final binary: **2.43x worker / 1.84x e2e**, 10/10 on both (`queue-20261024-222316`).
+- Tests: 91 queue/bridge TypeScript checks, 7 closure tests, 2 MCP tests, 4 chart tests.
+
 ## 0.44.0 — 2026-10-23
 
 The docker release: the whole runtime in one image, with the tools that keep the container from

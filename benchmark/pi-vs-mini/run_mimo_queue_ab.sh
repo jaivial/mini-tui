@@ -1,30 +1,33 @@
 #!/usr/bin/env bash
-# Isolated, interleaved mini-queue vs pi A/B on Xiaomi MiMo V2.6 Flash (Singapore token plan).
+# Isolated, interleaved mini-queue vs pi A/B. Defaults to Xiaomi MiMo V2.6 Flash
+# (Singapore token plan); run_kimi_queue_ab.sh selects Kimi for Coding K3 instead.
 # No global provider, settings, session DB, or production web service is modified.
 set -euo pipefail
 cd "$(dirname "$0")"
 REPO=$(cd ../.. && pwd)
 PORT=${WEB_PORT:-4410}
 REPS=${REPS:-3}
-RUN_ROOT=${RUN_ROOT:-/tmp/mini-tui-mimo-ab-$(date +%Y%m%d-%H%M%S)-$$}
+RUN_ROOT=${RUN_ROOT:-/tmp/mini-tui-${RUN_ROOT_PREFIX:-mimo}-ab-$(date +%Y%m%d-%H%M%S)-$$}
 mkdir -p "$RUN_ROOT/config" "$RUN_ROOT/runs"
-
-# pi resolves `$XIAOMI_API_KEY` from its provider config; mini reads the same credential
-# from providers.json. Load it without echoing it, then pin both arms to the same surface.
-if [[ -z "${XIAOMI_API_KEY:-}" ]]; then
-  KEY_FILE=${KEY_FILE:-$HOME/.config/mini-tui-web.env}
-  [[ -f "$KEY_FILE" ]] || { echo "missing Xiaomi credential: $KEY_FILE" >&2; exit 1; }
-  set -a
-  # shellcheck disable=SC1090
-  . "$KEY_FILE"
-  set +a
-fi
-: "${XIAOMI_API_KEY:?Xiaomi credential is empty}"
-export XIAOMI_API_BASE=https://token-plan-sgp.xiaomimimo.com/anthropic/v1
 
 export BENCH_MODEL=${BENCH_MODEL:-xiaomi/mimo-v2.6-flash}
 export BENCH_PI_PROVIDER=${BENCH_PI_PROVIDER:-xiaomi-anthropic}
 export BENCH_PI_MODEL=${BENCH_PI_MODEL:-mimo-v2.6-flash}
+
+# Xiaomi needs its key in the environment for pi's `$XIAOMI_API_KEY` reference. Kimi uses
+# mini's providers.json and pi's own auth.json, so no credential is copied or printed here.
+if [[ "$BENCH_MODEL" == xiaomi/* || "$BENCH_PI_PROVIDER" == xiaomi* ]]; then
+  if [[ -z "${XIAOMI_API_KEY:-}" ]]; then
+    KEY_FILE=${KEY_FILE:-$HOME/.config/mini-tui-web.env}
+    [[ -f "$KEY_FILE" ]] || { echo "missing Xiaomi credential: $KEY_FILE" >&2; exit 1; }
+    set -a
+    # shellcheck disable=SC1090
+    . "$KEY_FILE"
+    set +a
+  fi
+  : "${XIAOMI_API_KEY:?Xiaomi credential is empty}"
+  export XIAOMI_API_BASE=https://token-plan-sgp.xiaomimimo.com/anthropic/v1
+fi
 export BENCH_TIMEOUT=${BENCH_TIMEOUT:-900}
 export MINITUI_AGENT_BIN=${MINITUI_AGENT_BIN:-$REPO/agent-rs/target/release/mini-agent-rs}
 export MINITUI_WEB_HOST=127.0.0.1

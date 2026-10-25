@@ -25,6 +25,18 @@ rb.PI_MODEL = os.environ.get("BENCH_PI_MODEL", "mimo-v2.6-flash")
 TIMEOUT = int(os.environ.get("BENCH_TIMEOUT", "900"))
 
 
+def worker_bool(name, default=True):
+    raw = os.environ.get("MINITUI_WORKER_ENV", "")
+    try:
+        options = json.loads(raw) if raw else {}
+    except Exception:
+        options = {}
+    value = options.get(name, os.environ.get(name))
+    if value is None:
+        return default
+    return str(value).lower() not in ("0", "off", "false")
+
+
 def call(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(BASE + path, data=data, method=method, headers={"content-type": "application/json"})
@@ -72,6 +84,7 @@ def run_mini_queue(task, rundir, log, tag):
     for t in new:
         if t["status"] in ("queued", "running"):
             call("POST", f"/queue/tasks/{t['id']}/cancel")
+    ended = time.time()
     v, vout = rb.verify(work, task)
     # One card keeps the historical assigned-work time. A fanned-out request is measured from
     # its first worker start to its last worker finish: looking only at card #1 would hide most
@@ -80,6 +93,8 @@ def run_mini_queue(task, rundir, log, tag):
     finishes = [t.get("finishedAt") or 0 for t in new if t.get("finishedAt")]
     if len(new) > 1 and starts and finishes:
         worker = round((max(finishes) - min(starts)) / 1000, 1)
+    elif status == "timeout" and starts:
+        worker = round(ended - min(starts) / 1000, 1)
     else:
         worker = round(qt.get("workSeconds") or 0, 1)
     started = min(starts) / 1000 if starts else 0
@@ -87,7 +102,7 @@ def run_mini_queue(task, rundir, log, tag):
     workers = []
     for t in new:
         traj = traj_of_session(t.get("sessionId", ""))
-        workers.append({**{k: t.get(k) for k in ("id", "title", "sessionId", "attempts", "cwd", "status", "workSeconds")},
+        workers.append({**{k: t.get(k) for k in ("id", "title", "sessionId", "attempts", "cwd", "status", "workSeconds", "startedAt", "finishedAt")},
                         "traj": traj, "mini_info": rb.mini_info({}, traj)})
     traj = workers[0]["traj"] if workers else None
     n_tasks = len(new)
@@ -122,6 +137,9 @@ def main():
         "tasks_dir": rb.TASKS_DIR, "tasks": todo, "reps": reps, "timeout_seconds": TIMEOUT,
         "repo_head": subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
         "repo_dirty": bool(subprocess.run(["git", "-C", repo, "status", "--porcelain"], capture_output=True, text=True).stdout.strip()),
+        "worker_fast_close": worker_bool("MINI_AGENT_VERIFIER_FAST_CLOSE"),
+        "worker_eager_verifier": worker_bool("MINI_AGENT_VERIFIER_EAGER"),
+        "mcp_enabled": bool(os.environ.get("MINI_AGENT_MCP_URL")),
         "agent_binary": binary,
         "agent_binary_sha256": hashlib.sha256(open(binary, "rb").read()).hexdigest() if os.path.isfile(binary) else None,
     }
@@ -148,7 +166,7 @@ def main():
                 r["rep"] = rep + 1
                 rows.append(r)
                 json.dump(rows, open(os.path.join(rundir, "summary.json"), "w"), indent=1)
-                if h == "pi" and (r.get("returncode") not in (0, None) or r.get("turns") == 0):
+                if h == "pi" and (r.get("returncode") not in (0, None, "timeout") or r.get("turns") == 0):
                     raise RuntimeError(f"invalid pi runtime on {task} rep {rep + 1}: {r.get('status')}; {r.get('stderr', '')[-500:]}")
     summarize(rows, log)
     log(f"run dir: {rundir}")
