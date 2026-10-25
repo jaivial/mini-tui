@@ -57,7 +57,6 @@ const ZAI = "https://docs.z.ai/guides/llm/glm-5.3";
 const cap = (levels: ConfiguredEffort[], kind: EffortKind, source?: string, defaultEffort?: ConfiguredEffort, note?: string): EffortCapability =>
   ({ levels, kind, ...(source ? { source } : {}), ...(defaultEffort ? { defaultEffort } : {}), ...(note ? { note } : {}) });
 const NONE = cap([], "none");
-const OPENAI_STANDARD = cap(["off", "low", "medium", "high", "xhigh"], "openai", OPENAI, "medium");
 const CLAUDE_55 = cap(["low", "medium", "high", "xhigh", "max"], "anthropic", CLAUDE, "medium", "Adaptive thinking stays enabled; effort controls its depth.");
 const GLM_53 = cap(["low", "high", "max"], "openai", ZAI, "max", "GLM-5.3 always reasons; it does not accept thinking.disabled.");
 const KIMI_K3 = cap(["low", "high", "max"], "openai", MOONSHOT, "max", "Kimi K3 always reasons and preserves thinking.");
@@ -85,7 +84,10 @@ function openAICapability(id: string): EffortCapability {
   if (/^gpt-5\.6/.test(id)) return cap(["off", "low", "medium", "high", "xhigh", "max"], "openai", `${OPENAI_MODELS}/gpt-5.6-luna`, "medium");
   if (/^gpt-5\.5/.test(id)) return cap(["off", "low", "medium", "high", "xhigh"], "openai", `${OPENAI_MODELS}/gpt-5.5`, "medium");
   if (/^gpt-5\.4/.test(id)) return cap(["off", "low", "medium", "high", "xhigh"], "openai", `${OPENAI_MODELS}/gpt-5.4`, "off");
-  if (/^gpt-5(?:$|[.-])/.test(id)) return OPENAI_STANDARD;
+  if (/^gpt-5\.2/.test(id)) return cap(["off", "low", "medium", "high", "xhigh"], "openai", `${OPENAI_MODELS}/gpt-5.2`, "off");
+  if (/^gpt-5\.1/.test(id)) return cap(["off", "low", "medium", "high"], "openai", `${OPENAI_MODELS}/gpt-5.1`, "off");
+  if (/^gpt-5(?:-|$)/.test(id)) return cap(["minimal", "low", "medium", "high"], "openai", `${OPENAI_MODELS}/gpt-5`);
+  // Unverified GPT-5.x families stay on Auto; never inherit another model's levels.
   if (/^o[134](?:$|-)/.test(id)) return cap(["low", "medium", "high"], "openai", OPENAI, "medium");
   if (/gpt-oss/.test(id)) return cap(["low", "medium", "high"], "openai", OPENAI, "medium");
   return NONE;

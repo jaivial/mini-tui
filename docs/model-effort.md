@@ -25,7 +25,10 @@ parámetro y conserva el comportamiento del proveedor. Las preferencias se guard
 | OpenAI GPT-5.6 (Luna/Terra) | Off, Low, Medium, High, Extra high, Max | Medium | Tabla del modelo Luna; sin Minimal |
 | OpenAI GPT-5.5 | Off, Low, Medium, High, Extra high | Medium | Sin Minimal ni Max |
 | OpenAI GPT-5.4 | Off, Low, Medium, High, Extra high | Off | Sin Minimal ni Max |
-| Otras GPT-5 / o-series | Subconjunto documentado por familia | Depende del modelo | GPT-4o-mini queda en Auto |
+| OpenAI GPT-5.2 | Off, Low, Medium, High, Extra high | Off | Sin Minimal |
+| OpenAI GPT-5.1 | Off, Low, Medium, High | Off | Sin Minimal, Extra high ni Max |
+| OpenAI GPT-5 | Minimal, Low, Medium, High | — | Sin Off, Extra high ni Max |
+| Otras GPT-5.x / o-series | Auto o subconjunto documentado | Depende del modelo | Familias no verificadas y GPT-4o-mini quedan en Auto |
 | Claude Opus/Haiku 5.5 | Low, Medium, High, Extra high, Max | Medium | Adaptive thinking siempre activo; no se ofrece Off |
 | Claude Sonnet 5.5 / Opus/Sonnet 5 | Low, Medium, High, Extra high, Max | High | `output_config.effort` |
 | Claude Opus/Sonnet 4.6 | Low, Medium, High, Max | High | No se ofrece `xhigh` |
