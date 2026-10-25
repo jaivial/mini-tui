@@ -341,7 +341,16 @@ describe("Google Search Console (Google's own MCP server)", () => {
     async fetch(req) {
       const url = new URL(req.url);
       const base = `http://127.0.0.1:${google.port}`;
-      if (url.pathname === "/mcp" && req.method === "POST") return Response.json({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18", serverInfo: { name: "StatelessServer" } } });
+      if (url.pathname === "/mcp" && req.method === "POST") {
+        const body = (await req.json()) as { id?: number; method: string };
+        if (body.method === "tools/call") {
+          if (req.headers.get("authorization") !== "Bearer good") return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "Request is missing required authentication credential." }], isError: true } }, { status: 401 });
+          return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "[]" }] } });
+        }
+        if (body.method === "tools/list") return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "sites_list" }, { name: "query" }] } });
+        if (body.method === "initialize") return Response.json({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-06-18", serverInfo: { name: "StatelessServer" } } });
+        return new Response(null, { status: 202 });
+      }
       if (url.pathname === "/.well-known/oauth-protected-resource/mcp") return Response.json({ resource: `${base}/mcp`, authorization_servers: [`${base}/`], scopes_supported: ["https://www.googleapis.com/auth/webmasters", "https://www.googleapis.com/auth/webmasters.readonly"] });
       if (url.pathname === "/.well-known/oauth-authorization-server") return Response.json({ issuer: base, authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth", token_endpoint: `${base}/token`, token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"] });
       return new Response("", { status: 404 });
@@ -385,6 +394,17 @@ describe("Google Search Console (Google's own MCP server)", () => {
     expect(q.get("scope")).toBe("https://www.googleapis.com/auth/webmasters.readonly");
     expect(q.get("code_challenge_method")).toBe("S256");
     mcp.cancelLogin(login.id);
+  });
+
+  test("with a token, the connection is proved by a call, not by the anonymous listing", async () => {
+    const s = mcp.addServer({ preset: "google-search-console", clientId: "123-abc.apps.googleusercontent.com", clientSecret: "x" }, file);
+    const at = (accessToken: string) => ({ ...s, url: `http://127.0.0.1:${google.port}/mcp`, oauth: { ...s.oauth, tokens: { accessToken } } });
+    const bad = await mcp.probe(at("revoked"));
+    expect(bad.ok).toBe(false);
+    expect(bad.needsAuth).toBe(true);
+    const good = await mcp.probe(at("good"));
+    expect(good.ok).toBe(true);
+    expect(good.tools?.map((t) => t.name)).toEqual(["sites_list", "query"]);
   });
 
   test("non-Google servers do not get Google's offline parameters", async () => {
