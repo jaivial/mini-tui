@@ -4,6 +4,9 @@
 use crate::templates::render;
 use crate::util::{get, get_str, now, py_json, Obj};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static RECOVERED_XML_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn bash_tool() -> Value {
     json!({
@@ -216,6 +219,68 @@ fn json_error_text(raw: &str, e: &serde_json::Error) -> String {
         _ => "Invalid JSON",
     };
     format!("{what}: line {line} column {col} (char {char_index})")
+}
+
+/// MiMo can answer `stop_reason=tool_use` while serializing calls as
+/// `<tool_call><function=name><parameter=key>value</parameter>…` text. Recover that wire bug into
+/// the native shape; execution still goes through `command_for`, so unknown tools and bad arguments
+/// are rejected exactly as they are for provider-native calls.
+pub fn recover_xml_tool_calls(text: &str) -> Result<Vec<Value>, String> {
+    fn between<'a>(text: &'a str, from: usize, open: &str, close: &str) -> Result<(String, &'a str, usize), String> {
+        let start = text[from..].find(open).map(|i| from + i).ok_or_else(|| format!("missing {open}"))?;
+        let name = start + open.len();
+        let value = text[name..].find('>').map(|i| name + i + 1).ok_or_else(|| format!("missing > after {open}"))?;
+        let end = text[value..].find(close).map(|i| value + i).ok_or_else(|| format!("missing {close}"))?;
+        Ok((text[name..value - 1].to_string(), &text[value..end], end + close.len()))
+    }
+    fn value(raw: &str) -> Result<Value, String> {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return serde_json::from_str(trimmed).map_err(|e| format!("invalid JSON parameter: {e}"));
+        }
+        Ok(match trimmed {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            "null" => Value::Null,
+            _ => serde_json::from_str::<i64>(trimmed).map(Value::from)
+                .or_else(|_| serde_json::from_str::<f64>(trimmed).map(Value::from))
+                .unwrap_or_else(|_| Value::String(raw.to_string())),
+        })
+    }
+    let mut calls = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<tool_call>") {
+        if !rest[..start].trim().is_empty() && !calls.is_empty() {
+            return Err("unexpected text between recovered tool calls".into());
+        }
+        let after_open = &rest[start + "<tool_call>".len()..];
+        let end = after_open.find("</tool_call>").ok_or("missing </tool_call>")?;
+        let body = &after_open[..end];
+        let (name, mut params, _) = between(body, 0, "<function=", "</function>")?;
+        if name.is_empty() {
+            return Err("empty recovered function name".into());
+        }
+        let mut args = Obj::new();
+        while let Some(at) = params.find("<parameter=") {
+            if !params[..at].trim().is_empty() {
+                return Err("unexpected content between recovered parameters".into());
+            }
+            params = &params[at..];
+            let (key, raw, after) = between(params, 0, "<parameter=", "</parameter>")?;
+            if key.is_empty() || args.contains_key(&key) {
+                return Err(format!("empty or duplicate recovered parameter {key}"));
+            }
+            args.insert(key, value(raw)?);
+            params = &params[after..];
+        }
+        if !params.trim().is_empty() {
+            return Err("malformed recovered parameter list".into());
+        }
+        let id = format!("recovered_xml_{}", RECOVERED_XML_ID.fetch_add(1, Ordering::SeqCst));
+        calls.push(json!({"id": id, "type": "function", "function": {"name": name, "arguments": Value::Object(args).to_string()}}));
+        rest = &after_open[end + "</tool_call>".len()..];
+    }
+    if calls.is_empty() { Err("no XML tool calls found".into()) } else { Ok(calls) }
 }
 
 /// `parse_toolcall_actions`: chat-completions tool calls -> `[{command, tool_call_id}]`.
@@ -545,6 +610,30 @@ mod tests {
         let calls = vec![json!({"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{\"command\": \"ls\"}"}})];
         let actions = parse_toolcall_actions(&calls, TPL, &Value::Null).unwrap();
         assert_eq!(actions, vec![json!({"command": "ls", "tool_call_id": "c1"})]);
+    }
+
+    #[test]
+    fn recovers_mimo_xml_with_linear_parameter_types() {
+        let text = concat!(
+            "<tool_call><function=mcp__linear__save_issue>",
+            "<parameter=team>BIZ</parameter>",
+            "<parameter=priority>1</parameter>",
+            "<parameter=addLabels>[\"Bug\"]</parameter>",
+            "<parameter=links>[{\"url\":\"https://github.com/o/r/issues/191\",\"title\":\"GH #191\"}]</parameter>",
+            "<parameter=description>Primera línea\nSegunda línea</parameter>",
+            "</function></tool_call>",
+            "<tool_call><function=mcp__linear__list_issues><parameter=limit>5</parameter><parameter=query>DEBUG</parameter></function></tool_call>"
+        );
+        let calls = recover_xml_tool_calls(text).unwrap();
+        assert_eq!(calls.len(), 2);
+        let args: Value = serde_json::from_str(calls[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["team"], "BIZ");
+        assert_eq!(args["priority"], 1);
+        assert_eq!(args["addLabels"], json!(["Bug"]));
+        assert_eq!(args["links"][0]["url"], "https://github.com/o/r/issues/191");
+        assert_eq!(args["description"], "Primera línea\nSegunda línea");
+        assert_eq!(calls[1]["function"]["name"], "mcp__linear__list_issues");
+        assert!(recover_xml_tool_calls("<tool_call><function=bash>").is_err());
     }
 
     #[test]
