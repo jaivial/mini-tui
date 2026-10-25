@@ -18,7 +18,7 @@
     ok: "text-ok bg-ok/12",
     err: "text-err bg-err/12",
     warn: "text-warn bg-warn/12",
-    brand: "text-brand bg-brand-soft",
+    brand: "text-brand-fg bg-brand-soft",
     live: "text-ink bg-raised",
   };
   const DOTS: Record<string, string> = {

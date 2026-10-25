@@ -82,7 +82,7 @@
       <p class="mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-sm text-ink-muted">{detail.description || 'No description saved.'}</p>
       {#if detail.result}<details class="mt-3"><summary class="cursor-pointer py-2 text-xs font-medium">Saved result</summary><p class="whitespace-pre-wrap break-words text-sm text-ink-muted">{detail.result}</p></details>{/if}
       <h5 class="mt-4 text-xs font-semibold">Assigned subagent</h5>
-      {#each assigned as child}<button class="mt-2 flex w-full items-center justify-between gap-2 rounded-lg border border-line p-3 text-left" onclick={()=>enter(child.id)}><span class="min-w-0 truncate text-sm">{child.title}</span><span class="shrink-0 text-xs text-brand">{child.status} · Open board →</span></button>{:else}<p class="mt-2 text-xs text-ink-muted">{detail.assignee ? `Assigned to ${detail.assignee}. No linked subagent session is available.` : 'No subagent assigned.'}</p>{/each}
+      {#each assigned as child}<button class="mt-2 flex w-full items-center justify-between gap-2 rounded-lg border border-line p-3 text-left" onclick={()=>enter(child.id)}><span class="min-w-0 truncate text-sm">{child.title}</span><span class="shrink-0 text-xs text-brand-fg">{child.status} · Open board →</span></button>{:else}<p class="mt-2 text-xs text-ink-muted">{detail.assignee ? `Assigned to ${detail.assignee}. No linked subagent session is available.` : 'No subagent assigned.'}</p>{/each}
     </section>
   {/if}
   <div class={mode==='list'?'flex flex-col gap-3':'grid grid-flow-col auto-cols-[minmax(240px,1fr)] gap-3 overflow-x-auto pb-2 xl:auto-cols-fr'} aria-label={mode==='list'?'Task list':'Four task columns'}>
@@ -99,7 +99,7 @@
               <code class="tnum shrink-0 rounded bg-overlay px-1.5 py-0.5 font-mono text-[10.5px] text-ink-muted">{card.id}</code>
               {#if card.assignee}<span class="min-w-0 truncate">{card.assignee}</span>{/if}
             </span>
-            <span class="mt-2 block text-xs text-brand">View task & subagents →</span>
+            <span class="mt-2 block text-xs text-brand-fg">View task & subagents →</span>
           </button>
         {/each}
         {#if !shown.some(c=>columnOf(c)===col.id)}<p class="px-2 py-4 text-xs text-ink-faint">No tasks</p>{/if}</div>

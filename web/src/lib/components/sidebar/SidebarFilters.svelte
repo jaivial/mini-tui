@@ -24,7 +24,7 @@
       onclick={() => onchange(item.id)}
     >
       <span>{item.label}</span>
-      <span class="tnum rounded px-1 text-[9px] {value === item.id ? 'bg-brand-soft text-brand' : 'text-ink-faint'}">{counts[item.id]}</span>
+      <span class="tnum rounded px-1 text-[9px] {value === item.id ? 'bg-brand-soft text-brand-fg' : 'text-ink-faint'}">{counts[item.id]}</span>
     </button>
   {/each}
 </div>

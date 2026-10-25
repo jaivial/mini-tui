@@ -595,7 +595,7 @@
             </button>
             <button
               type="button"
-              class="interactive h-7 shrink-0 cursor-pointer rounded-md px-2 text-[12px] font-medium text-brand hover:bg-raised"
+              class="interactive h-7 shrink-0 cursor-pointer rounded-md px-2 text-[12px] font-medium text-brand-fg hover:bg-raised"
               onclick={() => (confirmClose = false)}
             >
               Seguir grabando

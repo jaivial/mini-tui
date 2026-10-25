@@ -145,7 +145,7 @@
   {:else if error}
     <p class="text-[12.5px] text-ink-muted" role="status">
       Could not read the router status: {error}
-      <button type="button" class="cursor-pointer text-brand underline underline-offset-2" onclick={() => load()}>Retry</button>
+      <button type="button" class="cursor-pointer text-brand-fg underline underline-offset-2" onclick={() => load()}>Retry</button>
     </p>
   {:else if status}
     <div class="flex flex-col gap-2 rounded-lg border border-line p-3 text-[12.5px] text-ink-muted">

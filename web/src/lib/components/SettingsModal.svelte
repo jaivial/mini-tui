@@ -419,7 +419,7 @@
             <div class="flex flex-col gap-2" role="status" aria-label="Loading providers"><Skeleton class="h-14" /><Skeleton class="h-14" /></div>
           {:else if catalog.providersStatus === "error"}
             <p class="text-[12.5px] text-ink-muted" role="status">
-              Could not load providers. <button type="button" class="cursor-pointer text-brand underline underline-offset-2" onclick={() => catalog.loadProviders(true)}>Retry</button>
+              Could not load providers. <button type="button" class="cursor-pointer text-brand-fg underline underline-offset-2" onclick={() => catalog.loadProviders(true)}>Retry</button>
             </p>
           {:else if !catalog.connected.length}
             <p class="rounded-lg border border-dashed border-line px-4 py-6 text-center text-[12.5px] text-ink-muted">No providers connected yet. Pick one below and paste a key.</p>
@@ -528,7 +528,7 @@
         {#if catalog.skillsStatus === "loading" && !catalog.skills.length}
           <div class="flex flex-col gap-2" role="status" aria-label="Loading skills"><Skeleton class="h-12" /><Skeleton class="h-12" /><Skeleton class="h-12" /></div>
         {:else if catalog.skillsStatus === "error"}
-          <p class="text-[12.5px] text-ink-muted" role="status">Could not load skills. <button type="button" class="cursor-pointer text-brand underline underline-offset-2" onclick={() => catalog.loadSkills(true)}>Retry</button></p>
+          <p class="text-[12.5px] text-ink-muted" role="status">Could not load skills. <button type="button" class="cursor-pointer text-brand-fg underline underline-offset-2" onclick={() => catalog.loadSkills(true)}>Retry</button></p>
         {:else if !catalog.skills.length}
           <p class="rounded-lg border border-dashed border-line px-4 py-6 text-center text-[12.5px] text-ink-muted">No skills installed. Add a folder with a SKILL.md to ~/.config/mini-tui/skills.</p>
         {:else}

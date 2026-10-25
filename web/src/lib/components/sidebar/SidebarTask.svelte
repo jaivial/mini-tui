@@ -41,7 +41,7 @@
     aria-expanded={open}
     onclick={ontoggle}
   >
-    <span class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-md text-ink-faint transition-[transform,background-color,color] duration-200 group-hover:bg-raised group-hover:text-ink {open ? 'rotate-90 bg-raised text-brand' : ''}">
+    <span class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-md text-ink-faint transition-[transform,background-color,color] duration-200 group-hover:bg-raised group-hover:text-ink {open ? 'rotate-90 bg-raised text-brand-fg' : ''}">
       <ChevronRight size={12} strokeWidth={2} aria-hidden="true" />
     </span>
     <span class="min-w-0 flex-1">
@@ -62,7 +62,7 @@
   {#if task.sessionId && onopen}
     <button
       type="button"
-      class="task-open interactive absolute right-2.5 bottom-2.5 grid size-7 cursor-pointer place-items-center rounded-md border border-line/65 bg-surface/80 text-ink-faint hover:border-brand/45 hover:bg-brand-soft hover:text-brand pointer-coarse:size-10"
+      class="task-open interactive absolute right-2.5 bottom-2.5 grid size-7 cursor-pointer place-items-center rounded-md border border-line/65 bg-surface/80 text-ink-faint hover:border-brand/45 hover:bg-brand-soft hover:text-brand-fg pointer-coarse:size-10"
       aria-label="Open worker session for {task.id}"
       title="Open worker session"
       onclick={() => task.sessionId && onopen?.(task.sessionId)}

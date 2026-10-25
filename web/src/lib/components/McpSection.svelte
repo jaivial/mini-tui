@@ -363,7 +363,7 @@
       data-status={login.status}
     >
       <div class="flex items-start gap-3">
-        <span class="relative grid size-9 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand" aria-hidden="true">
+        <span class="relative grid size-9 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand-fg" aria-hidden="true">
           {#if login.status === "done"}
             <Check size={18} strokeWidth={2.25} class="check-pop" />
           {:else}
@@ -444,7 +444,7 @@
       <div class="flex flex-col gap-2" role="status" aria-label="Loading MCP servers"><Skeleton class="h-14" /><Skeleton class="h-14" /></div>
     {:else if status === "error"}
       <p class="text-[12.5px] text-ink-muted" role="status">
-        Could not load MCP servers. <button type="button" class="cursor-pointer text-brand underline underline-offset-2" onclick={load}>Retry</button>
+        Could not load MCP servers. <button type="button" class="cursor-pointer text-brand-fg underline underline-offset-2" onclick={load}>Retry</button>
       </p>
     {:else if !servers.length}
       <div use:enter class="flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-4 py-7 text-center">

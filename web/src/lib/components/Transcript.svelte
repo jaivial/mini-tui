@@ -325,7 +325,7 @@
       {#if /^\[subagent [^\]\n]+\] /.test(row.event.text)}
         <details class="cv-row rounded-xl border border-line bg-raised/30 px-3 py-2 {gap}">
           <summary class="flex cursor-pointer list-none items-center gap-2 text-xs text-ink-muted">
-            <MessageCircle size={14} class="shrink-0 text-brand" />
+            <MessageCircle size={14} class="shrink-0 text-brand-fg" />
             <span class="min-w-0 flex-1 truncate">{row.event.text.split("\n")[0]}</span>
             <span class="shrink-0 text-ink-faint">Details</span>
           </summary>
