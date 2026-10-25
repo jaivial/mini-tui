@@ -19,6 +19,10 @@ export interface McpPreset {
   tools?: string[];
   /** Appended to these tools' descriptions for the agent. */
   hints?: Record<string, string>;
+  /** The authorization server has no dynamic registration: a client id/secret must be entered. */
+  needsClient?: boolean;
+  /** The OAuth scope to ask for, instead of everything the server lists (least privilege). */
+  scope?: string;
   /**
    * `client_name` for dynamic registration. Figma's registration endpoint only accepts the names
    * of the clients it has approved, and answers 403 to any other (measured: "mini-tui",
@@ -74,6 +78,21 @@ export const MCP_PRESETS: McpPreset[] = [
     docs: "https://openpencil.dev/programmable/mcp-server",
     tools: OPENPENCIL_TOOLS,
     hints: { render: OPENPENCIL_RENDER_HINT },
+  },
+  {
+    // Google's own MCP server. Google has no dynamic client registration: the login uses an OAuth
+    // client you create in Google Cloud ("Web application", redirects: <web origin>/api/mcp/oauth/callback
+    // and http://localhost:33418/callback), entered when installing (docs/google-search-console.md).
+    id: "google-search-console",
+    name: "Google Search Console",
+    description: "Search analytics: clicks, impressions, CTR, position by query/page/country/device (read-only)",
+    url: "https://searchconsole.googleapis.com/mcp",
+    auth: "oauth",
+    needsClient: true,
+    scope: "https://www.googleapis.com/auth/webmasters.readonly",
+    docs: "https://developers.google.com/webmaster-tools",
+    // The server also lists `get` ("get San API data"), undocumented and overlapping `query`.
+    tools: ["sites_list", "query"],
   },
   { id: "figma", name: "Figma", description: "Design context, code and assets from Figma files", url: "https://mcp.figma.com/mcp", auth: "oauth", clientName: "Claude Code", docs: "https://developers.figma.com/docs/figma-mcp-server/" },
   { id: "linear", name: "Linear", description: "Issues, projects and comments", url: "https://mcp.linear.app/mcp", auth: "oauth" },
@@ -160,6 +179,10 @@ export function addServer(input: AddInput, path: string | null = mcpPath()): Mcp
   );
   const clientName = input.clientName?.trim() || preset?.clientName;
   const wantsOAuth = preset?.auth === "oauth" || !!clientName || !!input.clientId;
+  if (preset?.needsClient && !input.clientId?.trim()) throw new Error(`${preset.name} needs an OAuth client id (and secret) from your Google Cloud project`);
+  for (const [label, value] of [["client id", input.clientId], ["client secret", input.clientSecret]] as const) {
+    if (value && (value.trim().length > 512 || /\s/.test(value.trim()))) throw new Error(`the ${label} looks wrong (no spaces or line breaks)`);
+  }
   const record: McpServerRecord = {
     id: slugId(preset?.id ?? name, existing.map((s) => s.id)),
     name,
@@ -174,6 +197,7 @@ export function addServer(input: AddInput, path: string | null = mcpPath()): Mcp
       ? {
           oauth: {
             ...(clientName ? { clientName } : {}),
+            ...(preset?.scope ? { scope: preset.scope } : {}),
             ...(input.clientId?.trim()
               ? { staticClient: { clientId: input.clientId.trim(), ...(input.clientSecret?.trim() ? { clientSecret: input.clientSecret.trim() } : {}), authMethod: input.clientSecret?.trim() ? ("client_secret_post" as const) : ("none" as const) } }
               : {}),

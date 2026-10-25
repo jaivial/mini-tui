@@ -11,6 +11,12 @@ import { getServer, loadServers, updateServer, mcpPath, type McpServerRecord, ty
 
 const PROTOCOL = "2025-06-18";
 
+/**
+ * Presets whose server lists its tools without a token, so a listing is not a working login.
+ * The value is a read-only, argument-free tool to call instead: the call is what proves the token.
+ */
+const PRESETS_LIST_ANONYMOUSLY: Record<string, string> = { "google-search-console": "sites_list" };
+
 export interface ProbeResult {
   ok: boolean;
   /** 401/403: the server wants (new) credentials. */
@@ -103,6 +109,12 @@ export function startTokenRefresher(everyMs = 5 * 60_000): () => void {
 
 export async function probe(server: McpServerRecord, timeoutMs = 15_000): Promise<ProbeResult> {
   const url = server.url;
+  // An OAuth server with no login yet. Some answer initialize and tools/list anonymously and
+  // refuse only the calls (Google's MCP servers): listing tools there proves nothing.
+  const verifyWith = server.preset ? PRESETS_LIST_ANONYMOUSLY[server.preset] : undefined;
+  if (server.oauth && !server.oauth.tokens && verifyWith) {
+    return { ok: false, needsAuth: true, error: "this server needs a login" };
+  }
   const base = { "content-type": "application/json", accept: "application/json, text/event-stream", ...authHeaders(server) };
   let session: string | null = null;
   let protocol = PROTOCOL;
@@ -140,6 +152,12 @@ export async function probe(server: McpServerRecord, timeoutMs = 15_000): Promis
       for (const t of listed.tools ?? []) if (t && typeof t.name === "string") tools.push({ name: t.name, description: t.description?.slice(0, 200) });
       cursor = listed.nextCursor;
       if (!cursor) break;
+    }
+    if (verifyWith) {
+      const r = await post({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: verifyWith, arguments: {} } });
+      const body = r.status === 401 || r.status === 403 ? null : parseBody(r.headers.get("content-type") ?? "", await r.text());
+      const failed = !body || "error" in body || (body.result as { isError?: boolean } | undefined)?.isError;
+      if (failed) return { ok: false, needsAuth: true, error: "the server refused the token: log in again" };
     }
     // The probe is done with its session: end it (servers cap them; OpenPencil allows 10).
     if (session) {

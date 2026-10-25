@@ -331,3 +331,97 @@ describe("self-hosted servers (OpenPencil)", () => {
     expect(probe.error).toContain("refused the token");
   });
 });
+
+describe("Google Search Console (Google's own MCP server)", () => {
+  // Google's server answers initialize and tools/list without a token and refuses only calls;
+  // only its protected-resource metadata says it needs OAuth.
+  const google = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(req) {
+      const url = new URL(req.url);
+      const base = `http://127.0.0.1:${google.port}`;
+      if (url.pathname === "/mcp" && req.method === "POST") {
+        const body = (await req.json()) as { id?: number; method: string };
+        if (body.method === "tools/call") {
+          if (req.headers.get("authorization") !== "Bearer good") return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "Request is missing required authentication credential." }], isError: true } }, { status: 401 });
+          return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "[]" }] } });
+        }
+        if (body.method === "tools/list") return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "sites_list" }, { name: "query" }] } });
+        if (body.method === "initialize") return Response.json({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-06-18", serverInfo: { name: "StatelessServer" } } });
+        return new Response(null, { status: 202 });
+      }
+      if (url.pathname === "/.well-known/oauth-protected-resource/mcp") return Response.json({ resource: `${base}/mcp`, authorization_servers: [`${base}/`], scopes_supported: ["https://www.googleapis.com/auth/webmasters", "https://www.googleapis.com/auth/webmasters.readonly"] });
+      if (url.pathname === "/.well-known/oauth-authorization-server") return Response.json({ issuer: base, authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth", token_endpoint: `${base}/token`, token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"] });
+      return new Response("", { status: 404 });
+    },
+  });
+  afterAll(() => google.stop(true));
+
+  test("a server that lists tools anonymously is still found to need OAuth", async () => {
+    const found = await oauth.discover(`http://127.0.0.1:${google.port}/mcp`);
+    expect(found.requiresAuth).toBe(true);
+    expect(found.authServer?.registrationEndpoint).toBeUndefined();
+  });
+
+  test("a server with no metadata and a 200 still needs no login", async () => {
+    const found = await oauth.discover(`${fake.base}/nothing-here`).catch(() => ({ requiresAuth: false }));
+    expect(found.requiresAuth).toBe(false);
+  });
+
+  test("the preset needs your client, asks only for read-only, and its login asks Google for a refresh token", async () => {
+    expect(() => mcp.addServer({ preset: "google-search-console" }, file)).toThrow("client id");
+    expect(() => mcp.addServer({ preset: "google-search-console", clientId: "a b" }, file)).toThrow("looks wrong");
+    const s = mcp.addServer({ preset: "google-search-console", clientId: "123-abc.apps.googleusercontent.com", clientSecret: "GOCSPX-test" }, file);
+    expect(s.url).toBe("https://searchconsole.googleapis.com/mcp");
+    expect(s.oauth?.staticClient).toEqual({ clientId: "123-abc.apps.googleusercontent.com", clientSecret: "GOCSPX-test", authMethod: "client_secret_post" });
+    expect(s.oauth?.scope).toBe("https://www.googleapis.com/auth/webmasters.readonly");
+    expect(s.tools).toEqual(["sites_list", "query"]);
+    expect(JSON.stringify(mcp.listViews(file))).not.toContain("GOCSPX-test");
+    // An anonymous tools/list is not a working login.
+    const probe = await mcp.probe(s);
+    expect(probe.needsAuth).toBe(true);
+
+    // Point it at the fake Google and start a login: offline access + consent, PKCE, the
+    // read-only scope (not everything the server lists), and no registration call.
+    mcp.updateServer(s.id, (r) => ({ ...r, url: `http://127.0.0.1:${google.port}/mcp` }), file);
+    const login = await mcp.startLogin({ serverId: s.id, redirectUri: "https://mini.example/api/mcp/oauth/callback", path: file });
+    const q = new URL(login.url).searchParams;
+    expect(login.url.startsWith("https://accounts.google.com/o/oauth2/v2/auth?")).toBe(true);
+    expect(q.get("client_id")).toBe("123-abc.apps.googleusercontent.com");
+    expect(q.get("access_type")).toBe("offline");
+    expect(q.get("prompt")).toBe("consent");
+    expect(q.get("scope")).toBe("https://www.googleapis.com/auth/webmasters.readonly");
+    expect(q.get("code_challenge_method")).toBe("S256");
+    mcp.cancelLogin(login.id);
+  });
+
+  test("with a token, the connection is proved by a call, not by the anonymous listing", async () => {
+    const s = mcp.addServer({ preset: "google-search-console", clientId: "123-abc.apps.googleusercontent.com", clientSecret: "x" }, file);
+    const at = (accessToken: string) => ({ ...s, url: `http://127.0.0.1:${google.port}/mcp`, oauth: { ...s.oauth, tokens: { accessToken } } });
+    const bad = await mcp.probe(at("revoked"));
+    expect(bad.ok).toBe(false);
+    expect(bad.needsAuth).toBe(true);
+    const good = await mcp.probe(at("good"));
+    expect(good.ok).toBe(true);
+    expect(good.tools?.map((t) => t.name)).toEqual(["sites_list", "query"]);
+  });
+
+  test("non-Google servers do not get Google's offline parameters", async () => {
+    const server = mcp.addServer({ url: `${fake.base}/mcp`, clientName: "Claude Code" }, file);
+    const login = await mcp.startLogin({ serverId: server.id, redirectUri: "http://localhost:1/callback", path: file });
+    expect(new URL(login.url).searchParams.get("access_type")).toBeNull();
+    mcp.cancelLogin(login.id);
+  });
+
+  test("a hand-registered client never falls back to a random loopback port", async () => {
+    const s = mcp.addServer({ preset: "google-search-console", clientId: "123-abc.apps.googleusercontent.com", clientSecret: "x" }, file);
+    mcp.updateServer(s.id, (r) => ({ ...r, url: `http://127.0.0.1:${google.port}/mcp` }), file);
+    const busy = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
+    try {
+      await expect(mcp.startLogin({ serverId: s.id, loopback: { port: busy.port }, path: file })).rejects.toThrow("busy");
+    } finally {
+      busy.stop(true);
+    }
+  });
+});

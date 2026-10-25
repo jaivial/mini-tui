@@ -14,6 +14,8 @@ export type McpStep =
   | { kind: "list"; index: number; busy?: string; note?: string }
   | { kind: "add"; index: number; query: string }
   | { kind: "url"; value: string; error?: string }
+  /** A preset with no dynamic registration (Google): its OAuth client id and secret. */
+  | { kind: "client"; preset: McpPreset; field: "id" | "secret"; id: string; secret: string; error?: string }
   | { kind: "login"; login: LoginView; copied?: boolean; opened?: string; pasting?: string; pasteError?: string }
   | { kind: "done"; name: string; tools: number }
   | { kind: "error"; message: string; serverId?: string };

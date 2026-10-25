@@ -34,7 +34,7 @@ export function McpPanel(props: { step: McpStep; servers: McpServerView[]; prese
             return (
               <box key={s.id} flexDirection="row" gap={2}>
                 <text fg={colors.accent}>{selected ? "▸" : " "}</text>
-                <text fg={selected ? colors.text : colors.dim}>{s.name}</text>
+                <text fg={selected ? colors.text : colors.dim} flexShrink={0}>{s.name}</text>
                 <text fg={STATE_COLOR(s.state)}>● {STATE_LABEL[s.state]}</text>
                 <text fg={colors.faint}>{s.url}</text>
               </box>
@@ -60,7 +60,7 @@ export function McpPanel(props: { step: McpStep; servers: McpServerView[]; prese
               return (
                 <box key={key} flexDirection="row" gap={2}>
                   <text fg={colors.accent}>{selected ? "▸" : " "}</text>
-                  <text fg={selected ? colors.text : colors.dim}>{row === "custom" ? "custom URL…" : row.name}</text>
+                  <text fg={selected ? colors.text : colors.dim} flexShrink={0}>{row === "custom" ? "custom URL…" : row.name}</text>
                   <text fg={colors.faint}>{row === "custom" ? "any Streamable HTTP MCP server" : `${row.description}${row.auth === "oauth" ? " · OAuth" : row.auth === "local" ? " · local" : ""}`}</text>
                 </box>
               );
@@ -79,6 +79,40 @@ export function McpPanel(props: { step: McpStep; servers: McpServerView[]; prese
           </box>
           {step.error ? <text fg={colors.err}>✗ {step.error}</text> : null}
           <text fg={colors.faint}>Enter add · Esc back · Ctrl+V paste</text>
+        </>
+      ) : null}
+
+      {step.kind === "client" ? (
+        <>
+          <text fg={colors.text}>{step.preset.name} · your OAuth client (Google has no automatic registration)</text>
+          <text fg={colors.dim}>Google Cloud → Credentials → OAuth client "Web application", redirect URI http://localhost:33418/callback</text>
+          <box flexDirection="row" gap={1}>
+            <text fg={step.field === "id" ? colors.accent : colors.faint}>{step.field === "id" ? "▸" : " "} client id    </text>
+            <text fg={colors.text}>{step.id}{step.field === "id" ? "▏" : ""}</text>
+          </box>
+          <box flexDirection="row" gap={1}>
+            <text fg={step.field === "secret" ? colors.accent : colors.faint}>{step.field === "secret" ? "▸" : " "} client secret</text>
+            <text fg={colors.text}>{"•".repeat(step.secret.length)}{step.field === "secret" ? "▏" : ""}</text>
+          </box>
+          {step.error ? <text fg={colors.err}>✗ {step.error}</text> : null}
+          <text fg={colors.faint}>Tab switch field · Enter next / install and log in · Ctrl+V paste · Esc back</text>
+        </>
+      ) : null}
+
+      {step.kind === "client" ? (
+        <>
+          <text fg={colors.text}>{step.preset.name} · your OAuth client (Google has no automatic registration)</text>
+          <text fg={colors.dim}>Google Cloud → Credentials → OAuth client "Web application", redirect URI http://localhost:33418/callback</text>
+          <box flexDirection="row" gap={1}>
+            <text fg={step.field === "id" ? colors.accent : colors.faint}>{step.field === "id" ? "▸" : " "} client id    </text>
+            <text fg={colors.text}>{step.id}{step.field === "id" ? "▏" : ""}</text>
+          </box>
+          <box flexDirection="row" gap={1}>
+            <text fg={step.field === "secret" ? colors.accent : colors.faint}>{step.field === "secret" ? "▸" : " "} client secret</text>
+            <text fg={colors.text}>{"•".repeat(step.secret.length)}{step.field === "secret" ? "▏" : ""}</text>
+          </box>
+          {step.error ? <text fg={colors.err}>✗ {step.error}</text> : null}
+          <text fg={colors.faint}>Tab switch field · Enter next / install and log in · Ctrl+V paste · Esc back</text>
         </>
       ) : null}
 
