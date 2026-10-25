@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "composio-kimi-k3-25-v1",
+  "source_url": "https://composio.dev/content/best-ai-agent-harnesses",
+  "source_published": "2026-08-04",
+  "retrieved_utc": "2026-10-24",
+  "model": "moonshotai/kimi-k3",
+  "provider": "OpenRouter",
+  "reasoning": "maximum",
+  "tools": "hosted Composio MCP",
+  "tasks_total": 25,
+  "attempts_per_task": 1,
+  "timeout_seconds": 900,
+  "token_tasks": 24,
+  "notes": [
+    "Values are transcribed from the article's overall table and its two charts; they are published results, not a local rerun.",
+    "Token and dollar totals use the shared 24-task usage slice. Pass rate and median time use 25 valid tasks.",
+    "Five invalid tasks were excluded by Composio. Infrastructure-invalid attempts were replaced; ordinary task failures and timeouts were retained."
+  ],
+  "harnesses": [
+    {
+      "name": "Oh My Pi",
+      "tasks_passed": 22,
+      "pass_rate_percent": 88.0,
+      "median_time_seconds": 231.7,
+      "tool_calls": 248,
+      "cost_per_success_usd": 0.52,
+      "total_tokens_millions": 9.65,
+      "total_cost_usd": 10.93,
+      "color": "#9298A5"
+    },
+    {
+      "name": "Kimi Code",
+      "tasks_passed": 21,
+      "pass_rate_percent": 84.0,
+      "median_time_seconds": 281.9,
+      "tool_calls": 301,
+      "cost_per_success_usd": 0.64,
+      "total_tokens_millions": 15.27,
+      "total_cost_usd": 12.87,
+      "color": "#8064E8"
+    },
+    {
+      "name": "Hermes Agent",
+      "tasks_passed": 20,
+      "pass_rate_percent": 80.0,
+      "median_time_seconds": 164.0,
+      "tool_calls": 262,
+      "cost_per_success_usd": 0.46,
+      "total_tokens_millions": 10.09,
+      "total_cost_usd": 9.28,
+      "color": "#56BF73"
+    },
+    {
+      "name": "Claude Code",
+      "tasks_passed": 19,
+      "pass_rate_percent": 76.0,
+      "median_time_seconds": 330.5,
+      "tool_calls": 293,
+      "cost_per_success_usd": 1.96,
+      "total_tokens_millions": 15.09,
+      "total_cost_usd": 35.37,
+      "color": "#EB8A3A"
+    },
+    {
+      "name": "Pi Agent",
+      "tasks_passed": 18,
+      "pass_rate_percent": 72.0,
+      "median_time_seconds": 156.2,
+      "tool_calls": 223,
+      "cost_per_success_usd": 0.57,
+      "total_tokens_millions": 7.59,
+      "total_cost_usd": 9.65,
+      "color": "#D84F91"
+    },
+    {
+      "name": "OpenCode",
+      "tasks_passed": 18,
+      "pass_rate_percent": 72.0,
+      "median_time_seconds": 270.5,
+      "tool_calls": 299,
+      "cost_per_success_usd": 0.72,
+      "total_tokens_millions": 9.50,
+      "total_cost_usd": 12.29,
+      "color": "#444B55"
+    },
+    {
+      "name": "Grok Build",
+      "tasks_passed": 18,
+      "pass_rate_percent": 72.0,
+      "median_time_seconds": 196.2,
+      "tool_calls": 402,
+      "cost_per_success_usd": 0.66,
+      "total_tokens_millions": 12.62,
+      "total_cost_usd": 11.87,
+      "color": "#EEEAE0"
+    },
+    {
+      "name": "Codex",
+      "tasks_passed": 17,
+      "pass_rate_percent": 68.0,
+      "median_time_seconds": 233.4,
+      "tool_calls": 297,
+      "cost_per_success_usd": 0.66,
+      "total_tokens_millions": 9.19,
+      "total_cost_usd": 11.28,
+      "color": "#4487E8"
+    }
+  ]
+}

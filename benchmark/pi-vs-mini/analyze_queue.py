@@ -34,8 +34,10 @@ LEVELS = {
 
 def valid(row: dict[str, Any]) -> bool:
     if row.get("harness") == "pi":
-        return row.get("returncode", 0) == 0 and row.get("turns", 1) > 0 and row.get("wall", 0) > 0
-    return row.get("status") == "done" and row.get("wall", 0) > 0
+        # A timeout after real model work is an ordinary scored task failure. A process that
+        # died before its first assistant turn is infrastructure-invalid and must be replaced.
+        return row.get("returncode", 0) in (0, "timeout") and row.get("turns", 0) > 0 and row.get("wall", 0) > 0
+    return row.get("status") in ("done", "timeout") and row.get("wall", 0) > 0
 
 
 def med(rows: list[dict[str, Any]], field: str = "wall") -> float:
@@ -44,6 +46,26 @@ def med(rows: list[dict[str, Any]], field: str = "wall") -> float:
 
 def pass_count(rows: list[dict[str, Any]]) -> int:
     return sum(r.get("verify") == "PASS" for r in rows)
+
+
+def hedge_events(row: dict[str, Any]) -> tuple[int, int]:
+    """Duplicate launches recorded beside each worker trajectory (count, logs found).
+
+    This is deliberately separate from accepted model turns: a losing hedge can still consume
+    provider work and is not represented as another assistant message in traj.json.
+    """
+    workers = row.get("workers") or [{"traj": row.get("traj")}]
+    count = found = 0
+    for worker in workers:
+        traj = worker.get("traj")
+        if not traj:
+            continue
+        log = Path(traj).with_name("mini.log")
+        if not log.is_file():
+            continue
+        found += 1
+        count += sum("[hedge]" in line and "duplicate request" in line for line in log.read_text(errors="ignore").splitlines())
+    return count, found
 
 
 def main() -> None:
@@ -86,6 +108,7 @@ def main() -> None:
                 pairs.append({"rep": m.get("rep", 1), "worker_speedup": p["wall"] / m["wall"],
                               "e2e_speedup": p["wall"] / m["e2e"] if m.get("e2e") else None,
                               "mini_pass": m["verify"], "pi_pass": p["verify"]})
+        hedges, hedge_logs = zip(*(hedge_events(r) for r in mini))
         task_rows.append({
             "task": task, "level": LEVELS.get(task, "unclassified"),
             "reps": min(len(mini), len(pi)),
@@ -94,6 +117,7 @@ def main() -> None:
             "mini_pass": pass_count(mini), "pi_pass": pass_count(pi), "runs_per_arm": len(mini),
             "mini_worker_walls_s": [r["wall"] for r in mini], "mini_e2e_walls_s": [r.get("e2e") for r in mini],
             "pi_walls_s": [r["wall"] for r in pi], "paired": pairs,
+            "hedge_duplicate_launches": sum(hedges), "hedge_logs_found": sum(hedge_logs),
         })
     mini_all = [r for r in rows if r.get("harness") == "mini" and valid(r)]
     pi_all = [r for r in rows if r.get("harness") == "pi" and valid(r)]
@@ -118,6 +142,8 @@ def main() -> None:
             "quality_gate_mini_at_least_pi": quality_gate,
             "goal_worker_2x_at_equal_or_better_pass": complete and quality_gate and worker_speedup >= 2,
             "goal_e2e_2x_at_equal_or_better_pass": complete and quality_gate and e2e_speedup >= 2,
+            "hedge_duplicate_launches": sum(t["hedge_duplicate_launches"] for t in task_rows),
+            "hedge_logs_found": sum(t["hedge_logs_found"] for t in task_rows),
         },
         "tasks_detail": task_rows,
     }
@@ -131,6 +157,19 @@ def main() -> None:
         "worker_speedup": sum(t["pi_median_s"] for t in ts) / sum(t["mini_worker_median_s"] for t in ts),
         "e2e_speedup": sum(t["pi_median_s"] for t in ts) / sum(t["mini_e2e_median_s"] for t in ts),
     } for level, ts in sorted(by_level.items())]
+    by_difficulty: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for task in task_rows:
+        by_difficulty[task["level"].split(" · ", 1)[0]].append(task)
+    report["by_difficulty"] = [{
+        "difficulty": level, "tasks": len(ts),
+        "mini_pass": sum(t["mini_pass"] for t in ts), "pi_pass": sum(t["pi_pass"] for t in ts),
+        "runs_per_arm": sum(t["runs_per_arm"] for t in ts),
+        "mini_worker_sum_medians_s": sum(t["mini_worker_median_s"] for t in ts),
+        "mini_e2e_sum_medians_s": sum(t["mini_e2e_median_s"] for t in ts),
+        "pi_sum_medians_s": sum(t["pi_median_s"] for t in ts),
+        "worker_speedup": sum(t["pi_median_s"] for t in ts) / sum(t["mini_worker_median_s"] for t in ts),
+        "e2e_speedup": sum(t["pi_median_s"] for t in ts) / sum(t["mini_e2e_median_s"] for t in ts),
+    } for level, ts in sorted(by_difficulty.items())]
     (run_dir / "analysis.json").write_text(json.dumps(report, indent=2) + "\n")
 
     a = report["aggregate"]
@@ -143,12 +182,17 @@ def main() -> None:
         f"- Sum of per-task medians: worker **{worker_sum:.1f}s**, e2e **{e2e_sum:.1f}s**, pi **{pi_sum:.1f}s**",
         f"- Speedup: **worker {worker_speedup:.2f}x**, **e2e {e2e_speedup:.2f}x**",
         f"- Goal worker ≥2x with equal/better pass: **{'PASS' if a['goal_worker_2x_at_equal_or_better_pass'] else 'FAIL'}**",
-        f"- Goal e2e ≥2x with equal/better pass: **{'PASS' if a['goal_e2e_2x_at_equal_or_better_pass'] else 'FAIL'}**", "",
+        f"- Goal e2e ≥2x with equal/better pass: **{'PASS' if a['goal_e2e_2x_at_equal_or_better_pass'] else 'FAIL'}**",
+        f"- Hedged duplicate launches observed: **{a['hedge_duplicate_launches']}** (losing in-flight usage is not an accepted trajectory turn)", "",
         "| Task | Level | mini worker med s | mini e2e med s | pi med s | pi/worker | pi/e2e | mini PASS | pi PASS |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for t in task_rows:
         lines.append(f"| {t['task']} | {t['level']} | {t['mini_worker_median_s']:.1f} | {t['mini_e2e_median_s']:.1f} | {t['pi_median_s']:.1f} | {t['worker_speedup']:.2f}x | {t['e2e_speedup']:.2f}x | {t['mini_pass']}/{t['runs_per_arm']} | {t['pi_pass']}/{t['runs_per_arm']} |")
+    lines += ["", "| Difficulty | Tasks | mini worker med sum | mini e2e med sum | pi med sum | pi/worker | mini PASS | pi PASS |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for group in report["by_difficulty"]:
+        lines.append(f"| {group['difficulty']} | {group['tasks']} | {group['mini_worker_sum_medians_s']:.1f} | {group['mini_e2e_sum_medians_s']:.1f} | {group['pi_sum_medians_s']:.1f} | {group['worker_speedup']:.2f}x | {group['mini_pass']}/{group['runs_per_arm']} | {group['pi_pass']}/{group['runs_per_arm']} |")
     lines += ["", "> Levels are editorial task-shape labels for this local corpus, not calibrated human difficulty.", ""]
     (run_dir / "REPORT.md").write_text("\n".join(lines))
     print(json.dumps(a, indent=2))

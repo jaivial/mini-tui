@@ -47,7 +47,7 @@ NODE = os.environ.get("BENCH_NODE_BIN") or shutil.which("node") or os.path.expan
     "~/.nvm/versions/node/v24.18.0/bin/node")
 PI = os.environ.get("BENCH_PI_BIN") or os.path.expanduser(
     "~/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js")
-TIMEOUT = 1800
+TIMEOUT = int(os.environ.get("BENCH_TIMEOUT", "1800"))
 
 
 def api(method, payload=None):

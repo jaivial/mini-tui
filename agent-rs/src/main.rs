@@ -15,6 +15,7 @@ mod e2e;
 mod environment;
 mod metrics;
 mod models;
+mod mcp;
 mod plan;
 mod repl;
 mod rlm;
@@ -315,6 +316,11 @@ fn run(o: Options) -> Result<(), String> {
     };
     let result = agent.run(o.task.as_deref().unwrap_or(""), resume, o.compact_only);
     match result {
+        // A deterministic closure rejection is a failed task, not a successful process that the
+        // work queue can mislabel as done. The trajectory keeps the checker's output and verdict.
+        Ok(result) if result.get("exit_status").and_then(Value::as_str) == Some("TaskVerifierFailed") => {
+            Err("TaskVerifierFailed: the pre-existing task checker rejected closure".into())
+        }
         Ok(_) => Ok(()),
         Err(e) if e.kind == "KeyboardInterrupt" => {
             // SIGINT is Python's KeyboardInterrupt (its `finally` saves); SIGTERM kills Python
@@ -439,6 +445,19 @@ fn main() {
         config::load_dotenv();
         install_signals();
         std::process::exit(rlm::client(&argv[1..]));
+    }
+    if argv.first().map(String::as_str) == Some("mcp-tools") {
+        config::load_dotenv();
+        match mcp::tool_names() {
+            Ok(names) => {
+                println!("{}", util::py_json(&Value::Array(names.into_iter().map(Value::String).collect()), false));
+                return;
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
     }
     // One-shot helpers mini-tui runs besides the agent itself.
     if let Some(cmd) = argv.first().map(String::as_str).filter(|c| *c == "title" || *c == "test-model" || *c == "metrics") {

@@ -1094,5 +1094,11 @@ fn tool_list(protocol: Protocol) -> Vec<Value> {
             q::chat_tools(),
         ),
     };
-    with_agent_tools(with_agent_tools(base, if q::active() { vec![] } else { agents }), queue)
+    let base = with_agent_tools(with_agent_tools(base, if q::active() { vec![] } else { agents }), queue);
+    let protocol = match protocol {
+        Protocol::Messages => "messages",
+        Protocol::Responses => "responses",
+        Protocol::Chat => "chat",
+    };
+    with_agent_tools(base, crate::mcp::tools(protocol))
 }

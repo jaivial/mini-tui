@@ -249,6 +249,8 @@ export interface TaskSpec {
   /** One task without a prompt: short notes appended to the human's message. */
   notes?: unknown;
   cwd?: unknown;
+  /** Independent fan-out only: false requires disjoint working directories. Default true (legacy sequential work). */
+  allow_overlap?: unknown;
 }
 
 export type CreateResult =
@@ -437,12 +439,25 @@ export class WorkQueue {
       title: oneLine(s.title, 80),
       description: oneLine(s.description, 400),
       prompt: clean(briefOf(s), PROMPT_MAX),
-      cwd: typeof s.cwd === "string" ? s.cwd : "",
+      cwd: expandCwd(typeof s.cwd === "string" ? s.cwd : dirIn(briefOf(s)) || (raw.length === 1 ? dirIn(message) : ""), this.#defaultCwd()),
+      requireDisjoint: s.allow_overlap === false,
     }));
     const bad = specs.findIndex((s) => !s.prompt || !s.title);
     if (bad >= 0) return { ok: false, text: `task ${bad + 1} needs a title and a prompt (only a single task may omit its prompt)` };
     if (specs.length > 1 && raw.some((s) => !(typeof s.prompt === "string" ? s.prompt : "").trim())) return { ok: false, text: "with several tasks, each one needs its own prompt" };
     if (specs.length > 100) return { ok: false, text: "at most 100 tasks per call" };
+    // allow_overlap:false declares independent fan-out. Overlapping directories would serialize
+    // the wave under the corruption guard and pay N cold starts. Refuse that shape so the
+    // dispatcher creates ONE task instead; legacy/sequential overlap remains supported.
+    if (specs.length > 1 && specs.every((s) => s.requireDisjoint)) {
+      for (let i = 0; i < specs.length; i++) {
+        for (let j = i + 1; j < specs.length; j++) {
+          if (overlaps(specs[i]!.cwd, specs[j]!.cwd)) {
+            return { ok: false, text: `independent tasks ${i + 1} and ${j + 1} have overlapping working directories (${specs[i]!.cwd} / ${specs[j]!.cwd}). Create ONE task for the whole request instead of serializing several cold starts, or assign disjoint part directories for fan-out.` };
+          }
+        }
+      }
+    }
     const existing = this.list();
     const active = existing.filter((t) => t.status === "queued" || t.status === "running");
     if (!force) {
@@ -470,7 +485,7 @@ export class WorkQueue {
         prompt: s.prompt,
         // Where the work happens: the dispatcher's cwd, else the brief's first real directory,
         // else (one task from one message) the human's own message's.
-        cwd: expandCwd(s.cwd || dirIn(s.prompt) || (specs.length === 1 ? dirIn(message) : ""), this.#defaultCwd()),
+        cwd: s.cwd,
         model: this.#model(),
         status: "queued",
         sessionId: "",

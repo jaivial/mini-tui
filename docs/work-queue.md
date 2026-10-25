@@ -81,6 +81,10 @@ later one waits, and tasks in other folders go past it. Measured: two parallel "
 tasks overwrote each other's change until the second redid it. Home, `/tmp` and `/` (where a
 task lands when no folder was named) are exempt, or every such task would wait for the others.
 The panel and the dispatcher's `<queue_state>` say what a waiting task waits for.
+The dispatcher fans out only when it can give each part a most-specific, existing, disjoint
+working directory. If every part would share one root, it creates one worker for the whole
+request instead of N cold starts that the same-folder guard would serialize. It never invents
+directories or disables the overlap guard to force parallelism.
 
 ## Relations and redirection
 
@@ -133,8 +137,25 @@ Agents (loopback, `x-queue-token` = a per-process secret handed only to agents t
 - `MINI_AGENT_THINKING=adaptive`: routine turns go out with thinking disabled; the turn after a real
   failure (a check or edit that failed, a format error, a repeated action) reasons again.
   A look-around command that found nothing (`ls`, `grep` with no match) does not count as a failure.
-- No closure judge (`MINI_AGENT_GOAL_ORACLE=off`; `MINITUI_WORKER_JUDGE=1` restores it): the
-  worker's own verification is the closure, and the judge doubled short tasks.
+- No LLM closure judge (`MINI_AGENT_GOAL_ORACLE=off`; `MINITUI_WORKER_JUDGE=1` restores it):
+  the worker's own verification is the closure, and the judge doubled short tasks.
+- A deterministic task-checker gate runs when the workspace supplied `verify.sh` (or
+  `run_tests.sh`, `verify`, `check.sh`, `test.sh`). The agent captures its path and SHA-256 at
+  run start and executes it before accepting `Submitted`; a failure returns the output for a
+  targeted repair, and three rejections end as `TaskVerifierFailed`, never as success. The
+  process exits non-zero so the queue marks the task as error, not done. Changing or deleting
+  the checker fails the integrity check. `verify.sh` must return 0 and print an independent
+  `PASS` line; partial `some tests PASS` text followed by a traceback/assertion is rejected,
+  as is any explicit failure text even when a pipeline masks the test's exit code. This adds no model
+  call and is separate from the LLM judge. `MINI_AGENT_TASK_VERIFIER=off` disables it;
+  `MINI_AGENT_TASK_VERIFIER_MAX_FAILURES` changes the cap.
+- Fast closure is enabled by default. When the last action is the intact checker, a passing
+  verdict closes immediately with a factual title/cwd/PASS card. With eager verification, the
+  harness also tries the checker after work steps and closes as soon as it passes, even if the
+  model used its own tests instead of `./verify.sh`; misses do not change the model's context.
+  This avoids a final-summary turn and post-pass exploration. `MINI_AGENT_VERIFIER_EAGER=0`
+  disables eager checks (useful for slow suites), and `MINI_AGENT_VERIFIER_FAST_CLOSE=0`
+  disables fast closure entirely. A manual final response still goes through the normal gate.
 - No cache warmer, no subagent tools (the queue is the parallelism).
 - The worker starts in the task's directory: the dispatcher's `cwd`, else the first existing
   directory its brief names.
@@ -185,3 +206,14 @@ needs no prompt at all, the human's message is the brief.
 Limits: one model, one machine, ten small tasks, three repetitions; provider latency tails
 (turns of 100+ s on both sides) dominate the variance, which is why per-round ratios moved
 between 1.4x and 2.3x while the worker changes above were landing.
+
+A fresh three-repetition validation (`runs/queue-20261024-151724`) also passed 30/30 on both arms
+but measured **1.52x worker / 1.17x e2e** (309.8 / 401.6 / 471.8 s sums of task medians). The
+2.26x result above is therefore a measured historical best, not a stable guarantee. Scale runs,
+the deterministic closure gate and rejected treatments are documented in
+`docs/ANALYSIS-mini-x2-20261024.md`.
+
+**Final result:** fast close + eager reached **2.85x worker with 30/30 PASS on both arms**
+(`queue-20261024-211031`). The stricter final binary then confirmed **2.43x worker / 1.84x e2e**
+(`queue-20261024-222316`, 10/10 on both). The worker ×2 goal is met; e2e including the dispatcher
+remains below ×2. Eager is on by default, with opt-out for slow suites.

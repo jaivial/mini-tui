@@ -184,6 +184,12 @@ pub struct Agent {
     /// orchestrator boundary is disarmed and the top-level session executes directly.
     orchestrator_lane: bool,
     goal_reports: Vec<Value>,
+    /// Queue-worker closure gate: a verifier present at run start, plus its sha256. The hash
+    /// prevents a worker from replacing the task's checker with an unconditional PASS.
+    task_verifier: Option<(String, String)>,
+    task_verifier_reports: Vec<Value>,
+    task_verifier_failures: usize,
+    task_verifier_closed: bool,
     oracle_errors: usize,
     /// Rejections the judge has returned for this run (see MINI_AGENT_GOAL_ORACLE_MAX_REJECTIONS).
     oracle_rejections: usize,
@@ -256,6 +262,10 @@ impl Agent {
             task_is_conversational: false,
             orchestrator_lane: true,
             goal_reports: Vec::new(),
+            task_verifier: None,
+            task_verifier_reports: Vec::new(),
+            task_verifier_failures: 0,
+            task_verifier_closed: false,
             oracle_errors: 0,
             oracle_rejections: 0,
             oracle_last_gap: std::collections::HashSet::new(),
@@ -431,6 +441,170 @@ impl Agent {
             Outcome::Output(v) => !v.get("output").and_then(Value::as_str).unwrap_or_default().trim().is_empty(),
             _ => false,
         }
+    }
+
+    fn task_verifier_enabled(&self) -> bool {
+        if self.task_is_conversational {
+            return false;
+        }
+        match std::env::var("MINI_AGENT_TASK_VERIFIER").as_deref() {
+            Ok("1") | Ok("true") | Ok("on") | Ok("always") => true,
+            Ok("0") | Ok("false") | Ok("off") => false,
+            _ => std::env::var("MINI_AGENT_TOOLSET").as_deref() == Ok("worker"),
+        }
+    }
+
+    /// Capture the checker before the worker can change it. Only its path and digest cross the
+    /// harness boundary; its source is never injected into the model's context.
+    fn capture_task_verifier(&mut self) {
+        if !self.task_verifier_enabled() {
+            return;
+        }
+        let command = "for f in ./verify.sh ./run_tests.sh ./verify ./check.sh ./test.sh; do if [ -f \"$f\" ]; then printf '%s\\n' \"$f\"; sha256sum < \"$f\" 2>/dev/null; break; fi; done";
+        let Outcome::Output(value) = self.env.execute(command) else { return };
+        if value.get("returncode").and_then(Value::as_i64) != Some(0) {
+            return;
+        }
+        let output = value.get("output").and_then(Value::as_str).unwrap_or_default();
+        let mut lines = output.lines();
+        let Some(path) = lines.next().map(str::trim).filter(|s| s.starts_with("./")) else { return };
+        let hash = lines.next().and_then(|l| l.split_whitespace().next()).unwrap_or_default();
+        self.task_verifier = Some((path.to_string(), hash.to_string()));
+        if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            self.task_verifier_reports.push(json!({"status": "captured", "path": path}));
+        } else {
+            // Fail closed at submission if the environment cannot prove checker integrity.
+            self.task_verifier_reports.push(json!({"status": "capture_failed", "path": path, "reason": "sha256 unavailable"}));
+        }
+    }
+
+    fn current_task_verifier_hash(&mut self, path: &str) -> String {
+        match self.env.execute(&format!("sha256sum < {path} 2>/dev/null")) {
+            Outcome::Output(v) if v.get("returncode").and_then(Value::as_i64) == Some(0) => v.get("output").and_then(Value::as_str).unwrap_or_default().split_whitespace().next().unwrap_or_default().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn task_checker_passed(path: &str, returncode: Option<i64>, output: &str) -> bool {
+        if returncode != Some(0) {
+            return false;
+        }
+        // A shell pipeline can mask a failing test (`node ... | tail`), so exit code alone is not
+        // evidence. verify.sh follows the benchmark's PASS/FAIL contract; other checker names
+        // use exit code plus explicit failure markers rather than demanding a particular word.
+        let explicit_failure = regex::Regex::new(r"(?im)^\s*(?:FAIL(?:ED)?\b|not ok\b|[1-9][0-9]*\s+failed\b|Traceback\b|AssertionError\b)").unwrap().is_match(output);
+        if explicit_failure {
+            return false;
+        }
+        if path == "./verify.sh" || path.ends_with("/verify.sh") {
+            // A partial suite can print `some tests PASS` and then traceback. Only an
+            // independent PASS line is a verdict; a word embedded in other output is not.
+            return output.lines().any(|line| line.trim() == "PASS");
+        }
+        true
+    }
+
+    fn reject_task_verifier(&mut self, path: &str, reason: &str, output: &str, returncode: Option<i64>) {
+        self.task_verifier_failures += 1;
+        let tail: String = output.chars().rev().take(8000).collect::<Vec<_>>().into_iter().rev().collect();
+        self.task_verifier_reports.push(json!({"status": "rejected", "path": path, "reason": reason, "returncode": returncode, "output_tail": tail}));
+        let cap = std::env::var("MINI_AGENT_TASK_VERIFIER_MAX_FAILURES").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(3);
+        if cap > 0 && self.task_verifier_failures >= cap {
+            let message = format!("{path} rejected closure after {} attempt(s): {reason}\n{tail}", self.task_verifier_failures);
+            self.add_messages(vec![Self::exit_message("TaskVerifierFailed", &message, "")]);
+            return;
+        }
+        self.submission_pending = false;
+        self.add_messages(vec![json!({
+            "role": "user",
+            "content": format!("[Task verifier rejected closure: {reason}. This is the pre-existing task checker, not an LLM judge. Repair the actual deliverable, then run {path} yourself and submit only after it passes. Do not edit, delete, replace or work around the checker.]\n{tail}"),
+            "extra": {"interrupt_type": "TaskVerifier"}
+        })]);
+    }
+
+    /// A queue worker may not claim success while the task's own checker fails or has never run.
+    /// This is deterministic closure, not the optional model judge. It adds no model call.
+    fn check_task_verifier(&mut self) {
+        if self.task_verifier_closed {
+            return;
+        }
+        let Some((path, expected_hash)) = self.task_verifier.clone() else { return };
+        let Some(exit) = self.messages.pop() else { return };
+        self.journaled = self.journaled.min(self.messages.len());
+        if expected_hash.is_empty() {
+            self.reject_task_verifier(&path, "checker integrity was not captured", "", None);
+            return;
+        }
+        if self.current_task_verifier_hash(&path) != expected_hash {
+            self.reject_task_verifier(&path, "checker is missing or its contents changed since task start", "", None);
+            return;
+        }
+        match self.env.execute(&path) {
+            Outcome::Output(v) => {
+                let rc = v.get("returncode").and_then(Value::as_i64);
+                let output = v.get("output").and_then(Value::as_str).unwrap_or_default();
+                if Self::task_checker_passed(&path, rc, output) {
+                    self.task_verifier_reports.push(json!({"status": "passed", "path": path, "output_tail": output.chars().rev().take(2000).collect::<Vec<_>>().into_iter().rev().collect::<String>()}));
+                    self.messages.push(exit);
+                } else {
+                    self.reject_task_verifier(&path, &format!("checker exited {rc:?} without a passing verdict"), output, rc);
+                }
+            }
+            Outcome::Submitted(s) => self.reject_task_verifier(&path, "checker produced a submit marker instead of a verdict", &s, None),
+            Outcome::Stopped => self.messages.push(exit),
+        }
+    }
+
+    /// Experimental fast closure: the verifier was the last action and passed, so another model
+    /// turn would only restate that fact. The result card is factual and needs no LLM generation.
+    fn fast_verifier_closure(&mut self, message: &Value, outputs: &[Value]) -> Option<String> {
+        if self.task_verifier_closed || !self.task_verifier_enabled() || matches!(std::env::var("MINI_AGENT_VERIFIER_FAST_CLOSE").as_deref(), Ok("0") | Ok("off") | Ok("false")) {
+            return None;
+        }
+        let (path, expected_hash) = self.task_verifier.clone()?;
+        let actions = message.pointer("/extra/actions").and_then(Value::as_array)?;
+        let (index, action) = actions.iter().enumerate().last()?;
+        let output = outputs.get(index)?;
+        let verdict = output.get("output").and_then(Value::as_str).unwrap_or_default();
+        let command = action.get("command").and_then(Value::as_str).unwrap_or_default();
+        let cwd = self.env.working_dir();
+        let relative = path.trim_start_matches("./");
+        let absolute = format!("{}/{relative}", cwd.trim_end_matches('/'));
+        let variants = [path.clone(), format!("bash {path}"), format!("sh {path}"), absolute.clone(), format!("bash {absolute}"), format!("sh {absolute}")];
+        let is_verifier = action.get("tool").is_none() && command.split([';', '|', '&', '\n', '\r']).any(|part| {
+            let part = part.trim();
+            variants.iter().any(|v| part == v || part.starts_with(&format!("{v} ")))
+        });
+        if self.current_task_verifier_hash(&path) != expected_hash {
+            return None;
+        }
+        let direct_pass = is_verifier && Self::task_checker_passed(&path, output.get("returncode").and_then(Value::as_i64), verdict);
+        let mut eager_pass = false;
+        let mut evidence = verdict.to_string();
+        if !is_verifier && !direct_pass && !matches!(std::env::var("MINI_AGENT_VERIFIER_EAGER").as_deref(), Ok("0") | Ok("off") | Ok("false")) {
+            // Eager closure is an optimization only: a miss is invisible and the model keeps
+            // working. A pass is accepted only from the intact pre-existing checker itself.
+            if let Outcome::Output(v) = self.env.execute(&path) {
+                let rc = v.get("returncode").and_then(Value::as_i64);
+                let out = v.get("output").and_then(Value::as_str).unwrap_or_default();
+                if Self::task_checker_passed(&path, rc, out) {
+                    eager_pass = true;
+                    evidence = out.to_string();
+                }
+            }
+        }
+        if !direct_pass && !eager_pass {
+            return None;
+        }
+        let title = std::env::var("MINITUI_TASK_TITLE").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+            let task = self.extra_vars.get("task").and_then(Value::as_str).unwrap_or_default();
+            let line = task.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("Working directory:")).unwrap_or("Task completed");
+            line.trim_start_matches('#').trim().trim_start_matches("Task:").trim().chars().take(120).collect()
+        });
+        let submission = format!("{title}\n{path}: PASS\nWorking directory: {cwd}");
+        self.task_verifier_closed = true;
+        self.task_verifier_reports.push(json!({"status": "passed", "path": path, "fast_close": true, "eager": eager_pass, "output_tail": evidence.chars().rev().take(2000).collect::<Vec<_>>().into_iter().rev().collect::<String>()}));
+        Some(submission)
     }
 
     /// Whether anyone can send this run a follow-up: the cache warmer only makes sense for a run
@@ -695,12 +869,19 @@ impl Agent {
         self.goal_baseline = None;
         self.initial_manifest = None;
         self.initial_files_capped = false;
+        self.task_verifier = None;
+        self.task_verifier_reports.clear();
+        self.task_verifier_failures = 0;
+        self.task_verifier_closed = false;
         // What the sender actually wrote decides whether this turn is chat or work, not the
         // transport frame the channel wrapped it in: a WhatsApp "Hola" arrives inside ~180
         // words of header, reply-format rules and queue directives, and classifying that
         // envelope answers "Task" for a greeting.
         self.task_is_conversational =
             crate::intent::classify(&crate::intent::channel_subject(task)) == crate::intent::Intent::Conversational;
+        if !compact_only {
+            self.capture_task_verifier();
+        }
         // P1 router: the orchestrator lane pays for itself only on work that actually splits.
         // A single-part task executes directly in this session — the delegation detour through
         // coordinator, worker, handoff and closure judge measured 2.5x the wall of direct
@@ -890,6 +1071,13 @@ impl Agent {
                     self.save(false);
                     return Err(e);
                 }
+            }
+            // A queue worker with a task-provided checker must prove closure deterministically.
+            // A rejection removes the proposed exit and returns the checker output to the model.
+            if self.messages.last().and_then(|m| m.pointer("/extra/exit_status")).and_then(Value::as_str) == Some("Submitted")
+                && !self.task_is_conversational
+            {
+                self.check_task_verifier();
             }
             // Gate only proposed success. Interrupts, resource limits and cancellation remain
             // explicit failures, never a reason to claim the user's goal was achieved. A chat
@@ -1375,8 +1563,12 @@ impl Agent {
         crate::models::set_think_next(failed || self.repeat_streak > 0 || self.fuzzy_streak > 0);
         t.mark("observe");
         let closing = crate::queue_tools::dispatcher_closing_text(&message, &outputs);
+        let fast_closure = self.fast_verifier_closure(&message, &outputs);
         self.finish_step(&message, outputs)?;
         self.record_timings(&mut t, at);
+        if let Some(submission) = fast_closure {
+            return Err(Flow::Interrupt(vec![Self::exit_message("Submitted", &submission, &submission)]));
+        }
         // The dispatcher's turn is over once its tasks are queued: the confirmation IS the
         // answer, so a second model call to say "done" is skipped.
         if let Some(text) = closing {
@@ -1791,6 +1983,9 @@ impl Agent {
         if crate::queue_tools::is_tool(tool) {
             return Some(crate::queue_tools::outcome(tool, &args));
         }
+        if crate::mcp::is_tool(tool) {
+            return Some(crate::mcp::outcome(tool, &args));
+        }
         let cwd = self.env.working_dir();
         match tool {
             "read" => Some(crate::tools::read_outcome(&args, &cwd)),
@@ -2024,6 +2219,9 @@ impl Agent {
         // to the trajectory it produced before the phase existed.
         if !self.goal_reports.is_empty() {
             data["info"]["goal_oracle"] = json!({"attempts": self.goal_reports, "provisional": self.goal_reports.iter().any(|v|v.get("backend").and_then(Value::as_str)==Some("model-provisional"))});
+        }
+        if !self.task_verifier_reports.is_empty() {
+            data["info"]["task_verifier"] = json!({"attempts": self.task_verifier_reports});
         }
         if let Some(report) = self.jev_report.as_ref() {
             data["info"]["jev_verifier"] = report.clone();

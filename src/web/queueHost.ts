@@ -128,7 +128,7 @@ export class QueueHost {
     };
   }
 
-  workerProfile(task: Pick<QueueTask, "id" | "model">): RunProfile {
+  workerProfile(task: Pick<QueueTask, "id" | "model" | "title">): RunProfile {
     // The worker's own verification is its closure: the model judge doubled short tasks and could
     // reject a correct answer into a loop (measured on the pi-vs-mini corpus). MINITUI_WORKER_JUDGE=1
     // turns it back on.
@@ -143,7 +143,7 @@ export class QueueHost {
     })();
     // The fallback chain. The worker switches model inside its own process and reads each
     // model's credentials from providers.json itself (models/connections.rs).
-    return { role: "worker", specs: [], env: { ...extra, ...this.#fallbackEnv(task.model), ...this.#queueEnv(), ...judge, MINI_AGENT_TOOLSET: "worker", MINITUI_TASK_ID: task.id, MINI_AGENT_CACHE_WARMER: "off", MINI_AGENT_THINKING: process.env.MINI_AGENT_THINKING ?? "adaptive" } };
+    return { role: "worker", specs: [], env: { ...extra, ...this.#fallbackEnv(task.model), ...this.#queueEnv(), ...judge, MINI_AGENT_TOOLSET: "worker", MINITUI_TASK_ID: task.id, MINITUI_TASK_TITLE: task.title, MINI_AGENT_CACHE_WARMER: "off", MINI_AGENT_THINKING: process.env.MINI_AGENT_THINKING ?? "adaptive" } };
   }
 
   #queueEnv(): Record<string, string> {
