@@ -446,3 +446,41 @@ export interface AgentsBrief {
   sessionId: string;
   nodes: AgentNode[];
 }
+
+/** An installed MCP server (`GET /api/mcp`). Never carries a token or a header value. Mirrors `serverView` in src/mcp/index.ts. */
+export interface McpServerView {
+  id: string;
+  name: string;
+  url: string;
+  preset?: string;
+  addedAt: number;
+  disabled: boolean;
+  oauth: boolean;
+  loggedIn: boolean;
+  expiresAt?: number;
+  headerNames: string[];
+  state: "connected" | "needs-login" | "expired" | "disabled" | "ready";
+}
+
+export interface McpPreset {
+  id: string;
+  name: string;
+  description: string;
+  url: string;
+  auth: "oauth" | "none" | "header";
+  docs?: string;
+}
+
+/** An OAuth login in flight (`LoginView` in src/mcp/flow.ts). */
+export interface McpLogin {
+  id: string;
+  serverId: string;
+  serverName: string;
+  url: string;
+  redirectUri: string;
+  status: "pending" | "exchanging" | "done" | "error";
+  error?: string;
+  toolCount?: number;
+  startedAt: number;
+  expiresAt: number;
+}

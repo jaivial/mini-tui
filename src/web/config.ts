@@ -336,6 +336,7 @@ export const COMMANDS: CommandInfo[] = [
   { name: "browser", insert: "/browser", detail: "Show the agents' browser (screenshots or live)", kind: "client" },
   { name: "compact", insert: "/compact", detail: "Summarize the conversation to free context", kind: "client" },
   { name: "connect", insert: "/connect", detail: "Connect a provider with your API key", kind: "client" },
+  { name: "mcp", insert: "/mcp", detail: "Install MCP servers and log in to them", kind: "client" },
   { name: "settings", insert: "/settings", detail: "Open settings (tasks at once, providers…)", kind: "client" },
   { name: "skills", insert: "/skills", detail: "Browse skills you can reference with $name", kind: "client" },
   { name: "help", insert: "/help", detail: "Commands and keyboard shortcuts", kind: "client" },

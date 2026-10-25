@@ -274,7 +274,7 @@
           {#if at}<div class="tnum pointer-coarse:px-1 pl-1 text-[10px] leading-3 text-ink-faint">{at}</div>{/if}
         {/if}
         <div class="flex items-end gap-1">
-          <div class="max-w-[85%] rounded-2xl rounded-bl-md bg-bubble-bot px-3.5 py-2 pointer-coarse:px-4">
+          <div class="msg-bot max-w-[85%] rounded-2xl rounded-bl-md bg-bubble-bot px-3.5 py-2 pointer-coarse:px-4">
             <Markdown text={row.event.text} class="read-[14px] leading-[1.55] text-ink" />
           </div>
           <button
@@ -427,6 +427,27 @@
   .cv-row {
     content-visibility: auto;
     contain-intrinsic-size: auto 64px;
+  }
+  /* A bubble that arrives grows out of its own corner (the user's from the right, the bot's from
+     the left): a message reads as sent/received, not as a block appearing. Rows off screen are
+     skipped by content-visibility, so a long transcript does not animate as it loads. */
+  .msg-user {
+    transform-origin: bottom right;
+    animation: bubble-in 300ms var(--ease-emphasized) both;
+  }
+  .msg-bot {
+    transform-origin: bottom left;
+    animation: bubble-in 300ms var(--ease-emphasized) both;
+  }
+  @keyframes bubble-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
 
   /* Espejo: a mirrored WhatsApp bubble keeps its own bubble style plus a quiet

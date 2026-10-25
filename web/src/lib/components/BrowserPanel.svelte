@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { X, RefreshCw, Camera, Radio, Hand } from "@lucide/svelte";
+  import { X, RefreshCw, Camera, Radio, Hand, Maximize2, Minimize2 } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import { api } from "../api";
   import { toasts } from "../stores/toast.svelte";
@@ -11,7 +11,7 @@
    * or its live stream. "Take control" relays the mouse and keyboard to that tab, which is how a
    * human solves a captcha, scans a QR or logs in for a task, in the agent's own browser.
    */
-  let { onclose, tab = $bindable(""), live = false }: { onclose?: () => void; tab?: string; live?: boolean } = $props();
+  let { onclose, tab = $bindable(""), live = false, full = false, onfull }: { onclose?: () => void; tab?: string; live?: boolean; full?: boolean; onfull?: () => void } = $props();
 
   let tabs = $state<CuTab[]>([]);
   let available = $state(true);
@@ -176,6 +176,7 @@
       {#each tabs as t (t.id)}<option value={t.id}>{t.title || t.url}</option>{/each}
     </select>
     <Button variant="ghost" size="icon-sm" icon={RefreshCw} title="Reload tabs" aria-label="Reload tabs" onclick={loadTabs} />
+    {#if onfull}<Button variant="ghost" size="icon-sm" icon={full ? Minimize2 : Maximize2} title={full ? "Exit full screen (Esc · Ctrl/⌘ ⇧ F)" : "Full screen (Ctrl/⌘ ⇧ F)"} aria-label={full ? "Exit full screen" : "Full screen"} aria-pressed={full} onclick={onfull} />{/if}
     {#if onclose}<Button variant="ghost" size="icon-sm" icon={X} title="Hide browser" aria-label="Hide browser" onclick={onclose} />{/if}
   </header>
   <div class="flex shrink-0 items-center gap-1 border-b border-line/80 px-2 py-1.5" role="tablist" aria-label="View">

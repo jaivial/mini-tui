@@ -1,4 +1,42 @@
-# MCP in mini-agent-rs
+# MCP in mini-tui and mini-agent-rs
+
+## Installing servers (`/mcp`)
+
+Remote MCP servers are installed from the terminal (`/mcp`) or the web app (Settings → MCP). Both
+write `~/.config/mini-tui/mcp.json` (0600, `MINITUI_MCP_PATH` overrides it), and every agent run gets
+the enabled servers with their current tokens through `MINI_AGENT_MCP_SERVERS`. Their tools are
+named `mcp__<server>__<tool>`, as in Claude Code.
+
+Presets: Figma, Linear, Notion, Atlassian, Stripe, Vercel. Any other Streamable HTTP server can be
+added by URL, with an optional static header (API-key servers) or an OAuth client.
+
+### OAuth (Figma and others)
+
+The flow is the MCP authorization spec, as Claude Code implements it:
+
+1. the server answers `401` with `WWW-Authenticate: Bearer resource_metadata=…`;
+2. protected-resource metadata (RFC 9728) → authorization-server metadata (RFC 8414);
+3. dynamic client registration (RFC 7591) for the redirect URI, cached per redirect;
+4. authorization code + PKCE S256 + `resource` (RFC 8707);
+5. the token is proved against the MCP server (`initialize` + `tools/list`) before the login
+   counts as done; refresh tokens are used before expiry (every 5 minutes, both front ends).
+
+**Figma** only accepts dynamic registration from approved client names (`mini-tui` gets
+`403 Forbidden`), so its preset registers as `Claude Code`. A custom server can set its own client
+name, or a client id/secret registered out of band.
+
+**Terminal**: the login runs in the background. A listener on `http://localhost:33418/callback`
+(`MINITUI_MCP_CALLBACK_PORT`; a free port if taken) waits for the browser, and the panel switches
+to "connected" by itself. Keys: `c` copy the link (OSC 52 / tmux / native clipboard), `o` open it
+in the browser, `p` paste the address the browser ended on (a browser on another machine, where
+the localhost redirect cannot load), `Esc` cancel. The link expires after 10 minutes.
+
+**Web**: the login opens in a popup; the provider redirects to `/api/mcp/oauth/callback` on the
+same origin the app was loaded from, the server completes it and the panel notices (the popup's
+message, with a poll as fallback). "Copy link" and "Paste redirect URL" cover a popup that is
+blocked or a login done on another device.
+
+## The agent side
 
 `mini-agent-rs` has an opt-in, single-server MCP Streamable HTTP client. It is **off by default**:
 ordinary coding and speed-benchmark runs do not connect, fetch schemas, or enlarge the tool list.

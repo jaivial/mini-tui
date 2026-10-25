@@ -119,11 +119,14 @@ fn action_value(command: &Value, tool_call_id: Value) -> Value {
 /// `MINITUI_AGENT_TOOLS=1` gate, so a bare run --- and the parity suite --- still sees only
 /// `bash` + `cu`, and a call to any of these without the gate is the usual unknown-tool error.
 pub fn is_native_tool(name: &str) -> bool {
-    crate::queue_tools::is_tool(name) || (name == "codejs" && crate::codejs::enabled()) || matches!(name, "read") || (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled())
+    crate::mcp::is_tool(name) || crate::queue_tools::is_tool(name) || (name == "codejs" && crate::codejs::enabled()) || matches!(name, "read") || (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled())
         || (name == "computer_use" && crate::computer_use::enabled())
 }
 
 fn command_for(name: &str, args: &Value) -> Result<Value, String> {
+    if crate::mcp::is_tool(name) {
+        return Ok(json!({"tool": name, "args": args}));
+    }
     if crate::queue_tools::is_tool(name) {
         return Ok(json!({"tool": name, "args": args}));
     }

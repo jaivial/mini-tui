@@ -48,6 +48,7 @@ import { bodyRefusal, BodyTimeout, BodyTooLarge, EmptyBody, readBody, readJsonBo
 import { syncAllSkills } from "../skills";
 import { etagFor, isFresh, mayRevalidate, revalidationHeaders } from "./etag";
 import { compressBody } from "./compress";
+import * as mcp from "../mcp/index";
 import {
   COMMANDS,
   connectProvider, refetchProviderModels,
@@ -487,6 +488,119 @@ function dropSession(id: string): void {
   sessions.close(id);
   feed.gone(id);
   broadcast({ type: "session-gone", id });
+}
+
+/**
+ * `/api/mcp/*`. The OAuth redirect comes back to THIS server (`/api/mcp/oauth/callback`) at the
+ * origin the page was loaded from, so the browser that logs in is the browser that is redirected,
+ * wherever the server runs. A browser that cannot reach that origin pastes the final address.
+ */
+async function mcpRoute(path: string, request: Request, srv: unknown): Promise<Response | null> {
+  const method = request.method;
+  if (path === "/mcp/oauth/callback" && method === "GET") {
+    const params = new URL(request.url).searchParams;
+    const login = await mcp.completeFromCallback(params);
+    const ok = login?.status === "done";
+    const message = !login
+      ? "This login is no longer pending: start it again from mini."
+      : ok
+        ? `${login.serverName} is connected (${login.toolCount ?? 0} tools). You can close this window.`
+        : (login.error ?? "The login did not complete.");
+    // The page tells its opener (the app) right away; the app's poll is the fallback.
+    const page = mcp.callbackPage(ok, message).replace(
+      "</body>",
+      `<script>try{window.opener&&window.opener.postMessage(${JSON.stringify({ type: "mcp-login", id: login?.id ?? "", status: login?.status ?? "error" }).replace(/</g, "\\u003c")},location.origin)}catch{}</script></body>`,
+    );
+    return new Response(page, { status: ok ? 200 : 400, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+  }
+  if (path === "/mcp" && method === "GET") return json({ servers: mcp.listViews(), presets: mcp.MCP_PRESETS });
+  if (path === "/mcp" && method === "POST") {
+    const { limited, key } = charged("providerConnect", request, srv);
+    if (limited) return limited;
+    const read = await readJsonOrRefuse(request, LIMITS.providerConnect, key);
+    if (!read.ok) return read.response;
+    const b = read.body;
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    let record: mcp.McpServerRecord;
+    try {
+      record = mcp.addServer({
+        preset: str(b.preset),
+        url: str(b.url),
+        name: str(b.name),
+        clientName: str(b.clientName),
+        clientId: str(b.clientId),
+        clientSecret: str(b.clientSecret),
+        headers: b.headers && typeof b.headers === "object" ? (b.headers as Record<string, string>) : undefined,
+      });
+    } catch (error) {
+      return json({ error: (error as Error).message }, 400);
+    }
+    const probe = await mcp.probe(record);
+    if (probe.needsAuth) mcp.markOAuth(record.id);
+    log("api.mcp.add", { id: record.id, url: record.url, auth: probe.needsAuth ? "oauth" : probe.ok ? "none" : "error" });
+    const view = mcp.listViews().find((s) => s.id === record.id);
+    return json({ server: view, probe: { ok: probe.ok, needsAuth: !!probe.needsAuth, tools: probe.tools?.length ?? 0, error: probe.ok ? undefined : probe.error } }, 201);
+  }
+  const login = path.match(/^\/mcp\/logins\/([\w-]+)(\/paste)?$/);
+  if (login) {
+    const id = login[1] as string;
+    if (login[2] && method === "POST") {
+      const read = await readJsonOrRefuse(request);
+      if (!read.ok) return read.response;
+      try {
+        return json({ login: await mcp.completeFromPaste(id, String(read.body.text ?? "")) });
+      } catch (error) {
+        return json({ error: (error as Error).message }, 400);
+      }
+    }
+    if (method === "GET") {
+      const view = mcp.getLogin(id);
+      return view ? json({ login: view }) : json({ error: "no such login" }, 404);
+    }
+    if (method === "DELETE") {
+      mcp.cancelLogin(id);
+      return json({ ok: true });
+    }
+    return null;
+  }
+  const one = path.match(/^\/mcp\/([\w-]+)(?:\/(login|logout|test))?$/);
+  if (!one) return null;
+  const id = one[1] as string;
+  const action = one[2];
+  if (!mcp.getServer(id)) return json({ error: "no such server" }, 404);
+  if (!action && method === "DELETE") {
+    mcp.removeServer(id);
+    return json({ ok: true });
+  }
+  if (!action && method === "PATCH") {
+    const read = await readJsonOrRefuse(request);
+    if (!read.ok) return read.response;
+    if (typeof read.body.disabled === "boolean") mcp.setDisabled(id, read.body.disabled);
+    return json({ server: mcp.listViews().find((s) => s.id === id) });
+  }
+  if (action === "logout" && method === "POST") {
+    mcp.logoutServer(id);
+    return json({ server: mcp.listViews().find((s) => s.id === id) });
+  }
+  if (action === "test" && method === "POST") {
+    const probe = await mcp.probeStored(id);
+    if (probe.needsAuth) mcp.markOAuth(id);
+    return json({ server: mcp.listViews().find((s) => s.id === id), probe: { ok: probe.ok, needsAuth: !!probe.needsAuth, tools: probe.tools ?? [], error: probe.error } });
+  }
+  if (action === "login" && method === "POST") {
+    const { limited } = charged("providerConnect", request, srv);
+    if (limited) return limited;
+    const origin = request.headers.get("origin") ?? `${new URL(request.url).protocol}//${request.headers.get("host")}`;
+    try {
+      mcp.markOAuth(id);
+      const view = await mcp.startLogin({ serverId: id, redirectUri: `${origin}/api/mcp/oauth/callback` });
+      log("api.mcp.login", { id, redirect: view.redirectUri });
+      return json({ login: view });
+    } catch (error) {
+      return json({ error: (error as Error).message, refused: error instanceof mcp.RegistrationRefused }, 502);
+    }
+  }
+  return null;
 }
 
 function json(body: unknown, status = 200, headers?: Record<string, string>): Response {
@@ -1593,6 +1707,13 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       if (providerMatch && request.method === "DELETE") {
         return disconnectProvider(providerMatch[1] as string) ? json({ ok: true }) : json({ error: "not connected" }, 404);
       }
+      // ------------------------------------------------------------------ MCP
+      // Installed MCP servers and their OAuth logins. Tokens never leave this process: the views
+      // carry state only, and the agent gets them through its environment (spawn.ts).
+      if (path.startsWith("/mcp")) {
+        const answer = await mcpRoute(path, request, srv);
+        if (answer) return answer;
+      }
       if (path === "/health") return json({ ok: true, sessions: sessions.list().length, hubClients: hub.clients });
 
       // ------------------------------------------------- static (built UI)
@@ -1646,6 +1767,8 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
 };
 
 console.log(`mini-tui web server on http://${server.hostname}:${server.port}`);
+// MCP OAuth tokens are refreshed before they expire, so a task started an hour from now still works.
+mcp.startTokenRefresher();
 console.log(existsSync(STATIC_DIR) ? `serving the web app from ${STATIC_DIR}` : "web/dist not built - run `bun run build` in web/ (API only for now)");
 
 // After module initialization: openHistory reads mirrorCtx and broadcasts through the live hub.

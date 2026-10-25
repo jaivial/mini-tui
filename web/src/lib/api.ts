@@ -24,7 +24,17 @@ import type {
   AgentDef,
   QueueView,
   CuTab,
+  McpServerView,
+  McpPreset,
+  McpLogin,
 } from "./types";
+
+export interface McpProbe {
+  ok: boolean;
+  needsAuth: boolean;
+  tools: number | unknown[];
+  error?: string;
+}
 
 /**
  * A failed call, with the status it failed with. The message is unchanged (it is what the UI
@@ -168,6 +178,18 @@ export const api = {
     return { ok: false, error: body.error ?? `${res.status} ${res.statusText}` };
   },
   disconnectProvider: (id: string) => call<{ ok: true }>(`/providers/${id}`, { method: "DELETE" }),
+  /** MCP servers: installed ones (masked) and the one-click presets. */
+  mcp: () => call<{ servers: McpServerView[]; presets: McpPreset[] }>("/mcp"),
+  mcpAdd: (body: { preset?: string; url?: string; name?: string; clientName?: string; clientId?: string; clientSecret?: string; headers?: Record<string, string> }) =>
+    call<{ server: McpServerView; probe: McpProbe }>("/mcp", { method: "POST", body: JSON.stringify(body) }),
+  mcpRemove: (id: string) => call<{ ok: true }>(`/mcp/${id}`, { method: "DELETE" }),
+  mcpSetDisabled: (id: string, disabled: boolean) => call<{ server: McpServerView }>(`/mcp/${id}`, { method: "PATCH", body: JSON.stringify({ disabled }) }),
+  mcpTest: (id: string) => call<{ server: McpServerView; probe: McpProbe & { tools: { name: string; description?: string }[] } }>(`/mcp/${id}/test`, { method: "POST" }),
+  mcpLogout: (id: string) => call<{ server: McpServerView }>(`/mcp/${id}/logout`, { method: "POST" }),
+  mcpLogin: (id: string) => call<{ login: McpLogin }>(`/mcp/${id}/login`, { method: "POST" }),
+  mcpLoginState: (loginId: string) => call<{ login: McpLogin }>(`/mcp/logins/${loginId}`),
+  mcpLoginPaste: (loginId: string, text: string) => call<{ login: McpLogin }>(`/mcp/logins/${loginId}/paste`, { method: "POST", body: JSON.stringify({ text }) }),
+  mcpLoginCancel: (loginId: string) => call<{ ok: true }>(`/mcp/logins/${loginId}`, { method: "DELETE" }),
 };
 
 /**
