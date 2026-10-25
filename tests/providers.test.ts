@@ -99,18 +99,50 @@ describe("BYOK connections", () => {
     saveConnection({ ...saved[0], key: "tp-new", addedAt: 2 }, PATH);
     expect(loadConnections(PATH).map((c) => c.key)).toEqual(["tp-new"]);
 
-    // only the model's own provider credentials reach its runs
+    // the model's provider credentials reach its runs
     expect(modelEnv("xiaomi/mimo-v2.6-flash", saved)).toEqual({
       XIAOMI_API_KEY: "tp-secret",
       XIAOMI_API_BASE: xiaomi.baseUrl,
     });
-    expect(modelEnv("deepseek/deepseek-chat", saved)).toEqual({}); // other providers stay untouched
 
     // every catalog model shows up in /model with its provider name
     const options = connectionModelOptions(saved);
     expect(options.map((o) => o.value)).toEqual(["xiaomi/mimo-v2.6-pro", "xiaomi/mimo-v2.6-flash"]);
     expect(options[0].name).toContain("Xiaomi MiMo");
     rmSync(PATH, { force: true });
+  });
+
+  test("a model the provider added after the connection was saved still gets its key (cliproxy 401)", () => {
+    const saved = [
+      { id: "cliproxy", name: "cli-proxy", route: "native" as const, keyEnv: "CLIPROXY_API_KEY", extraEnv: { CLIPROXY_API_BASE: "http://127.0.0.1:8317/v1" }, baseUrl: "http://127.0.0.1:8317/v1", prefix: "cliproxy", key: "gw-key", models: ["claude-sonnet-4-5-20250929"], defaultModel: "claude-sonnet-4-5-20250929", addedAt: 1 },
+      { id: "xiaomi", name: "Xiaomi", route: "native" as const, keyEnv: "XIAOMI_API_KEY", extraEnv: { XIAOMI_API_BASE: "https://x/v1" }, baseUrl: "https://x/v1", prefix: "xiaomi", key: "xk", models: ["mimo-v2.6-flash"], defaultModel: "mimo-v2.6-flash", addedAt: 1 },
+      { id: "zai", name: "Z.AI", route: "openai-compat" as const, keyEnv: "ZAI_API_KEY", baseUrl: "https://api.z.ai/v4", prefix: "openai", key: "zk", models: ["glm-5.3"], defaultModel: "glm-5.3", addedAt: 1 },
+    ];
+    // Not in the snapshot taken at connect time, advertised by the gateway since: before, no key → 401.
+    const env = modelEnv("cliproxy/claude-opus-5-5", saved);
+    expect(env.CLIPROXY_API_KEY).toBe("gw-key");
+    expect(env.CLIPROXY_API_BASE).toBe("http://127.0.0.1:8317/v1");
+    // A run that switches model mid-way (/model, the fallback chain) still holds the other native keys…
+    expect(env.XIAOMI_API_KEY).toBe("xk");
+    // …but never another connection's claim on the shared openai/ slot.
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(modelEnv("openai/glm-5.3", saved).OPENAI_API_KEY).toBe("zk");
+    // An openai/ model nobody saved gets no openai credentials by prefix (the slot is shared).
+    expect(modelEnv("openai/gpt-x", saved).OPENAI_API_KEY).toBeUndefined();
+    // Unknown provider: the native keys only.
+    expect(modelEnv("deepseek/deepseek-chat", saved)).toEqual({ CLIPROXY_API_KEY: "gw-key", CLIPROXY_API_BASE: "http://127.0.0.1:8317/v1", XIAOMI_API_KEY: "xk", XIAOMI_API_BASE: "https://x/v1" });
+  });
+
+  test("a variable two connections share is never set from the wrong one", () => {
+    const mk = (id: string, keyEnv: string, base: string) => ({ id, name: id, route: "native" as const, keyEnv, extraEnv: { MINIMAX_API_BASE: base }, baseUrl: base, prefix: id, key: `${id}-key`, models: ["m"], defaultModel: "m", addedAt: 1 });
+    const saved = [mk("minimax", "MINIMAX_API_KEY", "https://api.minimax.io/v1"), mk("minimax-cn", "MINIMAX_API_KEY_CN", "https://api.minimaxi.com/v1")];
+    expect(modelEnv("minimax/m", saved).MINIMAX_API_BASE).toBe("https://api.minimax.io/v1");
+    expect(modelEnv("minimax-cn/m", saved).MINIMAX_API_BASE).toBe("https://api.minimaxi.com/v1");
+    // A third provider's run carries both keys, but no ambiguous base.
+    const env = modelEnv("xiaomi/x", saved);
+    expect(env.MINIMAX_API_KEY).toBe("minimax-key");
+    expect(env.MINIMAX_API_KEY_CN).toBe("minimax-cn-key");
+    expect(env.MINIMAX_API_BASE).toBeUndefined();
   });
 
   test("legacy openai-compat connections keep mapping onto the openai slot", () => {

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { runHelperScript } from "./helpers";
 import { MODELS } from "./models";
 import { rustAgentBin } from "./mini/spawn";
+import { cliproxyEnv } from "./cliproxyCatalog";
 
 export const DOCTOR_SCRIPT = join(import.meta.dir, "..", "scripts", "cliproxy-doctor.py");
 const TEST_MODEL_SCRIPT = join(import.meta.dir, "..", "scripts", "test_model.py");
@@ -103,7 +104,8 @@ export async function runDoctor(
   model: string = defaultDoctorModel(),
   options: { env?: NodeJS.ProcessEnv; runTestModel?: (model: string) => Promise<number> } = {},
 ): Promise<DoctorReport> {
-  const env = options.env ?? process.env;
+  // The key and base a run would get (the saved `/connect` connection), not the bare defaults.
+  const env = options.env ?? cliproxyEnv();
   const base = env.CLIPROXY_API_BASE || "http://127.0.0.1:8317/v1";
   // An injected helper replaces the whole probe: a test stubs the end-to-end stage, so the
   // network stages it cannot know about must not be reported as failures beside it.
