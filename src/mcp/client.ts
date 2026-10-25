@@ -11,6 +11,9 @@ import { getServer, loadServers, updateServer, mcpPath, type McpServerRecord, ty
 
 const PROTOCOL = "2025-06-18";
 
+/** Presets whose server lists its tools without a token, so a listing is not a working login. */
+const PRESETS_LIST_ANONYMOUSLY = new Set(["google-search-console"]);
+
 export interface ProbeResult {
   ok: boolean;
   /** 401/403: the server wants (new) credentials. */
@@ -103,6 +106,11 @@ export function startTokenRefresher(everyMs = 5 * 60_000): () => void {
 
 export async function probe(server: McpServerRecord, timeoutMs = 15_000): Promise<ProbeResult> {
   const url = server.url;
+  // An OAuth server with no login yet. Some answer initialize and tools/list anonymously and
+  // refuse only the calls (Google's MCP servers): listing tools there proves nothing.
+  if (server.oauth && !server.oauth.tokens && server.preset && PRESETS_LIST_ANONYMOUSLY.has(server.preset)) {
+    return { ok: false, needsAuth: true, error: "this server needs a login" };
+  }
   const base = { "content-type": "application/json", accept: "application/json, text/event-stream", ...authHeaders(server) };
   let session: string | null = null;
   let protocol = PROTOCOL;

@@ -119,12 +119,15 @@ export async function discover(serverUrl: string, headers: Record<string, string
   } catch (error) {
     throw new Error(`cannot reach ${safeUrl(serverUrl)}: ${(error as Error).message}`);
   }
-  if (status !== 401 && status !== 403) return { requiresAuth: false };
-
+  const unauthorized = status === 401 || status === 403;
   const prm =
     (www.resource_metadata ? await getJson(www.resource_metadata) : null) ??
     (await getJson(wellKnown(serverUrl, "oauth-protected-resource"))) ??
-    (await getJson(`${new URL(serverUrl).origin}/.well-known/oauth-protected-resource`));
+    (unauthorized ? await getJson(`${new URL(serverUrl).origin}/.well-known/oauth-protected-resource`) : null);
+  // Some servers let anyone initialize and list tools and only ask for a token on tools/call
+  // (Google's: searchconsole.googleapis.com/mcp answers 200 to initialize, 401 to a call). Their
+  // protected-resource metadata is what says so; without it a 200 means "no login needed".
+  if (!unauthorized && !asStrings(prm?.authorization_servers)?.length) return { requiresAuth: false };
   const issuers = asStrings(prm?.authorization_servers) ?? [];
   // 2025-03-26 servers have no resource metadata: the MCP server's origin is the authorization server.
   const issuer = issuers[0] ?? new URL(serverUrl).origin;
@@ -233,7 +236,21 @@ export function authorizationUrl(opts: {
   u.searchParams.set("state", opts.state);
   if (opts.scope) u.searchParams.set("scope", opts.scope);
   if (opts.resource) u.searchParams.set("resource", opts.resource);
+  // Google issues a refresh token only for offline access, and again only when consent is shown:
+  // without these the login works for one hour and then needs the browser again.
+  if (isGoogle(opts.meta)) {
+    u.searchParams.set("access_type", "offline");
+    u.searchParams.set("prompt", "consent");
+  }
   return u.toString();
+}
+
+export function isGoogle(meta: Pick<AuthServerMeta, "authorizationEndpoint">): boolean {
+  try {
+    return new URL(meta.authorizationEndpoint).hostname === "accounts.google.com";
+  } catch {
+    return false;
+  }
 }
 
 async function tokenRequest(meta: AuthServerMeta, client: OAuthClient, params: Record<string, string>): Promise<OAuthTokens> {

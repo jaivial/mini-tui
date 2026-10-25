@@ -41,6 +41,24 @@
   let customError = $state("");
   let customForm = $state<HTMLElement | null>(null);
 
+  // A preset that needs your own OAuth client (Google): its id/secret, asked for inline.
+  let clientFor = $state<McpPreset | null>(null);
+  let clientId = $state("");
+  let clientSecret = $state("");
+  let clientError = $state("");
+  let clientForm = $state<HTMLElement | null>(null);
+
+  async function submitClient() {
+    const p = clientFor;
+    if (!p) return;
+    clientError = "";
+    const ok = await install({ preset: p.id, clientId: clientId.trim(), clientSecret: clientSecret.trim() }, p.name, true);
+    if (ok) {
+      clientFor = null;
+      clientId = clientSecret = "";
+    }
+  }
+
   // The login in flight (one at a time).
   let login = $state<McpLogin | null>(null);
   let popup: Window | null = null;
@@ -124,6 +142,9 @@
       if (key === "custom") {
         customError = (error as Error).message;
         shake(customForm);
+      } else if (clientFor?.id === key) {
+        clientError = (error as Error).message;
+        shake(clientForm);
       } else toasts.push(`Could not install ${label}`, { detail: (error as Error).message, tone: "err" });
       return false;
     } finally {
@@ -324,7 +345,7 @@
   function initials(name: string): string {
     return name.replace(/[^A-Za-z0-9 ]/g, "").split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase() || "M";
   }
-  const HUE: Record<string, string> = { openpencil: "#0d9488", figma: "#a259ff", linear: "#5e6ad2", notion: "#787774", atlassian: "#2684ff", stripe: "#635bff", vercel: "#888" };
+  const HUE: Record<string, string> = { "google-search-console": "#4285f4", openpencil: "#0d9488", figma: "#a259ff", linear: "#5e6ad2", notion: "#787774", atlassian: "#2684ff", stripe: "#635bff", vercel: "#888" };
 </script>
 
 <div class="flex flex-col gap-5">
@@ -541,6 +562,43 @@
       </form>
     {/if}
 
+    {#if clientFor}
+      <form
+        bind:this={clientForm}
+        transition:slide={{ duration: 200 }}
+        class="flex flex-col gap-3 rounded-xl border border-line bg-surface p-4"
+        onsubmit={(e) => {
+          e.preventDefault();
+          void submitClient();
+        }}
+      >
+        <div>
+          <h4 class="text-[13.5px] font-medium text-ink">{clientFor.name}: your OAuth client</h4>
+          <p class="mt-0.5 text-[12.5px] text-ink-muted">
+            Google has no automatic client registration. Create an OAuth client ("Web application") in your Google Cloud project with
+            these redirect URIs, then paste its id and secret. They stay on this server.
+          </p>
+          <ul class="mt-1.5 flex flex-col gap-0.5 font-mono text-[11.5px] text-ink-muted">
+            <li class="select-all">{location.origin}/api/mcp/oauth/callback</li>
+            <li class="select-all">http://localhost:33418/callback</li>
+          </ul>
+        </div>
+        <label class="flex flex-col gap-1 text-[12.5px] font-medium text-ink-muted">
+          Client id
+          <input bind:value={clientId} class="field font-mono" placeholder="…apps.googleusercontent.com" required autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="flex flex-col gap-1 text-[12.5px] font-medium text-ink-muted">
+          Client secret
+          <input bind:value={clientSecret} class="field font-mono" type="password" placeholder="GOCSPX-…" autocomplete="off" spellcheck="false" />
+        </label>
+        {#if clientError}<p role="alert" class="text-[12.5px] text-err">{clientError}</p>{/if}
+        <div class="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onclick={() => (clientFor = null)}>Cancel</Button>
+          <Button variant="primary" size="sm" icon={LogIn} type="submit" loading={busy[clientFor.id] === "install"} disabled={!clientId.trim()}>Install and log in</Button>
+        </div>
+      </form>
+    {/if}
+
     {#if status === "ready"}
       {#if !available.length}
         <p class="px-1 py-2 text-[12.5px] text-ink-muted">Every preset is installed. Use a custom URL for anything else.</p>
@@ -554,7 +612,12 @@
                 class="preset interactive group flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-xl border border-line bg-surface p-3 text-left hover:border-line-strong hover:bg-raised/60"
                 aria-label="Install {p.name}"
                 disabled={!!busy[p.id]}
-                onclick={() => install({ preset: p.id }, p.name, p.auth === "oauth")}
+                onclick={() => {
+                  if (p.needsClient) {
+                    clientFor = clientFor?.id === p.id ? null : p;
+                    clientError = "";
+                  } else void install({ preset: p.id }, p.name, p.auth === "oauth");
+                }}
               >
                 <span class="grid size-8 shrink-0 place-items-center rounded-lg text-[11px] font-semibold text-white transition-transform duration-200 group-hover:scale-105" style="background: {HUE[p.id] ?? 'var(--color-ink-faint)'}" aria-hidden="true">{initials(p.name)}</span>
                 <span class="min-w-0 flex-1">

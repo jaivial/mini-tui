@@ -469,6 +469,8 @@ export interface McpPreset {
   description: string;
   url: string;
   auth: "oauth" | "none" | "header" | "local";
+  /** No dynamic registration: installing asks for an OAuth client id/secret. */
+  needsClient?: boolean;
   docs?: string;
 }
 

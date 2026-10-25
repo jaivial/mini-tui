@@ -7,7 +7,8 @@ write `~/.config/mini-tui/mcp.json` (0600, `MINITUI_MCP_PATH` overrides it), and
 the enabled servers with their current tokens through `MINI_AGENT_MCP_SERVERS`. Their tools are
 named `mcp__<server>__<tool>`, as in Claude Code.
 
-Presets: OpenPencil (self-hosted on this machine, see [openpencil.md](openpencil.md)), Figma,
+Presets: OpenPencil (self-hosted on this machine, see [openpencil.md](openpencil.md)), Google
+Search Console (Google's own server, your OAuth client: [google-search-console.md](google-search-console.md)), Figma,
 Linear, Notion, Atlassian, Stripe, Vercel. Any other Streamable HTTP server can be
 added by URL, with an optional static header (API-key servers) or an OAuth client.
 

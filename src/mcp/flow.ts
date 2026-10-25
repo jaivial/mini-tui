@@ -137,7 +137,10 @@ export async function startLogin(opts: StartOptions): Promise<LoginView> {
   let pendingRef: Pending | undefined;
 
   if (opts.loopback) {
-    const listener = listenLoopback(typeof opts.loopback === "object" ? opts.loopback.port : undefined, (params) => {
+    // A client registered by hand (Google) knows ONE redirect URI: a random fallback port would
+    // only end in the provider's "redirect_uri_mismatch" page.
+    const fixedPort = !!server.oauth?.staticClient;
+    const listener = listenLoopback(typeof opts.loopback === "object" ? opts.loopback.port : undefined, fixedPort, (params) => {
       const p = pendingRef;
       if (!p) return { ok: false, message: "This login is no longer pending." };
       if (params.get("state") !== state) return { ok: false, message: "This page belongs to another login attempt." };
@@ -245,7 +248,7 @@ main{max-width:26rem;padding:2rem;text-align:center;animation:in .4s cubic-bezie
 <script>${ok ? "setTimeout(()=>{try{window.close()}catch{}},1800)" : ""}</script></body></html>`;
 }
 
-function listenLoopback(port: number | undefined, onCallback: (params: URLSearchParams) => { ok: boolean; message: string }): { redirectUri: string; stop: () => void } {
+function listenLoopback(port: number | undefined, fixedPort: boolean, onCallback: (params: URLSearchParams) => { ok: boolean; message: string }): { redirectUri: string; stop: () => void } {
   const serve = (p: number, hostname = "127.0.0.1") =>
     Bun.serve({
       hostname,
@@ -260,7 +263,8 @@ function listenLoopback(port: number | undefined, onCallback: (params: URLSearch
   let server: ReturnType<typeof serve>;
   try {
     server = serve(port ?? LOOPBACK_PORT);
-  } catch {
+  } catch (error) {
+    if (fixedPort) throw new Error(`port ${port ?? LOOPBACK_PORT} is busy (another login in progress?): this OAuth client only accepts http://localhost:${port ?? LOOPBACK_PORT}/callback`, { cause: error });
     server = serve(0); // the fixed port is taken (another login, another app): any free one
   }
   // `localhost` resolves to ::1 first on some systems: listen there too, on the same port.

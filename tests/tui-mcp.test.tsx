@@ -132,4 +132,34 @@ describe("/mcp in the terminal", () => {
     expect(mcp.listViews(file)[0]?.state).toBe("connected");
     setup.renderer.destroy();
   });
+
+  test("Google Search Console asks for your OAuth client before installing, with the secret masked", async () => {
+    const setup = await testRender(
+      <App cwd="." events={[]} info={{ cost: 0, apiCalls: 0 }} persistSettings={false} mcpPath={join(dir, "gsc.json")} onQuit={() => {}} />,
+      { width: 140, height: 40 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/mcp");
+    await Bun.sleep(20);
+    await press(setup, () => setup.mockInput.pressEnter());
+    await press(setup, () => setup.mockInput.pressEnter());
+    await frameUntil(setup, "mcp servers");
+    await press(setup, () => setup.mockInput.pressKey("a"));
+    await setup.mockInput.typeText("search console");
+    await frameUntil(setup, "Google Search Console");
+    await press(setup, () => setup.mockInput.pressEnter());
+    let frame = await frameUntil(setup, "your OAuth client");
+    expect(frame).toContain("http://localhost:33418/callback");
+    await press(setup, () => setup.mockInput.pasteBracketedText("123-abc.apps.googleusercontent.com"));
+    await press(setup, () => setup.mockInput.pressEnter()); // → secret
+    await press(setup, () => setup.mockInput.pasteBracketedText("GOCSPX-secret"));
+    frame = await frameUntil(setup, "•••••••••••••");
+    expect(frame).toContain("123-abc.apps.googleusercontent.com");
+    expect(frame).not.toContain("GOCSPX-secret");
+    // Escape goes back without installing anything.
+    await press(setup, () => setup.mockInput.pressEscape());
+    await frameUntil(setup, "custom URL");
+    expect(mcp.listViews(join(dir, "gsc.json"))).toEqual([]);
+    setup.renderer.destroy();
+  });
 });

@@ -1234,7 +1234,8 @@ export function App(props: AppProps) {
     try {
       record = mcp.addServer(input, mcpFile);
     } catch (error) {
-      if (mcpRef.current?.kind === "url") setMcpStep({ ...(mcpRef.current as Extract<McpStep, { kind: "url" }>), error: (error as Error).message });
+      const now = mcpRef.current;
+      if (now?.kind === "url" || now?.kind === "client") setMcpStep({ ...now, error: (error as Error).message });
       else setMcpStep({ kind: "error", message: (error as Error).message });
       return;
     }
@@ -1301,6 +1302,7 @@ export function App(props: AppProps) {
       if (isEnter || key.name === "tab") {
         const row = rows[Math.min(step.index, rows.length - 1)];
         if (row === "custom") return setMcpStep({ kind: "url", value: "" });
+        if (row?.needsClient) return setMcpStep({ kind: "client", preset: row, field: "id", id: "", secret: "" });
         if (row) return mcpInstall({ preset: row.id });
         return;
       }
@@ -1315,6 +1317,24 @@ export function App(props: AppProps) {
       if (isEnter) return step.value.trim() ? mcpInstall({ url: step.value.trim() }) : undefined;
       const chunk = pastedSequence(key) || typed;
       if (chunk) return setMcpStep({ ...step, value: step.value + chunk.trim(), error: undefined });
+      return;
+    }
+
+    if (step.kind === "client") {
+      const field = step.field;
+      const value = field === "id" ? step.id : step.secret;
+      const set = (next: string) => setMcpStep({ ...step, [field]: next, error: undefined });
+      if (key.name === "escape") return setMcpStep({ kind: "add", index: 0, query: "" });
+      if (key.name === "tab" || key.name === "down" || key.name === "up") return setMcpStep({ ...step, field: field === "id" ? "secret" : "id" });
+      if (key.name === "backspace") return set(value.slice(0, -1));
+      if (paste) return set(value + pastedToken(readClipboard()));
+      if (isEnter) {
+        if (field === "id") return setMcpStep({ ...step, field: "secret" });
+        if (!step.id.trim()) return setMcpStep({ ...step, field: "id", error: "the client id is required" });
+        return mcpInstall({ preset: step.preset.id, clientId: step.id.trim(), clientSecret: step.secret.trim() });
+      }
+      const chunk = pastedSequence(key) || typed;
+      if (chunk) return set(value + chunk.trim());
       return;
     }
 
@@ -1377,6 +1397,7 @@ export function App(props: AppProps) {
       event.preventDefault();
       event.stopPropagation();
       if (step.kind === "url") setMcpStep({ ...step, value: step.value + text, error: undefined });
+      else if (step.kind === "client") setMcpStep({ ...step, [step.field]: (step.field === "id" ? step.id : step.secret) + text, error: undefined });
       else if (step.kind === "login") setMcpStep({ ...step, pasting: (step.pasting ?? "") + text, pasteError: undefined });
       else if (step.kind === "add") setMcpStep({ ...step, query: step.query + text, index: 0 });
       return;
