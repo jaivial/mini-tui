@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 
-import { refreshTokens, isExpiring, safeUrl } from "./oauth";
+import { TokenError, refreshTokens, isExpiring, safeUrl } from "./oauth";
 import { getServer, loadServers, updateServer, mcpPath, type McpServerRecord, type OAuthClient } from "./store";
 
 /**
@@ -84,19 +84,41 @@ export async function ensureFresh(server: McpServerRecord, path: string | null =
   if (!client || !oauth.tokens.refreshToken) return { server, error: "the access token expired: log in again" };
   try {
     const tokens = await refreshTokens(oauth, client);
-    const next = updateServer(server.id, (s) => ({ ...s, oauth: { ...s.oauth, tokens } }), path) ?? { ...server, oauth: { ...oauth, tokens } };
+    const fresh = (o: typeof oauth | undefined) => {
+      const { refreshError: _dead, ...rest } = o ?? {};
+      return { ...rest, tokens };
+    };
+    const next = updateServer(server.id, (s) => ({ ...s, oauth: fresh(s.oauth) }), path) ?? { ...server, oauth: fresh(oauth) };
     return { server: next };
   } catch (error) {
-    return { server, error: (error as Error).message };
+    const message = (error as Error).message;
+    // A dead grant stays dead: record it so the UI shows "expired" and the timer stops asking.
+    // Network errors and 5xx are not recorded; the next tick tries again.
+    if (error instanceof TokenError && error.code === "invalid_grant") {
+      const next = updateServer(server.id, (s) => ({ ...s, oauth: { ...s.oauth, refreshError: message } }), path) ?? server;
+      return { server: next, error: `${message}: log in again` };
+    }
+    return { server, error: message };
   }
 }
 
 /** Refresh every token close to expiring. Run on a timer by the TUI and the web server. */
 export async function refreshDue(path: string | null = mcpPath(), marginMs = 15 * 60_000): Promise<void> {
   for (const s of loadServers(path)) {
-    if (s.disabled || !s.oauth?.tokens?.refreshToken) continue;
+    if (s.disabled || !s.oauth?.tokens?.refreshToken || s.oauth.refreshError) continue;
     await ensureFresh(s, path, marginMs).catch(() => undefined);
   }
+}
+
+let sharedRefresher: (() => void) | undefined;
+
+/**
+ * One refresher per process, started by whatever spawns agent runs (the CLI and the channel
+ * consumers too, not only the TUI and the web server): runs outlive the one-hour tokens they get
+ * and reload them from mcp.json on a 401 (agent-rs/src/mcp.rs), so the file must stay fresh.
+ */
+export function ensureTokenRefresher(): void {
+  sharedRefresher ??= startTokenRefresher();
 }
 
 export function startTokenRefresher(everyMs = 5 * 60_000): () => void {
@@ -105,6 +127,15 @@ export function startTokenRefresher(everyMs = 5 * 60_000): () => void {
   const timer = setInterval(() => void refreshDue(), everyMs);
   (timer as { unref?: () => void }).unref?.();
   return () => clearInterval(timer);
+}
+
+const AUTH_FAILURE = /\b(UNAUTHENTICATED|PERMISSION_DENIED|invalid[_ ]?(oauth|token|credentials?)|authentication credential|unauthori[sz]ed|401)\b/i;
+
+function toolError(body: Record<string, unknown> | null): string {
+  const err = body?.error as { message?: string } | undefined;
+  if (err?.message) return err.message.slice(0, 200);
+  const parts = (body?.result as { content?: { text?: string }[] } | undefined)?.content ?? [];
+  return parts.map((p) => p.text ?? "").join(" ").trim().slice(0, 200) || "the call failed";
 }
 
 export async function probe(server: McpServerRecord, timeoutMs = 15_000): Promise<ProbeResult> {
@@ -155,9 +186,14 @@ export async function probe(server: McpServerRecord, timeoutMs = 15_000): Promis
     }
     if (verifyWith) {
       const r = await post({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: verifyWith, arguments: {} } });
-      const body = r.status === 401 || r.status === 403 ? null : parseBody(r.headers.get("content-type") ?? "", await r.text());
+      const refused = r.status === 401 || r.status === 403;
+      const text = refused ? "" : await r.text();
+      const body = refused ? null : parseBody(r.headers.get("content-type") ?? "", text);
       const failed = !body || "error" in body || (body.result as { isError?: boolean } | undefined)?.isError;
-      if (failed) return { ok: false, needsAuth: true, error: "the server refused the token: log in again" };
+      // Only an authentication failure means "log in again". A quota error, a 5xx or a
+      // tool error must not send the user back to the browser with a perfectly good login.
+      if (failed && (refused || AUTH_FAILURE.test(text))) return { ok: false, needsAuth: true, error: "the server refused the token: log in again" };
+      if (failed) return { ok: false, error: `${verifyWith}: ${r.ok ? toolError(body) : `HTTP ${r.status}`}` };
     }
     // The probe is done with its session: end it (servers cap them; OpenPencil allows 10).
     if (session) {

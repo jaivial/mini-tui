@@ -4,11 +4,16 @@
 //! The default is deliberately off: normal coding runs pay no connection, schema or prompt cost.
 //! It supports initialize + session IDs, JSON and SSE responses, paginated tools/list and
 //! tools/call. Credentials are read from the environment and never included in errors.
+//!
+//! OAuth access tokens are short-lived (Google's: one hour) and runs are not. mini-tui refreshes
+//! them in `mcp.json` and names that file in `MINI_AGENT_MCP_FILE`: an installed server's
+//! headers are read from it at connect time (an inherited env can be hours old) and again when
+//! the server answers 401/403, and the call is retried once on a new session.
 
 use crate::util::get;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -19,12 +24,26 @@ struct RemoteTool {
     schema: Value,
 }
 
-struct Registry {
-    url: String,
+/// What a request carries; replaced when the credentials are reloaded.
+#[derive(Clone)]
+struct Conn {
     headers: Vec<(String, String)>,
     session: Option<String>,
     protocol: String,
+}
+
+struct Registry {
+    url: String,
+    /// The mcp.json id of an installed server (fresh credentials are looked up by it).
+    id: Option<String>,
+    conn: Mutex<Conn>,
     tools: Vec<RemoteTool>,
+}
+
+impl Registry {
+    fn conn(&self) -> Conn {
+        self.conn.lock().map(|c| c.clone()).unwrap_or_else(|e| e.into_inner().clone())
+    }
 }
 
 /// One server to connect. The legacy single server (`MINI_AGENT_MCP_URL`) keeps its tool names;
@@ -33,6 +52,8 @@ struct Registry {
 /// servers can both expose `search`.
 struct ServerSpec {
     name: String,
+    /// The mcp.json id (`name` before slugging); None for the legacy server.
+    id: Option<String>,
     url: String,
     headers: Vec<(String, String)>,
     prefixed: bool,
@@ -79,10 +100,12 @@ fn specs_from(servers_json: Option<&str>) -> Vec<ServerSpec> {
             if url.is_empty() {
                 return None;
             }
-            let name = server_slug(item.get("name").and_then(Value::as_str).unwrap_or("mcp"));
+            let raw_name = item.get("name").and_then(Value::as_str).unwrap_or("mcp");
+            let name = server_slug(raw_name);
             let allow = item.get("tools").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             let hints = json_headers(item.get("hints"));
-            Some(ServerSpec { name, url, headers: json_headers(item.get("headers")), prefixed: true, allow, hints })
+            let headers = fresh_headers(raw_name).unwrap_or_else(|| json_headers(item.get("headers")));
+            Some(ServerSpec { name, id: Some(raw_name.to_string()), url, headers, prefixed: true, allow, hints })
         })
         .collect()
 }
@@ -92,11 +115,42 @@ fn specs() -> Vec<ServerSpec> {
     if let Ok(url) = std::env::var("MINI_AGENT_MCP_URL") {
         if !url.trim().is_empty() {
             let name = std::env::var("MINI_AGENT_MCP_NAME").unwrap_or_else(|_| "composio".into());
-            out.push(ServerSpec { name, url: url.trim().trim_end_matches('/').to_string(), headers: headers(), prefixed: false, allow: vec![], hints: vec![] });
+            out.push(ServerSpec { name, id: None, url: url.trim().trim_end_matches('/').to_string(), headers: headers(), prefixed: false, allow: vec![], hints: vec![] });
         }
     }
     out.extend(specs_from(std::env::var("MINI_AGENT_MCP_SERVERS").ok().as_deref()));
     out
+}
+
+/// The headers mini-tui would send for server `id` right now, from `MINI_AGENT_MCP_FILE`
+/// (same rule as `authHeaders` in src/mcp/client.ts: static headers, then the OAuth access token
+/// or the token file). None when there is no file or no such server.
+fn fresh_headers(id: &str) -> Option<Vec<(String, String)>> {
+    let path = std::env::var("MINI_AGENT_MCP_FILE").ok().filter(|p| !p.trim().is_empty())?;
+    headers_from_file(&path, id)
+}
+
+fn headers_from_file(path: &str, id: &str) -> Option<Vec<(String, String)>> {
+    let data: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let server = data.get("servers")?.as_array()?.iter().find(|s| s.get("id").and_then(Value::as_str) == Some(id))?;
+    let mut out: Vec<(String, String)> = json_headers(server.get("headers")).into_iter().filter(|(k, _)| !k.eq_ignore_ascii_case("authorization")).collect();
+    let static_auth = json_headers(server.get("headers")).into_iter().find(|(k, _)| k.eq_ignore_ascii_case("authorization"));
+    let token = server.pointer("/oauth/tokens/accessToken").and_then(Value::as_str).map(str::to_string).or_else(|| {
+        let file = server.get("tokenFile").and_then(Value::as_str)?;
+        let home = std::env::var("HOME").unwrap_or_default();
+        let file = if file == "~" || file.starts_with("~/") { format!("{home}{}", &file[1..]) } else { file.to_string() };
+        let token = std::fs::read_to_string(file).ok()?.trim().to_string();
+        (!token.is_empty() && !token.contains(['\r', '\n'])).then_some(token)
+    });
+    match token {
+        Some(token) => out.push(("Authorization".into(), format!("Bearer {token}"))),
+        None => out.extend(static_auth),
+    }
+    Some(out)
+}
+
+fn auth_refused(error: &str) -> bool {
+    error.starts_with("MCP HTTP 401 ") || error.starts_with("MCP HTTP 403 ")
 }
 
 fn safe_url(url: &str) -> String {
@@ -172,8 +226,8 @@ fn parse_body(content_type: &str, body: &str) -> Result<Value, String> {
     Err("MCP SSE response ended without a JSON-RPC response".into())
 }
 
-fn post(client: &Registry, payload: &Value) -> Result<(Option<String>, Value), String> {
-    let url = client.url.trim_end_matches('/');
+fn post(url: &str, client: &Conn, payload: &Value) -> Result<(Option<String>, Value), String> {
+    let url = url.trim_end_matches('/');
     let mut request = ureq::post(url)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json, text/event-stream")
@@ -204,10 +258,11 @@ fn post(client: &Registry, payload: &Value) -> Result<(Option<String>, Value), S
     Ok((session, value.get("result").cloned().unwrap_or(value)))
 }
 
-fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>) -> Result<Registry, String> {
+/// initialize + notifications/initialized: a new session with these headers.
+fn handshake(url: &str, headers: Vec<(String, String)>) -> Result<Conn, String> {
     let protocol = "2024-11-05".to_string();
-    let mut client = Registry { url: spec.url.clone(), headers: spec.headers.clone(), session: None, protocol: protocol.clone(), tools: vec![] };
-    let (session, initialized) = post(&client, &json!({
+    let mut client = Conn { headers, session: None, protocol: protocol.clone() };
+    let (session, initialized) = post(url, &client, &json!({
         "jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "initialize",
         "params": {"protocolVersion": protocol, "capabilities": {}, "clientInfo": {"name": "mini-agent-rs", "version": crate::agent::VERSION}}
     }))?;
@@ -217,12 +272,18 @@ fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>
     }
     // initialized is a notification (no id and normally 202/empty). Some compatible servers
     // return 200 instead; both are accepted by post().
-    let _ = post(&client, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let _ = post(url, &client, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    Ok(client)
+}
+
+fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>) -> Result<Registry, String> {
+    let conn = handshake(&spec.url, spec.headers.clone())?;
+    let mut client = Registry { url: spec.url.clone(), id: spec.id.clone(), conn: Mutex::new(conn.clone()), tools: vec![] };
     let mut raw_tools = Vec::new();
     let mut cursor = Value::Null;
     for _ in 0..20 {
         let params = if cursor.is_null() { json!({}) } else { json!({"cursor": cursor}) };
-        let (_, result) = post(&client, &json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/list", "params": params}))?;
+        let (_, result) = post(&client.url, &conn, &json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/list", "params": params}))?;
         raw_tools.extend(result.get("tools").and_then(Value::as_array).cloned().unwrap_or_default());
         let next = result.get("nextCursor").cloned().filter(|v| !v.is_null());
         let Some(next) = next else { break };
@@ -311,9 +372,10 @@ pub fn tools(protocol: &str) -> Vec<Value> {
 pub fn close_sessions() {
     let Some(Ok(registries)) = REGISTRY.get() else { return };
     for registry in registries {
-        let Some(session) = &registry.session else { continue };
+        let conn = registry.conn();
+        let Some(session) = &conn.session else { continue };
         let mut request = ureq::delete(registry.url.trim_end_matches('/')).set("Mcp-Session-Id", session).timeout(Duration::from_secs(2));
-        for (key, value) in &registry.headers {
+        for (key, value) in &conn.headers {
             request = request.set(key, value);
         }
         let _ = request.call();
@@ -328,11 +390,30 @@ pub fn is_tool(name: &str) -> bool {
     configured() && find_tool(name).is_ok()
 }
 
+fn call(registry: &Registry, tool: &RemoteTool, args: &Value) -> Result<Value, String> {
+    let payload = || json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/call", "params": {"name": tool.original, "arguments": args}});
+    let conn = registry.conn();
+    match post(&registry.url, &conn, &payload()) {
+        Err(error) if auth_refused(&error) => {
+            // The token in hand expired (or was rotated): take the one mini-tui holds now.
+            let Some(id) = &registry.id else { return Err(error) };
+            let hint = format!("{error}\nThe login for MCP server \"{id}\" was refused: if this persists, log in again with /mcp (web: Settings → MCP).");
+            let Some(headers) = fresh_headers(id) else { return Err(hint) };
+            if headers == conn.headers {
+                return Err(hint);
+            }
+            let next = handshake(&registry.url, headers).map_err(|e| format!("{e}\n{hint}"))?;
+            if let Ok(mut slot) = registry.conn.lock() {
+                *slot = next.clone();
+            }
+            post(&registry.url, &next, &payload()).map(|(_, result)| result).map_err(|e| if auth_refused(&e) { format!("{e}\nThe login for MCP server \"{id}\" was refused: log in again with /mcp (web: Settings → MCP).") } else { e })
+        }
+        other => other.map(|(_, result)| result),
+    }
+}
+
 pub fn outcome(name: &str, args: &Value) -> Value {
-    let result = find_tool(name).and_then(|(registry, tool)| {
-        let (_, result) = post(registry, &json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/call", "params": {"name": tool.original, "arguments": args}}))?;
-        Ok(result)
-    });
+    let result = find_tool(name).and_then(|(registry, tool)| call(registry, tool, args));
     match result {
         Ok(result) => {
             let is_error = result.get("isError").and_then(Value::as_bool).unwrap_or(false);
@@ -408,6 +489,79 @@ mod tests {
         let hinted = specs_from(Some(r#"[{"name":"op","url":"http://x/mcp","hints":{"render":"Use flex=\"row\"."}}]"#));
         assert_eq!(hinted[0].hints, vec![("render".to_string(), "Use flex=\"row\".".to_string())]);
         assert_eq!(server_slug("  "), "mcp");
+    }
+
+    fn unauthorized(stream: &mut std::net::TcpStream) {
+        let body = r#"{"error":{"code":401,"message":"invalid OAuth"}}"#;
+        let head = format!("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(body.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn mcp_json_headers_follow_mini_tui_auth_rules() {
+        let dir = std::env::temp_dir().join(format!("mcp-headers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let token_file = dir.join("token");
+        std::fs::write(&token_file, "file-token\n").unwrap();
+        let file = dir.join("mcp.json");
+        std::fs::write(&file, json!({"servers": [
+            {"id": "gsc", "url": "https://x/mcp", "headers": {"X-Key": "k", "Authorization": "Bearer static"}, "oauth": {"tokens": {"accessToken": "oauth-token"}}},
+            {"id": "op", "url": "http://127.0.0.1/mcp", "tokenFile": token_file.to_string_lossy()},
+            {"id": "plain", "url": "https://y/mcp", "headers": {"Authorization": "Bearer static"}}
+        ]}).to_string()).unwrap();
+        let path = file.to_string_lossy().to_string();
+        assert_eq!(headers_from_file(&path, "gsc").unwrap(), vec![("X-Key".to_string(), "k".to_string()), ("Authorization".to_string(), "Bearer oauth-token".to_string())]);
+        assert_eq!(headers_from_file(&path, "op").unwrap(), vec![("Authorization".to_string(), "Bearer file-token".to_string())]);
+        assert_eq!(headers_from_file(&path, "plain").unwrap(), vec![("Authorization".to_string(), "Bearer static".to_string())]);
+        assert!(headers_from_file(&path, "missing").is_none());
+        assert!(headers_from_file("/nonexistent/mcp.json", "gsc").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A one-hour token expires during a long run: the 401 makes the client take the token
+    /// mini-tui refreshed in mcp.json, open a new session with it and retry the call.
+    #[test]
+    fn an_expired_token_is_reloaded_from_mcp_json_and_the_call_retried() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for index in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let raw = request(&mut stream);
+                requests.push(raw.clone());
+                match index {
+                    0 => unauthorized(&mut stream),
+                    1 => response(&mut stream, r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}"#, true),
+                    2 => response(&mut stream, "", false),
+                    _ => response(&mut stream, r#"{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"sites"}],"isError":false}}"#, false),
+                }
+            }
+            requests
+        });
+        let dir = std::env::temp_dir().join(format!("mcp-retry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mcp.json");
+        std::fs::write(&file, json!({"servers": [{"id": "google-search-console", "url": url, "oauth": {"tokens": {"accessToken": "new-token"}}}]}).to_string()).unwrap();
+        std::env::set_var("MINI_AGENT_MCP_FILE", &file);
+        let registry = Registry {
+            url: url.clone(),
+            id: Some("google-search-console".into()),
+            conn: Mutex::new(Conn { headers: vec![("Authorization".into(), "Bearer old-token".into())], session: Some("old".into()), protocol: "2025-06-18".into() }),
+            tools: vec![],
+        };
+        let tool = RemoteTool { exposed: "mcp__google-search-console__sites_list".into(), original: "sites_list".into(), description: String::new(), schema: json!({}) };
+        let result = call(&registry, &tool, &json!({})).unwrap();
+        std::env::remove_var("MINI_AGENT_MCP_FILE");
+        assert_eq!(result["content"][0]["text"], "sites");
+        let requests = handle.join().unwrap();
+        assert!(requests[0].contains("Bearer old-token") && requests[0].contains("tools/call"));
+        assert!(requests[1].contains("Bearer new-token") && requests[1].contains("initialize"));
+        assert!(requests[3].contains("Bearer new-token") && requests[3].contains("tools/call"));
+        assert!(requests[3].to_lowercase().contains("mcp-session-id: test-session"));
+        assert_eq!(registry.conn().headers, vec![("Authorization".to_string(), "Bearer new-token".to_string())]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

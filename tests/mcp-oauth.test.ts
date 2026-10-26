@@ -246,6 +246,36 @@ describe("tokens", () => {
     expect(stored.oauth.tokens.refreshToken).toBe("refresh-1"); // kept when not rotated
   });
 
+  test("runs are told where to re-read a refused token (they outlive the one-hour access token)", () => {
+    const server = mcp.addServer({ url: `${fake.base}/mcp`, clientName: "Claude Code" }, file);
+    mcp.updateServer(server.id, (s) => ({ ...s, oauth: { ...s.oauth, tokens: { accessToken: "t" } } }), file);
+    expect(mcp.mcpRunEnv(file).MINI_AGENT_MCP_FILE).toBe(file);
+    expect(mcp.mcpRunEnv(null)).toEqual({});
+  });
+
+  test("a refused refresh token shows as expired, is not retried by the timer, and a login clears it", async () => {
+    const server = mcp.addServer({ url: `${fake.base}/mcp`, clientName: "Claude Code" }, file);
+    const login = await mcp.startLogin({ serverId: server.id, redirectUri: "http://localhost:1/callback", path: file });
+    const r = await fetch(login.url, { redirect: "manual" });
+    await mcp.completeFromPaste(login.id, r.headers.get("location")!);
+    expect(mcp.listViews(file).find((v) => v.id === server.id)?.state).toBe("connected");
+    // Revoked, or Google's 7-day limit for apps in Testing: the token endpoint says invalid_grant.
+    mcp.updateServer(server.id, (s) => ({ ...s, oauth: { ...s.oauth, tokens: { ...s.oauth!.tokens!, refreshToken: "dead", expiresAt: Date.now() - 1 } } }), file);
+    const fresh = await mcp.ensureFresh(mcp.getServer(server.id, file)!, file);
+    expect(fresh.error).toContain("log in again");
+    expect(mcp.getServer(server.id, file)?.oauth?.refreshError).toContain("invalid_grant");
+    expect(mcp.listViews(file).find((v) => v.id === server.id)?.state).toBe("expired");
+    const before = fake.refreshed;
+    const { refreshDue } = await import("../src/mcp/client");
+    await refreshDue(file, 15 * 60_000);
+    expect(fake.refreshed).toBe(before);
+    const again = await mcp.startLogin({ serverId: server.id, redirectUri: "http://localhost:1/callback", path: file });
+    const r2 = await fetch(again.url, { redirect: "manual" });
+    await mcp.completeFromPaste(again.id, r2.headers.get("location")!);
+    expect(mcp.getServer(server.id, file)?.oauth?.refreshError).toBeUndefined();
+    expect(mcp.listViews(file).find((v) => v.id === server.id)?.state).toBe("connected");
+  });
+
   test("logout forgets tokens but keeps the client; disabled servers are not given to the agent", async () => {
     const server = mcp.addServer({ url: `${fake.base}/mcp`, clientName: "Claude Code" }, file);
     mcp.updateServer(server.id, (s) => ({ ...s, oauth: { ...s.oauth, clients: { k: { clientId: "c", authMethod: "none" } }, tokens: { accessToken: "t" } } }), file);
@@ -364,6 +394,7 @@ describe("Google Search Console (Google's own MCP server)", () => {
       if (url.pathname === "/mcp" && req.method === "POST") {
         const body = (await req.json()) as { id?: number; method: string };
         if (body.method === "tools/call") {
+          if (req.headers.get("authorization") === "Bearer quota") return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "Quota exceeded for quota metric 'Queries'." }], isError: true } });
           if (req.headers.get("authorization") !== "Bearer good") return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "Request is missing required authentication credential." }], isError: true } }, { status: 401 });
           return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "[]" }] } });
         }
@@ -425,6 +456,14 @@ describe("Google Search Console (Google's own MCP server)", () => {
     const good = await mcp.probe(at("good"));
     expect(good.ok).toBe(true);
     expect(good.tools?.map((t) => t.name)).toEqual(["sites_list", "query"]);
+  });
+
+  test("a verification call that fails for another reason does not ask for a new login", async () => {
+    const s = mcp.addServer({ preset: "google-search-console", clientId: "123-abc.apps.googleusercontent.com", clientSecret: "x" }, file);
+    const probe = await mcp.probe({ ...s, url: `http://127.0.0.1:${google.port}/mcp`, oauth: { ...s.oauth, tokens: { accessToken: "quota" } } });
+    expect(probe.ok).toBe(false);
+    expect(probe.needsAuth).toBeFalsy();
+    expect(probe.error).toContain("Quota exceeded");
   });
 
   test("non-Google servers do not get Google's offline parameters", async () => {
