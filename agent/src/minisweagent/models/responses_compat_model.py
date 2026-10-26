@@ -45,6 +45,13 @@ class ResponsesCompatModel(OpenaiCompatModel):
     def _query(self, messages: list[dict], **kwargs):
         params = {k: v for k, v in (self.config.model_kwargs | kwargs).items() if k not in _LITELLM_ONLY_KWARGS}
         headers = params.pop("extra_headers", None) or {}
+        # Responses calls the output cap `max_output_tokens`; keep accepting the common
+        # chat/config spellings so the shared per-model catalog works on every wire flavor.
+        if "max_output_tokens" not in params:
+            if "max_tokens" in params:
+                params["max_output_tokens"] = params.pop("max_tokens")
+            elif "max_completion_tokens" in params:
+                params["max_output_tokens"] = params.pop("max_completion_tokens")
         if "reasoning_effort" in params:
             params["reasoning"] = {"effort": params.pop("reasoning_effort")}
         body = {"model": self._wire_model_name(), "input": messages, "tools": [BASH_TOOL_RESPONSE_API, CU_TOOL_RESPONSE_API], **params}

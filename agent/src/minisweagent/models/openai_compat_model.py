@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from minisweagent.exceptions import FormatError
 from minisweagent.models import GLOBAL_MODEL_STATS, prices
+from minisweagent.models.limits import apply_model_limits
 from minisweagent.models.errors import (  # noqa: F401 (historical names, re-exported)
     OpenaiCompatAbortError,
     OpenaiCompatError,
@@ -133,7 +134,12 @@ class OpenaiCompatModel:
     abort_exceptions: list[type[Exception]] = [OpenaiCompatAbortError, KeyboardInterrupt]
 
     def __init__(self, *, config_class=OpenaiCompatModelConfig, **kwargs):
+        configured_kwargs = kwargs.get("model_kwargs") or {}
+        explicit_max_tokens = "max_tokens" in kwargs or any(
+            key in configured_kwargs for key in ("max_tokens", "max_completion_tokens", "max_output_tokens")
+        )
         self.config = config_class(**kwargs)
+        apply_model_limits(self.config, explicit_max_tokens=explicit_max_tokens)
         self._delta_sink: Any = None  # set per-run to stream partial output to a live view
         if not self.config.api_base:
             # Direct base URL per provider: registry row first (moonshot/, zai/, ...),

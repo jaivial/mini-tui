@@ -125,6 +125,18 @@ fn base_config(config: &Obj, cost_default: &str) -> Obj {
     let ttl = std::env::var("MSWEA_CACHE_TTL").ok().filter(|s| !s.is_empty());
     c.insert("cache_ttl".into(), ttl.map(Value::String).unwrap_or(Value::Null));
     c.insert("context_window".into(), json!(0));
+    // Provider metadata supplies real per-model limits instead of the 200k/4096 fallbacks.
+    // Explicit environment overrides beat the catalog, and explicit model config below beats both.
+    if let Some(limits) = super::limits::model_limits(c["model_name"].as_str().unwrap_or("")) {
+        c.insert("context_window".into(), json!(limits.context_window));
+        c.insert("max_tokens".into(), json!(limits.max_output_tokens));
+    }
+    if let Some(window) = std::env::var("MSWEA_CONTEXT_WINDOW").ok().and_then(|s| s.parse::<i64>().ok()).filter(|n| *n > 0) {
+        c.insert("context_window".into(), json!(window));
+    }
+    if let Some(max_tokens) = std::env::var("MSWEA_MAX_TOKENS").ok().and_then(|s| s.parse::<i64>().ok()).filter(|n| *n > 0) {
+        c.insert("max_tokens".into(), json!(max_tokens));
+    }
     c.insert("cost_tracking".into(), json!(env_or("MSWEA_COST_TRACKING", cost_default)));
     c.insert("format_error_template".into(), json!("{{ error }}"));
     c.insert("observation_template".into(), json!(DEFAULT_OBSERVATION));
@@ -182,16 +194,18 @@ fn openai_compat(mut c: Obj, protocol: Protocol, model_type: &str) -> Box<dyn Mo
 }
 
 fn anthropic_compat(config: &Obj) -> Box<dyn Model> {
-    let mut c = base_config(&Obj::new(), "ignore_errors");
-    c.insert("api_base".into(), json!(env_or("ANTHROPIC_API_BASE", "https://api.anthropic.com/v1")));
-    c.insert("api_key".into(), json!(env_or("ANTHROPIC_API_KEY", "")));
-    c.insert("set_cache_control".into(), json!("rolling"));
-    c.insert("api_version".into(), json!("2023-06-01"));
-    let max_tokens: i64 = env_or("MSWEA_MAX_TOKENS", "4096").parse().unwrap_or(4096);
-    c.insert("max_tokens".into(), json!(max_tokens));
-    for (k, v) in config {
-        c.insert(k.clone(), v.clone());
+    let mut c = base_config(config, "ignore_errors");
+    if !config.contains_key("api_base") {
+        c.insert("api_base".into(), json!(env_or("ANTHROPIC_API_BASE", "https://api.anthropic.com/v1")));
     }
+    if !config.contains_key("api_key") {
+        c.insert("api_key".into(), json!(env_or("ANTHROPIC_API_KEY", "")));
+    }
+    if !config.contains_key("set_cache_control") {
+        c.insert("set_cache_control".into(), json!("rolling"));
+    }
+    c.entry("api_version").or_insert(json!("2023-06-01"));
+    c.entry("max_tokens").or_insert(json!(4096));
     let name = c["model_name"].as_str().unwrap_or("").to_string();
     let wire_name = strip(&name, "anthropic/");
     let api_base = c["api_base"].as_str().unwrap_or("").to_string();
@@ -271,6 +285,13 @@ fn opencode_go(config: &Obj, force_responses: bool) -> Box<dyn Model> {
     impl_cfg.insert("model_kwargs".into(), Value::Object(kw));
     for k in ["set_cache_control", "cost_tracking", "format_error_template", "observation_template", "multimodal_regex"] {
         impl_cfg.insert(k.into(), requested.get(k).cloned().unwrap_or(Value::Null));
+    }
+    // The facade resolves limits using the qualified id; retain them after stripping
+    // `opencode-go/` for the protocol-specific implementation.
+    for k in ["context_window", "max_tokens"] {
+        if let Some(v) = requested.get(k) {
+            impl_cfg.insert(k.into(), v.clone());
+        }
     }
     let (protocol, c) = match endpoint {
         "messages" => {
@@ -453,6 +474,31 @@ mod tests {
         assert_eq!(ty("plainmodel"), "OpenaiCompatModel");
         assert_eq!(ty("opencode-go/grok-4.7"), "OpencodeGoResponseModel");
         assert_eq!(ty("opencode-go/unknownid"), "OpencodeGoModel");
+    }
+
+    #[test]
+    fn catalog_limits_reach_every_wire_flavor() {
+        for (name, window, output) in [
+            ("xiaomi/mimo-v2.6-pro", 1_048_576, 131_072),
+            ("openai/gpt-6-astra", 272_000, 128_000),
+            ("anthropic/claude-opus-4-1", 200_000, 32_000),
+            ("opencode-go/glm-5.3-flash", 1_000_000, 131_072),
+            ("opencode-go/minimax-m3", 1_000_000, 131_072),
+            ("opencode-go/grok-4.7", 500_000, 500_000),
+        ] {
+            let mut config = Obj::new();
+            config.insert("model_name".into(), json!(name));
+            let model = build(name, "", config).unwrap();
+            let serialized = model.serialize();
+            assert_eq!(serialized["info"]["config"]["model"]["context_window"], json!(window), "{name} context");
+            let max_tokens = serialized["info"]["config"]["model"]["max_tokens"].as_i64()
+                .or_else(|| serialized["info"]["config"]["model"]["model_kwargs"]["max_tokens"].as_i64());
+            assert_eq!(max_tokens, Some(output), "{name} output");
+        }
+        let mut config = Obj::new();
+        config.insert("model_name".into(), json!("anthropic/claude-sonnet-4-5"));
+        let model = build("anthropic/claude-sonnet-4-5", "", config).unwrap();
+        assert_eq!(model.serialize()["info"]["config"]["model"]["set_cache_control"], json!("rolling"));
     }
 
     #[test]

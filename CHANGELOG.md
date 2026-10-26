@@ -4,6 +4,16 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ## Unreleased
 
+### Added
+
+- **Real per-model context windows and output caps.** `config/model-limits.json` covers every
+  static BYOK provider and curated catalog id; the Rust and Python agents read it on every model
+  construction (so a `/model` switch never keeps the previous model's limits) instead of the
+  200k / 4096 fallbacks. `MSWEA_CONTEXT_WINDOW` / `MSWEA_MAX_TOKENS` override it, explicit model
+  config overrides both; Responses requests send the cap as `max_output_tokens`. Anthropic models
+  now honour their YAML config like the other wire flavours. Unknown and local ids keep their
+  dynamic defaults.
+
 ### Fixed
 
 - **Google Search Console (and any OAuth MCP server) no longer drops out mid-run.** A run had

@@ -8,6 +8,7 @@ pub mod connections;
 pub mod deterministic;
 pub mod go_catalog;
 pub mod http;
+pub mod limits;
 pub mod prices;
 pub mod shapes;
 pub mod wire;

@@ -58,6 +58,21 @@ def test_query_posts_to_responses_and_keeps_the_trajectory_shape():
     assert "submission" not in message["extra"]
 
 
+def test_shared_output_cap_uses_the_responses_field():
+    model = _model(model_kwargs={"max_tokens": 128000})
+    captured = {}
+
+    def fake_post(self, path, body, headers=None):
+        captured.update(body)
+        return _reply()
+
+    with patch.object(ResponsesCompatModel, "_post", fake_post):
+        model.query([{"role": "user", "content": "hi"}])
+    assert captured["max_output_tokens"] == 128000
+    assert "max_tokens" not in captured
+    assert "max_completion_tokens" not in captured
+
+
 def test_plain_text_output_is_the_final_answer():
     model = _model()
     with patch.object(ResponsesCompatModel, "_post", lambda self, path, body, headers=None: _reply(calls=False)):

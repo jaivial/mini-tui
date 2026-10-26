@@ -311,7 +311,14 @@ maximum`: every message was sent on every call and nothing bounded it.
   the error is saved in `<global config>/context_windows.json`, so later runs compact in time.
   A single output bigger than the window is elided in the request only.
 - Windows: learned > `model.context_window` > OpenCode Go metadata > known ids (Claude 4.6+/5
-  = 1M, older Claude 200k, GPT-5 400k, ...).
+  = 1M, older Claude 200k, GPT-5 400k, ...). mini-tui fills `model.context_window` and the
+  output cap from `config/model-limits.json`, which covers every static provider/catalog id.
+  Resolution happens per model construction, so `/model` switches cannot retain the previous
+  model's limits. Unknown/local ids keep their dynamic defaults.
+
+`MSWEA_CONTEXT_WINDOW` and `MSWEA_MAX_TOKENS` override the shared catalog; explicit model config
+overrides both. Responses requests translate the cap to `max_output_tokens`, while Chat and
+Messages use `max_tokens`.
 
 Knobs (`agent.compaction` in the config, or env): `enabled` (`MSWEA_AUTO_COMPACT=0` turns it
 off), `threshold` (`MSWEA_COMPACT_THRESHOLD`, 0.8), `max_context_tokens`
