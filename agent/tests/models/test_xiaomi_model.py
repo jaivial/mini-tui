@@ -70,7 +70,9 @@ def test_xiaomi_model_defaults(clean_env):
     assert model.config.model_name == "mimo-v2.6-pro"
     assert model.config.api_base == DEFAULT_API_BASE == "https://token-plan-sgp.xiaomimimo.com/v1"
     assert model.config.api_key == DEFAULT_API_KEY == ""
-    assert model.config.model_kwargs == {}  # connection settings live on the config, not in the body
+    # Only connection settings stay out of the body; the shared catalog supplies its real caps.
+    assert model.config.model_kwargs == {"max_tokens": 131072}
+    assert model.config.context_window == 1048576
     # The endpoint reports no per-token cost, so cost errors must not abort a run.
     assert model.config.cost_tracking == "ignore_errors"
 

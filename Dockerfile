@@ -47,7 +47,8 @@ RUN mkdir -p /opt/whisper/models \
 # mini-agent-rs → /opt/mini-tui/bin/mini-agent-rs.
 # The crate lives INSIDE the repo layout on purpose: src/e2e/mod.rs bakes
 # ../../../skills/e2e/SKILL.md at compile time, so the build dir mirrors the
-# checkout (agent-rs/ and skills/ as siblings). Cargo.lock exists, so --locked;
+# checkout (agent-rs/, skills/ and config/ as siblings; models/limits.rs embeds
+# ../../../config/model-limits.json the same way). Cargo.lock exists, so --locked;
 # the manifest/lock copy is its own layer so a source-only change never
 # re-resolves the dependency graph. Default cargo features (the `task-graph`
 # queue lane ships on the host as a second binary; see docs/docker.md).
@@ -56,6 +57,7 @@ COPY agent-rs/Cargo.toml agent-rs/Cargo.lock ./agent-rs/
 RUN cargo fetch --manifest-path agent-rs/Cargo.toml
 COPY agent-rs/ ./agent-rs/
 COPY skills/ ./skills/
+COPY config/model-limits.json ./config/model-limits.json
 RUN cargo build --release --locked --jobs "${BUILD_JOBS}" --manifest-path agent-rs/Cargo.toml \
     && install -Dm755 agent-rs/target/release/mini-agent-rs /opt/mini-tui/bin/mini-agent-rs \
     && rm -rf /opt/build

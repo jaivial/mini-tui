@@ -45,6 +45,7 @@ from minisweagent.models import prices
 from minisweagent.models.anthropic_compat_model import AnthropicCompatModel, to_anthropic_messages
 from minisweagent.models.errors import ProviderAbortError, ProviderError
 from minisweagent.models.openai_compat_model import OpenaiCompatModel, OpenaiCompatModelConfig
+from minisweagent.models.limits import apply_model_limits
 from minisweagent.models.responses_compat_model import ResponsesCompatModel
 from minisweagent.models.routing import OPENCODE_GO_PREFIX, is_opencode_go_model  # noqa: F401 (re-exported)
 from minisweagent.models.utils.anthropic_utils import _reorder_anthropic_thinking_blocks
@@ -1060,10 +1061,14 @@ class OpencodeGoModel:
     _force_endpoint: Endpoint | None = None
 
     def __init__(self, *, config_class=OpencodeGoModelConfig, **kwargs):
+        configured_kwargs = kwargs.get("model_kwargs") or {}
+        explicit_max_tokens = any(key in configured_kwargs for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"))
         config = config_class(**kwargs)
+        apply_model_limits(config, explicit_max_tokens=explicit_max_tokens)
         self.requested_model_name = config.model_name
         model_id = strip_opencode_go_prefix(config.model_name)
-        if get_model_info(model_id) is None:
+        info = get_model_info(model_id)
+        if info is None:
             logger.warning(
                 "checkpoint=unknown_go_model model=%s: id not in the documented table, "
                 "served as OpenAI compatible /chat/completions; run "
@@ -1073,6 +1078,12 @@ class OpencodeGoModel:
         endpoint = self._force_endpoint or endpoint_for(model_id)
         _ensure_pricing_registered()
         model_kwargs = _normalize_model_kwargs(model_id, dict(config.model_kwargs))
+        # Keep standalone Python-agent runs correct too when the mini-tui catalog is absent.
+        if info is not None:
+            if config.context_window <= 0:
+                config.context_window = info.context_window
+            if not explicit_max_tokens and not os.getenv("MSWEA_MAX_TOKENS"):
+                model_kwargs.setdefault("max_tokens", info.max_tokens)
         # The Anthropic flavor hangs off the gateway root; the client posts `/messages`
         # after the `/v1` the Messages API lives under.
         if endpoint == "messages":
@@ -1088,6 +1099,7 @@ class OpencodeGoModel:
             api_base=api_base,
             api_key=api_key,
             model_kwargs=_with_session_headers(model_kwargs),
+            context_window=config.context_window,
             set_cache_control=config.set_cache_control,
             cost_tracking=config.cost_tracking,
             format_error_template=config.format_error_template,
