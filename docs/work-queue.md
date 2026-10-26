@@ -1,17 +1,19 @@
 # Work queue: one chat, background tasks
 
-The web app is one screen: a single chat, and the task queue on the right. There is no sessions
-sidebar, no panes and no kanban. Everything sent to the chat becomes work in a queue.
+The web app is one screen: worker sessions grouped by workspace on the left, a single chat in the
+center, and the task queue on the right. There are no panes and no kanban. Everything sent to the
+main chat becomes work in a queue; the prompt bar in an opened worker redirects that task.
 
 ## The pieces
 
 | piece | what it is | where |
 | --- | --- | --- |
-| dispatcher | the chat's agent. It has **no shell and no files**: it turns each request into a better-written task and queues it, or redirects a task in flight. One model call per message. | `agent/src/minisweagent/config/dispatcher.yaml`, `MINI_AGENT_TOOLSET=dispatcher` |
+| dispatcher | the chat's agent. It has **no shell and no files**: it turns each request into a better-written task, assigns a reusable workspace name, and queues it, or redirects a task in flight. It also communicates each worker's final response when it arrives. | `agent/src/minisweagent/config/dispatcher.yaml`, `MINI_AGENT_TOOLSET=dispatcher` |
 | queue | durable FIFO of tasks with a concurrency cap (Settings → General → Work queue, 1–300, default 300) | `src/web/workQueue.ts` (`queue_tasks` in the sessions DB) |
 | worker | one background mini session per task: the normal agent (shell, read/write/edit, browser) plus its card tools | `MINI_AGENT_TOOLSET=worker`, `<queue_worker>` in `mini.yaml` |
 | glue | starts workers, feeds results back to the chat, serves the queue API | `src/web/queueHost.ts`, routes in `src/web/serve.ts` |
-| panel | tasks by state: working, queued, completed, error; redirect / cancel / open the worker's session | `web/src/lib/components/QueuePanel.svelte` |
+| panel | search by title/description; filter by working, queued, latest completed or error; sort by launch, update or completion time; redirect / cancel / open the worker's session | `web/src/lib/components/QueuePanel.svelte` |
+| workspaces | worker sessions grouped under the dispatcher-assigned workspace labels | `web/src/lib/components/WorkspaceSidebar.svelte` |
 
 ## Flow
 
@@ -26,8 +28,9 @@ sidebar, no panes and no kanban. Everything sent to the chat becomes work in a q
    tasks: 5 run, 3 wait, and each finished task hands its slot to the oldest waiting one.
 4. A worker keeps its card's **description** current (`task_update`; the title is the
    dispatcher's) and can reach the dispatcher mid-task (`task_notify`, shown in the chat).
-5. When a worker ends, its task becomes `done` or `error` with the final answer as its result, and
-   a one-line notice lands in the chat.
+5. When a worker ends, its task becomes `done` or `error` with the final answer as its result. The
+   queue sends that full result to the dispatcher as a `[queue]` turn, and the dispatcher — not a
+   static notice — communicates the outcome in the main chat. A notice is the fallback if delivery fails.
 
 ## Models
 
@@ -95,6 +98,10 @@ The dispatcher sees the closest ones for every new message, and decides:
 - a follow-up on a finished task's result → `task_redirect` (it re-opens and continues the same
   worker session, so nothing already done is redone);
 - anything else, including the same kind of work in another directory → `task_create`.
+
+Every task also carries a short `workspace` label chosen by the dispatcher. Related tasks reuse the
+label, which lets the left sidebar create and classify workspace groups without another model call.
+Older tasks and API calls without a label fall back to the working directory's basename.
 
 A `task_create` that duplicates an active task (similarity ≥ 0.72) is refused with that task's id
 unless it passes `new_task: true`. Redirect semantics by state: running → the message reaches the

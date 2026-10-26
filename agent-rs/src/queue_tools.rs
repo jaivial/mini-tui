@@ -43,6 +43,7 @@ fn task_schema() -> Value {
         "properties": {
             "title": {"type": "string", "description": "short title, at most 6 words, in the user's language"},
             "description": {"type": "string", "description": "one sentence: what this task delivers"},
+            "workspace": {"type": "string", "description": "short reusable project/workspace name used to group this worker session"},
             "prompt": {"type": "string", "description": "the complete, self-contained brief this part's worker receives (its ONLY input): goal, deliverables, working directory, constraints, every literal from the request copied verbatim, acceptance criteria, how to verify"},
             "cwd": {"type": "string", "description": "optional working directory (absolute or ~/...) when the request names one"},
             "allow_overlap": {"type": "boolean", "description": "For independent fan-out, set false on EVERY part: the queue then requires disjoint working directories. Omit for sequential work that may share a directory."}
@@ -56,7 +57,7 @@ fn dispatcher_specs() -> Vec<(&'static str, &'static str, Value)> {
         (
             "task_create",
             "Queue background tasks. Each task runs as its own autonomous coding agent (shell, files, browser) in the background; \
-             up to the configured concurrency run at once and the rest wait in the queue. ONE task: give title, description, cwd \
+             up to the configured concurrency run at once and the rest wait in the queue. ONE task: give title, description, workspace, cwd \
              and optional notes (the worker receives the human's message verbatim). SEVERAL independent tasks from one message: \
              `tasks`, each with its own self-contained prompt. If an ACTIVE task covers the same deliverable, the call is refused with that task's id: redirect it \
              instead, or repeat the call with `new_task: true` when it really is different work.",
@@ -65,9 +66,10 @@ fn dispatcher_specs() -> Vec<(&'static str, &'static str, Value)> {
                 "properties": {
                     "title": {"type": "string", "description": "short title, at most 6 words, in the user's language"},
                     "description": {"type": "string", "description": "one sentence: what this task delivers"},
+                    "workspace": {"type": "string", "description": "short reusable project/workspace name; reuse it for tasks in the same project"},
                     "notes": {"type": "string", "description": "ONE task from the human's message: omit `prompt`; the worker gets the human's message verbatim plus these notes (at most 3 short lines: acceptance criteria, how to verify)"},
                     "cwd": {"type": "string", "description": "working directory when the request names one"},
-                    "tasks": {"type": "array", "description": "several tasks at once, each {title, description, prompt, cwd?}", "items": task_schema()},
+                    "tasks": {"type": "array", "description": "several tasks at once, each {title, description, workspace, prompt, cwd?}", "items": task_schema()},
                     "new_task": {"type": "boolean", "description": "true = create even though a similar active task exists"}
                 }
             }),

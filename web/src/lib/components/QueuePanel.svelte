@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CornerDownRight, Ban, Link2 } from "@lucide/svelte";
+  import { CornerDownRight, Ban, Link2, Search, X } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import Markdown from "./Markdown.svelte";
   import SidebarShell from "./sidebar/SidebarShell.svelte";
@@ -19,13 +19,31 @@
   /** Task sidebar: composed from app-owned sidebar primitives, not a generic nav rail. */
   let { onclose, onopen, full = false, onfull }: { onclose?: () => void; onopen?: (sessionId: string) => void; full?: boolean; onfull?: () => void } = $props();
   let filter = $state<QueueFilter>("all");
+  type QueueSort = "launched-desc" | "launched-asc" | "updated-desc" | "finished-desc";
+  let sort = $state<QueueSort>("launched-desc");
+  let query = $state("");
   let openId = $state("");
   let redirectText = $state("");
   let busy = $state(false);
   const PAGE = 100;
   let limit = $state(PAGE);
-  $effect(() => { filter; limit = PAGE; });
-  const matching = $derived(queue.tasks.filter((task) => matches(task.status, filter)));
+  $effect(() => { filter; query; sort; limit = PAGE; });
+  const normalize = (text: string) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const matching = $derived.by(() => {
+    const terms = normalize(query).split(/\s+/).filter(Boolean);
+    const filtered = queue.tasks.filter((task) => {
+      if (!matches(task.status, filter)) return false;
+      const text = normalize(`${task.title} ${task.description}`);
+      return terms.every((term) => text.includes(term));
+    });
+    return filtered.sort((a, b) => {
+      // Completed is deliberately a recency view, independently of the launch-time sort.
+      if (filter === "recent" || sort === "finished-desc") return b.finishedAt - a.finishedAt || b.seq - a.seq;
+      if (sort === "launched-asc") return a.createdAt - b.createdAt || a.seq - b.seq;
+      if (sort === "updated-desc") return b.updatedAt - a.updatedAt || b.seq - a.seq;
+      return b.createdAt - a.createdAt || b.seq - a.seq;
+    });
+  });
   const shown = $derived(matching.slice(0, limit));
   const running = $derived(queue.tasks.some((task) => task.status === "running"));
   $effect(() => { if (running) return clock.watchAge("elapsed", Date.now() - 1000); });
@@ -66,7 +84,32 @@
 
 <SidebarShell running={queue.counts.running} concurrency={queue.concurrency} {full} {onfull} {onclose}>
   {#snippet filters()}
-    <SidebarFilters items={FILTERS} value={filter} counts={queue.counts} onchange={(id) => (filter = id)} />
+    <div class="flex flex-col gap-2">
+      <label class="relative block">
+        <span class="sr-only">Search tasks by title or description</span>
+        <Search size={13} class="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ink-faint" aria-hidden="true" />
+        <input
+          type="search"
+          bind:value={query}
+          placeholder="Search title or description…"
+          class="min-h-9 w-full rounded-lg border border-line/80 bg-canvas/70 pr-8 pl-8 text-[11px] read-[16px] text-ink outline-none placeholder:text-ink-faint focus:border-brand/55"
+        />
+        {#if query}
+          <button type="button" class="interactive absolute top-1/2 right-1.5 grid size-7 -translate-y-1/2 cursor-pointer place-items-center rounded-md text-ink-faint hover:bg-raised hover:text-ink" aria-label="Clear task search" onclick={() => (query = "")}><X size={12} /></button>
+        {/if}
+      </label>
+      <SidebarFilters items={FILTERS} value={filter} counts={queue.counts} onchange={(id) => (filter = id)} />
+      <div class="flex items-center gap-2">
+        <label for="queue-sort" class="shrink-0 text-[9.5px] font-medium tracking-[0.06em] text-ink-faint uppercase">Order</label>
+        <select id="queue-sort" bind:value={sort} class="min-h-8 min-w-0 flex-1 cursor-pointer rounded-lg border border-line/70 bg-canvas/60 px-2 text-[10.5px] text-ink-muted outline-none focus:border-brand/55">
+          <option value="launched-desc">Latest launched</option>
+          <option value="launched-asc">Oldest launched</option>
+          <option value="updated-desc">Recently updated</option>
+          <option value="finished-desc">Recently completed</option>
+        </select>
+        {#if query}<span class="tnum shrink-0 text-[9.5px] text-ink-faint" aria-live="polite">{matching.length} found</span>{/if}
+      </div>
+    </div>
   {/snippet}
 
   {#if !queue.loaded}
@@ -113,7 +156,7 @@
               <details class="task-brief rounded-lg border border-line/60 bg-canvas/65 px-2.5 py-2">
                 <summary class="cursor-pointer text-[10.5px] text-ink-muted">Brief{task.redirects.length ? ` · ${task.redirects.length} redirect${task.redirects.length > 1 ? "s" : ""}` : ""}</summary>
                 <pre class="mt-2 max-h-60 overflow-auto rounded-md bg-surface p-2.5 font-mono text-[10.5px] whitespace-pre-wrap text-ink-muted">{task.prompt}{#each task.redirects as redirect}{"\n\n↳ "}{redirect}{/each}</pre>
-                <p class="mt-2 text-[9.5px] text-ink-faint">{task.cwd} · {task.model}{task.attempts > 1 ? ` · run ${task.attempts}` : ""}</p>
+                <p class="mt-2 text-[9.5px] text-ink-faint">{task.workspace} · {task.cwd} · {task.model}{task.attempts > 1 ? ` · run ${task.attempts}` : ""}</p>
               </details>
               <form class="flex items-end gap-1.5" onsubmit={(event) => { event.preventDefault(); void redirect(task); }}>
                 <textarea class="min-h-9 flex-1 resize-y rounded-lg border border-line bg-canvas px-2.5 py-2 text-[12px] text-ink outline-none focus:border-brand/60" rows="1" placeholder="Redirect this task…" aria-label="Redirect {task.id}" bind:value={redirectText}></textarea>

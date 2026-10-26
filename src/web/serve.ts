@@ -1425,6 +1425,8 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
           if (!sessions.get(id)) return json({ error: "unknown session" }, 404);
           log("api.session.model", { id, model });
           sessions.setModel(id, model);
+          const workerTask = queueHost.queue.bySession(id);
+          if (workerTask) queueHost.queue.setModel(workerTask.id, model, "model changed from the worker session");
           return json({ ok: true });
         }
         if (action === "/title" && request.method === "POST") {

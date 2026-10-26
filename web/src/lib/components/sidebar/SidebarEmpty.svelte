@@ -9,6 +9,6 @@
   </span>
   <h3 class="text-[12px] font-medium text-ink">{loading ? "Loading your queue" : filtered ? "Nothing in this view" : "Your queue is clear"}</h3>
   <p class="mt-1.5 max-w-52 text-[10.5px] leading-4.5 text-ink-muted">
-    {loading ? "Getting the latest task states…" : filtered ? "Try another status filter to see the rest of your work." : "Send work in the chat. New tasks and their live progress will appear here."}
+    {loading ? "Getting the latest task states…" : filtered ? "Try another status filter or clear the search to see the rest of your work." : "Send work in the chat. New tasks and their live progress will appear here."}
   </p>
 </div>

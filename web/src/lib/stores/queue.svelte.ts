@@ -6,18 +6,19 @@ import { api } from "../api";
 import { store } from "./sessions.svelte";
 import type { QueueStatus, QueueTask, QueueView } from "../types";
 
-export type QueueFilter = "all" | "running" | "queued" | "done" | "error";
+export type QueueFilter = "all" | "running" | "queued" | "recent" | "error";
 
 export const FILTERS: Array<{ id: QueueFilter; label: string }> = [
   { id: "all", label: "All" },
   { id: "running", label: "Working" },
   { id: "queued", label: "Queued" },
-  { id: "done", label: "Completed" },
+  { id: "recent", label: "Completed" },
   { id: "error", label: "Error" },
 ];
 
 export function matches(status: QueueStatus, filter: QueueFilter): boolean {
   if (filter === "all") return true;
+  if (filter === "recent") return status === "done";
   if (filter === "error") return status === "error" || status === "cancelled";
   return status === filter;
 }
@@ -30,8 +31,8 @@ class QueueStore {
   #off: (() => void) | null = null;
 
   get counts(): Record<QueueFilter, number> {
-    const c: Record<QueueFilter, number> = { all: this.tasks.length, running: 0, queued: 0, done: 0, error: 0 };
-    for (const t of this.tasks) for (const f of ["running", "queued", "done", "error"] as const) if (matches(t.status, f)) c[f] += 1;
+    const c: Record<QueueFilter, number> = { all: this.tasks.length, running: 0, queued: 0, recent: 0, error: 0 };
+    for (const t of this.tasks) for (const f of ["running", "queued", "recent", "error"] as const) if (matches(t.status, f)) c[f] += 1;
     return c;
   }
 

@@ -51,6 +51,8 @@
     modelEfforts = {},
     effortBusy = false,
     disabled = false,
+    attachmentsEnabled = true,
+    placeholder = "",
     /**
      * E39: which conversation this prompt bar is writing for (the pane's session, "" for a
      * new chat). It changes when the user moves to another conversation, which is exactly when
@@ -96,6 +98,9 @@
     modelEfforts?: Partial<Record<string, EffortLevel>>;
     effortBusy?: boolean;
     disabled?: boolean;
+    /** Worker redirects are text-only; the main conversation keeps uploads and voice notes. */
+    attachmentsEnabled?: boolean;
+    placeholder?: string;
     /** Render as a floating pill over the content instead of a solid band below the transcript. */
     floating?: boolean;
     /** `text` is the finished message: chips first, then what was typed. */
@@ -502,9 +507,9 @@
     class={floating
       ? "pill-float isolate pointer-events-auto relative mx-auto max-w-3xl rounded-[26px] border border-line/60 shadow-[0_12px_32px_-12px_oklch(0_0_0/0.3)] transition-[border-color,box-shadow] duration-(--duration-fast) ease-(--ease-standard)"
       : "relative mx-auto max-w-3xl rounded-[26px] border border-transparent bg-raised transition-[border-color,box-shadow,background-color] duration-(--duration-fast) ease-(--ease-standard)"}
-    ondragover={onDragOver}
+    ondragover={attachmentsEnabled ? onDragOver : undefined}
     ondragleave={() => (dragging = false)}
-    ondrop={onDrop}
+    ondrop={attachmentsEnabled ? onDrop : undefined}
   >
     {#if dragging}
       <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-[26px] border-2 border-dashed border-brand bg-brand-soft/60 text-[13px] font-medium text-ink" aria-hidden="true">
@@ -627,7 +632,7 @@
       aria-autocomplete="list"
       aria-activedescendant={menu ? `${menuId}-opt-${active}` : undefined}
       rows="1"
-      placeholder={chips.some((c) => c.kind === "command") ? "Add an argument, or press Enter" : running ? "Send a follow-up…" : "Message mini-tui…"}
+      placeholder={placeholder || (chips.some((c) => c.kind === "command") ? "Add an argument, or press Enter" : running ? "Send a follow-up…" : "Message mini-tui…")}
       aria-label="Prompt"
       aria-describedby="{uid}-hint"
       enterkeyhint="send"
@@ -670,29 +675,31 @@
       <div class="ml-auto flex shrink-0 items-center gap-0.5">
         <!-- The mic lives inside the floating pill, next to the paperclip: one
              rail, two "add something to this prompt" verbs. -->
-        <button
-          bind:this={micEl}
-          type="button"
-          class="interactive grid size-8 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11 pointer-coarse:min-w-11"
-          aria-label="Grabar nota de voz"
-          title="Grabar nota de voz"
-          aria-expanded={recordingOpen}
-          aria-controls={recordingOpen ? `${uid}-recorder` : undefined}
-          {disabled}
-          onclick={toggleRecording}
-        >
-          <Mic size={16} strokeWidth={1.75} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          class="interactive grid size-8 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11 pointer-coarse:min-w-11"
-          aria-label="Adjuntar archivos"
-          title="Adjuntar archivos (o arrástralos aquí)"
-          {disabled}
-          onclick={pickFiles}
-        >
-          <Paperclip size={16} strokeWidth={1.75} aria-hidden="true" />
-        </button>
+        {#if attachmentsEnabled}
+          <button
+            bind:this={micEl}
+            type="button"
+            class="interactive grid size-8 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11 pointer-coarse:min-w-11"
+            aria-label="Grabar nota de voz"
+            title="Grabar nota de voz"
+            aria-expanded={recordingOpen}
+            aria-controls={recordingOpen ? `${uid}-recorder` : undefined}
+            {disabled}
+            onclick={toggleRecording}
+          >
+            <Mic size={16} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            class="interactive grid size-8 cursor-pointer place-items-center rounded-md text-ink-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11 pointer-coarse:min-w-11"
+            aria-label="Adjuntar archivos"
+            title="Adjuntar archivos (o arrástralos aquí)"
+            {disabled}
+            onclick={pickFiles}
+          >
+            <Paperclip size={16} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        {/if}
         <input
           bind:this={fileInput}
           type="file"
