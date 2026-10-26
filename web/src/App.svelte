@@ -11,6 +11,7 @@
   import Spinner from "./lib/components/Spinner.svelte";
   import PixelLoader from "./lib/components/PixelLoader.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
+  import Lightbox from "./lib/components/Lightbox.svelte";
   import QueuePanel from "./lib/components/QueuePanel.svelte";
   import WorkspaceSidebar from "./lib/components/WorkspaceSidebar.svelte";
   import BrowserPanel from "./lib/components/BrowserPanel.svelte";
@@ -593,6 +594,7 @@
 
 {#if SettingsModal}<SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />{/if}
 {#if HelpModal}<HelpModal bind:open={helpOpen} />{/if}
+<Lightbox />
 <Toasts />
 
 <style>
