@@ -6,6 +6,13 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ### Added
 
+- **Google Business Profile MCP, several businesses.** Google has no MCP server for Business
+  Profile, so mini-tui's web server now serves one (`/api/gbp/mcp`, loopback only). It proxies the
+  Business Profile REST APIs with your Google token: profile info and edits, reviews and replies,
+  posts, performance and search keywords. You save businesses (`business_add`) and choose one per
+  call or as the default. The login is the Search Console flow (your OAuth client,
+  `business.manage`). See docs/google-business-profile.md.
+
 - **Real per-model context windows and output caps.** `config/model-limits.json` covers every
   static BYOK provider and curated catalog id; the Rust and Python agents read it on every model
   construction (so a `/model` switch never keeps the previous model's limits) instead of the

@@ -345,7 +345,7 @@
   function initials(name: string): string {
     return name.replace(/[^A-Za-z0-9 ]/g, "").split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase() || "M";
   }
-  const HUE: Record<string, string> = { "google-search-console": "#4285f4", openpencil: "#0d9488", figma: "#a259ff", linear: "#5e6ad2", notion: "#787774", atlassian: "#2684ff", stripe: "#635bff", vercel: "#888" };
+  const HUE: Record<string, string> = { "google-search-console": "#4285f4", "google-business": "#34a853", openpencil: "#0d9488", figma: "#a259ff", linear: "#5e6ad2", notion: "#787774", atlassian: "#2684ff", stripe: "#635bff", vercel: "#888" };
 </script>
 
 <div class="flex flex-col gap-5">

@@ -1710,6 +1710,21 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       // ------------------------------------------------------------------ MCP
       // Installed MCP servers and their OAuth logins. Tokens never leave this process: the views
       // carry state only, and the agent gets them through its environment (spawn.ts).
+      // Google Business Profile as an MCP server (src/mcp/googleBusiness.ts). The caller's Bearer
+      // is a Google token checked with Google; nothing here holds or logs it.
+      // Loopback only (the agents run on this machine): a request through the public proxy
+      // carries the public Host, and a direct one a non-loopback address.
+      if (path === "/gbp/mcp" || path === "/.well-known/oauth-protected-resource/api/gbp/mcp") {
+        const ip = (srv as { requestIP?: (r: Request) => { address: string } | null }).requestIP?.(request)?.address ?? "";
+        const hostName = (request.headers.get("host") ?? "").replace(/:\d+$/, "").toLowerCase();
+        const loopIp = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+        if (!loopIp || !["127.0.0.1", "localhost", "[::1]"].includes(hostName)) return json({ error: "not found" }, 404);
+      }
+      if (path === "/gbp/mcp") {
+        const origin = new URL(request.url).origin;
+        return await mcp.handleGbpMcp(request, { metadataUrl: `${origin}/.well-known/oauth-protected-resource/api/gbp/mcp` });
+      }
+      if (path === "/.well-known/oauth-protected-resource/api/gbp/mcp" && request.method === "GET") return json(mcp.gbpResourceMetadata());
       if (path.startsWith("/mcp")) {
         const answer = await mcpRoute(path, request, srv);
         if (answer) return answer;

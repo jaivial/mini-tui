@@ -128,7 +128,7 @@ export async function startLogin(opts: StartOptions): Promise<LoginView> {
   const found = await discover(server.url, server.headers ?? {});
   if (!found.requiresAuth || !found.authServer) throw new Error(`${server.name} does not ask for OAuth: it works without a login`);
   server =
-    updateServer(server.id, (s) => ({ ...s, oauth: { ...s.oauth, authServer: found.authServer, resource: found.resource, scope: s.oauth?.scope ?? found.scope } }), path) ?? server;
+    updateServer(server.id, (s) => ({ ...s, oauth: { ...s.oauth, authServer: found.authServer, resource: s.oauth?.omitResource ? undefined : found.resource, scope: s.oauth?.scope ?? found.scope } }), path) ?? server;
 
   const state = randomState();
   const { verifier, challenge } = pkce();

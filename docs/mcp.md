@@ -8,7 +8,8 @@ the enabled servers with their current tokens through `MINI_AGENT_MCP_SERVERS`. 
 named `mcp__<server>__<tool>`, as in Claude Code.
 
 Presets: OpenPencil (self-hosted on this machine, see [openpencil.md](openpencil.md)), Google
-Search Console (Google's own server, your OAuth client: [google-search-console.md](google-search-console.md)), Figma,
+Search Console (Google's own server, your OAuth client: [google-search-console.md](google-search-console.md)), Google
+Business Profile (served by mini-tui's web server, several businesses: [google-business-profile.md](google-business-profile.md)), Figma,
 Linear, Notion, Atlassian, Stripe, Vercel. Any other Streamable HTTP server can be
 added by URL, with an optional static header (API-key servers) or an OAuth client.
 
