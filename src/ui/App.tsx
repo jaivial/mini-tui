@@ -1181,7 +1181,9 @@ export function App(props: AppProps) {
     return () => clearInterval(timer);
   }, [mcpStep?.kind]);
   // Tokens are refreshed in the background, so a long session's runs keep a valid one.
-  useEffect(() => (props.persistSettings === false ? undefined : mcp.startTokenRefresher()), []);
+  useEffect(() => {
+    if (props.persistSettings !== false) mcp.ensureTokenRefresher();
+  }, []);
   /** Follow a login in the background: the panel moves on by itself when the browser comes back. */
   const watchLogin = (login: mcp.LoginView) => {
     mcpLoginUnsub.current?.();

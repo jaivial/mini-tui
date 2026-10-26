@@ -49,6 +49,12 @@ export interface McpOAuthState {
   authServer?: AuthServerMeta;
   resource?: string;
   scope?: string;
+  /**
+   * The refresh token was refused for good (`invalid_grant`: revoked, or Google's 7-day limit for
+   * apps in Testing). Set by the refresher so the UI says "expired" instead of "connected";
+   * cleared by the next login or successful refresh.
+   */
+  refreshError?: string;
 }
 
 export interface McpServerRecord {

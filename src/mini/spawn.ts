@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 
 import { miniBin, createSessionDir, type SessionPaths } from "../config";
 import { gitIdentityEnv } from "../gitIdentity";
-import { mcpRunEnv } from "../mcp/index";
+import { ensureTokenRefresher, mcpRunEnv } from "../mcp/index";
 import { resolveCommand, resolvePython } from "../helpers";
 import { log } from "../web/log";
 
@@ -228,6 +228,8 @@ export function buildRunEnv(
   extra: Record<string, string> = {},
   control = true,
 ): Record<string, string> {
+  // The run reloads refused tokens from mcp.json: keep that file fresh while this process lives.
+  ensureTokenRefresher();
   return {
     ...process.env,
     // MCP servers installed with /mcp (web Settings → MCP), with their current tokens. An explicit

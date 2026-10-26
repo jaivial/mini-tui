@@ -253,6 +253,14 @@ export function isGoogle(meta: Pick<AuthServerMeta, "authorizationEndpoint">): b
   }
 }
 
+/** A refused token request; `code` is the OAuth error (`invalid_grant`: the grant is dead, log in again). */
+export class TokenError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+    this.name = "TokenError";
+  }
+}
+
 async function tokenRequest(meta: AuthServerMeta, client: OAuthClient, params: Record<string, string>): Promise<OAuthTokens> {
   const body = new URLSearchParams(params);
   const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded", accept: "application/json" };
@@ -273,7 +281,7 @@ async function tokenRequest(meta: AuthServerMeta, client: OAuthClient, params: R
   }
   if (!r.ok || typeof data.access_token !== "string") {
     const why = typeof data.error_description === "string" ? data.error_description : typeof data.error === "string" ? data.error : `HTTP ${r.status}`;
-    throw new Error(`token request failed: ${why}`);
+    throw new TokenError(`token request failed: ${why}`, typeof data.error === "string" ? data.error : undefined);
   }
   const expires = Number(data.expires_in);
   return {

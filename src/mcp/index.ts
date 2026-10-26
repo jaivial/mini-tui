@@ -2,7 +2,7 @@ import { authHeaders } from "./client";
 import { loadServers, mcpPath, slugId, upsertServer, type McpServerRecord } from "./store";
 
 export * from "./store";
-export { probe, probeStored, ensureFresh, startTokenRefresher, type ProbeResult } from "./client";
+export { probe, probeStored, ensureFresh, startTokenRefresher, ensureTokenRefresher, type ProbeResult } from "./client";
 export { startLogin, getLogin, subscribeLogin, cancelLogin, completeFromCallback, completeFromPaste, callbackPage, type LoginView } from "./flow";
 export { discover, RegistrationRefused } from "./oauth";
 
@@ -131,7 +131,8 @@ export interface McpServerView {
 export function serverView(s: McpServerRecord, now = Date.now()): McpServerView {
   const tokens = s.oauth?.tokens;
   const oauth = !!s.oauth;
-  const expired = !!tokens?.expiresAt && tokens.expiresAt <= now && !tokens.refreshToken;
+  // With a refresh token the access token's expiry is routine; a refused refresh is not.
+  const expired = (!!tokens?.expiresAt && tokens.expiresAt <= now && !tokens.refreshToken) || (!!tokens && !!s.oauth?.refreshError);
   const state: McpState = s.disabled ? "disabled" : !oauth ? "ready" : !tokens ? "needs-login" : expired ? "expired" : "connected";
   return {
     id: s.id,
@@ -230,13 +231,18 @@ export function markOAuth(id: string, path: string | null = mcpPath()): void {
 export function mcpRunEnv(path: string | null = mcpPath()): Record<string, string> {
   const servers = loadServers(path).filter((s) => !s.disabled && (!s.oauth || s.oauth.tokens));
   if (!servers.length) return {};
-  return { MINI_AGENT_MCP_SERVERS: JSON.stringify(servers.map((s) => {
+  return {
+    // Where the agent re-reads a server's credentials when they are refused mid-run: the
+    // access tokens below last an hour (Google's), runs and their children much longer.
+    ...(path ? { MINI_AGENT_MCP_FILE: path } : {}),
+    MINI_AGENT_MCP_SERVERS: JSON.stringify(servers.map((s) => {
     // Preset guidance is applied at spawn as well as install: existing mcp.json files receive
     // fixes without forcing users to remove and re-authenticate the server. Local edits win.
     const preset = s.preset ? MCP_PRESETS.find((p) => p.id === s.preset) : undefined;
     const hints = { ...preset?.hints, ...s.hints };
     return { name: s.id, url: s.url, headers: authHeaders(s), ...(s.tools?.length ? { tools: s.tools } : {}), ...(Object.keys(hints).length ? { hints } : {}) };
-  })) };
+    })),
+  };
 }
 
 /** Forget the tokens (the registered clients are kept, so the next login skips registration). */

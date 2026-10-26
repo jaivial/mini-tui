@@ -197,7 +197,7 @@ async function complete(p: Pending, code: string | undefined, error: string | un
     const server = getServer(p.view.serverId, p.path);
     if (!server?.oauth?.authServer) throw new Error("the server was removed during the login");
     const tokens = await exchangeCode({ meta: server.oauth.authServer, client: p.client, code, verifier: p.verifier, redirectUri: p.view.redirectUri, resource: server.oauth.resource });
-    const saved = updateServer(server.id, (s) => ({ ...s, disabled: false, oauth: { ...s.oauth, tokens, tokenClient: p.clientKey } }), p.path);
+    const saved = updateServer(server.id, (s) => ({ ...s, disabled: false, oauth: { ...s.oauth, tokens, tokenClient: p.clientKey, refreshError: undefined } }), p.path);
     // Prove it: the login is only "done" when the MCP server takes the token.
     const check = saved ? await probe(saved) : { ok: false, error: "not saved" };
     if (!check.ok) return finish(p, "error", { error: `logged in, but the server still refuses: ${check.error ?? "unknown error"}` });

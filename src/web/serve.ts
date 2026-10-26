@@ -1768,7 +1768,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
 
 console.log(`mini-tui web server on http://${server.hostname}:${server.port}`);
 // MCP OAuth tokens are refreshed before they expire, so a task started an hour from now still works.
-mcp.startTokenRefresher();
+mcp.ensureTokenRefresher();
 console.log(existsSync(STATIC_DIR) ? `serving the web app from ${STATIC_DIR}` : "web/dist not built - run `bun run build` in web/ (API only for now)");
 
 // After module initialization: openHistory reads mirrorCtx and broadcasts through the live hub.
