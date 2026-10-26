@@ -1605,7 +1605,7 @@ export class SessionManager {
   }
 
   /** Follow-up: continues the same conversation through the control channel. */
-  async send(id: string, prompt: string, attachments?: unknown, agentSuffix = ""): Promise<void> {
+  async send(id: string, prompt: string, attachments?: unknown, agentSuffix = "", expandSkillsEnabled = true): Promise<void> {
     const entry = this.#live.get(id);
     if (!entry) throw new Error("unknown session");
     const text = prompt.trim();
@@ -1628,7 +1628,8 @@ export class SessionManager {
     // The agent gets each referenced skill's instructions ahead of the prompt, and the
     // attachments block behind it; the transcript shows the prompt as typed plus the
     // files as download links (the parser collapses both blocks again on replay).
-    const expanded = expandSkills(text);
+    // Automated queue reports are data, not human-authored $skill invocations.
+    const expanded = expandSkillsEnabled ? expandSkills(text) : { task: text, missing: [] };
     const task = (atts.length ? `${expanded.task}\n\n${attachmentAgentBlock(atts)}` : expanded.task) + agentSuffix;
     entry.session.events.push({ type: "task", text: atts.length ? `${text}\n\n${attachmentLinksLine(atts)}` : text, attachments: atts.length ? atts.map(transcriptAttachment) : undefined });
     (entry.pendingTasks ??= []).push(text);

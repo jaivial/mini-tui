@@ -26,8 +26,8 @@ agent:
            that merely resembles an older task, is NEW work. Independent parts the human listed separately are separate
            tasks in ONE task_create call (`tasks: [...]`) WHEN they can work in disjoint directories;
            never one task per turn.
-      2. ONE task (the usual case): call task_create with title, description, cwd and, only if
-         they add something, `notes` (at most 3 short lines: acceptance criteria, how to verify).
+      2. ONE task (the usual case): call task_create with title, description, workspace, cwd and,
+         only if they add something, `notes` (at most 3 short lines: acceptance criteria, how to verify).
          Do NOT write a prompt: the worker receives the human's message verbatim, every literal
          intact. Never paraphrase it, and never add facts, causes or requirements the human did
          not state: a wrong guess misleads the worker.
@@ -44,7 +44,10 @@ agent:
       3. `title`: at most 6 words. `description`: one sentence. Titles, descriptions, briefs and
          notes are ALWAYS in the language of the human's current message (an English message
          gets English briefs, a Spanish one Spanish), whatever language came before.
-      4. `cwd`: ALWAYS set it to the most specific existing directory the work happens in when the
+      4. `workspace`: ALWAYS choose a short project/workspace name (at most 4 words) and reuse the
+         same name for related tasks in <queue_state>. Create a new name when the project changes.
+         This groups the worker sessions for the human; it is a label, not a directory.
+      5. `cwd`: ALWAYS set it to the most specific existing directory the work happens in when the
          request names or implies one (a path, "this folder", a project, a named part directory).
          The worker starts there. For several tasks, disjoint part directories are what lets the
          parts run concurrently; a shared parent makes them wait for one another.

@@ -34,6 +34,8 @@ export interface QueueTask {
   title: string;
   description: string;
   prompt: string;
+  /** Short project/workspace label chosen by the dispatcher; groups sessions in the UI. */
+  workspace: string;
   cwd: string;
   model: string;
   status: QueueStatus;
@@ -130,6 +132,7 @@ interface Row {
   title: string;
   description: string;
   prompt: string;
+  workspace: string;
   cwd: string;
   model: string;
   status: string;
@@ -165,6 +168,7 @@ function fromRow(r: Row): QueueTask {
     title: r.title,
     description: r.description,
     prompt: r.prompt,
+    workspace: r.workspace || workspaceFromCwd(r.cwd),
     cwd: r.cwd,
     model: r.model,
     status: r.status as QueueStatus,
@@ -191,6 +195,7 @@ export function ensureQueueSchema(db: Database): void {
   if (!cols.includes("redirects_seen")) db.exec("ALTER TABLE queue_tasks ADD COLUMN redirects_seen INTEGER NOT NULL DEFAULT 0");
   if (!cols.includes("redirects_at_start")) db.exec("ALTER TABLE queue_tasks ADD COLUMN redirects_at_start INTEGER NOT NULL DEFAULT 0");
   if (!cols.includes("browser")) db.exec("ALTER TABLE queue_tasks ADD COLUMN browser TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes("workspace")) db.exec("ALTER TABLE queue_tasks ADD COLUMN workspace TEXT NOT NULL DEFAULT ''");
 }
 
 function ensureTables(db: Database): void {
@@ -201,6 +206,7 @@ function ensureTables(db: Database): void {
       title TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       prompt TEXT NOT NULL,
+      workspace TEXT NOT NULL DEFAULT '',
       cwd TEXT NOT NULL DEFAULT '',
       model TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL,
@@ -249,6 +255,8 @@ export interface TaskSpec {
   /** One task without a prompt: short notes appended to the human's message. */
   notes?: unknown;
   cwd?: unknown;
+  /** Dispatcher-chosen project/workspace label used to group worker sessions. */
+  workspace?: unknown;
   /** Independent fan-out only: false requires disjoint working directories. Default true (legacy sequential work). */
   allow_overlap?: unknown;
 }
@@ -260,6 +268,13 @@ export type CreateResult =
 /** Text fields only: a number, object or array from a model is not coerced into "[object Object]". */
 const clean = (v: unknown, max: number) => (typeof v === "string" ? v : "").replace(/\r\n/g, "\n").trim().slice(0, max);
 const oneLine = (v: unknown, max: number) => clean(v, max * 2).replace(/\s+/g, " ").slice(0, max);
+
+/** Stable, human-readable fallback for old tasks and calls that omit a workspace. */
+export function workspaceFromCwd(cwd: string): string {
+  const cleanPath = cwd.replace(/[\\/]+$/, "");
+  if (!cleanPath || cleanPath === "/" || cleanPath === "/tmp" || cleanPath === homedir()) return "General";
+  return cleanPath.split(/[\\/]/).pop() || "General";
+}
 
 function expandCwd(raw: string, fallback: string): string {
   const p = raw.trim();
@@ -383,14 +398,14 @@ export class WorkQueue {
     t.updatedAt = Math.max(Date.now(), t.updatedAt + 1);
     this.#db
       .query(
-        `INSERT INTO queue_tasks (id, seq, title, description, prompt, cwd, model, status, session_id, result, created_at, started_at, finished_at, updated_at, redirects, related, notes, attempts, work_seconds, redirects_seen, redirects_at_start, browser)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET title=excluded.title, description=excluded.description, prompt=excluded.prompt, cwd=excluded.cwd, model=excluded.model,
+        `INSERT INTO queue_tasks (id, seq, title, description, prompt, workspace, cwd, model, status, session_id, result, created_at, started_at, finished_at, updated_at, redirects, related, notes, attempts, work_seconds, redirects_seen, redirects_at_start, browser)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET title=excluded.title, description=excluded.description, prompt=excluded.prompt, workspace=excluded.workspace, cwd=excluded.cwd, model=excluded.model,
            status=excluded.status, session_id=excluded.session_id, result=excluded.result, started_at=excluded.started_at, finished_at=excluded.finished_at,
            updated_at=excluded.updated_at, redirects=excluded.redirects, related=excluded.related, notes=excluded.notes, attempts=excluded.attempts, work_seconds=excluded.work_seconds, redirects_seen=excluded.redirects_seen, redirects_at_start=excluded.redirects_at_start, browser=excluded.browser`,
       )
       .run(
-        t.id, t.seq, t.title, t.description, t.prompt, t.cwd, t.model, t.status, t.sessionId, t.result, t.createdAt, t.startedAt, t.finishedAt, t.updatedAt,
+        t.id, t.seq, t.title, t.description, t.prompt, t.workspace, t.cwd, t.model, t.status, t.sessionId, t.result, t.createdAt, t.startedAt, t.finishedAt, t.updatedAt,
         JSON.stringify(t.redirects), JSON.stringify(t.related), JSON.stringify(t.notes.slice(-50)), t.attempts, t.workSeconds, t.redirectsSeen, t.redirectsAtStart, t.browser ? JSON.stringify(t.browser) : "",
       );
   }
@@ -440,6 +455,7 @@ export class WorkQueue {
       description: oneLine(s.description, 400),
       prompt: clean(briefOf(s), PROMPT_MAX),
       cwd: expandCwd(typeof s.cwd === "string" ? s.cwd : dirIn(briefOf(s)) || (raw.length === 1 ? dirIn(message) : ""), this.#defaultCwd()),
+      workspace: oneLine(s.workspace, 48),
       requireDisjoint: s.allow_overlap === false,
     }));
     const bad = specs.findIndex((s) => !s.prompt || !s.title);
@@ -483,6 +499,7 @@ export class WorkQueue {
         title: s.title,
         description: s.description,
         prompt: s.prompt,
+        workspace: s.workspace || workspaceFromCwd(s.cwd),
         // Where the work happens: the dispatcher's cwd, else the brief's first real directory,
         // else (one task from one message) the human's own message's.
         cwd: s.cwd,
@@ -670,6 +687,7 @@ export class WorkQueue {
       return [
         `${t.id} "${t.title}" — ${t.status}${t.attempts > 1 ? ` (run ${t.attempts})` : ""} on ${t.model}`,
         `description: ${t.description}`,
+        `workspace: ${t.workspace}`,
         `cwd: ${t.cwd}`,
         live ? `live progress:\n${live}` : "",
         t.redirects.length ? `redirects:\n${t.redirects.map((r) => `- ${r}`).join("\n")}` : "",
@@ -710,7 +728,7 @@ export class WorkQueue {
       const busy = active.filter((t) => t.status === "running");
       for (const t of active.slice(0, 40)) {
         const blocker = t.status === "queued" ? busy.find((b) => overlaps(b.cwd, t.cwd)) : undefined;
-        lines.push(`- ${t.id} [${t.status}] ${t.title} — ${t.description} (in ${t.cwd})${blocker ? ` — waits for ${blocker.id} (same directory)` : ""}`);
+        lines.push(`- ${t.id} [${t.status}] ${t.title} — ${t.description} (workspace ${t.workspace}; in ${t.cwd})${blocker ? ` — waits for ${blocker.id} (same directory)` : ""}`);
       }
     }
     if (recent.length) {
@@ -720,7 +738,7 @@ export class WorkQueue {
     if (notes.length) lines.push("notes from workers:", ...notes.map((n) => `- ${n}`));
     if (related.length) {
       lines.push("closest tasks to this message (similarity):");
-      for (const r of related) lines.push(`- ${r.task.id} [${r.task.status}] ${r.task.title} — in ${r.task.cwd} (${r.score})`);
+      for (const r of related) lines.push(`- ${r.task.id} [${r.task.status}] ${r.task.title} — workspace ${r.task.workspace}, in ${r.task.cwd} (${r.score})`);
     }
     return `\n\n<queue_state>\n${lines.join("\n")}\n</queue_state>`;
   }

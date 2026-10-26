@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { ArrowDown, ListTodo, SquarePen, Settings, Keyboard, WifiOff, ArrowLeft, Globe, Sparkles, ArrowUpRight } from "@lucide/svelte";
+  import { ArrowDown, ListTodo, SquarePen, Settings, Keyboard, WifiOff, ArrowLeft, Globe, Sparkles, ArrowUpRight, PanelLeft } from "@lucide/svelte";
   import { fade } from "svelte/transition";
   import { dragSize, effectiveWidth, keySize, loadPanelSize, savePanelSize, type PanelSize } from "./lib/panelWidth";
   import { popIn, pressable, staggerChildren } from "./lib/motion";
@@ -12,6 +12,7 @@
   import PixelLoader from "./lib/components/PixelLoader.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
   import QueuePanel from "./lib/components/QueuePanel.svelte";
+  import WorkspaceSidebar from "./lib/components/WorkspaceSidebar.svelte";
   import BrowserPanel from "./lib/components/BrowserPanel.svelte";
   import { catalog } from "./lib/stores/catalog.svelte";
   import { store } from "./lib/stores/sessions.svelte";
@@ -30,16 +31,20 @@
    *
    * The chat's agent is the dispatcher: everything sent here becomes tasks in the work queue (or a
    * redirect of a task in flight), and each task runs as its own background session. The panel on
-   * the right lists them by state. No sidebar of sessions, no panes: one screen.
+   * the right lists and filters them; the left groups their sessions by dispatcher-assigned workspace.
    */
   const NARROW = 900;
+  const COMPACT = 1200;
   let narrow = $state(false);
+  let compact = $state(false);
+  let workspaceOpen = $state(true);
   let panelOpen = $state(true);
   /** What the right panel shows: the task queue, or the agents' browser. */
   let panelTab = $state<"tasks" | "browser">("tasks");
   let browserTab = $state("");
   let browserLive = $state(false);
   function showBrowser(tab = "") {
+    if (compact) workspaceOpen = false;
     browserLive = !!tab;
     if (tab) browserTab = tab;
     panelTab = "browser";
@@ -59,8 +64,11 @@
   $effect(() => {
     const apply = () => {
       const was = narrow;
+      const wasCompact = compact;
       narrow = window.innerWidth <= NARROW;
+      compact = window.innerWidth < COMPACT;
       if (narrow !== was) panelOpen = !narrow;
+      if (compact !== wasCompact) workspaceOpen = !compact;
     };
     apply();
     window.addEventListener("resize", apply);
@@ -111,12 +119,15 @@
     setPanelSize(next);
   }
   function toggleFull() {
+    if (!panelSize.full) workspaceOpen = false;
     setPanelSize({ ...panelSize, full: !panelSize.full });
   }
 
   let loading = $state(true);
   let prompt = $state("");
+  let workerPrompt = $state("");
   let chips = $state<Chip[]>([]);
+  let workerChips = $state<Chip[]>([]);
   let attachments = $state<AttachmentRef[]>([]);
   let sending = $state(false);
   let modelOpen = $state(false);
@@ -126,7 +137,7 @@
   const memory = new PromptMemory();
   let composer = $state<{ focus: () => void } | null>(null);
   let scroller = $state<HTMLElement | null>(null);
-  /** A worker's session opened from the task panel, read-only, in place of the chat. */
+  /** A worker session opened from either sidebar; its composer redirects the owning task. */
   let viewing = $state("");
 
   let settingsOpen = $state(false);
@@ -143,7 +154,7 @@
   const shownId = $derived(viewing || queue.main);
   const session = $derived(shownId ? (store.sessions[shownId] ?? null) : null);
   const link = $derived(session ? (store.links[session.id] ?? "idle") : "idle");
-  const currentModel = $derived(store.sessions[queue.main]?.model || draftModel || catalog.settings?.lastModel || "");
+  const currentModel = $derived(session?.model || draftModel || catalog.settings?.lastModel || "");
 
   $effect(() => {
     untrack(() => void catalog.warm());
@@ -173,7 +184,7 @@
     const events = id ? (store.sessions[id]?.events ?? []) : [];
     if (id === memoryOf && events.length) return;
     const names = catalog.commands.map((c) => c.name);
-    memory.reset(events.flatMap((e) => (e.type === "task" ? [splitSent(stripQueueState(e.text), names)] : [])));
+    memory.reset(events.flatMap((e) => (e.type === "task" && !e.text.startsWith("[queue] Task ") ? [splitSent(stripQueueState(e.text), names)] : [])));
     if (events.length) memoryOf = id;
   });
 
@@ -214,7 +225,7 @@
     return text.replace(/\s*<queue_state>[\s\S]*?<\/queue_state>\s*$/, "");
   }
   const events = $derived(
-    (session?.events ?? []).map((e) => {
+    (session?.events ?? []).filter((e) => !(e.type === "task" && e.text.startsWith("[queue] Task "))).map((e) => {
       if (e.type === "task" && e.text.includes("<queue_state>")) return { ...e, text: stripQueueState(e.text) };
       // The browser marker is for the panel, not for reading.
       if (e.type === "notice" && e.text.includes("[[browser")) return { ...e, text: e.text.replace(/\s*\[\[browser(?::[A-Za-z0-9_-]+)?\]\]/g, "") + " — open the Browser panel." };
@@ -252,10 +263,7 @@
       settingsTab = cmd.name === "mcp" ? "mcp" : "providers";
       settingsOpen = true;
     } else if (cmd.name === "help") helpOpen = true;
-    else if (cmd.name === "tasks") {
-      panelOpen = !(panelOpen && panelTab === "tasks");
-      panelTab = "tasks";
-    }
+    else if (cmd.name === "tasks") showTasks();
     else if (cmd.name === "browser") showBrowser();
     else toasts.push(`/${cmd.name} is not available here`, { tone: "info" });
     prompt = "";
@@ -265,13 +273,22 @@
 
   async function send(message: string) {
     const text = message.trim();
-    if ((!text && !attachments.length) || sending) return;
-    const sent = text || `📎 ${attachments.map((a) => a.name).join(", ")}`;
+    const mainAttachments = viewing ? [] : attachments;
+    if ((!text && !mainAttachments.length) || sending) return;
+    const sent = text || `📎 ${mainAttachments.map((a) => a.name).join(", ")}`;
     sending = true;
     try {
+      if (viewing) {
+        const task = queue.tasks.find((item) => item.sessionId === viewing);
+        if (!task) throw new Error("This session is not linked to a queue task");
+        const result = await api.queueRedirect(task.id, sent);
+        workerPrompt = "";
+        workerChips = [];
+        toasts.push(result.text, { tone: "info" });
+        return;
+      }
       if (await runCommand(sent)) return;
-      viewing = "";
-      const s = await api.queuePrompt(sent, currentModel || undefined, attachments);
+      const s = await api.queuePrompt(sent, currentModel || undefined, mainAttachments);
       store.adopt(s);
       queue.main = s.id;
       prompt = "";
@@ -285,19 +302,19 @@
   }
 
   async function pickModel(id: string) {
-    const main = store.sessions[queue.main];
-    if (!main) {
+    const selected = shownId ? store.sessions[shownId] : undefined;
+    if (!selected) {
       draftModel = id;
       return;
     }
-    if (switchingModel || id === main.model) return;
+    if (switchingModel || id === selected.model) return;
     switchingModel = true;
-    const previous = main.model;
-    main.model = id;
+    const previous = selected.model;
+    selected.model = id;
     try {
-      await api.setModel(main.id, id);
+      await api.setModel(selected.id, id);
     } catch (error) {
-      main.model = previous;
+      selected.model = previous;
       toasts.push("Model switch failed", { detail: (error as Error).message, tone: "err" });
     } finally {
       switchingModel = false;
@@ -326,9 +343,31 @@
     try {
       if (!store.sessions[id]) store.adopt(await api.openHistory(id));
       viewing = id;
+      workerPrompt = "";
+      workerChips = [];
+      if (compact) workspaceOpen = false;
       if (narrow) panelOpen = false;
     } catch (error) {
       toasts.push("Could not open that session", { detail: (error as Error).message, tone: "err" });
+    }
+  }
+
+  function openMain() {
+    viewing = "";
+    if (compact) workspaceOpen = false;
+  }
+
+  function toggleWorkspaces() {
+    workspaceOpen = !workspaceOpen;
+    if (workspaceOpen && compact) panelOpen = false;
+  }
+
+  function showTasks() {
+    if (panelOpen && panelTab === "tasks") panelOpen = false;
+    else {
+      if (compact) workspaceOpen = false;
+      panelTab = "tasks";
+      panelOpen = true;
     }
   }
 
@@ -341,8 +380,12 @@
       event.preventDefault();
       settingsTab = "general";
       settingsOpen = true;
+    } else if (mod && event.shiftKey && event.key.toLowerCase() === "b") {
+      event.preventDefault();
+      toggleWorkspaces();
     } else if (mod && !event.shiftKey && event.key.toLowerCase() === "b") {
       event.preventDefault();
+      if (panelOpen && compact) workspaceOpen = false;
       panelOpen = !panelOpen;
     } else if (mod && event.shiftKey && event.key.toLowerCase() === "f" && panelOpen && !narrow) {
       event.preventDefault();
@@ -354,6 +397,9 @@
       // On a phone the panel covers the chat: Escape is its way out.
       event.preventDefault();
       panelOpen = false;
+    } else if (event.key === "Escape" && compact && workspaceOpen && !settingsOpen && !helpOpen) {
+      event.preventDefault();
+      workspaceOpen = false;
     }
   }
 </script>
@@ -361,8 +407,23 @@
 <svelte:window onkeydowncapture={onkey} />
 
 <div bind:this={shell} bind:clientWidth={shellWidth} class="app-shell relative flex h-full w-full overflow-hidden bg-canvas text-ink" class:select-none={resizing} class:cursor-col-resize={resizing}>
-  <div class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)]" inert={(narrow || panelFull) && panelOpen} class:hidden={panelFull && panelOpen}>
+  {#if workspaceOpen && compact}
+    <button type="button" class="absolute inset-0 z-40 cursor-default bg-black/25" aria-label="Close workspaces" onclick={() => (workspaceOpen = false)}></button>
+  {/if}
+  {#if workspaceOpen}
+    <div
+      class={compact ? "workspace-panel absolute inset-y-0 left-0 z-50 w-[min(18rem,88vw)] bg-surface pt-[env(safe-area-inset-top)]" : "relative w-64 shrink-0"}
+      role={compact ? "dialog" : undefined}
+      aria-modal={compact ? "true" : undefined}
+      aria-label={compact ? "Workspaces and sessions" : undefined}
+      in:fade={{ duration: 140 }}
+    >
+      <WorkspaceSidebar tasks={queue.tasks} mainId={queue.main} activeId={shownId} onmain={openMain} onopen={openWorker} onclose={() => (workspaceOpen = false)} />
+    </div>
+  {/if}
+  <div class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)]" inert={((narrow || panelFull) && panelOpen) || (compact && workspaceOpen)} class:hidden={panelFull && panelOpen}>
     <header class="app-header relative z-30 flex min-h-16 shrink-0 items-center gap-1.5 border-b border-line/65 px-4 py-2">
+      <Button variant="ghost" size="icon-sm" icon={PanelLeft} title="Workspaces (Ctrl/⌘ ⇧ B)" aria-label="Toggle workspaces" active={workspaceOpen} onclick={toggleWorkspaces} />
       {#if viewing}
         <Button variant="ghost" size="icon-sm" icon={ArrowLeft} title="Back to the chat" aria-label="Back to the chat" onclick={() => (viewing = "")} />
         <h1 class="min-w-0 flex-1 truncate px-1 text-[13.5px] font-semibold">{session?.title || "Task"} <span class="font-normal text-ink-faint">· worker</span></h1>
@@ -379,7 +440,7 @@
       <Button variant="ghost" size="icon-sm" icon={Settings} title="Settings (Ctrl/⌘ ,)" aria-label="Settings" onclick={() => { settingsTab = "general"; settingsOpen = true; }} />
       <Button variant="ghost" size="icon-sm" icon={Keyboard} title="Help" aria-label="Help" onclick={() => (helpOpen = true)} />
       <Button variant="ghost" size="icon-sm" icon={Globe} title="Browser" aria-label="Toggle browser" active={panelOpen && panelTab === "browser"} onclick={() => { if (panelOpen && panelTab === "browser") panelOpen = false; else showBrowser(); }} />
-      <Button variant="ghost" size="icon-sm" icon={ListTodo} title="Tasks (Ctrl/⌘ B)" aria-label="Toggle tasks" active={panelOpen && panelTab === "tasks"} onclick={() => { if (panelOpen && panelTab === "tasks") panelOpen = false; else { panelTab = "tasks"; panelOpen = true; } }} />
+      <Button variant="ghost" size="icon-sm" icon={ListTodo} title="Tasks (Ctrl/⌘ B)" aria-label="Toggle tasks" active={panelOpen && panelTab === "tasks"} onclick={showTasks} />
       {#if queue.counts.running}<span class="tnum -ml-1 text-[11px] text-live" aria-label="{queue.counts.running} running">{queue.counts.running}</span>{/if}
     </header>
 
@@ -437,7 +498,27 @@
         </div>
       {/if}
 
-      {#if !viewing}
+      {#if viewing}
+        <Composer
+          bind:value={workerPrompt}
+          bind:chips={workerChips}
+          draftKey={viewing}
+          bind:modelOpen
+          running={session?.status === "running"}
+          {sending}
+          model={currentModel}
+          {switchingModel}
+          modelNote="Used when this worker continues."
+          placeholder="Redirect this session…"
+          attachmentsEnabled={false}
+          onsend={send}
+          oninterrupt={interrupt}
+          onmodel={pickModel}
+          oneffort={pickEffort}
+          modelEfforts={catalog.settings?.modelEfforts ?? {}}
+          {effortBusy}
+        />
+      {:else}
         <Composer
           bind:this={composer}
           bind:value={prompt}
@@ -518,6 +599,7 @@
       linear-gradient(var(--color-canvas), var(--color-canvas));
   }
   .app-header { background: color-mix(in oklab, var(--color-canvas) 88%, transparent); }
+  .workspace-panel { box-shadow: 16px 0 40px rgb(0 0 0 / 0.14); }
   .brand-mark { box-shadow: inset 0 1px 0 rgb(200 184 166 / 0.12), 0 4px 16px rgb(0 0 0 / 0.16); }
   .empty-workspace { margin-top: clamp(2rem, 9vh, 6rem); background: linear-gradient(145deg, color-mix(in oklab, var(--color-raised) 58%, transparent), color-mix(in oklab, var(--color-surface) 45%, transparent)); }
   .empty-workspace::before { content: ""; position: absolute; width: 15rem; height: 10rem; top: -7rem; left: 50%; translate: -50% 0; background: var(--color-brand); opacity: 0.06; filter: blur(45px); pointer-events: none; }

@@ -326,6 +326,8 @@ export interface QueueTask {
   title: string;
   description: string;
   prompt: string;
+  /** Dispatcher-assigned project/workspace label for grouping worker sessions. */
+  workspace: string;
   cwd: string;
   model: string;
   status: QueueStatus;
