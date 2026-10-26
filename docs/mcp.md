@@ -48,10 +48,45 @@ same origin the app was loaded from, the server completes it and the panel notic
 message, with a poll as fallback). "Copy link" and "Paste redirect URL" cover a popup that is
 blocked or a login done on another device.
 
+## Built in: `cu` (the browser)
+
+Every run mini-tui spawns gets the browser tools of [`cu`](https://github.com/jaivial/cu) as
+`mcp__cu__*`: `navigate`, `snapshot`, `text`, `click`, `type`, `act`, `screenshot`, `tabs`,
+`close_tab`, `console`, `inspect`, `mark`/`marks`, `upload`, `downloads`, `handoff`,
+`session_save`/`session_load`, `login_url`, `status` and `close_context`. It is not a record in
+`mcp.json` and has no switch: `buildRunEnv` (src/mini/spawn.ts) sets `MINI_AGENT_CU_MCP=1` last and
+unconditionally, and the agent then starts `cu mcp` over stdio next to the installed servers. The
+terminal's `/mcp` shows it as a fixed line; the web (Settings → MCP) lists it with a Test button
+and no disable, remove or log-out controls, and the API answers 400 to those.
+
+- **One page per run.** The `cu mcp` process is the run's browser session: `navigate`, then
+  `snapshot`, read the same page, and two runs (a subagent included) never share one. The first
+  page call names the tab id (`task_show_browser` takes it). When the run ends, the agent closes the
+  server's input and gives it three seconds: cu answers what is in flight and closes the run's tabs.
+  A run that dies closes the pipe all the same.
+- **In the container too.** The daemon runs on the host and keys a session on the caller's pid,
+  which a container (host network, own pids) cannot show it. cu 1.5.1 pins the tab after the first
+  call, so the page holds; older cu answered every call in a fresh tab.
+- **Screenshots are images.** An image block in a tool result reaches the model as an image
+  attachment (8 MB cap), like a `read` of a .png, instead of being dropped with everything that is
+  not text. This applies to any MCP server.
+- **Cost.** The 21 schemas are ~14.5 KB (~3.6k tokens) in every prompt.
+- **Missing or old cu.** The binary is resolved like the `computer_use` tool's (`MINITUI_CU_BIN`,
+  `~/.local/bin/cu`, `~/.cargo/bin/cu`, PATH). A cu without `mcp` (before 1.5) prints its help and
+  exits: the agent sees the end of its output and drops the server at once (no timeout), with
+  `[mcp] cu: ...` in the run log. A bare `mini-agent-rs` run (benchmarks, the parity suite) does
+  not get it, like the native agent tools.
+- **The `cu` tool stays.** It runs one `cu` CLI command (vault, otp, diagnostics...). Its
+  description names only commands the CLI has: the old one taught `tab open --lease`, `tab close`
+  and `batch`, which the CLI answers with its help and exit status 0.
+
 ## The agent side
 
-`mini-agent-rs` has an opt-in, single-server MCP Streamable HTTP client. It is **off by default**:
-ordinary coding and speed-benchmark runs do not connect, fetch schemas, or enlarge the tool list.
+`mini-agent-rs` has an opt-in MCP client, Streamable HTTP or stdio (a local program, one per run,
+JSON-RPC over its pipes). It is **off by default**: a bare run (speed benchmarks) does not connect,
+fetch schemas, or enlarge the tool list. mini-tui's runs get the installed servers and the built-in
+`cu`. `MINI_AGENT_MCP_SERVERS` entries take `{"name","url","headers"}` or, for a stdio server,
+`{"name","command","args","env"}`.
 
 ## Configuration
 

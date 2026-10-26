@@ -468,6 +468,10 @@ export interface McpServerView {
   headerNames: string[];
   tokenFile?: string;
   state: "connected" | "needs-login" | "expired" | "disabled" | "ready";
+  /** Part of mini-tui (the `cu` browser server): always on; it can be tested, never changed. */
+  builtin?: boolean;
+  /** A local server: the command line the agent runs instead of a URL. */
+  command?: string;
 }
 
 export interface McpPreset {

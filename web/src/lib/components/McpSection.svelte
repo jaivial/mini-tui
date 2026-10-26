@@ -468,9 +468,9 @@
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="truncate text-[13px] font-medium text-ink">{s.name}</span>
                   <span data-state={s.state} class="inline-flex"><Badge tone={st.tone} dot>{st.label}</Badge></span>
-                  {#if s.oauth}<span class="text-[11px] text-ink-faint">OAuth</span>{:else if s.tokenFile}<span class="text-[11px] text-ink-faint" title="Token read from {s.tokenFile}">self-hosted</span>{/if}
+                  {#if s.builtin}<span class="text-[11px] text-ink-faint" title="Part of mini-tui: every run gets these browser tools">built-in</span>{:else if s.oauth}<span class="text-[11px] text-ink-faint">OAuth</span>{:else if s.tokenFile}<span class="text-[11px] text-ink-faint" title="Token read from {s.tokenFile}">self-hosted</span>{/if}
                 </div>
-                <span class="mt-0.5 block truncate font-mono text-[11.5px] text-ink-muted" title={s.url}>{s.url}</span>
+                <span class="mt-0.5 block truncate font-mono text-[11.5px] text-ink-muted" title={s.command ?? s.url}>{s.command ?? s.url}</span>
               </div>
               <div class="flex shrink-0 items-center gap-0.5">
                 {#if s.state === "needs-login" || s.state === "expired"}
@@ -481,8 +481,10 @@
                 {#if s.loggedIn}
                   <Button variant="ghost" size="icon-sm" icon={LogOut} title="Log out" aria-label="Log out of {s.name}" loading={busy[s.id] === "logout"} onclick={() => logout(s)} />
                 {/if}
-                <Button variant="ghost" size="icon-sm" icon={Power} title={s.disabled ? "Enable" : "Disable"} aria-label="{s.disabled ? 'Enable' : 'Disable'} {s.name}" active={!s.disabled} loading={busy[s.id] === "toggle"} onclick={() => toggle(s)} />
-                <Button variant="danger" size="icon-sm" icon={Trash2} title="Remove" aria-label="Remove {s.name}" loading={busy[s.id] === "remove"} onclick={() => remove(s)} />
+                {#if !s.builtin}
+                  <Button variant="ghost" size="icon-sm" icon={Power} title={s.disabled ? "Enable" : "Disable"} aria-label="{s.disabled ? 'Enable' : 'Disable'} {s.name}" active={!s.disabled} loading={busy[s.id] === "toggle"} onclick={() => toggle(s)} />
+                  <Button variant="danger" size="icon-sm" icon={Trash2} title="Remove" aria-label="Remove {s.name}" loading={busy[s.id] === "remove"} onclick={() => remove(s)} />
+                {/if}
               </div>
             </div>
             {#if expanded[s.id] && tools[s.id]}

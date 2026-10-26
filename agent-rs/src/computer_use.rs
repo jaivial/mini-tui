@@ -49,7 +49,7 @@ const IMAGE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// `MINITUI_CU_BIN`, else `~/.local/bin/cu` (a wrapper with its own glibc: the one that loads
 /// inside the Docker image too), else `~/.cargo/bin/cu`, else `cu` on PATH.
-fn cu_bin() -> PathBuf {
+pub(crate) fn cu_bin() -> PathBuf {
     if let Ok(p) = std::env::var("MINITUI_CU_BIN").map(PathBuf::from) {
         return p;
     }

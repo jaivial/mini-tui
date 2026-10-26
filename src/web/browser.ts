@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { cuBin } from "../cu";
 import { log } from "./log";
 
 export interface CuTab {
@@ -35,17 +36,8 @@ export function daemonInfo(): Daemon | null {
   }
 }
 
-/**
- * The cu CLI: `MINITUI_CU_BIN`, else `~/.local/bin/cu`, else `~/.cargo/bin/cu`, else PATH. The
- * same resolution as the agent's `computer_use` tool. `~/.local/bin/cu` comes first because it
- * is a wrapper that carries its own glibc: the bare cargo binary does not load inside the Docker
- * image (Debian 12, glibc 2.36 vs the 2.39 the binary needs), the wrapper does.
- */
-export function cuBin(): string {
-  if (process.env.MINITUI_CU_BIN) return process.env.MINITUI_CU_BIN;
-  for (const p of [join(homedir(), ".local", "bin", "cu"), join(homedir(), ".cargo", "bin", "cu")]) if (existsSync(p)) return p;
-  return "cu";
-}
+/** The cu CLI (see src/cu.ts: shared with the built-in `cu` MCP server). */
+export { cuBin };
 
 /** The daemon's open tabs (minus chrome:// pages), or null when no daemon runs. */
 export async function listTabs(): Promise<CuTab[] | null> {

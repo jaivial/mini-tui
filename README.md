@@ -29,7 +29,8 @@ concurrently when their working directories are disjoint. Shared-root work falls
   serializing N cold starts. Existing sequential overlap behavior is preserved.
 - **Native MCP, opt-in.** Streamable HTTP initialize/session handling, JSON/SSE responses,
   paginated `tools/list`, `tools/call`, and schemas for OpenAI chat/Responses and Anthropic.
-  See [`docs/mcp.md`](docs/mcp.md) and verify a server with `mini-agent-rs mcp-tools`.
+  See [`docs/mcp.md`](docs/mcp.md) and verify a server with `mini-agent-rs mcp-tools`. Built in:
+  the `cu` browser tools (`mcp__cu__*`, one page per run) in every run, with no switch.
 - **A browser with a human handoff.** The agent can show a live tab for login, QR, captcha or 2FA,
   then resume when you press Done. It never defeats a captcha or guesses credentials.
 - **The whole runtime in Docker.** Web, Rust agent, Python, whisper, gh and ssh in one image, with

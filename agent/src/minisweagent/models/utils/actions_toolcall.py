@@ -31,13 +31,13 @@ CU_TOOL = {
     "type": "function",
     "function": {
         "name": "cu",
-        "description": "Drive the persistent cu browser (one Chrome always open, one leased tab or context per task). One call runs one cu command; the $cu skill has the full guide. Typical flow: tab open URL --lease 300 --label my-test (returns the tab id), page commands with --tab ID (or --context NAME for an isolated cookie jar), read snapshot (ref-addressable page) or text, act with click e3 / type e2 text / act JSON, close with tab close ID (a lease closes it anyway if the run dies). batch 'CMD' 'CMD' runs several commands at once.",
+        "description": "Run one `cu` CLI command against the persistent browser daemon (one Chrome shared by every agent). When the mcp__cu__* tools are present, browse with them: they keep one page for the whole run and attach screenshots as images. Use this tool for what they do not cover (`vault ...`, `otp ...`, `diagnostics`, `challenge ...`) or when they are absent. Page commands: `navigate URL --new-tab` opens a page of this run's own and prints its id (`cu: working in a fresh tab (ID)`); pass `--tab ID` to every later command: `snapshot`, `text`, `click e3`, `type e2 TEXT [--submit]`, `act JSON`, `shot FILE.png`, `console --level warn+`; close it with `tabs close ID` at the end. Never type a password or a one-time code: `login` prints the link where the human signs in.",
         "parameters": {
             "type": "object",
             "properties": {
                 "args": {
                     "type": "string",
-                    "description": "cu arguments, e.g. snapshot --tab t3",
+                    "description": "cu arguments, e.g. snapshot --tab ID",
                 }
             },
             "required": ["args"],

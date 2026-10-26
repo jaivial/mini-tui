@@ -1,7 +1,9 @@
-//! Minimal MCP Streamable HTTP client: one opt-in server (`MINI_AGENT_MCP_URL`) and/or the servers
-//! installed through mini-tui (`MINI_AGENT_MCP_SERVERS`).
+//! Minimal MCP client: one opt-in server (`MINI_AGENT_MCP_URL`), the servers installed through
+//! mini-tui (`MINI_AGENT_MCP_SERVERS`) and mini-tui's built-in `cu` server (`MINI_AGENT_CU_MCP=1`).
+//! Servers are reached over Streamable HTTP or, for a local program, over stdio.
 //!
-//! The default is deliberately off: normal coding runs pay no connection, schema or prompt cost.
+//! The default is deliberately off: a bare run pays no connection, schema or prompt cost. mini-tui
+//! turns the built-in on for every run it spawns, the way it turns on the native agent tools.
 //! It supports initialize + session IDs, JSON and SSE responses, paginated tools/list and
 //! tools/call. Credentials are read from the environment and never included in errors.
 //!
@@ -12,9 +14,13 @@
 
 use crate::util::get;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 struct RemoteTool {
@@ -63,13 +69,49 @@ struct ServerSpec {
     /// Extra guidance appended to one tool's description (`"hints": {"render": "..."}`): what the
     /// server documents elsewhere and a model would otherwise guess (OpenPencil's JSX props).
     hints: Vec<(String, String)>,
+    /// A local server: the program to run and talk to over its stdin/stdout, instead of `url`
+    /// (which then holds the `stdio:<name>` address its registry is known by).
+    stdio: Option<StdioCommand>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StdioCommand {
+    program: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+}
+
+/// The name of mini-tui's built-in server: its tools are `mcp__cu__*`.
+const BUILTIN_CU: &str = "cu";
+
+/// mini-tui's built-in server: `cu mcp`, the browser daemon's tools (navigate, snapshot, click,
+/// type, act, screenshot...), one page per run. mini-tui sets `MINI_AGENT_CU_MCP=1` on every run it
+/// spawns and offers no way to turn it off; a bare `mini-agent-rs` run (benchmarks, the parity
+/// suite) does not get it, like the native agent tools. Never in unit tests: they must not start
+/// the developer's browser daemon, even when they run inside a mini-tui session.
+fn builtin_cu_on() -> bool {
+    !cfg!(test) && std::env::var("MINI_AGENT_CU_MCP").map(|v| v.trim() == "1").unwrap_or(false)
+}
+
+fn builtin_cu() -> ServerSpec {
+    ServerSpec {
+        name: BUILTIN_CU.into(),
+        id: None,
+        url: format!("stdio:{BUILTIN_CU}"),
+        headers: vec![],
+        prefixed: true,
+        allow: vec![],
+        hints: vec![],
+        stdio: Some(StdioCommand { program: crate::computer_use::cu_bin().to_string_lossy().into_owned(), args: vec!["mcp".into()], env: vec![] }),
+    }
 }
 
 static REGISTRY: OnceLock<Result<Vec<Registry>, String>> = OnceLock::new();
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn configured() -> bool {
-    std::env::var("MINI_AGENT_MCP_URL").map(|v| !v.trim().is_empty()).unwrap_or(false)
+    builtin_cu_on()
+        || std::env::var("MINI_AGENT_MCP_URL").map(|v| !v.trim().is_empty()).unwrap_or(false)
         || std::env::var("MINI_AGENT_MCP_SERVERS").map(|v| v.trim().starts_with('[') && v.trim() != "[]").unwrap_or(false)
 }
 
@@ -96,16 +138,22 @@ fn specs_from(servers_json: Option<&str>) -> Vec<ServerSpec> {
     items
         .iter()
         .filter_map(|item| {
-            let url = item.get("url").and_then(Value::as_str)?.trim().trim_end_matches('/').to_string();
-            if url.is_empty() {
-                return None;
-            }
             let raw_name = item.get("name").and_then(Value::as_str).unwrap_or("mcp");
             let name = server_slug(raw_name);
             let allow = item.get("tools").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             let hints = json_headers(item.get("hints"));
+            // A local server: a program to run instead of a URL to call.
+            if let Some(program) = item.get("command").and_then(Value::as_str).map(str::trim).filter(|c| !c.is_empty()) {
+                let args = item.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+                let stdio = StdioCommand { program: program.to_string(), args, env: json_headers(item.get("env")) };
+                return Some(ServerSpec { url: format!("stdio:{name}"), name, id: Some(raw_name.to_string()), headers: vec![], prefixed: true, allow, hints, stdio: Some(stdio) });
+            }
+            let url = item.get("url").and_then(Value::as_str)?.trim().trim_end_matches('/').to_string();
+            if url.is_empty() {
+                return None;
+            }
             let headers = fresh_headers(raw_name).unwrap_or_else(|| json_headers(item.get("headers")));
-            Some(ServerSpec { name, id: Some(raw_name.to_string()), url, headers, prefixed: true, allow, hints })
+            Some(ServerSpec { name, id: Some(raw_name.to_string()), url, headers, prefixed: true, allow, hints, stdio: None })
         })
         .collect()
 }
@@ -115,11 +163,167 @@ fn specs() -> Vec<ServerSpec> {
     if let Ok(url) = std::env::var("MINI_AGENT_MCP_URL") {
         if !url.trim().is_empty() {
             let name = std::env::var("MINI_AGENT_MCP_NAME").unwrap_or_else(|_| "composio".into());
-            out.push(ServerSpec { name, id: None, url: url.trim().trim_end_matches('/').to_string(), headers: headers(), prefixed: false, allow: vec![], hints: vec![] });
+            out.push(ServerSpec { name, id: None, url: url.trim().trim_end_matches('/').to_string(), headers: headers(), prefixed: false, allow: vec![], hints: vec![], stdio: None });
         }
     }
-    out.extend(specs_from(std::env::var("MINI_AGENT_MCP_SERVERS").ok().as_deref()));
+    let builtin = builtin_cu_on();
+    for spec in specs_from(std::env::var("MINI_AGENT_MCP_SERVERS").ok().as_deref()) {
+        // The built-in owns the `cu` namespace: an installed server of that name would collide
+        // with it tool by tool (and take the whole run's MCP down with a name collision).
+        if builtin && spec.name == BUILTIN_CU {
+            eprintln!("[mcp] {BUILTIN_CU}: the name belongs to the built-in browser server; the installed one is skipped");
+            continue;
+        }
+        out.push(spec);
+    }
+    if builtin {
+        out.push(builtin_cu());
+    }
     out
+}
+
+/// A local MCP server: a child process speaking JSON-RPC, one message per line, over its
+/// stdin/stdout. It is started once per run and lives as long as the run, so a tool call costs a
+/// write and a read, not a process. Its sessions live here, by their registry's `stdio:` address.
+struct StdioSession {
+    child: Mutex<Child>,
+    /// Taken (closed) to stop the server: end of input is how a stdio server is told to finish.
+    stdin: Mutex<Option<ChildStdin>>,
+    /// Requests in flight, by JSON-RPC id; the reader thread hands each its answer.
+    pending: Arc<Mutex<HashMap<u64, Sender<Value>>>>,
+    /// False once the server's output ended: every call then fails at once instead of waiting
+    /// out its timeout (a program that is not an MCP server prints and exits).
+    alive: Arc<AtomicBool>,
+}
+
+static STDIO: OnceLock<Mutex<HashMap<String, Arc<StdioSession>>>> = OnceLock::new();
+
+fn stdio_sessions() -> &'static Mutex<HashMap<String, Arc<StdioSession>>> {
+    STDIO.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn stdio_session(address: &str) -> Option<Arc<StdioSession>> {
+    stdio_sessions().lock().ok()?.get(address).cloned()
+}
+
+impl StdioSession {
+    fn spawn(command: &StdioCommand) -> Result<Self, String> {
+        let mut cmd = Command::new(&command.program);
+        cmd.args(&command.args).envs(command.env.iter().map(|(k, v)| (k, v)));
+        // stderr is the server's log, not part of the protocol; it would only fill the run's log.
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        // Its own process group: a Ctrl-C meant for the agent must not kill the server before the
+        // agent stops it (cu closes the run's tabs on the way out). If the agent dies instead,
+        // the pipe closes and the server sees the end of its input all the same.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = cmd.spawn().map_err(|error| format!("cannot run {}: {error}", command.program))?;
+        let stdin = child.stdin.take().ok_or("the server has no stdin")?;
+        let stdout = child.stdout.take().ok_or("the server has no stdout")?;
+        let pending: Arc<Mutex<HashMap<u64, Sender<Value>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let alive = Arc::new(AtomicBool::new(true));
+        let (reader_pending, reader_alive) = (Arc::clone(&pending), Arc::clone(&alive));
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                // Anything that is not a JSON-RPC answer (a notification, a stray print) is skipped.
+                let Ok(value) = serde_json::from_str::<Value>(line.trim()) else { continue };
+                let Some(id) = value.get("id").and_then(Value::as_u64) else { continue };
+                let sender = reader_pending.lock().ok().and_then(|mut map| map.remove(&id));
+                if let Some(sender) = sender {
+                    let _ = sender.send(value);
+                }
+            }
+            // Output ended: the server is gone. Dropping the senders wakes every waiting call.
+            reader_alive.store(false, Ordering::SeqCst);
+            if let Ok(mut map) = reader_pending.lock() {
+                map.clear();
+            }
+        });
+        Ok(StdioSession { child: Mutex::new(child), stdin: Mutex::new(Some(stdin)), pending, alive })
+    }
+
+    fn write_line(&self, payload: &Value) -> Result<(), String> {
+        let mut guard = self.stdin.lock().map_err(|_| "the server's input is gone")?;
+        let stdin = guard.as_mut().ok_or("the server was stopped")?;
+        stdin.write_all(format!("{payload}\n").as_bytes()).and_then(|_| stdin.flush()).map_err(|error| format!("cannot write to the server: {error}"))
+    }
+
+    /// One request, one answer, matched by id.
+    fn request(&self, payload: Value, timeout: Duration) -> Result<Value, String> {
+        let id = payload.get("id").and_then(Value::as_u64).ok_or("a request needs an id")?;
+        let method = payload.get("method").and_then(Value::as_str).unwrap_or("request").to_string();
+        let (sender, receiver) = channel();
+        self.pending.lock().map_err(|_| "the server is gone")?.insert(id, sender);
+        // Checked after the waiter is in: the reader marks the server gone BEFORE it clears the
+        // waiters, so either this sees it gone, or the clear drops this waiter (Disconnected).
+        // Checked first, a server ending in between left a waiter nobody would ever wake.
+        if !self.alive.load(Ordering::SeqCst) {
+            let _ = self.pending.lock().map(|mut map| map.remove(&id));
+            return Err(format!("MCP {method}: the server exited"));
+        }
+        if let Err(error) = self.write_line(&payload) {
+            let _ = self.pending.lock().map(|mut map| map.remove(&id));
+            return Err(error);
+        }
+        let answer = match receiver.recv_timeout(timeout) {
+            Ok(answer) => answer,
+            Err(RecvTimeoutError::Disconnected) => return Err(format!("MCP {method}: the server exited before answering")),
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = self.pending.lock().map(|mut map| map.remove(&id));
+                return Err(format!("MCP {method}: no answer in {}s", timeout.as_secs()));
+            }
+        };
+        if let Some(error) = answer.get("error") {
+            let message = error.get("message").and_then(Value::as_str).unwrap_or_else(|| error.as_str().unwrap_or("MCP error"));
+            return Err(format!("MCP {method}: {message}"));
+        }
+        Ok(answer.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    /// Close its input and give it a moment to finish (cu answers what is in flight and closes
+    /// the tabs the run opened); kill it if it does not.
+    fn stop(&self) {
+        if let Ok(mut stdin) = self.stdin.lock() {
+            stdin.take();
+        }
+        let Ok(mut child) = self.child.lock() else { return };
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// The timeout a request gets (the same knob as the HTTP transport's).
+fn request_timeout() -> Duration {
+    Duration::from_secs_f64(std::env::var("MINI_AGENT_MCP_TIMEOUT").ok().and_then(|v| v.parse().ok()).unwrap_or(60.0))
+}
+
+/// Start a local server, run the handshake and register its session under its address.
+fn stdio_connect(spec: &ServerSpec, command: &StdioCommand) -> Result<Arc<StdioSession>, String> {
+    let session = Arc::new(StdioSession::spawn(command)?);
+    let initialized = session.request(json!({
+        "jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "initialize",
+        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "mini-agent-rs", "version": crate::agent::VERSION}}
+    }), request_timeout());
+    if let Err(error) = initialized {
+        session.stop();
+        return Err(error);
+    }
+    let _ = session.write_line(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    if let Ok(mut sessions) = stdio_sessions().lock() {
+        sessions.insert(spec.url.clone(), Arc::clone(&session));
+    }
+    Ok(session)
 }
 
 /// The headers mini-tui would send for server `id` right now, from `MINI_AGENT_MCP_FILE`
@@ -277,13 +481,33 @@ fn handshake(url: &str, headers: Vec<(String, String)>) -> Result<Conn, String> 
 }
 
 fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>) -> Result<Registry, String> {
-    let conn = handshake(&spec.url, spec.headers.clone())?;
+    let stdio = match &spec.stdio {
+        Some(command) => Some(stdio_connect(spec, command)?),
+        None => None,
+    };
+    let conn = match &stdio {
+        Some(_) => Conn { headers: vec![], session: None, protocol: "2024-11-05".into() },
+        None => handshake(&spec.url, spec.headers.clone())?,
+    };
     let mut client = Registry { url: spec.url.clone(), id: spec.id.clone(), conn: Mutex::new(conn.clone()), tools: vec![] };
     let mut raw_tools = Vec::new();
     let mut cursor = Value::Null;
     for _ in 0..20 {
         let params = if cursor.is_null() { json!({}) } else { json!({"cursor": cursor}) };
-        let (_, result) = post(&client.url, &conn, &json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/list", "params": params}))?;
+        let request = json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/list", "params": params});
+        let listed = match &stdio {
+            Some(session) => session.request(request, request_timeout()),
+            None => post(&client.url, &conn, &request).map(|(_, result)| result),
+        };
+        let result = match listed {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(session) = &stdio {
+                    session.stop();
+                }
+                return Err(error);
+            }
+        };
         raw_tools.extend(result.get("tools").and_then(Value::as_array).cloned().unwrap_or_default());
         let next = result.get("nextCursor").cloned().filter(|v| !v.is_null());
         let Some(next) = next else { break };
@@ -370,8 +594,17 @@ pub fn tools(protocol: &str) -> Vec<Value> {
 /// idle ones expire after 15 minutes), so a run that just exits holds a slot another worker needs.
 /// Best effort, short timeout, and a no-op when nothing was connected.
 pub fn close_sessions() {
+    // Local servers: end of input, a moment to finish, then a kill. Taken out of the map, so a
+    // second call (a signal during the normal exit) has nothing left to stop.
+    let local: Vec<Arc<StdioSession>> = stdio_sessions().lock().map(|mut map| map.drain().map(|(_, session)| session).collect()).unwrap_or_default();
+    for session in local {
+        session.stop();
+    }
     let Some(Ok(registries)) = REGISTRY.get() else { return };
     for registry in registries {
+        if registry.url.starts_with("stdio:") {
+            continue;
+        }
         let conn = registry.conn();
         let Some(session) = &conn.session else { continue };
         let mut request = ureq::delete(registry.url.trim_end_matches('/')).set("Mcp-Session-Id", session).timeout(Duration::from_secs(2));
@@ -392,6 +625,10 @@ pub fn is_tool(name: &str) -> bool {
 
 fn call(registry: &Registry, tool: &RemoteTool, args: &Value) -> Result<Value, String> {
     let payload = || json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/call", "params": {"name": tool.original, "arguments": args}});
+    if registry.url.starts_with("stdio:") {
+        let session = stdio_session(&registry.url).ok_or_else(|| format!("MCP server {} was stopped", registry.url.trim_start_matches("stdio:")))?;
+        return session.request(payload(), request_timeout());
+    }
     let conn = registry.conn();
     match post(&registry.url, &conn, &payload()) {
         Err(error) if auth_refused(&error) => {
@@ -412,6 +649,15 @@ fn call(registry: &Registry, tool: &RemoteTool, args: &Value) -> Result<Value, S
     }
 }
 
+/// The first image block of a tool result as a data URL, within the size an attachment may have.
+fn image_url(result: &Value) -> Option<String> {
+    const IMAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
+    let part = result.get("content")?.as_array()?.iter().find(|part| part.get("type").and_then(Value::as_str) == Some("image"))?;
+    let data = part.get("data")?.as_str()?;
+    let mime = part.get("mimeType").and_then(Value::as_str).filter(|m| m.starts_with("image/") && !m.contains([';', ',']))?;
+    (data.len() / 4 * 3 <= IMAGE_MAX_BYTES).then(|| format!("data:{mime};base64,{data}"))
+}
+
 pub fn outcome(name: &str, args: &Value) -> Value {
     let result = find_tool(name).and_then(|(registry, tool)| call(registry, tool, args));
     match result {
@@ -421,7 +667,14 @@ pub fn outcome(name: &str, args: &Value) -> Value {
                 parts.iter().filter_map(|part| get(part, "text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n")
             }).unwrap_or_default();
             let output = if !text.is_empty() { text } else if let Some(structured) = result.get("structuredContent") { structured.to_string() } else { result.to_string() };
-            json!({"output": output, "returncode": if is_error { 1 } else { 0 }, "exception_info": if is_error { output.clone() } else { String::new() }, "extra": {"mcp": true, "tool": name, "structuredContent": result.get("structuredContent").cloned().unwrap_or(Value::Null)}})
+            let mut observation = json!({"output": output, "returncode": if is_error { 1 } else { 0 }, "exception_info": if is_error { output.clone() } else { String::new() }, "extra": {"mcp": true, "tool": name, "structuredContent": result.get("structuredContent").cloned().unwrap_or(Value::Null)}});
+            // An image the tool answered (cu's screenshot) reaches the model as an image, the way a
+            // `read` of a .png does, instead of being dropped with everything that is not text.
+            if let Some(url) = image_url(&result) {
+                observation["image_url"] = Value::String(url);
+                observation["extra"]["visual_attachment"] = Value::Bool(true);
+            }
+            observation
         }
         Err(error) => json!({"output": error, "returncode": 2, "exception_info": "MCP tool call failed"}),
     }

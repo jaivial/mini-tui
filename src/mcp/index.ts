@@ -1,3 +1,4 @@
+import { BUILTIN_CU_COMMAND, BUILTIN_CU_ID, isBuiltin } from "./builtin";
 import { authHeaders } from "./client";
 import { loadServers, mcpPath, slugId, upsertServer, type McpServerRecord } from "./store";
 
@@ -5,6 +6,7 @@ export * from "./store";
 export { probe, probeStored, ensureFresh, startTokenRefresher, ensureTokenRefresher, type ProbeResult } from "./client";
 export { startLogin, getLogin, subscribeLogin, cancelLogin, completeFromCallback, completeFromPaste, callbackPage, type LoginView } from "./flow";
 export { discover, RegistrationRefused } from "./oauth";
+export { BUILTIN_CU_ID, BUILTIN_CU_COMMAND, BUILTIN_REFUSAL, isBuiltin, probeBuiltin } from "./builtin";
 export { handleGbpMcp, protectedResourceMetadata as gbpResourceMetadata, loadBusinesses, businessesPath } from "./googleBusiness";
 
 /** Known remote MCP servers, one click to install. Anything else is "custom URL". */
@@ -147,6 +149,27 @@ export interface McpServerView {
   /** A self-hosted server whose token is read from a file (the file path, never the token). */
   tokenFile?: string;
   state: McpState;
+  /** Part of mini-tui (the `cu` browser server): always on, never disabled, removed or logged out. */
+  builtin?: boolean;
+  /** A local server: the command line the agent runs instead of a URL. */
+  command?: string;
+}
+
+/** The built-in `cu` server as the UIs list it: always ready, last, after the installed ones. */
+export function builtinView(): McpServerView {
+  return {
+    id: BUILTIN_CU_ID,
+    name: "cu (browser)",
+    url: "",
+    addedAt: 0,
+    disabled: false,
+    oauth: false,
+    loggedIn: false,
+    headerNames: [],
+    state: "ready",
+    builtin: true,
+    command: BUILTIN_CU_COMMAND,
+  };
 }
 
 export function serverView(s: McpServerRecord, now = Date.now()): McpServerView {
@@ -171,8 +194,14 @@ export function serverView(s: McpServerRecord, now = Date.now()): McpServerView 
   };
 }
 
+/** The installed servers. A record that took the built-in's id before it existed is shadowed: the agent skips it too. */
 export function listViews(path: string | null = mcpPath()): McpServerView[] {
-  return loadServers(path).map((s) => serverView(s));
+  return loadServers(path).filter((s) => !isBuiltin(s.id)).map((s) => serverView(s));
+}
+
+/** Everything a run gets: the installed servers, then the built-in `cu` (what the web list shows). */
+export function allViews(path: string | null = mcpPath()): McpServerView[] {
+  return [...listViews(path), builtinView()];
 }
 
 export interface AddInput {
@@ -213,7 +242,8 @@ export function addServer(input: AddInput, path: string | null = mcpPath()): Mcp
     if (value && (value.trim().length > 512 || /\s/.test(value.trim()))) throw new Error(`the ${label} looks wrong (no spaces or line breaks)`);
   }
   const record: McpServerRecord = {
-    id: slugId(preset?.id ?? name, existing.map((s) => s.id)),
+    // The built-in's id is taken: an installed `cu` would collide with its mcp__cu__* tools.
+    id: slugId(preset?.id ?? name, [...existing.map((s) => s.id), BUILTIN_CU_ID]),
     name,
     url,
     ...(Object.keys(headers).length ? { headers } : {}),
@@ -251,7 +281,7 @@ export function markOAuth(id: string, path: string | null = mcpPath()): void {
  * Read on every spawn, so a login finished a second ago is in the next task.
  */
 export function mcpRunEnv(path: string | null = mcpPath()): Record<string, string> {
-  const servers = loadServers(path).filter((s) => !s.disabled && (!s.oauth || s.oauth.tokens));
+  const servers = loadServers(path).filter((s) => !isBuiltin(s.id) && !s.disabled && (!s.oauth || s.oauth.tokens));
   if (!servers.length) return {};
   return {
     // Where the agent re-reads a server's credentials when they are refused mid-run: the

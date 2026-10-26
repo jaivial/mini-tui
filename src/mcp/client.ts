@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 
+import { isBuiltin, probeBuiltin } from "./builtin";
 import { TokenError, refreshTokens, isExpiring, safeUrl } from "./oauth";
 import { getServer, loadServers, updateServer, mcpPath, type McpServerRecord, type OAuthClient } from "./store";
 
@@ -215,6 +216,8 @@ export async function probe(server: McpServerRecord, timeoutMs = 15_000): Promis
 
 /** Probe a stored server with a fresh token. */
 export async function probeStored(id: string, path: string | null = mcpPath()): Promise<ProbeResult> {
+  // The built-in is a local program, not a stored record: probe it over its pipes.
+  if (isBuiltin(id)) return probeBuiltin();
   const stored = getServer(id, path);
   if (!stored) return { ok: false, error: "no such server" };
   const { server, error } = await ensureFresh(stored, path);

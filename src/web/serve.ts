@@ -513,7 +513,7 @@ async function mcpRoute(path: string, request: Request, srv: unknown): Promise<R
     );
     return new Response(page, { status: ok ? 200 : 400, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
   }
-  if (path === "/mcp" && method === "GET") return json({ servers: mcp.listViews(), presets: mcp.MCP_PRESETS });
+  if (path === "/mcp" && method === "GET") return json({ servers: mcp.allViews(), presets: mcp.MCP_PRESETS });
   if (path === "/mcp" && method === "POST") {
     const { limited, key } = charged("providerConnect", request, srv);
     if (limited) return limited;
@@ -567,6 +567,12 @@ async function mcpRoute(path: string, request: Request, srv: unknown): Promise<R
   if (!one) return null;
   const id = one[1] as string;
   const action = one[2];
+  // The built-in `cu` server is not in mcp.json: it can be tested, never changed.
+  if (mcp.isBuiltin(id)) {
+    if (action !== "test" || method !== "POST") return json({ error: mcp.BUILTIN_REFUSAL }, 400);
+    const probe = await mcp.probeStored(id);
+    return json({ server: mcp.builtinView(), probe: { ok: probe.ok, needsAuth: false, tools: probe.tools ?? [], error: probe.error } });
+  }
   if (!mcp.getServer(id)) return json({ error: "no such server" }, 404);
   if (!action && method === "DELETE") {
     mcp.removeServer(id);
