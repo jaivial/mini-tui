@@ -21,7 +21,16 @@ The flow is the MCP authorization spec, as Claude Code implements it:
 3. dynamic client registration (RFC 7591) for the redirect URI, cached per redirect;
 4. authorization code + PKCE S256 + `resource` (RFC 8707);
 5. the token is proved against the MCP server (`initialize` + `tools/list`) before the login
-   counts as done; refresh tokens are used before expiry (every 5 minutes, both front ends).
+   counts as done; refresh tokens are used before expiry (every 5 minutes, in every process that
+   spawns runs: the terminal, the web server, the CLI and the channel consumers).
+
+**Tokens during a run.** A run gets its servers' access tokens at spawn, and some last only an
+hour (Google's), while runs, resumes and subagents last longer. The run is also given
+`MINI_AGENT_MCP_FILE` (the path of `mcp.json`). When it starts, and whenever a server answers
+401/403, the agent reads that server's current credentials from the file. On a 401/403 it opens a
+new session and retries the call once. A refresh token the provider refuses (`invalid_grant`)
+puts the server in the **expired** state, and the timer stops retrying it until the next login.
+Only then is a new login actually needed.
 
 **Figma** only accepts dynamic registration from approved client names (`mini-tui` gets
 `403 Forbidden`), so its preset registers as `Claude Code`. A custom server can set its own client

@@ -25,7 +25,9 @@ Google has no dynamic client registration, so the login needs a client of your o
    in `~/.config/mini-tui/mcp.json` (0600) and never returned by the API.
 
 While the consent screen is in **Testing**, Google expires refresh tokens after 7 days: log in again
-weekly, or publish the app.
+weekly, or publish the app (Google Auth Platform → Audience → **Publish app**; a read-only
+scope for your own account needs no verification). mini-tui shows the server as **expired** when
+that happens.
 
 ## What mini-tui does differently for it
 
@@ -35,5 +37,9 @@ weekly, or publish the app.
   succeeds, and an anonymous tool listing does not count as a working connection.
 - **Refresh tokens.** Google issues one only with `access_type=offline&prompt=consent`; mini-tui adds
   both for `accounts.google.com`. Access tokens last an hour and are refreshed in the background.
+  A run that outlives its token reloads the refreshed one from `mcp.json` on the 401 and retries
+  (docs/mcp.md, "Tokens during a run"). Before this, runs longer than an hour lost the server.
+- **Testing the connection** calls `sites_list`. Only an authentication failure asks for a new
+  login; a quota or server error is reported as it is.
 - **Fixed loopback port.** A hand-registered client accepts one redirect URI, so the terminal login
   fails with a clear message when port 33418 is busy instead of falling back to a random port.
