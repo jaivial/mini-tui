@@ -5,6 +5,7 @@ export * from "./store";
 export { probe, probeStored, ensureFresh, startTokenRefresher, ensureTokenRefresher, type ProbeResult } from "./client";
 export { startLogin, getLogin, subscribeLogin, cancelLogin, completeFromCallback, completeFromPaste, callbackPage, type LoginView } from "./flow";
 export { discover, RegistrationRefused } from "./oauth";
+export { handleGbpMcp, protectedResourceMetadata as gbpResourceMetadata, loadBusinesses, businessesPath } from "./googleBusiness";
 
 /** Known remote MCP servers, one click to install. Anything else is "custom URL". */
 export interface McpPreset {
@@ -23,6 +24,11 @@ export interface McpPreset {
   needsClient?: boolean;
   /** The OAuth scope to ask for, instead of everything the server lists (least privilege). */
   scope?: string;
+  /**
+   * Leave RFC 8707 `resource` out of the login: the token comes from an authorization server that
+   * does not know this server (Google issuing a token for mini-tui's own Business Profile proxy).
+   */
+  omitResource?: boolean;
   /**
    * `client_name` for dynamic registration. Figma's registration endpoint only accepts the names
    * of the clients it has approved, and answers 403 to any other (measured: "mini-tui",
@@ -100,6 +106,21 @@ export const MCP_PRESETS: McpPreset[] = [
     docs: "https://developers.google.com/webmaster-tools",
     // The server also lists `get` ("get San API data"), undocumented and overlapping `query`.
     tools: ["sites_list", "query"],
+  },
+  {
+    // Served by mini-tui's own web server (src/mcp/googleBusiness.ts): Google has no MCP server
+    // for Business Profile, so this one proxies its REST APIs with YOUR Google token. The login is
+    // the Search Console one (your OAuth client, offline access). Needs the web server running on
+    // 4317 (MINITUI_WEB_PORT). Several businesses: saved in ~/.config/mini-tui/google-business.json.
+    id: "google-business",
+    name: "Google Business Profile",
+    description: "Your business profiles: info, hours, reviews and replies, posts, performance; several businesses to choose from",
+    url: `http://127.0.0.1:${process.env.MINITUI_WEB_PORT || 4317}/api/gbp/mcp`,
+    auth: "oauth",
+    needsClient: true,
+    omitResource: true,
+    scope: "https://www.googleapis.com/auth/business.manage",
+    docs: "https://developers.google.com/my-business",
   },
   { id: "figma", name: "Figma", description: "Design context, code and assets from Figma files", url: "https://mcp.figma.com/mcp", auth: "oauth", clientName: "Claude Code", docs: "https://developers.figma.com/docs/figma-mcp-server/" },
   { id: "linear", name: "Linear", description: "Issues, projects and comments", url: "https://mcp.linear.app/mcp", auth: "oauth", hints: { save_issue: LINEAR_SAVE_ISSUE_HINT } },
@@ -206,6 +227,7 @@ export function addServer(input: AddInput, path: string | null = mcpPath()): Mcp
           oauth: {
             ...(clientName ? { clientName } : {}),
             ...(preset?.scope ? { scope: preset.scope } : {}),
+            ...(preset?.omitResource ? { omitResource: true } : {}),
             ...(input.clientId?.trim()
               ? { staticClient: { clientId: input.clientId.trim(), ...(input.clientSecret?.trim() ? { clientSecret: input.clientSecret.trim() } : {}), authMethod: input.clientSecret?.trim() ? ("client_secret_post" as const) : ("none" as const) } }
               : {}),

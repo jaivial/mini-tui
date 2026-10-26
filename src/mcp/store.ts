@@ -48,6 +48,8 @@ export interface McpOAuthState {
   tokenClient?: string;
   authServer?: AuthServerMeta;
   resource?: string;
+  /** Never send `resource` (the authorization server does not know this server). */
+  omitResource?: boolean;
   scope?: string;
   /**
    * The refresh token was refused for good (`invalid_grant`: revoked, or Google's 7-day limit for

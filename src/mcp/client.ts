@@ -203,7 +203,12 @@ export async function probe(server: McpServerRecord, timeoutMs = 15_000): Promis
     }
     return { ok: true, tools, serverName: result.serverInfo?.name };
   } catch (error) {
-    const hint = server.preset === "openpencil" ? " — start it with `systemctl --user start openpencil-mcp` (docs/openpencil.md)" : "";
+    const hint =
+      server.preset === "openpencil"
+        ? " — start it with `systemctl --user start openpencil-mcp` (docs/openpencil.md)"
+        : server.preset === "google-business"
+          ? " — it is served by the mini-tui web server (port 4317): start it (docs/google-business-profile.md)"
+          : "";
     return { ok: false, error: `cannot reach ${safeUrl(url)}: ${(error as Error).message}${hint}` };
   }
 }
