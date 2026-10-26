@@ -256,11 +256,15 @@ impl StdioSession {
     fn request(&self, payload: Value, timeout: Duration) -> Result<Value, String> {
         let id = payload.get("id").and_then(Value::as_u64).ok_or("a request needs an id")?;
         let method = payload.get("method").and_then(Value::as_str).unwrap_or("request").to_string();
-        if !self.alive.load(Ordering::SeqCst) {
-            return Err(format!("MCP {method}: the server exited"));
-        }
         let (sender, receiver) = channel();
         self.pending.lock().map_err(|_| "the server is gone")?.insert(id, sender);
+        // Checked after the waiter is in: the reader marks the server gone BEFORE it clears the
+        // waiters, so either this sees it gone, or the clear drops this waiter (Disconnected).
+        // Checked first, a server ending in between left a waiter nobody would ever wake.
+        if !self.alive.load(Ordering::SeqCst) {
+            let _ = self.pending.lock().map(|mut map| map.remove(&id));
+            return Err(format!("MCP {method}: the server exited"));
+        }
         if let Err(error) = self.write_line(&payload) {
             let _ = self.pending.lock().map(|mut map| map.remove(&id));
             return Err(error);
