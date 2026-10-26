@@ -48,18 +48,26 @@ pub fn anthropic_bash_tool() -> Value {
     })
 }
 
+/// What the model reads about the `cu` tool. It names only commands the `cu` CLI has: an earlier
+/// text taught `tab open --lease`, `tab close` and `batch` from an unmerged branch, and the CLI
+/// answers an unknown command with its help and exit status 0, so those calls failed silently.
+/// The Python agent sends the same text (wire parity).
+pub const CU_TOOL_DESCRIPTION: &str = "Run one `cu` CLI command against the persistent browser daemon (one Chrome shared by every agent). When the mcp__cu__* tools are present, browse with them: they keep one page for the whole run and attach screenshots as images. Use this tool for what they do not cover (`vault ...`, `otp ...`, `diagnostics`, `challenge ...`) or when they are absent. Page commands: `navigate URL --new-tab` opens a page of this run's own and prints its id (`cu: working in a fresh tab (ID)`); pass `--tab ID` to every later command: `snapshot`, `text`, `click e3`, `type e2 TEXT [--submit]`, `act JSON`, `shot FILE.png`, `console --level warn+`; close it with `tabs close ID` at the end. Never type a password or a one-time code: `login` prints the link where the human signs in.";
+pub const CU_ARGS_DESCRIPTION: &str = "cu arguments, e.g. snapshot --tab ID";
+
 /// The `cu` custom tool: one call runs one `cu` command against the persistent
-/// browser daemon (one Chrome always open, one leased tab or context per
-/// task). Executed as `cu <args>` through the same shell path as `bash`.
+/// browser daemon (one Chrome for every agent; the mcp__cu__* tools, when present,
+/// are the typed way to browse). Executed as `cu <args>` through the same shell
+/// path as `bash`.
 pub fn cu_tool() -> Value {
     json!({
         "type": "function",
         "function": {
             "name": "cu",
-            "description": "Drive the persistent cu browser (one Chrome always open, one leased tab or context per task). One call runs one cu command; the $cu skill has the full guide. Typical flow: tab open URL --lease 300 --label my-test (returns the tab id), page commands with --tab ID (or --context NAME for an isolated cookie jar), read snapshot (ref-addressable page) or text, act with click e3 / type e2 text / act JSON, close with tab close ID (a lease closes it anyway if the run dies). batch 'CMD' 'CMD' runs several commands at once.",
+            "description": CU_TOOL_DESCRIPTION,
             "parameters": {
                 "type": "object",
-                "properties": {"args": {"type": "string", "description": "cu arguments, e.g. snapshot --tab t3"}},
+                "properties": {"args": {"type": "string", "description": CU_ARGS_DESCRIPTION}},
                 "required": ["args"],
             },
         },
@@ -70,10 +78,10 @@ pub fn cu_tool_responses() -> Value {
     json!({
         "type": "function",
         "name": "cu",
-        "description": "Drive the persistent cu browser (one Chrome always open, one leased tab or context per task). One call runs one cu command; the $cu skill has the full guide. Typical flow: tab open URL --lease 300 --label my-test (returns the tab id), page commands with --tab ID (or --context NAME for an isolated cookie jar), read snapshot (ref-addressable page) or text, act with click e3 / type e2 text / act JSON, close with tab close ID (a lease closes it anyway if the run dies). batch 'CMD' 'CMD' runs several commands at once.",
+        "description": CU_TOOL_DESCRIPTION,
         "parameters": {
             "type": "object",
-            "properties": {"args": {"type": "string", "description": "cu arguments, e.g. snapshot --tab t3"}},
+            "properties": {"args": {"type": "string", "description": CU_ARGS_DESCRIPTION}},
             "required": ["args"],
         },
     })
@@ -82,10 +90,10 @@ pub fn cu_tool_responses() -> Value {
 pub fn anthropic_cu_tool() -> Value {
     json!({
         "name": "cu",
-        "description": "Drive the persistent cu browser (one Chrome always open, one leased tab or context per task). One call runs one cu command; the $cu skill has the full guide. Typical flow: tab open URL --lease 300 --label my-test (returns the tab id), page commands with --tab ID (or --context NAME for an isolated cookie jar), read snapshot (ref-addressable page) or text, act with click e3 / type e2 text / act JSON, close with tab close ID (a lease closes it anyway if the run dies). batch 'CMD' 'CMD' runs several commands at once.",
+        "description": CU_TOOL_DESCRIPTION,
         "input_schema": {
             "type": "object",
-            "properties": {"args": {"type": "string", "description": "cu arguments, e.g. snapshot --tab t3"}},
+            "properties": {"args": {"type": "string", "description": CU_ARGS_DESCRIPTION}},
             "required": ["args"],
         },
     })

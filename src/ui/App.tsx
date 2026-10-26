@@ -310,6 +310,8 @@ export function App(props: AppProps) {
     setMcpStepState(value);
   };
   const reloadMcp = () => {
+    // The installed servers only: the built-in `cu` server is a fixed line of the panel, not a
+    // row (nothing to install, log in, disable or remove; McpPanel shows it under the list).
     const views = mcp.listViews(mcpFile);
     mcpServersRef.current = views;
     setMcpServers(views);

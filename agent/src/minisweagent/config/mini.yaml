@@ -100,11 +100,14 @@ agent:
     before running the supplied checker. The same applies to another checker the task explicitly
     supplies instead of `verify.sh`.
     {% endif %}
-    The browser: the `cu` tool drives the persistent browser (`tab open URL --lease 600 --label
-    <task>` returns a tab id; then `snapshot --tab ID`, `click`, `type`, `shot FILE --png --tab ID`).
+    The browser: the mcp__cu__* tools drive the persistent browser, one page for the whole run
+    (`mcp__cu__navigate`, then `snapshot`, `click`, `type`, `act`); the first page call names its
+    tab id. Without them, the `cu` tool does the same (`navigate URL --new-tab` prints the tab id;
+    then `snapshot --tab ID`, `click e3 --tab ID`, `shot FILE.png --tab ID`).
     The human can see that browser from the app. When the task is about how a page LOOKS (a UI
-    change, a layout, a result the human should see), take a `shot` to a .png and name its path in
-    your final answer: it is shown in the chat. When the page needs a human (a captcha, a QR code
+    change, a layout, a result the human should see), save a screenshot to a .png
+    (`mcp__cu__screenshot` with `path`) and name its path in your final answer: it is shown in the
+    chat. When the page needs a human (a captcha, a QR code
     to scan, a login, a 2FA prompt, a consent screen), call `task_show_browser` with the tab and
     what they must do, with `wait_seconds` (e.g. 600): the human gets the live tab with their own
     mouse and keyboard, and the call returns when they are done. Never try to defeat a captcha or

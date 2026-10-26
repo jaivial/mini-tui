@@ -1,7 +1,7 @@
 import { colors } from "../theme";
 import { visibleSlice } from "../../connect";
 import { STATE_LABEL, addRows, remaining, type McpStep } from "../../mcpPanel";
-import type { McpPreset, McpServerView } from "../../mcp/index";
+import { builtinView, type McpPreset, type McpServerView } from "../../mcp/index";
 
 const STATE_COLOR = (state: McpServerView["state"]) =>
   state === "connected" || state === "ready" ? colors.ok : state === "disabled" ? colors.faint : colors.warn;
@@ -40,6 +40,18 @@ export function McpPanel(props: { step: McpStep; servers: McpServerView[]; prese
               </box>
             );
           })}
+          {(() => {
+            // Always there, never a row: every run gets its browser tools (src/mcp/builtin.ts).
+            const cu = builtinView();
+            return (
+              <box flexDirection="row" gap={2}>
+                <text fg={colors.faint}> </text>
+                <text fg={colors.dim} flexShrink={0}>{cu.name}</text>
+                <text fg={colors.ok}>● built-in</text>
+                <text fg={colors.faint}>{cu.command} · mcp__cu__* in every run</text>
+              </box>
+            );
+          })()}
           {step.busy ? <text fg={colors.accent}>… {step.busy}</text> : null}
           {step.note ? <text fg={colors.dim}>{step.note}</text> : null}
           <text fg={colors.faint}>↑/↓ move · Enter log in / test · a add · l log out · x enable/disable · d remove</text>

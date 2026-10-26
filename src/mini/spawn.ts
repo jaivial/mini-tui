@@ -255,6 +255,9 @@ export function buildRunEnv(
     // Empty = no control channel: the agent finishes its turn and exits (headless runs).
     MSWEA_CONTROL_FILE: control ? session.controlPath : "",
     MSWEA_SILENT_STARTUP: "1",
+    // The built-in `cu` MCP server (src/mcp/builtin.ts): every run gets the browser tools
+    // (mcp__cu__*), one page per run. Set last and unconditionally: nothing turns it off.
+    MINI_AGENT_CU_MCP: "1",
   } as Record<string, string>;
 }
 

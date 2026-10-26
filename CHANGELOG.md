@@ -6,6 +6,20 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ### Added
 
+- **The `cu` browser is a built-in MCP server.** Every run mini-tui spawns gets cu's browser tools
+  as `mcp__cu__*` (navigate, snapshot, click, type, act, screenshot, console, tabs, handoff...),
+  one page per run, closed when the run ends. It has no switch: `MINI_AGENT_CU_MCP=1` is set last
+  in `buildRunEnv`, the terminal `/mcp` shows it as a fixed line, and the web lists it with a Test
+  button and no disable/remove/log-out (the API answers 400). A bare `mini-agent-rs` run does not
+  get it. Needs cu 1.5.1 (the page holds in the container); an older cu is dropped at once.
+  See docs/mcp.md.
+- **MCP over stdio in mini-agent-rs.** A server can be a local program
+  (`{"name","command","args","env"}` in `MINI_AGENT_MCP_SERVERS`): started once per run, JSON-RPC
+  over its pipes, stopped with end of input and a 3 s grace. A program that exits early fails at
+  once instead of after the timeout.
+- **MCP image results reach the model.** An image block in a tool result is attached as an image
+  (8 MB cap) instead of being dropped.
+
 - **Google Business Profile MCP, several businesses.** Google has no MCP server for Business
   Profile, so mini-tui's web server now serves one (`/api/gbp/mcp`, loopback only). It proxies the
   Business Profile REST APIs with your Google token: profile info and edits, reviews and replies,
@@ -22,6 +36,12 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
   dynamic defaults.
 
 ### Fixed
+
+- **The `cu` tool taught commands the CLI does not have.** Its description (Rust and Python
+  agents) and the queue worker's prompt told the model to run `tab open --lease`, `tab close` and
+  `batch`, which exist only on an unmerged cu branch. The CLI answers an unknown command with its
+  help and exit status 0, so those calls failed silently (run `2026-10-26T15-09-10`). They now name
+  real commands (`navigate URL --new-tab`, then `--tab ID`) and point at the `mcp__cu__*` tools.
 
 - **Google Search Console (and any OAuth MCP server) no longer drops out mid-run.** A run had
   only the access token it was spawned with, and Google's lasts one hour, so long runs, resumes

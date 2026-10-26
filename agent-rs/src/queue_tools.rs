@@ -131,7 +131,7 @@ fn worker_specs() -> Vec<(&'static str, &'static str, Value)> {
             json!({
                 "type": "object",
                 "properties": {
-                    "tab": {"type": "string", "description": "the cu tab id (from `cu tabs` / `tab open`)"},
+                    "tab": {"type": "string", "description": "the cu tab id (the first mcp__cu__ page call names it; `cu tabs` lists every tab)"},
                     "message": {"type": "string", "description": "what the human should look at or do"},
                     "wait_seconds": {"type": "number", "description": "wait up to this long for the human to finish (0 = do not wait)"}
                 },
