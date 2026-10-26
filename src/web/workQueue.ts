@@ -244,6 +244,8 @@ export interface WorkerHost {
   stopWorker(sessionId: string): void;
   /** The worker's final answer (or last words) once its run ended. */
   workerResult(sessionId: string): { text: string; ok: boolean };
+  /** Every settlement, including a fast run whose exit preceded session-id persistence. */
+  workerSettled?(task: QueueTask): void;
   /** The task card the session itself shows (title + description). */
   saveCard(sessionId: string, title: string, description: string): void;
 }
@@ -850,6 +852,7 @@ export class WorkQueue {
     if (status === "interrupted") task.result ||= "interrupted";
     this.#save(task);
     this.#changed();
+    this.#host.workerSettled?.(task);
     this.pump();
   }
 

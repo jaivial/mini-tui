@@ -87,6 +87,7 @@ export class QueueHost {
           }
         },
         workerResult: (sessionId) => finalText(sessions().get(sessionId)),
+        workerSettled: (task) => void this.deliverResult(task),
         saveCard: (sessionId, title, description) => {
           try {
             saveTask(sessions().db(), sessionId, { title, description, todos: {} });
@@ -228,7 +229,6 @@ export class QueueHost {
     this.queue.workerExited(sessionId, status === "running" || status === "idle" ? "done" : status);
     const after = this.queue.get(before.id);
     if (!after) return;
-    void this.deliverResult(after);
     // Screenshots the worker took (cu `shot`, computer_use) and named in its result show in the
     // chat as images: "here is how the page looks" needs no extra step from the human.
     const shots = [...new Set(after.result.match(/(?:^|[\s(`"'])(\/[\w.@+\/-]+\.(?:png|jpe?g|webp))(?=$|[\s)`"'.,;:!?])/gm)?.map((m) => m.trim().replace(/^[(`"']/, "")) ?? [])].slice(0, 4);
