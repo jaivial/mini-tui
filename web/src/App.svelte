@@ -358,7 +358,10 @@
   }
 
   function toggleWorkspaces() {
-    workspaceOpen = !workspaceOpen;
+    if (panelFull) {
+      setPanelSize({ ...panelSize, full: false });
+      workspaceOpen = true;
+    } else workspaceOpen = !workspaceOpen;
     if (workspaceOpen && compact) panelOpen = false;
   }
 
@@ -407,10 +410,10 @@
 <svelte:window onkeydowncapture={onkey} />
 
 <div bind:this={shell} bind:clientWidth={shellWidth} class="app-shell relative flex h-full w-full overflow-hidden bg-canvas text-ink" class:select-none={resizing} class:cursor-col-resize={resizing}>
-  {#if workspaceOpen && compact}
+  {#if workspaceOpen && compact && !panelFull}
     <button type="button" class="absolute inset-0 z-40 cursor-default bg-black/25" aria-label="Close workspaces" onclick={() => (workspaceOpen = false)}></button>
   {/if}
-  {#if workspaceOpen}
+  {#if workspaceOpen && !panelFull}
     <div
       class={compact ? "workspace-panel absolute inset-y-0 left-0 z-50 w-[min(18rem,88vw)] bg-surface pt-[env(safe-area-inset-top)]" : "relative w-64 shrink-0"}
       role={compact ? "dialog" : undefined}
