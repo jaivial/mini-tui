@@ -47,8 +47,35 @@ fn lower(s: &str) -> String {
 fn has_prefix(name: &str, prefix: &str) -> bool {
     lower(name).starts_with(prefix)
 }
+/// A cli-proxy-api gateway mini can talk to.
+///
+/// More than one can run on the same host (one per Claude subscription), so the gateway is
+/// chosen by the model-name prefix instead of being hardcoded: `cliproxy/` is the first
+/// subscription, `cliproxy2/` the second, `cliproxy-merge/` the merge proxy that fronts
+/// them all. Each gateway keeps its own base/key environment variables.
+struct CliproxyGateway {
+    prefix: &'static str,
+    base_env: &'static str,
+    default_base: &'static str,
+    key_env: &'static str,
+    default_key: &'static str,
+    /// The merge proxy speaks the Anthropic surface (`/v1/messages`); cli-proxy's own
+    /// OpenAI surface (`/v1/chat/completions`) is what the other gateways answer.
+    messages: bool,
+}
+
+const CLIPROXY_GATEWAYS: &[CliproxyGateway] = &[
+    CliproxyGateway { prefix: "cliproxy/", base_env: "CLIPROXY_API_BASE", default_base: "http://127.0.0.1:8317/v1", key_env: "CLIPROXY_API_KEY", default_key: "sk-cliproxy-local-2026", messages: false },
+    CliproxyGateway { prefix: "cliproxy2/", base_env: "CLIPROXY2_API_BASE", default_base: "http://127.0.0.1:8318/v1", key_env: "CLIPROXY2_API_KEY", default_key: "sk-cliproxy2-local-2026", messages: false },
+    CliproxyGateway { prefix: "cliproxy-merge/", base_env: "CLIPROXY_MERGE_API_BASE", default_base: "http://127.0.0.1:9112/v1", key_env: "CLIPROXY_MERGE_API_KEY", default_key: "sk-cliproxy-merge-local-2026", messages: true },
+];
+
+fn cliproxy_gateway(name: &str) -> Option<&'static CliproxyGateway> {
+    CLIPROXY_GATEWAYS.iter().find(|g| has_prefix(name, g.prefix))
+}
+
 pub fn is_cliproxy(n: &str) -> bool {
-    has_prefix(n, "cliproxy/")
+    cliproxy_gateway(n).is_some()
 }
 pub fn is_rosetta(n: &str) -> bool {
     has_prefix(n, "rosetta/")
@@ -69,7 +96,7 @@ pub fn is_opencode_go(n: &str) -> bool {
 }
 pub fn is_anthropic(n: &str) -> bool {
     let l = lower(n);
-    if ["cliproxy/", "rosetta/", "xiaomi/", "deepseek/", "openai/", "opencode-go/"].iter().any(|p| l.starts_with(p)) {
+    if ["cliproxy/", "cliproxy2/", "cliproxy-merge/", "rosetta/", "xiaomi/", "deepseek/", "openai/", "opencode-go/"].iter().any(|p| l.starts_with(p)) {
         return false;
     }
     l.starts_with("anthropic/") || (!l.contains('/') && ["anthropic", "sonnet", "opus", "claude"].iter().any(|h| l.contains(h)))
@@ -379,7 +406,13 @@ pub fn build(name: &str, class: &str, mut config: Obj) -> Result<Box<dyn Model>,
         "anthropic_compat" => anthropic_compat(&config),
         "cliproxy" | "rosetta" | "xiaomi" => {
             let (base_env, default_base, key_env, default_key, prefix, ty) = match class.as_str() {
-                "cliproxy" => ("CLIPROXY_API_BASE", "http://127.0.0.1:8317/v1", "CLIPROXY_API_KEY", "sk-cliproxy-local-2026", "cliproxy/", "minisweagent.models.cliproxy_model.CliproxyModel"),
+                "cliproxy" => {
+                    // The gateway follows the model's own prefix: `cliproxy/` (first Claude
+                    // subscription), `cliproxy2/` (second one), `cliproxy-merge/` (the merge
+                    // proxy in front of all of them).
+                    let g = cliproxy_gateway(name).unwrap_or(&CLIPROXY_GATEWAYS[0]);
+                    (g.base_env, g.default_base, g.key_env, g.default_key, g.prefix, "minisweagent.models.cliproxy_model.CliproxyModel")
+                }
                 "rosetta" => ("ROSETTA_API_BASE", "http://127.0.0.1:9120/v1", "ROSETTA_API_KEY", "rosetta-local", "rosetta/", "minisweagent.models.rosetta_model.RosettaModel"),
                 _ => ("XIAOMI_API_BASE", "https://token-plan-sgp.xiaomimimo.com/v1", "XIAOMI_API_KEY", "", "xiaomi/", "minisweagent.models.xiaomi_model.XiaomiModel"),
             };
@@ -404,7 +437,13 @@ pub fn build(name: &str, class: &str, mut config: Obj) -> Result<Box<dyn Model>,
             // disables thinking, =on leaves the gateway's own default,
             // XIAOMI_THINKING_BUDGET sets the budget (default 512 — 2048 let a trivial read
             // turn burn 12-19 s and a refactor turn 42-58 s, 2026-10-22, vs pi's 5-7 s/turn).
-            let protocol = if c["api_base"].as_str().unwrap_or("").contains("/anthropic") {
+            let protocol = if class == "cliproxy" && cliproxy_gateway(name).map(|g| g.messages).unwrap_or(false) {
+                // The merge proxy only serves the Anthropic surface, so the protocol follows the
+                // gateway instead of the base URL (cli-proxy's own surface is OpenAI Chat).
+                c.entry("set_cache_control".to_string()).or_insert(json!("rolling"));
+                c.entry("api_version".to_string()).or_insert(json!("2023-06-01"));
+                Protocol::Messages
+            } else if c["api_base"].as_str().unwrap_or("").contains("/anthropic") {
                 c.entry("set_cache_control".to_string()).or_insert(json!("rolling"));
                 let mode = std::env::var("XIAOMI_THINKING").unwrap_or_else(|_| "budget".into());
                 if mode != "on" {
@@ -505,5 +544,36 @@ mod tests {
     fn deepseek_aliases() {
         assert_eq!(resolve_deepseek("deepseek/deepseek-v41-flash"), "deepseek/deepseek-v4-flash");
         assert_eq!(resolve_deepseek("deepseek-v4.1-flash"), "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn every_cliproxy_gateway_is_routed_by_its_prefix() {
+        // Each cli-proxy on the host answers on its own port, with its own key: the prefix
+        // picks the gateway, so `cliproxy2/` must not talk to the first one.
+        for (name, base) in [
+            ("cliproxy/claude-opus-5-5", "http://127.0.0.1:8317/v1"),
+            ("cliproxy2/claude-opus-5-5", "http://127.0.0.1:8318/v1"),
+            ("cliproxy-merge/claude-opus-5-5", "http://127.0.0.1:9112/v1"),
+        ] {
+            let mut config = Obj::new();
+            config.insert("model_name".into(), json!(name));
+            let model = build(name, "", config).unwrap();
+            let serialized = model.serialize();
+            assert_eq!(serialized["info"]["config"]["model"]["api_base"], json!(base), "{name} base");
+            assert_eq!(serialized["info"]["config"]["model"]["model_name"], json!("claude-opus-5-5"), "{name} wire name");
+        }
+    }
+
+    #[test]
+    fn the_merge_proxy_is_spoken_to_with_the_anthropic_surface() {
+        // cli-proxy answers the OpenAI surface; the merge proxy only serves /v1/messages,
+        // so its gateway picks the protocol instead of the base URL. `api_version` and the
+        // rolling cache markers are what that path puts in the config.
+        let mut config = Obj::new();
+        config.insert("model_name".into(), json!("cliproxy-merge/claude-opus-5-5"));
+        let model = build("cliproxy-merge/claude-opus-5-5", "", config).unwrap();
+        let serialized = model.serialize();
+        assert_eq!(serialized["info"]["config"]["model"]["api_version"], json!("2023-06-01"));
+        assert_eq!(serialized["info"]["config"]["model"]["set_cache_control"], json!("rolling"));
     }
 }

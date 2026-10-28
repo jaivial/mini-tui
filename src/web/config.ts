@@ -18,7 +18,7 @@ import {
   type SavedConnection,
 } from "../providers";
 import { DEFAULT_SETTINGS, OUTPUT_MODES, loadSettings, saveSettings, type OutputMode, type Settings } from "../settings";
-import { gatewayServes, loadCliproxyCatalogSync, type CliproxyCatalog } from "../cliproxyCatalog";
+import { cliproxyGatewayFor, gatewayServes, loadCliproxyCatalogSync, type CliproxyCatalog } from "../cliproxyCatalog";
 import { listSkills } from "../skills";
 import { loadLastModel } from "../lastModel";
 import { MODELS } from "../models";
@@ -379,14 +379,17 @@ export function modelCatalog(): ModelCatalogEntry[] {
   const seen = new Set<string>();
   const out: ModelCatalogEntry[] = [];
   let cliproxy: CliproxyCatalog | null = null;
+  const catalogs: Record<string, CliproxyCatalog> = {};
   for (const m of all) {
     const id = String(m.value);
     if (seen.has(id)) continue;
     seen.add(id);
     let description = m.description;
-    if (id.startsWith("cliproxy/")) {
-      cliproxy ??= loadCliproxyCatalogSync();
-      if (gatewayServes(cliproxy, id) === false) {
+    const gateway = cliproxyGatewayFor(id);
+    if (gateway) {
+      const own = (catalogs[gateway.prefix] ??= loadCliproxyCatalogSync(undefined, gateway));
+      cliproxy ??= own;
+      if (gatewayServes(own, id) === false) {
         description = `${description} — NOT SERVED by cli-proxy (subscription signed out)`;
       }
     }

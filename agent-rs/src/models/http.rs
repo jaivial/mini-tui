@@ -146,18 +146,22 @@ fn transport_error(e: &dyn std::fmt::Display, base: &str) -> ModelError {
 /// What a refused connect means for a gateway mini talks to, and what to check first.
 fn refused_hint(base: &str) -> String {
     let local = ["127.0.0.1", "localhost", "[::1]"].iter().any(|h| base.contains(h));
-    let name = if base.contains(":8317") {
-        "cli-proxy (cliproxy/)"
+    let (name, env) = if base.contains(":8317") {
+        ("cli-proxy (cliproxy/)", "CLIPROXY_API_BASE")
+    } else if base.contains(":8318") {
+        ("cli-proxy #2 (cliproxy2/)", "CLIPROXY2_API_BASE")
+    } else if base.contains(":9112") {
+        ("the claude merge proxy (cliproxy-merge/)", "CLIPROXY_MERGE_API_BASE")
     } else if base.contains(":9120") {
-        "rosetta"
+        ("rosetta", "ROSETTA_API_BASE")
     } else {
-        "the gateway"
+        ("the gateway", "CLIPROXY_API_BASE")
     };
     if local {
         // The port is the actionable bit: it is what `ss -ltn` and the service unit use.
         let host = base.split("://").nth(1).unwrap_or(base);
         let port = host.split('/').next().unwrap_or("").rsplit(':').next().unwrap_or("");
-        format!(" -- {name} is not listening on port {port}: start it, or point CLIPROXY_API_BASE where it runs (`ss -ltn | grep {port}`). mini re-probes a few times a second apart before giving up")
+        format!(" -- {name} is not listening on port {port}: start it, or point {env} where it runs (`ss -ltn | grep {port}`). mini re-probes a few times a second apart before giving up")
     } else {
         format!(" -- the host at {} is unreachable: check the network, the VPN and that {name} is up there", base.trim_end_matches('/'))
     }

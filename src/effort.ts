@@ -138,7 +138,7 @@ export function effortCapability(model: string): EffortCapability {
     if (/gpt-oss|muse-spark/.test(id)) return cap(["low", "medium", "high"], "openai", GROQ, "medium");
     return NONE;
   }
-  if (provider === "anthropic" || ((provider === "cliproxy" || provider === "opencode-go") && /claude|sonnet|opus|haiku/.test(id))) return claudeCapability(id);
+  if (provider === "anthropic" || ((provider === "cliproxy" || provider.startsWith("cliproxy") || provider === "opencode-go") && /claude|sonnet|opus|haiku/.test(id))) return claudeCapability(id);
   if (provider === "openai" || (provider === "opencode-go" && /^gpt-/.test(id))) return openAICapability(id);
   if (provider === "opencode-go" && /^grok-/.test(id)) return cap(["low", "medium", "high", "xhigh"], "openai", "https://docs.x.ai/docs/models/grok-4.7", "high");
   if (provider === "zai" || provider === "zhipu" || /(?:^|\/)glm-/.test(id)) return glmCapability(id);

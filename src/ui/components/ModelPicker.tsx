@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { SelectOption } from "@opentui/core";
 import { useKeyboard, usePaste } from "@opentui/react";
 
-import { gatewayServes, loadCliproxyCatalog, type CliproxyCatalog } from "../../cliproxyCatalog";
+import { CLIPROXY_GATEWAYS, cliproxyGatewayFor, gatewayServes, loadCliproxyCatalog, type CliproxyCatalog } from "../../cliproxyCatalog";
 import { colors } from "../theme";
 import { pasteText, pastedToken } from "../../clipboard";
 import { MODELS } from "../../models";
@@ -34,6 +34,7 @@ export function ModelPicker(props: {
   // cli-proxy drops a model from /v1/models when its subscription signs out, so the picker checks
   // the catalog and says so instead of letting the run fail with `auth_unavailable` later.
   const [catalog, setCatalog] = useState<CliproxyCatalog | null>(null);
+  const [catalogs, setCatalogs] = useState<Record<string, CliproxyCatalog>>({});
   useEffect(() => {
     let alive = true;
     loadCliproxyCatalog().then((next) => {
@@ -43,7 +44,23 @@ export function ModelPicker(props: {
       alive = false;
     };
   }, []);
-  const unserved = (model: string): boolean => gatewayServes(catalog, model) === false;
+  useEffect(() => {
+    let alive = true;
+    Promise.all(
+      CLIPROXY_GATEWAYS.map((gateway) => loadCliproxyCatalog(undefined, gateway).then((c) => [gateway.prefix, c] as const)),
+    ).then((entries) => {
+      if (alive) setCatalogs(Object.fromEntries(entries));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const unserved = (model: string): boolean => {
+    const gateway = cliproxyGatewayFor(model);
+    if (!gateway) return false;
+    const own = catalogs[gateway.prefix];
+    return gatewayServes(own ?? catalog, model) === false;
+  };
   const annotate = (option: SelectOption): SelectOption =>
     unserved(String(option.value))
         ? { ...option, description: `${option.description ?? ""} — NOT SERVED by cli-proxy (subscription signed out)`.trim() }
