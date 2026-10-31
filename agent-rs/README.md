@@ -26,6 +26,20 @@ Python is needed at all:
   (`scripts/test_model.py`): it prints `ok` and exits 0, or `error: …` and exits 1.
 On a remote host, install the binary the same way; its `mini-tui -p` picks it up.
 
+## ACP server (`mini-agent-rs acp`)
+
+`mini-agent-rs acp` makes mini-tui an [Agent Client Protocol](https://agentclientprotocol.com)
+agent for editors and Paseo: JSON-RPC 2.0 on stdio, one message per line. Every prompt runs this
+binary as a normal resumed turn in the session's directory, and its journal streams back as
+`session/update` notifications (text, thinking, tool calls with results, usage, title). Sessions
+live in `~/.config/mini-tui/acp-sessions/` and survive restarts (`session/load` replays them).
+Between turns the server only waits on stdin. Methods, event mapping, models, MCP forwarding,
+the Paseo config and the known gaps are in [docs/acp.md](../docs/acp.md).
+
+```sh
+python3 agent-rs/scripts/acp_e2e.py      # end to end against a scripted mock: no network, no keys
+```
+
 ## What it does
 
 The agent loop of `agents/default.py`:
