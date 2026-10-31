@@ -59,6 +59,7 @@ import {
   DEFAULT_DB_PATH,
   PAGE_SIZE,
   countSessions,
+  countWorkspaceSessions,
   createSession,
   fallbackTitle,
   getLiveRun,
@@ -1579,17 +1580,17 @@ export function App(props: AppProps) {
     } catch {
       list = [];
     }
-    const sessionsIn = (path: string) => {
-      try {
-        return countSessions(db(), path, "");
-      } catch {
-        return 0;
-      }
-    };
+    // The web sidebar's rule: the folder and its subfolders on the same host, minus nested workspaces.
+    let counts: Record<string, number> = {};
+    try {
+      counts = countWorkspaceSessions(db(), list);
+    } catch {
+      counts = {};
+    }
     const rows = [...list.filter((w) => !w.hostId), ...list.filter((w) => w.hostId)].map((workspace) => ({
       workspace,
       path: workspace.hostId ? workspace.path : shortPath(workspace.path),
-      sessions: workspace.hostId ? 0 : sessionsIn(workspace.path),
+      sessions: counts[workspace.id] ?? 0,
       remote: Boolean(workspace.hostId),
     }));
     wsRowsRef.current = rows;
