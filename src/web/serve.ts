@@ -25,6 +25,7 @@ import { AgentsViewCache } from "./agentsCache";
 import { AgentsStreamHub } from "./agentsStream";
 import { listAgentDefs } from "../mini/agentDefs";
 import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
+import { WorkspaceError, addWorkspace, listWorkspaces, removeWorkspace, renameWorkspace } from "../workspaces";
 import { homedir } from "node:os";
 import { runQueueRead } from "../mini/queueRead";
 import { ChannelInbox } from "../channels/inbox";
@@ -1612,6 +1613,41 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         return json({ ok: true });
       }
 
+      // ------------------------------------------------------- workspaces
+      // Saved folders for manual chat mode (src/workspaces.ts), shared with the terminal UI.
+      if (path === "/workspaces" && request.method === "GET") return json({ workspaces: listWorkspaces() });
+      if (path === "/workspaces" && request.method === "POST") {
+        const wsBody = await readJsonOrRefuse(request);
+        if (!wsBody.ok) return wsBody.response;
+        try {
+          const saved = addWorkspace(wsBody.body, (id) => loadHosts().some((h) => h.id === id));
+          broadcast({ type: "workspaces", workspaces: listWorkspaces() });
+          return json(saved, 201);
+        } catch (error) {
+          if (error instanceof WorkspaceError) return json({ error: error.message }, error.status);
+          throw error;
+        }
+      }
+      const workspaceMatch = path.match(/^\/workspaces\/([^/]+)$/);
+      if (workspaceMatch && (request.method === "PATCH" || request.method === "DELETE")) {
+        const id = decodeURIComponent(workspaceMatch[1] as string);
+        try {
+          if (request.method === "DELETE") {
+            if (!removeWorkspace(id)) return json({ error: "no such workspace" }, 404);
+            broadcast({ type: "workspaces", workspaces: listWorkspaces() });
+            return json({ ok: true });
+          }
+          const renameBody = await readJsonOrRefuse(request);
+          if (!renameBody.ok) return renameBody.response;
+          const renamed = renameWorkspace(id, renameBody.body.name);
+          broadcast({ type: "workspaces", workspaces: listWorkspaces() });
+          return json(renamed);
+        } catch (error) {
+          if (error instanceof WorkspaceError) return json({ error: error.message }, error.status);
+          throw error;
+        }
+      }
+
       // ----------------------------------------------------------- misc
       if (path === "/models" && request.method === "GET") return json(modelCatalog());
 
@@ -1675,6 +1711,8 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         // More (or fewer) slots: the queue starts waiting work now.
         queueHost.queue.resize();
         queueChanged();
+        // Every open tab follows a mode switch (dispatcher ↔ manual) made anywhere.
+        broadcast({ type: "settings", settings: patched });
         return json(patched);
       }
 

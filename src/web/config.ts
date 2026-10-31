@@ -17,7 +17,7 @@ import {
   type ProviderDef,
   type SavedConnection,
 } from "../providers";
-import { DEFAULT_SETTINGS, OUTPUT_MODES, loadSettings, saveSettings, type OutputMode, type Settings } from "../settings";
+import { DEFAULT_SETTINGS, OUTPUT_MODES, chatModeOf, isChatMode, loadSettings, saveSettings, type ChatMode, type OutputMode, type Settings } from "../settings";
 import { cliproxyGatewayFor, gatewayServes, loadCliproxyCatalogSync, type CliproxyCatalog } from "../cliproxyCatalog";
 import { listSkills } from "../skills";
 import { loadLastModel } from "../lastModel";
@@ -272,6 +272,7 @@ export function liveScreenView(env: Record<string, string | undefined> = process
 }
 
 export interface SettingsView extends Settings {
+  chatMode: ChatMode;
   lastModel: string;
   outputModes: typeof OUTPUT_MODES;
   liveScreen: LiveScreenView;
@@ -280,7 +281,7 @@ export interface SettingsView extends Settings {
 
 export function settingsView(): SettingsView {
   const settings = loadSettings();
-  return { ...settings, queueConcurrency: clampConcurrency(settings.queueConcurrency), maxQueueConcurrency: MAX_CONCURRENCY, lastModel: loadLastModel(), outputModes: OUTPUT_MODES, liveScreen: liveScreenView() };
+  return { ...settings, chatMode: chatModeOf(settings), queueConcurrency: clampConcurrency(settings.queueConcurrency), maxQueueConcurrency: MAX_CONCURRENCY, lastModel: loadLastModel(), outputModes: OUTPUT_MODES, liveScreen: liveScreenView() };
 }
 
 /** Only known keys with valid values are applied; anything else is ignored, not stored. */
@@ -300,6 +301,7 @@ export function patchSettings(patch: Record<string, unknown>): SettingsView {
   // thing that picks a model. Only an explicit boolean flips it.
   if (typeof patch.modelRouterEnabled === "boolean") next.modelRouterEnabled = patch.modelRouterEnabled;
   if (typeof patch.queueConcurrency === "number" && Number.isFinite(patch.queueConcurrency)) next.queueConcurrency = clampConcurrency(patch.queueConcurrency);
+  if (isChatMode(patch.chatMode)) next.chatMode = patch.chatMode;
   // Reasoning preferences are per fully-qualified model, validated against that model's actual
   // capability map. Invalid levels and unknown ids are ignored instead of reaching the wire.
   if (patch.modelEfforts && typeof patch.modelEfforts === "object" && !Array.isArray(patch.modelEfforts)) {

@@ -5,6 +5,18 @@ import type { EffortLevel } from "./effort";
 
 export type OutputMode = "collapsed" | "trim" | "expanded";
 
+/**
+ * What the main chat is. `dispatcher`: one chat whose agent turns each request into work-queue
+ * tasks, each run as its own background session. `manual`: no dispatcher; the user creates
+ * sessions inside saved workspaces (src/workspaces.ts), each one a normal agent in that folder.
+ */
+export type ChatMode = "dispatcher" | "manual";
+
+export const CHAT_MODES: Array<{ value: ChatMode; name: string; description: string }> = [
+  { value: "dispatcher", name: "dispatcher", description: "one main chat that creates and classifies tasks as background sessions" },
+  { value: "manual", name: "manual", description: "you create sessions yourself, inside saved workspace folders" },
+];
+
 export interface Settings {
   /** How bash outputs are displayed: collapsed, trimmed to 2 lines, or fully expanded. */
   outputMode: OutputMode;
@@ -39,6 +51,8 @@ export interface Settings {
   modelFallbacks?: string[];
   /** Reasoning effort per fully-qualified model id. "auto" sends no override. */
   modelEfforts?: Record<string, EffortLevel>;
+  /** The main chat's mode, shared by the web app and the terminal UI. Absent = `dispatcher`. */
+  chatMode?: ChatMode;
 }
 
 export const OUTPUT_MODES: Array<{ value: OutputMode; name: string; description: string }> = [
@@ -122,12 +136,22 @@ export function loadSettings(): Settings {
         ...(typeof data?.queueConcurrency === "number" ? { queueConcurrency: data.queueConcurrency } : {}),
         ...(Array.isArray(data?.modelFallbacks) ? { modelFallbacks: (data.modelFallbacks as unknown[]).filter((m): m is string => typeof m === "string") } : {}),
         ...(data?.modelEfforts && typeof data.modelEfforts === "object" && !Array.isArray(data.modelEfforts) ? { modelEfforts: data.modelEfforts as Record<string, EffortLevel> } : {}),
+        ...(isChatMode(data?.chatMode) ? { chatMode: data.chatMode } : {}),
       };
     }
   } catch {
     // missing or broken settings fall back to defaults
   }
   return { ...DEFAULT_SETTINGS };
+}
+
+export function isChatMode(value: unknown): value is ChatMode {
+  return value === "dispatcher" || value === "manual";
+}
+
+/** The effective chat mode: the dispatcher unless the settings say manual. */
+export function chatModeOf(settings: Pick<Settings, "chatMode">): ChatMode {
+  return settings.chatMode === "manual" ? "manual" : "dispatcher";
 }
 
 export function saveSettings(settings: Settings): void {

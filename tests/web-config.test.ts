@@ -228,6 +228,15 @@ describe("settings", () => {
     expect(view.modelEfforts).toEqual({ "zai/glm-5.3": "low" });
     expect(cfg.settingsView().modelEfforts?.["zai/glm-5.3"]).toBe("low");
   });
+  test("chat mode: dispatcher unless the file says manual, and only the two modes are accepted", () => {
+    expect(cfg.settingsView().chatMode).toBe("dispatcher");
+    expect(cfg.patchSettings({ chatMode: "manual" }).chatMode).toBe("manual");
+    expect(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).chatMode).toBe("manual");
+    expect(cfg.patchSettings({ chatMode: "bogus" }).chatMode).toBe("manual");
+    // A save that knows nothing about the mode (the terminal UI changing the theme) keeps it.
+    expect(cfg.patchSettings({ theme: "nord" }).chatMode).toBe("manual");
+    expect(cfg.patchSettings({ chatMode: "dispatcher" }).chatMode).toBe("dispatcher");
+  });
   test("a broken settings file falls back to defaults", () => {
     writeFileSync(join(dir, "settings.json"), "{not json");
     expect(cfg.settingsView().outputMode).toBe("collapsed");
