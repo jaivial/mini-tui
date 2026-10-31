@@ -10,7 +10,8 @@ import json, os, re, subprocess, sys, tempfile, time, shutil, argparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 RUST = os.environ.get("MINI_AGENT_RS") or os.path.join(REPO, "agent-rs", "target", "release", "mini-agent-rs")
-PY = ["/usr/bin/python3.10", "-m", "minisweagent.run.tui"]
+# The interpreter run_all.sh picked (`PY`, /usr/bin/python3.10 by default) runs the Python agent too.
+PY = [sys.executable, "-m", "minisweagent.run.tui"]
 
 def normalize(v, root):
     if isinstance(v, dict):
