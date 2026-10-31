@@ -255,7 +255,7 @@ impl WireModel {
             body[k] = v;
         }
         self.text_only(&mut body);
-        let data = post_chat_stream(&self.api_base, &body, &headers, self.timeout(), sink)?;
+        let data = post_chat_stream(&self.api_base, body, &headers, self.timeout(), sink)?;
         if data.get("choices").and_then(Value::as_array).is_none_or(|c| c.is_empty()) {
             return Err(ModelError { message: format!("response without choices from {}: {}", self.api_base, data.to_string().chars().take(300).collect::<String>()), status: None, abort: false, kind: "ProviderError".into(), connect_refused: false, retry_after: None, });
         }
