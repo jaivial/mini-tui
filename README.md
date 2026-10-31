@@ -491,7 +491,19 @@ the web's settings; a change made in either UI applies in the other right away):
   same list as the web app's). `/workspaces` (or `ctrl+t`): `Enter` switches to one (a fresh
   session starts there and `/resume` lists its sessions), `n` adds a folder (`Tab` completes
   folders), `s` saves the current folder, `r` renames, `d` removes (its sessions stay). The
-  status line shows the workspace's name next to the path.
+  status line shows the workspace's name next to the path. A workspace on a saved **remote host**
+  (added in the web app) opens too: its sessions run on the web server, which owns the SSH runs
+  (reached or started as in dispatcher mode). The first prompt creates the session on that host
+  and folder, later prompts continue it, `Esc Esc` interrupts, `/new` starts another; the status
+  line shows `◆ name @ host` and `host:path`. Picking a local workspace returns to local sessions.
+
+`/attach <file> [more files]` stages files for the next prompt (`Tab` completes paths, relative to
+the session folder; quote or backslash-escape spaces), shown above the prompt; `/detach` drops them all,
+`/detach 2` one. The web server's rules apply when a file is staged (its type allowlist, 15 MB, the
+content must match the extension). In dispatcher mode and remote workspaces the files are uploaded
+to the server (`POST /api/attachments`) and their refs go with the prompt, as from the web app; a
+refused upload keeps the files and puts the prompt back. A local session needs no server: the
+prompt names the files by path and the agent reads them in place.
 
 ### Headless: `mini-tui -p` (no TUI)
 
@@ -586,7 +598,8 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `/new` | start a fresh session in place (stops the current run; model and settings stay) · dispatcher mode: a new main chat |
 | `/tasks` · `ctrl+t` | dispatcher mode: the work queue (filter · `Enter` opens a worker's session, prompts there redirect it · `c` cancels) |
 | `/main` | dispatcher mode: back to the main chat from a task's session (also `Esc Esc`) |
-| `/workspaces` · `ctrl+t` | manual mode: saved folders (`Enter` switch · `n` new · `s` save the current folder · `r` rename · `d` remove) |
+| `/workspaces` · `ctrl+t` | manual mode: saved folders, local or on a remote host (`Enter` switch · `n` new · `s` save the current folder · `r` rename · `d` remove) |
+| `/attach <file…>` · `/detach [n]` | files for the next prompt (`Tab` completes paths); uploaded through the web server, or named by path to a local session |
 | `/resume` | browse sessions saved in this folder (search + pages, `→` previews a transcript read-only) |
 | `/connect` | connect a BYOK provider (key → model → tested connection) |
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |

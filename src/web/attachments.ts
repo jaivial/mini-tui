@@ -46,6 +46,11 @@ const TYPES: Record<string, string> = {
 /** The `accept` hint the prompt bar shows; the server enforces the same set. */
 export const ATTACH_ACCEPT = Object.keys(TYPES).join(",");
 
+/** The MIME the store would serve `name` as; undefined = a type it refuses. */
+export function attachmentMime(name: string): string | undefined {
+  return TYPES[extname(name).toLowerCase()];
+}
+
 export interface Attachment {
   id: string;
   /** The name the file came with (metadata only; never used on disk). */

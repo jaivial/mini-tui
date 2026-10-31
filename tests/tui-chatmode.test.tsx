@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -7,8 +7,8 @@ import { testRender } from "@opentui/react/test-utils";
 
 import { App } from "../src/ui/App";
 import { createSession, openDb } from "../src/sessions";
-import { addWorkspace, listWorkspaces } from "../src/workspaces";
-import type { FollowHandlers, QueueClientLike, QueueState, QueueSubscriber, QueueTaskView, SessionView } from "../src/queueClient";
+import { addWorkspace, listWorkspaces, removeWorkspace } from "../src/workspaces";
+import type { AttachmentRef, CreateSessionInput, FollowHandlers, QueueClientLike, QueueState, QueueSubscriber, QueueTaskView, RemoteHostView, SessionView } from "../src/queueClient";
 
 // bun runs every test file in one process: put the environment back for the files after this one
 const ENV_KEYS = ["MINITUI_CONNECTIONS_PATH", "MINITUI_LAST_MODEL_PATH", "MINITUI_WORKSPACES_PATH"] as const;
@@ -67,9 +67,17 @@ class FakeQueue implements QueueClientLike {
   subs = new Set<QueueSubscriber>();
   followed: string[] = [];
   handlers = new Map<string, FollowHandlers>();
-  prompts: Array<{ text: string; model?: string }> = [];
+  prompts: Array<{ text: string; model?: string; attachments?: string[] }> = [];
   redirects: Array<{ id: string; message: string }> = [];
   cancels: string[] = [];
+  uploads: Array<{ name: string; size: number }> = [];
+  creates: CreateSessionInput[] = [];
+  sends: Array<{ id: string; prompt: string; attachments?: string[] }> = [];
+  interrupts: string[] = [];
+  models: Array<{ id: string; model: string }> = [];
+  hostList: RemoteHostView[] = [];
+  /** Uploads of files with this name are refused (the server's verdict). */
+  refuse = "";
   newChats = 0;
   stopped = 0;
   constructor(state: QueueState, readonly sessions: Record<string, SessionView>) {
@@ -96,9 +104,32 @@ class FakeQueue implements QueueClientLike {
     if (session) queueMicrotask(() => handlers.onSnapshot(session));
     return () => void this.handlers.delete(id);
   }
-  prompt(text: string, model?: string) {
-    this.prompts.push({ text, model });
+  prompt(text: string, model?: string, attachments?: AttachmentRef[]) {
+    this.prompts.push({ text, model, ...(attachments ? { attachments: attachments.map((a) => a.id) } : {}) });
     return Promise.resolve({ id: this.st.main || "s-main" });
+  }
+  upload(file: { name: string; bytes: Uint8Array }) {
+    if (file.name === this.refuse) return Promise.reject(new Error(`${file.name}: el archivo pasa de 15 MB`));
+    this.uploads.push({ name: file.name, size: file.bytes.length });
+    const id = String(this.uploads.length).padStart(16, "a");
+    return Promise.resolve({ id, name: file.name, mime: "image/png", size: file.bytes.length, url: `/api/attachments/${id}` });
+  }
+  createSession(input: CreateSessionInput) {
+    this.creates.push({ ...input, attachments: input.attachments });
+    const id = `s-remote${this.creates.length}`;
+    this.sessions[id] = { id, status: "running", model: input.model, cwd: input.cwd, events: [{ type: "task", text: input.prompt }, { type: "assistant", text: `REMOTE REPLY on ${input.hostId}` }] };
+    return Promise.resolve({ id, status: "running" });
+  }
+  send(id: string, prompt: string, attachments?: AttachmentRef[]) {
+    this.sends.push({ id, prompt, ...(attachments ? { attachments: attachments.map((a) => a.id) } : {}) });
+    return Promise.resolve();
+  }
+  setModel(id: string, model: string) {
+    this.models.push({ id, model });
+    return Promise.resolve();
+  }
+  hosts() {
+    return Promise.resolve(this.hostList);
   }
   newChat() {
     this.newChats++;
@@ -113,7 +144,8 @@ class FakeQueue implements QueueClientLike {
     this.redirects.push({ id, message });
     return Promise.resolve({ ok: true, text: `redirected ${id}` });
   }
-  interrupt() {
+  interrupt(id: string) {
+    this.interrupts.push(id);
     return Promise.resolve();
   }
   compact() {
@@ -421,5 +453,218 @@ describe("manual mode: workspaces", () => {
     await command(setup, "/tasks");
     expect(setup.captureCharFrame()).toContain("the task list belongs to the dispatcher chat mode");
     setup.renderer.destroy();
+  });
+});
+
+/** A folder with files to attach: two good ones, one of a refused type, one whose bytes lie. */
+function attachFolder(): string {
+  const dir = join(root, "att");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "screen shot.png"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7]));
+  writeFileSync(join(dir, "notes.md"), "# notes\n");
+  writeFileSync(join(dir, "tool.exe"), "MZ");
+  writeFileSync(join(dir, "fake.png"), "<html></html>");
+  return dir;
+}
+
+async function sendText(setup: Setup, text: string) {
+  await setup.mockInput.typeText(text);
+  await act(async () => {
+    setup.mockInput.pressEnter();
+  });
+  await settle(setup, 40);
+}
+
+describe("/attach", () => {
+  test("dispatcher: Tab completes, bad files are refused, the files go up and their ids ride with the prompt", async () => {
+    const dir = attachFolder();
+    const fake = dispatcherFixture();
+    const setup = await testRender(<App cwd={dir} persistSettings={false} queue={fake} initialModel="openai/gpt-mock" initialSettings={{ outputMode: "expanded" }} onQuit={() => {}} />, { width: 150, height: 34 });
+    await settle(setup, 60);
+    await setup.mockInput.typeText("/attach scr");
+    await act(async () => {
+      setup.mockInput.pressTab();
+    });
+    await settle(setup);
+    expect(setup.captureCharFrame()).toContain("/attach screen\\ shot.png");
+    await act(async () => {
+      setup.mockInput.pressEnter();
+    });
+    await settle(setup);
+    let frame = setup.captureCharFrame();
+    expect(frame).toContain("attached (1)");
+    expect(frame).toContain("1. screen shot.png 10 B");
+
+    await sendText(setup, "/attach notes.md tool.exe fake.png");
+    frame = setup.captureCharFrame();
+    expect(frame).toContain("attached (2)");
+    expect(frame).toContain("2. notes.md");
+    expect(frame).toContain("not attached: tool.exe: this type is not accepted");
+    expect(frame).toContain("fake.png: the content is not a valid .png");
+
+    await sendText(setup, "look at these");
+    expect(fake.uploads).toEqual([{ name: "screen shot.png", size: 10 }, { name: "notes.md", size: 8 }]);
+    expect(fake.prompts).toEqual([{ text: "look at these", model: "openai/gpt-mock", attachments: ["aaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaa2"] }]);
+    expect(setup.captureCharFrame()).not.toContain("sent with the next prompt");
+
+    // the server refuses one: nothing is sent, the prompt and the files stay
+    fake.refuse = "notes.md";
+    await sendText(setup, "/attach notes.md");
+    await sendText(setup, "again");
+    frame = setup.captureCharFrame();
+    expect(fake.prompts).toHaveLength(1);
+    expect(frame).toContain("attachments not sent: notes.md: el archivo pasa de 15 MB");
+    expect(frame).toContain("attached (1)");
+    expect(frame).toContain("again");
+    for (let i = 0; i < "again".length; i++) await act(async () => setup.mockInput.pressBackspace()); // clear the restored prompt
+    await settle(setup);
+    await sendText(setup, "/detach");
+    frame = setup.captureCharFrame();
+    expect(frame).toContain("removed 1 attachment");
+    expect(frame).not.toContain("sent with the next prompt");
+    setup.renderer.destroy();
+  });
+
+  test("a local session names the files by path in the prompt (no server)", async () => {
+    const dir = attachFolder();
+    const sent: string[] = [];
+    const setup = await testRender(
+      <App cwd={dir} persistSettings={false} onSend={(text) => sent.push(text)} initialSettings={{ outputMode: "expanded", chatMode: "manual" }} onQuit={() => {}} />,
+      { width: 150, height: 34 },
+    );
+    await settle(setup);
+    await sendText(setup, "/attach notes.md");
+    expect(setup.captureCharFrame()).toContain("attached (1)");
+    await sendText(setup, "summarize");
+    expect(sent).toEqual([`summarize\n\nAttached files (on this machine; read them from these paths):\n- ${join(dir, "notes.md")} (text/markdown, 8 B)`]);
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Attached files");
+    expect(frame).not.toContain("sent with the next prompt");
+    // a prompt that merely starts with the word is a prompt
+    await sendText(setup, "attach the logs to the report");
+    expect(sent.at(-1)).toBe("attach the logs to the report");
+    setup.renderer.destroy();
+  });
+});
+
+describe("manual mode: a remote workspace", () => {
+  test("runs through the server: created with its host, followed, continued, interrupted; a local pick returns", async () => {
+    const alpha = join(root, "alpha");
+    mkdirSync(alpha, { recursive: true });
+    addWorkspace({ path: alpha, name: "Alpha" });
+    const remote = addWorkspace({ path: "~/srv/app", name: "Remote App", hostId: "h-box" });
+    const dir = attachFolder();
+    const fake = dispatcherFixture();
+    fake.hostList = [{ id: "h-box", label: "build box" }];
+    const setup = await testRender(
+      <App cwd={alpha} dbPath={join(root, "sessions.db")} persistSettings={false} queue={fake} initialModel="openai/gpt-mock" initialSettings={{ outputMode: "expanded", chatMode: "manual" }} onQuit={() => {}} />,
+      { width: 150, height: 34 },
+    );
+    try {
+      await settle(setup);
+      await key(setup, "t", { ctrl: true });
+      await settle(setup, 40);
+      let frame = setup.captureCharFrame();
+      expect(frame).toContain("Remote App");
+      expect(frame).toContain("remote · on build box");
+      const rows = listWorkspaces().length;
+      for (let i = 0; i < rows; i++) {
+        await act(async () => {
+          setup.mockInput.pressArrow("down"); // remote rows come last
+        });
+      }
+      await setup.renderOnce();
+      await act(async () => {
+        setup.mockInput.pressEnter();
+      });
+      await settle(setup, 40);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("◆ Remote App @ build box");
+      expect(frame).toContain("build box:~/srv/app");
+      expect(frame).toContain("sessions run on build box through the web server");
+      expect(fake.followed).toEqual([]); // no session until the first prompt
+
+      await sendText(setup, "deploy it");
+      await settle(setup, 60);
+      expect(fake.creates).toEqual([{ prompt: "deploy it", cwd: "~/srv/app", model: "openai/gpt-mock", target: "remote", hostId: "h-box", attachments: undefined }]);
+      expect(fake.followed).toEqual(["s-remote1"]);
+      expect(setup.captureCharFrame()).toContain("REMOTE REPLY on h-box");
+
+      await sendText(setup, "and the docs");
+      expect(fake.sends).toEqual([{ id: "s-remote1", prompt: "and the docs" }]);
+      // files go up first, their ids ride with the follow-up
+      await sendText(setup, `/attach ${join(dir, "notes.md")}`);
+      await sendText(setup, "with the notes");
+      expect(fake.uploads).toEqual([{ name: "notes.md", size: 8 }]);
+      expect(fake.sends.at(-1)).toEqual({ id: "s-remote1", prompt: "with the notes", attachments: ["aaaaaaaaaaaaaaa1"] });
+
+      // Esc Esc interrupts the remote turn
+      setup.mockInput.pressEscape();
+      await Bun.sleep(100);
+      setup.mockInput.pressEscape();
+      await Bun.sleep(100);
+      await settle(setup);
+      expect(fake.interrupts).toEqual(["s-remote1"]);
+
+      await command(setup, "/model openai/gpt-other");
+      await settle(setup);
+      expect(fake.models).toEqual([{ id: "s-remote1", model: "openai/gpt-other" }]);
+
+      await command(setup, "/new");
+      await settle(setup);
+      expect(setup.captureCharFrame()).toContain("new session on build box");
+      expect(setup.captureCharFrame()).not.toContain("REMOTE REPLY");
+      await sendText(setup, "second one");
+      await settle(setup, 60);
+      expect(fake.creates.at(-1)).toMatchObject({ prompt: "second one", hostId: "h-box", target: "remote" });
+      expect(fake.followed.at(-1)).toBe("s-remote2");
+
+      // back to a local workspace: local sessions again
+      await key(setup, "t", { ctrl: true });
+      for (let i = 0; i < rows; i++) {
+        await act(async () => {
+          setup.mockInput.pressArrow("up");
+        });
+      }
+      await setup.renderOnce();
+      await act(async () => {
+        setup.mockInput.pressEnter();
+      });
+      await settle(setup, 40);
+      frame = setup.captureCharFrame();
+      expect(frame).toContain("◆ Alpha");
+      expect(frame).not.toContain("@ build box");
+      expect(frame).toContain("workspace Alpha");
+    } finally {
+      setup.renderer.destroy();
+      removeWorkspace(remote.id);
+    }
+  });
+
+  test("without a server client the remote row says why it cannot open", async () => {
+    const remote = addWorkspace({ path: "~/srv/app", name: "Remote App", hostId: "h-box" });
+    const setup = await testRender(
+      <App cwd={root} dbPath={join(root, "sessions.db")} persistSettings={false} initialSettings={{ outputMode: "expanded", chatMode: "manual" }} onQuit={() => {}} />,
+      { width: 150, height: 34 },
+    );
+    try {
+      await settle(setup);
+      await key(setup, "t", { ctrl: true });
+      for (let i = 0; i < listWorkspaces().length; i++) {
+        await act(async () => {
+          setup.mockInput.pressArrow("down");
+        });
+      }
+      await act(async () => {
+        setup.mockInput.pressEnter();
+      });
+      await settle(setup);
+      const frame = setup.captureCharFrame();
+      expect(frame).toContain("remote · on h-box");
+      expect(frame).toContain("does not reach here");
+    } finally {
+      setup.renderer.destroy();
+      removeWorkspace(remote.id);
+    }
   });
 });

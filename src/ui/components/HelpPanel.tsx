@@ -7,6 +7,7 @@ export function HelpPanel() {
     ["/new  ·  /main", "new session (dispatcher: new main chat) · /main: back from a task"],
     ["/resume", "browse sessions saved in this folder (search, pages · → preview read-only)"],
     ["/tasks  /workspaces", "ctrl+t · task queue (dispatcher) / saved folders (manual)"],
+    ["/attach  /detach", "files for the next prompt (Tab completes)"],
     ["/connect", "connect a BYOK provider (key → model → connection test)"],
     ["/mcp", "MCP servers: install, OAuth login (c copy · o open), test"],
     ["/settings", "output display · theme · main chat (dispatcher / manual) · jev (Tab)"],

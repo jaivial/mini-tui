@@ -12,6 +12,11 @@
  *     with a 2 s poll of `GET /api/queue` while the stream is down;
  *   - one session's transcript: the per-session socket `/api/sessions/:id/socket` (a snapshot,
  *     then deltas), which also carries the notices the server injects into the chat.
+ *
+ * Manual mode uses the same client for a workspace on a remote host: the server owns the SSH
+ * runs, so the terminal creates the session there (`POST /api/sessions`), follows it over its
+ * socket and sends follow-ups to it. Files go up with `POST /api/attachments` first; only the
+ * returned refs travel with a prompt.
  */
 import { mkdirSync, openSync, closeSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -66,6 +71,34 @@ export interface SessionMetaView {
 
 export interface SessionView extends SessionMetaView {
   events: RunEvent[];
+}
+
+/** A file the server stored (`POST /api/attachments`); a prompt carries these refs, never bytes. */
+export interface AttachmentRef {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  url: string;
+}
+
+/** A saved remote host as `GET /api/hosts` lists it (only what the terminal shows). */
+export interface RemoteHostView {
+  id: string;
+  label?: string;
+  host?: string;
+  user?: string;
+  workdir?: string;
+  online?: boolean;
+}
+
+export interface CreateSessionInput {
+  prompt: string;
+  cwd?: string;
+  model?: string;
+  target: "local" | "remote";
+  hostId?: string;
+  attachments?: AttachmentRef[];
 }
 
 export interface QueueFrame {
@@ -199,12 +232,21 @@ export interface QueueClientLike {
   state(): QueueState;
   subscribe(subscriber: QueueSubscriber): () => void;
   follow(sessionId: string, handlers: FollowHandlers): () => void;
-  prompt(prompt: string, model?: string): Promise<{ id: string }>;
+  prompt(prompt: string, model?: string, attachments?: AttachmentRef[]): Promise<{ id: string }>;
   newChat(): Promise<void>;
   cancel(taskId: string): Promise<ActionResult>;
   redirect(taskId: string, message: string): Promise<ActionResult>;
   interrupt(sessionId: string): Promise<void>;
   compact(sessionId: string): Promise<void>;
+  /** Store one file on the server; the ref goes with the next prompt. */
+  upload(file: { name: string; bytes: Uint8Array }): Promise<AttachmentRef>;
+  /** Start a session the server runs (a remote host's when `target` is "remote"). */
+  createSession(input: CreateSessionInput): Promise<SessionMetaView>;
+  /** A follow-up prompt to a session the server runs. */
+  send(sessionId: string, prompt: string, attachments?: AttachmentRef[]): Promise<void>;
+  setModel(sessionId: string, model: string): Promise<void>;
+  /** The saved remote hosts; empty when no server answers (labels fall back to the id). */
+  hosts(): Promise<RemoteHostView[]>;
   stop(): void;
 }
 
@@ -339,8 +381,8 @@ export class QueueClient implements QueueClientLike {
     return this.#state;
   }
 
-  async prompt(prompt: string, model?: string): Promise<{ id: string }> {
-    const session = await this.#json<{ id?: string }>("POST", "/api/queue/prompt", { prompt, ...(model ? { model } : {}) });
+  async prompt(prompt: string, model?: string, attachments?: AttachmentRef[]): Promise<{ id: string }> {
+    const session = await this.#json<{ id?: string }>("POST", "/api/queue/prompt", { prompt, ...(model ? { model } : {}), ...(attachments?.length ? { attachments } : {}) });
     const id = typeof session.id === "string" ? session.id : "";
     if (id && id !== this.#state.main) this.#publish({ ...this.#state, main: id });
     return { id };
@@ -365,6 +407,42 @@ export class QueueClient implements QueueClientLike {
 
   async compact(sessionId: string): Promise<void> {
     await this.#json("POST", `/api/sessions/${encodeURIComponent(sessionId)}/compact`);
+  }
+
+  async upload(file: { name: string; bytes: Uint8Array }): Promise<AttachmentRef> {
+    const form = new FormData();
+    form.append("file", new File([file.bytes as Uint8Array<ArrayBuffer>], file.name), file.name);
+    // The server answers its own size/type verdict (413/400 with a reason): pass that on as is.
+    const res = await this.#fetch(`${this.url}/api/attachments`, { method: "POST", body: form, signal: AbortSignal.timeout(120_000) });
+    const data = (await res.json().catch(() => ({}))) as Partial<AttachmentRef> & { error?: string };
+    if (!res.ok || typeof data.id !== "string") throw new Error(`${file.name}: ${data.error || `HTTP ${res.status}`}`);
+    return { id: data.id, name: data.name || file.name, mime: data.mime ?? "", size: data.size ?? file.bytes.length, url: data.url ?? `/api/attachments/${data.id}` };
+  }
+
+  async createSession(input: CreateSessionInput): Promise<SessionMetaView> {
+    const { attachments, ...rest } = input;
+    const session = await this.#json<SessionMetaView>("POST", "/api/sessions", { ...rest, ...(attachments?.length ? { attachments } : {}) });
+    if (typeof session?.id !== "string" || !session.id) throw new Error("the server did not return a session");
+    return session;
+  }
+
+  async send(sessionId: string, prompt: string, attachments?: AttachmentRef[]): Promise<void> {
+    await this.#json("POST", `/api/sessions/${encodeURIComponent(sessionId)}/prompt`, { prompt, ...(attachments?.length ? { attachments } : {}) });
+  }
+
+  async setModel(sessionId: string, model: string): Promise<void> {
+    await this.#json("POST", `/api/sessions/${encodeURIComponent(sessionId)}/model`, { model });
+  }
+
+  async hosts(): Promise<RemoteHostView[]> {
+    try {
+      const res = await this.#fetch(`${this.url}/api/hosts`, { signal: AbortSignal.timeout(2000) });
+      if (!res.ok) return [];
+      const list = (await res.json()) as unknown;
+      return Array.isArray(list) ? list.filter((h): h is RemoteHostView => Boolean(h) && typeof (h as RemoteHostView).id === "string") : [];
+    } catch {
+      return [];
+    }
   }
 
   #publish(next: QueueState): void {
