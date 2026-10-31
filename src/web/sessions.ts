@@ -25,6 +25,9 @@ import {
   defaultDbPath,
   createSession,
   listHistory,
+  listWorkspaceSessions,
+  type HistoryRow,
+  type WorkspaceScope,
   listFolders,
   type FolderSummary,
   deleteSession,
@@ -1234,7 +1237,7 @@ export class SessionManager {
     // A remote chat is saved like a local one. Every later save is an UPDATE of this row; without it they
     // all updated nothing, so remote chats never reached the history (nor the sidebar's folders).
     try {
-      createSession(this.db(), { id, title, cwd: workdir, model, task: prompt });
+      createSession(this.db(), { id, title, cwd: workdir, model, task: prompt, hostId: host.id });
     } catch {
       // persistence is best-effort
     }
@@ -2230,7 +2233,17 @@ export class SessionManager {
   }
 
   history(options: { query?: string; limit?: number; cwd?: string } = {}): HistoryItem[] {
-    return listHistory(this.db(), options).map((row) => ({
+    return listHistory(this.db(), options).map((row) => this.#historyItem(row));
+  }
+
+  /** Each saved workspace's saved sessions (its folder, subfolders and host), keyed by workspace id. */
+  workspaceHistory(workspaces: WorkspaceScope[], limit?: number): Record<string, HistoryItem[]> {
+    const rows = listWorkspaceSessions(this.db(), workspaces, limit);
+    return Object.fromEntries(Object.entries(rows).map(([id, list]) => [id, list.map((row) => this.#historyItem(row))]));
+  }
+
+  #historyItem(row: HistoryRow): HistoryItem {
+    return {
       id: row.id,
       title: row.title,
       cwd: row.cwd,
@@ -2244,7 +2257,7 @@ export class SessionManager {
       exitStatus: row.exit_status,
       resumable: row.resumable,
       open: this.#live.has(row.id),
-    }));
+    };
   }
 }
 
@@ -2275,7 +2288,8 @@ export function restoreFromRow(row: SessionRecord): LiveSession {
     cwd: row.cwd ?? "",
     model: row.model ?? "",
     task: row.task ?? "",
-    target: "local",
+    // A remote chat reopened from the history continues on its host, in the host's folder.
+    ...(row.host_id ? { target: "remote" as const, hostId: row.host_id } : { target: "local" as const }),
     status: exitStatus === "Submitted" ? "done" : exitStatus ? "error" : "idle",
     events,
     messages,

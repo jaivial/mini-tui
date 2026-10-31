@@ -158,6 +158,14 @@ describe("rows written by other UIs never fail an open", () => {
     expect(session.status).toBe("done");
   });
 
+  test("restoreFromRow reopens a remote chat on its host, and an unmarked row as local", () => {
+    const row = { id: "s-r", title: "t", cwd: "~/proj", model: "", task: "", created_at: 1, updated_at: 2, api_calls: 1, cost: 0, exit_status: "Submitted", events_json: "[]", info_json: "{}", messages_json: "[]" };
+    expect(restoreFromRow({ ...row, host_id: "h1" })).toMatchObject({ target: "remote", hostId: "h1", cwd: "~/proj" });
+    const local = restoreFromRow({ ...row, host_id: "" });
+    expect(local.target).toBe("local");
+    expect("hostId" in local).toBe(false);
+  });
+
   test("a terminal holding the database does not fail the web app's open", async () => {
     const manager = new SessionManager(() => {}, { syncMs: 0 });
     manager.db();

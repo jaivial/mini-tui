@@ -1646,6 +1646,16 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
       // ------------------------------------------------------- workspaces
       // Saved folders for manual chat mode (src/workspaces.ts), shared with the terminal UI.
       if (path === "/workspaces" && request.method === "GET") return json({ workspaces: listWorkspaces() });
+      if (path === "/workspaces/sessions" && request.method === "GET") {
+        // Every workspace's saved sessions in one read: `{ [workspaceId]: HistoryItem[] }`, `?limit=` per
+        // workspace. Subfolders count, and a nested workspace keeps its own (src/sessions.ts).
+        const limit = Number(url.searchParams.get("limit") ?? "");
+        try {
+          return json(sessions.workspaceHistory(listWorkspaces(), Number.isFinite(limit) && limit > 0 ? limit : undefined));
+        } catch (error) {
+          return json({ error: `could not read the saved sessions: ${(error as Error).message}` }, 503);
+        }
+      }
       if (path === "/workspaces" && request.method === "POST") {
         const wsBody = await readJsonOrRefuse(request);
         if (!wsBody.ok) return wsBody.response;

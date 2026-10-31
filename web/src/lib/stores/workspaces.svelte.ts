@@ -1,9 +1,9 @@
 /**
  * Saved workspaces (manual chat mode): the list, live through the shared stream's `workspaces`
- * pushes, and each workspace's saved sessions (read from the history for its folder, re-read only
- * when something in the sidebar moved).
+ * pushes, and each workspace's saved sessions (one read for all of them, re-read only when
+ * something in the sidebar moved).
  */
-import { api } from "../api";
+import { api, HttpError } from "../api";
 import { store } from "./sessions.svelte";
 import type { HistoryItem, SavedWorkspace } from "../types";
 
@@ -47,10 +47,23 @@ class WorkspacesStore {
     return this.list.find((w) => w.id === id);
   }
 
-  /** Re-read the saved sessions of these workspaces (all of them by default). */
-  async refreshSaved(list: SavedWorkspace[] = this.list) {
+  /** Re-read the saved sessions of every workspace. */
+  async refreshSaved() {
+    let all: Record<string, HistoryItem[]>;
+    try {
+      all = await api.workspaceSessions(SAVED_PER_WORKSPACE);
+    } catch (error) {
+      // The bundle is deployed apart from the server: one older than this bundle has no such
+      // route, and its exact-folder history is the closest it can answer.
+      if (error instanceof HttpError && error.status === 404) await this.#refreshByFolder();
+      return; // anything else: keep what is shown
+    }
+    for (const w of this.list) this.saved[w.id] = all[w.id] ?? [];
+  }
+
+  async #refreshByFolder() {
     await Promise.all(
-      list.map(async (w) => {
+      this.list.map(async (w) => {
         try {
           this.saved[w.id] = await api.history("", SAVED_PER_WORKSPACE, w.path);
         } catch {

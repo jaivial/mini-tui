@@ -21,6 +21,8 @@ export interface SessionRecord {
   messages_json: string;
   /** The session whose agent started this one as a subagent ('' for a top-level session). */
   parent_id?: string;
+  /** The saved remote host it ran on ('' = this machine, and every row written before hosts were recorded). */
+  host_id?: string;
 }
 
 export const DEFAULT_DB_PATH = process.env.MINITUI_DB_PATH ?? join(homedir(), ".config", "mini-tui", "sessions.db");
@@ -88,6 +90,14 @@ export function openDb(path: string = DEFAULT_DB_PATH): Database {
   } catch {
     // column already exists
   }
+  try {
+    // A remote session's cwd is a path on its host: without the host, a remote workspace and a
+    // local folder with the same path would list each other's sessions. Defaulted, so a build that
+    // does not know the column keeps writing rows (as local ones).
+    db.exec("ALTER TABLE sessions ADD COLUMN host_id TEXT NOT NULL DEFAULT ''");
+  } catch {
+    // column already exists
+  }
   // The agent each UI is running for a session right now, so another UI (the web app, a second
   // terminal) can follow that same agent and talk to it instead of forking the conversation.
   db.exec(`
@@ -138,14 +148,14 @@ function configureConcurrency(db: Database): void {
 
 export function createSession(
   db: Database,
-  record: { id: string; cwd: string; model: string; task: string; title?: string },
+  record: { id: string; cwd: string; model: string; task: string; title?: string; hostId?: string },
 ): SessionRecord {
   const now = Date.now();
   const title = record.title ?? fallbackTitle(record.task);
   db.query(
-    `INSERT OR REPLACE INTO sessions (id, title, cwd, model, task, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(record.id, title, record.cwd, record.model, record.task, now, now);
+    `INSERT OR REPLACE INTO sessions (id, title, cwd, model, task, created_at, updated_at, host_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(record.id, title, record.cwd, record.model, record.task, now, now, record.hostId ?? "");
   return getSession(db, record.id) as SessionRecord;
 }
 
@@ -375,6 +385,9 @@ export type HistoryRow = Omit<SessionRecord, "events_json" | "info_json" | "mess
   resumable: boolean;
 };
 
+/** Whether a row has a conversation to continue from, from cheap columns only (see `listHistory`). */
+const RESUMABLE = "CASE WHEN api_calls > 0 THEN 1 ELSE length(CAST(events_json AS BLOB)) > 2 END";
+
 /**
  * The history for the web app's "Resume": every folder, newest first, one light query.
  *
@@ -393,7 +406,7 @@ export function listHistory(db: Database, options: { query?: string; limit?: num
   const rows = db
     .query(
       `SELECT ${META_COLUMNS},
-         CASE WHEN api_calls > 0 THEN 1 ELSE length(CAST(events_json AS BLOB)) > 2 END AS resumable FROM sessions
+         ${RESUMABLE} AS resumable FROM sessions
        WHERE (? = '' OR title LIKE ? ESCAPE '\\' OR task LIKE ? ESCAPE '\\' OR cwd LIKE ? ESCAPE '\\')
          AND (? IS NULL OR cwd = ?)
        ORDER BY updated_at DESC
@@ -401,6 +414,89 @@ export function listHistory(db: Database, options: { query?: string; limit?: num
     )
     .all(query, likePattern(query), likePattern(query), likePattern(query), cwd, cwd, limit) as Array<Omit<HistoryRow, "resumable"> & { resumable: number }>;
   return rows.map((r) => ({ ...r, resumable: r.resumable === 1 }));
+}
+
+/** What the workspace queries need of a saved workspace (`SavedWorkspace` in src/workspaces.ts fits). */
+export interface WorkspaceScope {
+  id: string;
+  path: string;
+  /** A saved remote host's id; absent = this machine. */
+  hostId?: string;
+}
+
+const trimSlash = (p: string) => p.replace(/(.)\/+$/, "$1");
+
+/**
+ * `cwd` is this folder or below it, as index ranges rather than LIKE: the `(cwd, updated_at)` index
+ * answers it, and a `%` or `_` in a folder name stays a character. `[p/, p0)` is everything under
+ * `p/` because `0` is the byte after `/`; "/" is every absolute path.
+ */
+function cwdUnder(path: string): { sql: string; params: string[] } {
+  if (path === "/") return { sql: "(cwd >= '/' AND cwd < '0')", params: [] };
+  return { sql: "(cwd = ? OR (cwd >= ? AND cwd < ?))", params: [path, `${path}/`, `${path}0`] };
+}
+
+/**
+ * The rows that belong to one workspace by the rule `workspaceForCwd` applies to a live session:
+ * its folder or a subfolder, on the same host, unless a deeper saved workspace contains the cwd.
+ * The deeper ones are cut out in SQL, so a nested workspace never eats into the parent's page.
+ * Subagent sessions are left out (they are listed under the session that started them). `null`:
+ * an earlier workspace with the same folder on the same host already owns every row.
+ */
+function workspaceWhere(all: WorkspaceScope[], ws: WorkspaceScope): { sql: string; params: string[] } | null {
+  const host = ws.hostId ?? "";
+  const path = trimSlash(ws.path);
+  if (!path) return null;
+  const inside = (p: string) => (path === "/" ? p.startsWith("/") : p.startsWith(`${path}/`));
+  const clauses = ["host_id = ?", "parent_id = ''"];
+  const own = cwdUnder(path);
+  clauses.push(own.sql);
+  const params = [host, ...own.params];
+  for (const other of all) {
+    if (other === ws || (other.hostId ?? "") !== host) continue;
+    const p = trimSlash(other.path);
+    if (p === path) {
+      if (all.indexOf(other) < all.indexOf(ws)) return null;
+      continue;
+    }
+    if (!inside(p)) continue;
+    const nested = cwdUnder(p);
+    clauses.push(`NOT ${nested.sql}`);
+    params.push(...nested.params);
+  }
+  return { sql: clauses.join(" AND "), params };
+}
+
+/**
+ * Each workspace's saved sessions, newest first, `limit` per workspace, metadata only: the manual
+ * mode sidebar's saved list, one indexed query per workspace. Keyed by workspace id; every
+ * workspace has an entry.
+ */
+export function listWorkspaceSessions(db: Database, workspaces: WorkspaceScope[], limit = 30): Record<string, HistoryRow[]> {
+  const n = Math.min(500, Math.max(1, Math.floor(limit) || 30));
+  const out: Record<string, HistoryRow[]> = {};
+  for (const ws of workspaces) {
+    const where = workspaceWhere(workspaces, ws);
+    if (!where) {
+      out[ws.id] = [];
+      continue;
+    }
+    const rows = db
+      .query(`SELECT ${META_COLUMNS}, ${RESUMABLE} AS resumable FROM sessions WHERE ${where.sql} ORDER BY updated_at DESC LIMIT ?`)
+      .all(...where.params, n) as Array<Omit<HistoryRow, "resumable"> & { resumable: number }>;
+    out[ws.id] = rows.map((r) => ({ ...r, resumable: r.resumable === 1 }));
+  }
+  return out;
+}
+
+/** How many saved sessions each workspace holds, by the same rule as `listWorkspaceSessions`. */
+export function countWorkspaceSessions(db: Database, workspaces: WorkspaceScope[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const ws of workspaces) {
+    const where = workspaceWhere(workspaces, ws);
+    out[ws.id] = where ? (db.query(`SELECT COUNT(*) AS n FROM sessions WHERE ${where.sql}`).get(...where.params) as { n: number }).n : 0;
+  }
+  return out;
 }
 
 export interface FolderSummary {

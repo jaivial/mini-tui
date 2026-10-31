@@ -76,6 +76,34 @@ test("workspaces: a missing folder or an unknown host is the request's fault", a
   expect((await send("POST", "/workspaces", { path: "~/x", hostId: "no-such-host" })).status).toBe(404);
 });
 
+test("workspaces: saved sessions per workspace, subfolders and host included, nested ones apart", async () => {
+  const { createSession, openDb } = await import("../src/sessions");
+  const root = join(dir, "repo");
+  mkdirSync(join(root, "api", "src"), { recursive: true });
+  mkdirSync(join(root, "web"), { recursive: true });
+  const repo = (await (await send("POST", "/workspaces", { path: root })).json()) as { id: string };
+  const api = (await (await send("POST", "/workspaces", { path: join(root, "api") })).json()) as { id: string };
+  // The server's own database file: written from here, read there (WAL).
+  const db = openDb(join(dir, "sessions.db"));
+  createSession(db, { id: "ws-top", cwd: root, model: "m", task: "top" });
+  createSession(db, { id: "ws-web", cwd: join(root, "web"), model: "m", task: "web" });
+  createSession(db, { id: "ws-api", cwd: join(root, "api", "src"), model: "m", task: "api" });
+  createSession(db, { id: "ws-remote", cwd: root, model: "m", task: "remote", hostId: "some-host" });
+  createSession(db, { id: "ws-sibling", cwd: `${root}-old`, model: "m", task: "sibling" });
+  db.close();
+  const r = await send("GET", "/workspaces/sessions?limit=30");
+  expect(r.status).toBe(200);
+  const body = (await r.json()) as Record<string, Array<{ id: string; open: boolean; cwd: string }>>;
+  expect(body[repo.id]!.map((h) => h.id).sort()).toEqual(["ws-top", "ws-web"]);
+  expect(body[api.id]!.map((h) => h.id)).toEqual(["ws-api"]);
+  expect(body[repo.id]![0]).toMatchObject({ open: false });
+  // The folder history other callers use is unchanged: that exact folder, every host.
+  const exact = (await (await send("GET", `/history?cwd=${encodeURIComponent(root)}`)).json()) as Array<{ id: string }>;
+  expect(exact.map((h) => h.id).sort()).toEqual(["ws-remote", "ws-top"]);
+  await send("DELETE", `/workspaces/${repo.id}`);
+  await send("DELETE", `/workspaces/${api.id}`);
+});
+
 test("workspaces: another site cannot add one", async () => {
   const r = await send("POST", "/workspaces", { path: dir }, { origin: "http://evil.example" });
   expect(r.status).toBe(403);

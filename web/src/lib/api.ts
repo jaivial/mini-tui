@@ -147,6 +147,8 @@ export const api = {
     }),
   /** Saved workspaces for manual chat mode (shared with the terminal UI). */
   workspaces: () => call<{ workspaces: SavedWorkspace[] }>("/workspaces"),
+  /** Every workspace's saved sessions (its folder and subfolders, on its host), keyed by workspace id. */
+  workspaceSessions: (limit = 30) => call<Record<string, HistoryItem[]>>(`/workspaces/sessions?limit=${limit}`),
   addWorkspace: (body: { name?: string; path: string; hostId?: string }) =>
     call<SavedWorkspace>("/workspaces", { method: "POST", body: JSON.stringify(body) }),
   renameWorkspace: (id: string, name: string) =>

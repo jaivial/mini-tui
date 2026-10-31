@@ -1,6 +1,7 @@
 // Real-browser end-to-end for manual chat mode: Settings -> Manual, a workspace added through the
 // "New workspace" dialog (its folder chosen in the folder browser), a session started in it, a reply
-// on screen, the session listed under its workspace, a reload that lands on it, a second tab that
+// on screen, the session listed under its workspace, a reload that lands on it, a session in a
+// subfolder that stays listed after it is closed, a second tab that
 // follows a mode switch live, and the switch back to the dispatcher layout.
 //
 // Everything runs against a throwaway server (temp config, database and settings; a port in 7900-7999)
@@ -20,6 +21,7 @@ const dir = mkdtempSync(join(tmpdir(), "minitui-e2e-manual-"));
 const projects = join(dir, "projects");
 const folder = join(projects, "project-alpha");
 mkdirSync(join(folder, ".git"), { recursive: true });
+mkdirSync(join(folder, "api"), { recursive: true });
 mkdirSync(join(projects, "project-beta"), { recursive: true });
 
 const freePort = async () => {
@@ -203,6 +205,25 @@ try {
   await drawer.locator('section[aria-label="project-alpha"] ul button').first().click();
   check("phone: opening a session closes the drawer", await drawer.waitFor({ state: "hidden", timeout: 3000 }).then(() => true, () => false));
   await page.setViewportSize({ width: 1440, height: 900 });
+
+  // ---- a session in a subfolder of the workspace is listed under it, also once it is closed
+  const subfolder = join(folder, "api");
+  const subSession = await api("/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: "subfolder work", cwd: subfolder, target: "local" }) });
+  const subRow = section.locator("ul button", { hasText: "subfolder work" });
+  check("subfolder: the live session is under the workspace", await visible(subRow));
+  for (let i = 0; i < 100; i++) {
+    const s = (await api("/sessions")).find((x) => x.id === subSession.id);
+    if (!s || s.status !== "running") break;
+    await Bun.sleep(100);
+  }
+  await fetch(`${base}/api/sessions/${subSession.id}`, { method: "DELETE" });
+  check("subfolder: the session is closed", !(await api("/sessions")).some((s) => s.id === subSession.id));
+  const byWorkspace = await api("/workspaces/sessions?limit=30");
+  check("subfolder: the server lists it under the workspace", (byWorkspace[saved.workspaces[0].id] ?? []).some((h) => h.id === subSession.id), JSON.stringify(Object.values(byWorkspace).flat().map((h) => h.cwd)));
+  await page.waitForTimeout(600);
+  check("subfolder: still under the workspace once closed", await visible(subRow));
+  await page.reload();
+  check("subfolder: still under the workspace after a reload", await visible(page.locator('section[aria-label="project-alpha"] ul button', { hasText: "subfolder work" }), 10000));
 
   // ---- rename, then remove the workspace (its sessions stay)
   await page.getByRole("button", { name: "Options for project-alpha" }).click();
