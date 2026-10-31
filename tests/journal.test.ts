@@ -115,4 +115,55 @@ describe("trajectory journal", () => {
     watch.stop();
     expect(snapshots).toEqual([1, 2]);
   });
+
+  test("a change is read on the directory's event, not on the next poll", async () => {
+    const dir = tmp();
+    const traj = join(dir, "traj.json");
+    const journal = join(dir, "traj.jsonl");
+    writeFileSync(journal, line({ t: "msg", m: msg(1) }));
+    const snapshots: number[] = [];
+    // The backstop poll runs every 1.5 s here: an append read well before that came by event.
+    const watch = watchTrajectory(traj, (snap) => snapshots.push(snap.messages?.length ?? 0), { intervalMs: 300 });
+    await Bun.sleep(350);
+    const appended = Date.now();
+    appendFileSync(journal, line({ t: "msg", m: msg(2) }));
+    for (let i = 0; i < 100 && snapshots.length < 2; i++) await Bun.sleep(5);
+    const delay = Date.now() - appended;
+    watch.stop();
+    expect(snapshots).toEqual([1, 2]);
+    expect(delay).toBeLessThan(250);
+  });
+
+  test("events are coalesced to one read per interval while writes keep coming", async () => {
+    const dir = tmp();
+    const traj = join(dir, "traj.json");
+    const journal = join(dir, "traj.jsonl");
+    writeFileSync(journal, line({ t: "msg", m: msg(0) }));
+    const snapshots: number[] = [];
+    const watch = watchTrajectory(traj, (snap) => snapshots.push(snap.messages?.length ?? 0), { intervalMs: 100 });
+    await Bun.sleep(20);
+    for (let n = 1; n <= 20; n++) {
+      appendFileSync(journal, line({ t: "msg", m: msg(n) }));
+      await Bun.sleep(5);
+    }
+    await Bun.sleep(250);
+    watch.stop();
+    expect(snapshots[0]).toBe(1);
+    expect(snapshots.at(-1)).toBe(21);
+    expect(snapshots.length).toBeLessThanOrEqual(4);
+  });
+
+  test("without events (events: false) the poll alone still delivers", async () => {
+    const dir = tmp();
+    const traj = join(dir, "traj.json");
+    const journal = join(dir, "traj.jsonl");
+    writeFileSync(journal, line({ t: "msg", m: msg(1) }));
+    const snapshots: number[] = [];
+    const watch = watchTrajectory(traj, (snap) => snapshots.push(snap.messages?.length ?? 0), { intervalMs: 5, events: false });
+    await Bun.sleep(20);
+    appendFileSync(journal, line({ t: "msg", m: msg(2) }));
+    await Bun.sleep(30);
+    watch.stop();
+    expect(snapshots).toEqual([1, 2]);
+  });
 });

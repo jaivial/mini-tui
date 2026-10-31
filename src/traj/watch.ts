@@ -9,7 +9,8 @@
  * read keeps the last good snapshot and is retried on the next tick).
  */
 
-import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, watch, type FSWatcher } from "node:fs";
+import { basename, dirname } from "node:path";
 
 import type { Trajectory, TrajectoryInfo, TrajectoryMessage } from "./schema";
 import { POLL_MS } from "../config";
@@ -204,16 +205,28 @@ export class DurableTrajectoryReader {
 }
 
 export interface WatchOptions {
+  /** Poll interval, and the shortest gap between two reads when change events drive them. */
   intervalMs?: number;
+  /** Wake on the directory's change events instead of polling (default true). */
+  events?: boolean;
 }
+
+/** While change events drive the reads, the poll is only a backstop for an event that was lost. */
+const EVENT_BACKSTOP_FACTOR = 5;
 
 export interface WatchHandle {
   stop(): void;
 }
 
 /**
- * Poll a trajectory and call `onSnapshot` on every change. The snapshot is only valid during
+ * Watch a trajectory and call `onSnapshot` on every change. The snapshot is only valid during
  * the callback: afterwards the journal-backed messages are slimmed in place (see `slim.ts`).
+ *
+ * The run's directory is watched (the journal may not exist yet, and the export is replaced by a
+ * rename), so a run that is quiet -- a long command, a slow model call -- costs no read at all. A
+ * change is read at most once per `intervalMs` (a streamed reply appends a line per fragment),
+ * at once when the previous read is older than that. The poll stays as a slower backstop, and becomes
+ * the only driver again when the directory cannot be watched (no inotify instance left).
  */
 export function watchTrajectory(path: string, onSnapshot: (traj: Trajectory) => void, options: WatchOptions = {}): WatchHandle {
   const intervalMs = options.intervalMs ?? POLL_MS;
@@ -253,13 +266,50 @@ export function watchTrajectory(path: string, onSnapshot: (traj: Trajectory) => 
     onSnapshot(traj);
   };
 
-  const timer = setInterval(tick, intervalMs);
-  timer.unref?.();
-  tick();
+  let lastTick = 0;
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  const timedTick = () => {
+    pending = undefined;
+    lastTick = Date.now();
+    tick();
+  };
+  const onEvent = () => {
+    if (stopped || pending) return;
+    pending = setTimeout(timedTick, Math.max(0, lastTick + intervalMs - Date.now()));
+    pending.unref?.();
+  };
+
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const poll = (ms: number) => {
+    if (timer) clearInterval(timer);
+    timer = setInterval(timedTick, ms);
+    timer.unref?.();
+  };
+
+  let watcher: FSWatcher | undefined;
+  if (options.events ?? true) {
+    const names = new Set([basename(journal), basename(path)]);
+    try {
+      watcher = watch(dirname(path), { persistent: false }, (_event, name) => {
+        if (!name || names.has(String(name))) onEvent();
+      });
+      watcher.on("error", () => {
+        watcher?.close();
+        watcher = undefined;
+        if (!stopped) poll(intervalMs);
+      });
+    } catch {
+      watcher = undefined; // no directory yet, or no inotify instance left: poll as before
+    }
+  }
+  poll(watcher ? Math.max(intervalMs * EVENT_BACKSTOP_FACTOR, 1000) : intervalMs);
+  timedTick();
   return {
     stop() {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
+      if (pending) clearTimeout(pending);
+      watcher?.close();
     },
   };
 }
