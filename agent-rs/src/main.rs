@@ -16,6 +16,7 @@ mod environment;
 mod metrics;
 mod models;
 mod mcp;
+mod mem;
 mod plan;
 mod repl;
 mod rlm;
@@ -402,6 +403,7 @@ fn cmd_test_model(args: &[String]) -> i32 {
 }
 
 fn main() {
+    mem::tune();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(feature = "task-graph")]
     if argv.first().map(String::as_str) == Some("queue") {

@@ -832,6 +832,9 @@ impl Agent {
             }
             return Ok(false);
         }
+        // The process now idles for as long as the session (or its children) take: what the turn
+        // freed goes back to the kernel instead of staying resident.
+        crate::mem::trim();
         if Self::control_file().is_none() {
             // No one can send a follow-up (a headless run), but subagents still at work will
             // report: hold for them, so ending a turn never kills the children it started.
@@ -2239,6 +2242,9 @@ impl Agent {
         });
         self.add_messages(vec![message.clone()]);
         self.save(false);
+        // The summary request and the old view were copies of the whole conversation.
+        drop((view, request));
+        crate::mem::trim();
         Some(message)
     }
 
@@ -2327,6 +2333,9 @@ impl Agent {
                     eprintln!("trajectory export failed at {}: {e}; export remains pending", path.display());
                 }
             }
+            // The export copied every message (and rendered them all as text): give it back.
+            drop(data);
+            crate::mem::trim();
         }
     }
 
