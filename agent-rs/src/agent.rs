@@ -21,13 +21,72 @@ pub static STOP: AtomicBool = AtomicBool::new(false);
 /// Returns false when it was interrupted.
 pub fn interruptible_sleep(d: std::time::Duration) -> bool {
     let end = std::time::Instant::now() + d;
-    while std::time::Instant::now() < end {
+    loop {
         if STOP.load(Ordering::SeqCst) {
             return false;
         }
-        std::thread::sleep((end - std::time::Instant::now()).min(std::time::Duration::from_millis(20)));
+        let now = std::time::Instant::now();
+        if now >= end {
+            return true;
+        }
+        wait_fd_or_stop(-1, end - now);
     }
-    !STOP.load(Ordering::SeqCst)
+}
+
+/// An eventfd the signal handler writes to: a blocked wait that watches it wakes the moment a stop
+/// arrives, instead of waking every few milliseconds to look at the flag.
+static STOP_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+fn stop_fd() -> i32 {
+    let fd = STOP_FD.load(Ordering::SeqCst);
+    if fd >= 0 {
+        return fd;
+    }
+    let new = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if new < 0 {
+        return -1;
+    }
+    match STOP_FD.compare_exchange(-1, new, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => new,
+        Err(existing) => {
+            unsafe { libc::close(new) };
+            existing
+        }
+    }
+}
+
+/// Called from the signal handler, after `STOP` is set: async-signal-safe (one `write`).
+pub fn wake_stop() {
+    let fd = STOP_FD.load(Ordering::SeqCst);
+    if fd >= 0 {
+        let one: u64 = 1;
+        unsafe { libc::write(fd, &one as *const u64 as *const libc::c_void, 8) };
+    }
+}
+
+/// Block until `fd` is readable (a negative `fd`: never), a stop signal arrives, or `timeout`
+/// passes. Callers re-check what they wait for: this only says that something may have changed.
+pub fn wait_fd_or_stop(fd: i32, timeout: std::time::Duration) {
+    // Created before the flag is read: a signal after the check finds the eventfd to wake.
+    let stop = stop_fd();
+    if STOP.load(Ordering::SeqCst) {
+        return;
+    }
+    // Without the eventfd the flag can only be polled.
+    let timeout = if stop < 0 { timeout.min(std::time::Duration::from_millis(20)) } else { timeout };
+    if stop < 0 && fd < 0 {
+        std::thread::sleep(timeout);
+        return;
+    }
+    let ms = timeout.as_micros().div_ceil(1000).min(i32::MAX as u128) as libc::c_int;
+    let mut fds = [libc::pollfd { fd, events: libc::POLLIN, revents: 0 }, libc::pollfd { fd: stop, events: libc::POLLIN, revents: 0 }];
+    let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) };
+    // A stop that was cleared since (`rlm` resets the flag between runs) must not leave the
+    // eventfd readable, or every later wait would return at once.
+    if ready > 0 && fds[1].revents & libc::POLLIN != 0 && !STOP.load(Ordering::SeqCst) {
+        let mut count: u64 = 0;
+        unsafe { libc::read(stop, &mut count as *mut u64 as *mut libc::c_void, 8) };
+    }
 }
 
 /// Process group of the command running now (0 = none), killed with us on SIGTERM.
@@ -773,6 +832,9 @@ impl Agent {
             }
             return Ok(false);
         }
+        // The process now idles for as long as the session (or its children) take: what the turn
+        // freed goes back to the kernel instead of staying resident.
+        crate::mem::trim();
         if Self::control_file().is_none() {
             // No one can send a follow-up (a headless run), but subagents still at work will
             // report: hold for them, so ending a turn never kills the children it started.
@@ -2180,6 +2242,9 @@ impl Agent {
         });
         self.add_messages(vec![message.clone()]);
         self.save(false);
+        // The summary request and the old view were copies of the whole conversation.
+        drop((view, request));
+        crate::mem::trim();
         Some(message)
     }
 
@@ -2268,6 +2333,9 @@ impl Agent {
                     eprintln!("trajectory export failed at {}: {e}; export remains pending", path.display());
                 }
             }
+            // The export copied every message (and rendered them all as text): give it back.
+            drop(data);
+            crate::mem::trim();
         }
     }
 

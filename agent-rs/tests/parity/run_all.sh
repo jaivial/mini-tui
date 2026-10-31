@@ -1,7 +1,7 @@
 #!/bin/sh
 # Every parity scenario: the Python agent and the Rust agent must write identical trajectories.
 cd "$(dirname "$0")/.." || exit 1
-PY=/usr/bin/python3.10
+PY=${PY:-/usr/bin/python3.10}
 fail=0
 run() {
   name=$1; shift

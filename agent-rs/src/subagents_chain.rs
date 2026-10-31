@@ -593,6 +593,8 @@ impl Hub {
                 h.start_job(j, &copy);
             }
             h.write_index();
+            drop(h);
+            super::ensure_monitor();
         });
     }
 

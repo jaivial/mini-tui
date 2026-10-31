@@ -17,6 +17,7 @@ mod environment;
 mod metrics;
 mod models;
 mod mcp;
+mod mem;
 mod plan;
 mod repl;
 mod rlm;
@@ -195,6 +196,7 @@ fn parse_args(argv: &[String]) -> Result<ParseResult, String> {
 extern "C" fn on_signal(sig: libc::c_int) {
     SIGNAL.store(sig, Ordering::SeqCst);
     STOP.store(true, Ordering::SeqCst);
+    agent::wake_stop();
     if sig == libc::SIGINT {
         // e2e: interrupt the worker subagents too (they save); the coordinator then winds down.
         for g in e2e::worker::GROUPS.iter() {
@@ -402,6 +404,7 @@ fn cmd_test_model(args: &[String]) -> i32 {
 }
 
 fn main() {
+    mem::tune();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(feature = "task-graph")]
     if argv.first().map(String::as_str) == Some("queue") {

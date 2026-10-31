@@ -287,7 +287,10 @@ fn interruptible<T: Send + 'static>(
 /// occasionally sat 100+ s at the provider; the duplicate answers in the usual time.
 pub fn post_json(base: &str, path: &str, body: &Value, headers: &[(String, String)], timeout: f64) -> Result<Value, ModelError> {
     let hedge: f64 = std::env::var("MINI_AGENT_HEDGE_S").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
-    let (base, path, body, headers) = (base.to_string(), path.to_string(), body.clone(), headers.to_vec());
+    // Serialized once, here: the worker and every hedged copy send these same bytes, instead of
+    // each holding its own clone of the whole conversation as a JSON tree.
+    let body = std::sync::Arc::new(serde_json::to_string(body).unwrap());
+    let (base, path, headers) = (base.to_string(), path.to_string(), headers.to_vec());
     if hedge <= 0.0 {
         return interruptible(&mut None, move |_| post_json_blocking(&base, &path, &body, &headers, timeout));
     }
@@ -295,7 +298,7 @@ pub fn post_json(base: &str, path: &str, body: &Value, headers: &[(String, Strin
         use std::sync::mpsc;
         let (tx, rx) = mpsc::channel::<Result<Value, ModelError>>();
         let launch = |tx: mpsc::Sender<Result<Value, ModelError>>| {
-            let (base, path, body, headers) = (base.clone(), path.clone(), body.clone(), headers.clone());
+            let (base, path, body, headers) = (base.clone(), path.clone(), std::sync::Arc::clone(&body), headers.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(post_json_blocking(&base, &path, &body, &headers, timeout));
             });
@@ -330,10 +333,9 @@ pub fn post_json(base: &str, path: &str, body: &Value, headers: &[(String, Strin
     })
 }
 
-fn post_json_blocking(base: &str, path: &str, body: &Value, headers: &[(String, String)], timeout: f64) -> Result<Value, ModelError> {
+fn post_json_blocking(base: &str, path: &str, payload: &str, headers: &[(String, String)], timeout: f64) -> Result<Value, ModelError> {
     let url = format!("{}{}", base.trim_end_matches('/'), path);
-    let payload = serde_json::to_string(body).unwrap();
-    match request(&url, headers, timeout, "application/json").send_string(&payload) {
+    match request(&url, headers, timeout, "application/json").send_string(payload) {
         Ok(resp) => {
             let text = resp.into_string().map_err(|e| transport_error(&e, base))?;
             serde_json::from_str(&text).map_err(|_| ModelError {
@@ -366,17 +368,17 @@ fn retry_headers(resp: &ureq::Response) -> std::collections::HashMap<String, Str
 
 /// POST with `stream: true` and rebuild the chat-completions body from the SSE chunks
 /// (interruptible by a stop signal; fragments reach `sink` as they arrive).
-pub fn post_chat_stream(base: &str, body: &Value, headers: &[(String, String)], timeout: f64, sink: &mut Option<DeltaSink>) -> Result<Value, ModelError> {
-    let (base, body, headers) = (base.to_string(), body.clone(), headers.to_vec());
+/// The body is taken by value: it is the whole conversation, and the worker thread owns it.
+pub fn post_chat_stream(base: &str, body: Value, headers: &[(String, String)], timeout: f64, sink: &mut Option<DeltaSink>) -> Result<Value, ModelError> {
+    let (base, headers) = (base.to_string(), headers.to_vec());
     interruptible(sink, move |forward| {
         let mut forward: Option<DeltaSink> = Some(forward);
-        post_chat_stream_blocking(&base, &body, &headers, timeout, &mut forward)
+        post_chat_stream_blocking(&base, body, &headers, timeout, &mut forward)
     })
 }
 
-fn post_chat_stream_blocking(base: &str, body: &Value, headers: &[(String, String)], timeout: f64, sink: &mut Option<DeltaSink>) -> Result<Value, ModelError> {
+fn post_chat_stream_blocking(base: &str, mut body: Value, headers: &[(String, String)], timeout: f64, sink: &mut Option<DeltaSink>) -> Result<Value, ModelError> {
     let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-    let mut body = body.clone();
     body["stream"] = json!(true);
     // An OpenAI-compatible stream carries no usage block unless it is asked for. Gateways such as
     // OpenCode Go send it anyway; MiniMax and Kimi do not, so every call they served was journalled

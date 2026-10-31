@@ -185,3 +185,17 @@ The renderer's tool-call/observation pairing index now has an explicit append-on
 journal updates extend it in O(delta); resume, `/new`, static scenes, and unusual out-of-order
 arrivals use the original full rebuild. `tests/items.test.ts` fuzzes append/replacement sequences
 against that full builder before the cache is trusted.
+
+
+## 10. Rust per-session footprint (2026-10-31)
+
+Measured with `benchmark/footprint/footprint.py` (scripted local mock, no network). A typical web
+turn (12 steps, cu enabled): agent RSS 14.0 -> 13.0 MB, process tree 23.7 -> 19.0 MB, 5 -> 3
+threads, 4 -> 3 processes, voluntary context switches 566 -> 147. A session waiting on a 20 s
+command: 4020 -> 40 context switches. After a 60-step turn the idle session holds 14.9 MB instead
+of 21.9 MB. Changes: glibc arena cap and `malloc_trim` after big frees, the built-in `cu` MCP
+server started on its first call from a cached tool list, fd/condvar waits instead of polling,
+a lazily started hub monitor, no extra request-body clones, and an event-driven trajectory
+watcher in the TUI. Request bytes are identical before and after. Details, per-change numbers and
+the rejected options (mimalloc, fat LTO, panic=abort, the per-step context clone):
+[ANALYSIS-session-footprint-20261031.md](ANALYSIS-session-footprint-20261031.md).

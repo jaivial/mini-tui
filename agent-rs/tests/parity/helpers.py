@@ -49,7 +49,7 @@ for name, sub, script, steps in CASES:
                    MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT="1", PYTHONPATH=os.path.join(REPO, "agent", "src"))
         args = ["the task text"] if sub == ["title"] else []
         if kind == "py":
-            cmd = ["/usr/bin/python3.10", os.path.join(REPO, "scripts", script), *args, "cliproxy/m"]
+            cmd = [sys.executable, os.path.join(REPO, "scripts", script), *args, "cliproxy/m"]
         else:
             cmd = [RUST, *sub, *args, "cliproxy/m"]
         r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)

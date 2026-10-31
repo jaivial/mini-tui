@@ -860,19 +860,34 @@ pub fn start(traj: &Path, configs: &[String], parent_limit: f64) -> Option<Guard
             }
         });
     }
-    {
-        let hub = hub.clone();
-        let every = Duration::from_millis(env_num("MINI_AGENT_MONITOR_MS", 250u64));
-        std::thread::spawn(move || {
-            while ACTIVE.load(Ordering::SeqCst) {
-                if let Ok(mut h) = hub.lock() {
-                    h.monitor();
-                }
-                std::thread::sleep(every);
-            }
-        });
-    }
+    ensure_monitor();
     Some(Guard)
+}
+
+static MONITOR: AtomicBool = AtomicBool::new(false);
+
+/// The monitor thread ticks every 250 ms, but with no child and no plan a tick has nothing to
+/// read: it is started by the first of them (a recovered child, a saved plan, a spawn), not by
+/// every turn of a session that never delegates. Callers already tick inline when they ask.
+pub(crate) fn ensure_monitor() {
+    let Some(hub) = HUB.get() else { return };
+    if MONITOR.load(Ordering::SeqCst) || !ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
+    let needed = hub.lock().map(|h| !h.children.is_empty() || h.plan.is_some()).unwrap_or(false);
+    if !needed || MONITOR.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let hub = hub.clone();
+    let every = Duration::from_millis(env_num("MINI_AGENT_MONITOR_MS", 250u64));
+    std::thread::spawn(move || {
+        while ACTIVE.load(Ordering::SeqCst) {
+            if let Ok(mut h) = hub.lock() {
+                h.monitor();
+            }
+            std::thread::sleep(every);
+        }
+    });
 }
 
 /// Notes for the parent (children finished, failed, stalled or asked), oldest first.
@@ -2661,6 +2676,7 @@ fn serve(hub: Arc<Mutex<Hub>>, stream: UnixStream) {
     }
     let req: Value = serde_json::from_str(&line).unwrap_or(json!({}));
     let reply = handle(&hub, &req);
+    ensure_monitor();
     let mut stream = stream;
     let _ = writeln!(stream, "{}", reply);
 }
