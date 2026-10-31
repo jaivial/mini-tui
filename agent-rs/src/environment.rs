@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 // The codejs host bridge runs synchronously on this agent thread. Propagate its
@@ -136,6 +136,8 @@ pub struct Child {
 /// facts stay readable without it.
 struct Reader {
     collected: Arc<Mutex<Collected>>,
+    /// Signalled (under `collected`'s lock) on every chunk and at EOF: the drain waits on it.
+    changed: Arc<Condvar>,
     /// The pipe reached EOF: no more bytes can arrive and the thread is about to end.
     eof: Arc<AtomicBool>,
     handle: std::thread::JoinHandle<()>,
@@ -144,22 +146,22 @@ struct Reader {
 impl Reader {
     fn new(r: std::fs::File, cap: usize) -> Self {
         let collected = Arc::new(Mutex::new(Collected::new(cap)));
+        let changed = Arc::new(Condvar::new());
         let eof = Arc::new(AtomicBool::new(false));
-        let (c, e) = (Arc::clone(&collected), Arc::clone(&eof));
+        let (c, v, e) = (Arc::clone(&collected), Arc::clone(&changed), Arc::clone(&eof));
         let handle = std::thread::spawn(move || {
-            collect_bounded(r, c);
+            collect_bounded(r, &c, &v);
+            // Set under the lock the drain checks it under, so its wait cannot miss the EOF.
+            let guard = lock(&c);
             e.store(true, Ordering::SeqCst);
+            drop(guard);
+            v.notify_all();
         });
-        Reader { collected, eof, handle }
+        Reader { collected, changed, eof, handle }
     }
 
     fn done(&self) -> bool {
         self.eof.load(Ordering::SeqCst)
-    }
-
-    /// Bytes collected so far. What the drain window watches for progress.
-    fn total(&self) -> usize {
-        lock(&self.collected).total
     }
 
     /// Take the page, joining the thread when it is already finished (the normal case). When it is
@@ -262,22 +264,25 @@ impl Child {
     /// it takes the reader to see the EOF; without it a killed command's last words could be
     /// dropped on the floor by a race between the SIGKILL landing and the thread being scheduled.
     fn drain(&mut self, idle: Duration, note: Option<String>) -> String {
-        let mut total = self.reader.as_ref().map_or(0, Reader::total);
-        let mut idle_since = Instant::now();
-        while let Some(r) = self.reader.as_ref() {
-            if r.done() {
-                break;
+        if let Some(r) = self.reader.as_ref() {
+            let mut guard = lock(&r.collected);
+            let mut total = guard.total;
+            let mut idle_since = Instant::now();
+            loop {
+                if r.done() {
+                    break;
+                }
+                let now = Instant::now();
+                if guard.total != total {
+                    total = guard.total;
+                    idle_since = now;
+                }
+                let quiet = now - idle_since;
+                if quiet >= idle {
+                    break;
+                }
+                guard = r.changed.wait_timeout(guard, idle - quiet).unwrap_or_else(|e| e.into_inner()).0;
             }
-            let now = Instant::now();
-            let seen = r.total();
-            if seen != total {
-                total = seen;
-                idle_since = now;
-            }
-            if now - idle_since >= idle {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
         }
         self.reader.take().map_or_else(String::new, |r| r.take(note))
     }
@@ -306,6 +311,9 @@ impl Child {
         use crate::agent::STOP;
         let command_deadline = Instant::now() + Duration::from_secs(timeout.max(1));
         let deadline = HOST_DEADLINE.with(|slot| slot.get().map_or(command_deadline, |end| end.min(command_deadline)));
+        // The exit is waited for on a pidfd (readable once the leader exits), together with the
+        // stop eventfd: no wakeups while a long command runs. Without one, the old 5 ms poll.
+        let pidfd = PidFd::open(self.pid);
         let status = loop {
             match self.process.try_wait() {
                 Ok(Some(status)) => break Some(status),
@@ -326,7 +334,10 @@ impl Child {
                 let out = self.take_output(None);
                 return Err((out, "TimeoutExpired".into(), format!("Command '{label}' timed out after {timeout} seconds")));
             }
-            std::thread::sleep(Duration::from_millis(5));
+            match &pidfd {
+                Some(fd) => crate::agent::wait_fd_or_stop(fd.0, deadline.saturating_duration_since(Instant::now())),
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
         };
         // The leader is reaped: the command is OVER and its exit code is final. What can still
         // arrive is output from a process it detached on purpose, so this wait ends on silence
@@ -432,15 +443,34 @@ impl Collected {
     }
 }
 
+/// A pidfd for a child we have not reaped yet (so the pid cannot have been reused). Closed on drop.
+struct PidFd(i32);
+
+impl PidFd {
+    fn open(pid: i32) -> Option<Self> {
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        (fd >= 0).then_some(PidFd(fd as i32))
+    }
+}
+
+impl Drop for PidFd {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.0) };
+    }
+}
+
 /// Read `r` to EOF, keeping at most `cap` bytes (head + tail) in memory and publishing them as
 /// it goes, so a waiter that gives up on the pipe can still take what arrived.
-fn collect_bounded(r: impl std::io::Read, into: Arc<Mutex<Collected>>) {
+fn collect_bounded(r: impl std::io::Read, into: &Mutex<Collected>, changed: &Condvar) {
     let mut r = r;
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         match r.read(&mut buf) {
             Ok(0) => break,
-            Ok(n) => lock(&into).push(&buf[..n]),
+            Ok(n) => {
+                lock(into).push(&buf[..n]);
+                changed.notify_all();
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }

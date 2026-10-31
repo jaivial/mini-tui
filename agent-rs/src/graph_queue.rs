@@ -900,6 +900,7 @@ fn execute_wave(
 // terminate their own process groups and close leases first, so the queue only sets STOP.
 extern "C" fn stop_queue(_: libc::c_int) {
     crate::agent::STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::agent::wake_stop();
 }
 pub fn install_signals() {
     unsafe {
