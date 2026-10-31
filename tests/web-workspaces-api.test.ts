@@ -3,7 +3,7 @@
  * one file) and a mode switch that reaches every open tab.
  */
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +24,8 @@ beforeAll(async () => {
       MINITUI_SKILLS_DIR: join(dir, "skills"),
       MINITUI_DB_PATH: join(dir, "sessions.db"),
       MINITUI_CONFIG_DIR: dir,
+      // Set outright: another test file in the same run may have left its own path in process.env.
+      MINITUI_WORKSPACES_PATH: join(dir, "workspaces.json"),
       MINITUI_RESUME_DIR: join(dir, "resume"),
       MINITUI_RUNS_DIR: join(dir, "runs"),
       MINITUI_WEB_TERMINAL: "0",
@@ -79,27 +81,48 @@ test("workspaces: another site cannot add one", async () => {
   expect(r.status).toBe(403);
 });
 
-test("a chat mode switch is pushed to every open tab", async () => {
+/** Opens the stream and waits past its snapshot frames, so later events are caused by the test. */
+async function openStream() {
   const abort = new AbortController();
   const stream = await fetch(`${base}/api/stream`, { signal: abort.signal });
   const reader = stream.body!.getReader();
   const decoder = new TextDecoder();
-  // The first frames are the stream's snapshot (hello, queue, hosts…): wait for them before patching.
   let buffered = "";
   while (!buffered.includes('"type":"hosts"')) buffered += decoder.decode((await reader.read()).value, { stream: true });
+  buffered = "";
+  return {
+    async settingsEvent(): Promise<{ settings?: { chatMode?: string } } | undefined> {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        buffered += decoder.decode((await reader.read()).value, { stream: true });
+        for (const line of buffered.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const e = JSON.parse(line.slice(6));
+          if (e.type === "settings") return e;
+        }
+      }
+      return undefined;
+    },
+    close: () => abort.abort(),
+  };
+}
+
+test("a chat mode switch is pushed to every open tab", async () => {
+  const stream = await openStream();
   const patched = await send("PATCH", "/settings", { chatMode: "manual" });
   expect(((await patched.json()) as { chatMode: string }).chatMode).toBe("manual");
-  const deadline = Date.now() + 5000;
-  let event: { type: string; settings?: { chatMode?: string } } | undefined;
-  while (!event && Date.now() < deadline) {
-    buffered += decoder.decode((await reader.read()).value, { stream: true });
-    for (const line of buffered.split("\n")) {
-      if (!line.startsWith("data: ")) continue;
-      const e = JSON.parse(line.slice(6));
-      if (e.type === "settings") event = e;
-    }
-  }
-  abort.abort();
+  const event = await stream.settingsEvent();
+  stream.close();
   expect(event?.settings?.chatMode).toBe("manual");
   expect(((await (await send("GET", "/settings")).json()) as { chatMode: string }).chatMode).toBe("manual");
+});
+
+test("a switch the terminal UI saves to the shared file reaches open tabs too", async () => {
+  const stream = await openStream();
+  const file = join(dir, "settings.json");
+  const stored = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, `${JSON.stringify({ ...stored, chatMode: "dispatcher" }, null, 2)}\n`);
+  const event = await stream.settingsEvent();
+  stream.close();
+  expect(event?.settings?.chatMode).toBe("dispatcher");
 });

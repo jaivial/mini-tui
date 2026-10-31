@@ -375,9 +375,9 @@ describe("no route can read a body the lenient way (E41)", () => {
     const callSites = [...code.matchAll(/await readJsonOrRefuse\(/g)];
     // The eight E40 converted, plus /router/preview (E41), plus the work queue's three
     // (/queue-agent/*, /queue/prompt, /queue/tasks/:id/redirect) and the browser panel's input, plus MCP's
-    // three (install, enable/disable, paste the redirect). Each one is a route that acts on what arrived, so
-    // each one has to be able to refuse.
-    expect(callSites.length).toBe(16);
+    // three (install, enable/disable, paste the redirect), plus saved workspaces' two (add, rename). Each one
+    // is a route that acts on what arrived, so each one has to be able to refuse.
+    expect(callSites.length).toBe(18);
   });
 
   test("the 413 fast-refuse and the multipart upload still give their token back", () => {

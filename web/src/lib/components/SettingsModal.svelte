@@ -19,7 +19,7 @@
   import { api } from "../api";
   import { relativeTime } from "../format";
   import { skillIsCut } from "../skillDescription";
-  import type { ProviderCatalogEntry } from "../types";
+  import type { ChatMode, ProviderCatalogEntry } from "../types";
 
   let {
     open = $bindable(false),
@@ -183,6 +183,19 @@
       toasts.push("Could not save the setting", { detail: (error as Error).message, tone: "err" });
     }
   }
+
+  const CHAT_MODES: { value: ChatMode; label: string; description: string }[] = [
+    { value: "dispatcher", label: "Dispatcher", description: "One chat creates and classifies tasks; each runs as a background session." },
+    { value: "manual", label: "Manual", description: "You create sessions yourself, inside workspaces listed in the sidebar." },
+  ];
+  async function setChatMode(value: ChatMode) {
+    if ((catalog.settings?.chatMode ?? "dispatcher") === value) return;
+    try {
+      await catalog.saveSettings({ chatMode: value });
+    } catch (error) {
+      toasts.push("Could not switch the main chat", { detail: (error as Error).message, tone: "err" });
+    }
+  }
 </script>
 
 <Modal bind:open title="Settings" description="How mini-tui looks and which providers it can use." width="max-w-2xl" {onclose}>
@@ -192,6 +205,29 @@
 
     {#if tab === "general"}
       <div role="tabpanel" id="{uid}-panel-general" aria-labelledby="{uid}-tab-general" class="flex flex-col gap-6">
+        <fieldset class="flex flex-col gap-2">
+          <legend class="mb-1 text-[13px] font-medium text-ink">Main chat</legend>
+          <p class="-mt-1 text-[12.5px] text-ink-muted">Shared with the terminal UI. Switching keeps every session; only the layout changes.</p>
+          <div class="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Main chat mode">
+            {#each CHAT_MODES as mode (mode.value)}
+              {@const on = (catalog.settings?.chatMode ?? "dispatcher") === mode.value}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={on}
+                disabled={!catalog.settings}
+                class="interactive flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-3 py-2.5 text-left pointer-coarse:min-h-11
+                  {on ? 'border-brand bg-brand-soft text-ink' : 'border-line text-ink-muted hover:text-ink'}"
+                onclick={() => void setChatMode(mode.value)}
+              >
+                <span class="text-[13px] font-medium">{mode.label}</span>
+                <span class="text-[11.5px] leading-4 text-ink-muted">{mode.description}</span>
+              </button>
+            {/each}
+          </div>
+        </fieldset>
+
+        {#if catalog.settings?.chatMode !== "manual"}
         <fieldset class="flex flex-col gap-2">
           <legend class="mb-1 text-[13px] font-medium text-ink">Work queue</legend>
           <p class="-mt-1 text-[12.5px] text-ink-muted" id="{uid}-conc-help">How many tasks run at the same time. The rest wait in the queue and start as soon as a slot frees up (1–{catalog.settings?.maxQueueConcurrency ?? 300}).</p>
@@ -220,6 +256,7 @@
             </div>
           {/if}
         </fieldset>
+        {/if}
 
         <fieldset class="flex flex-col gap-2">
           <legend class="mb-1 text-[13px] font-medium text-ink">Model fallback order</legend>

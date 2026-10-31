@@ -16,7 +16,7 @@ import { SessionSocket, type SocketState } from "../session-socket";
 import { shallowEqual } from "../equal";
 import { isNowhere, unknown } from "../unknownSessions";
 import { markArrival, markCallEnd, markCallStart } from "../toolTimings";
-import type { Frame, QueueView, RemoteHost, SessionMeta, SessionState, WireSession } from "../types";
+import type { Frame, QueueView, RemoteHost, ServerEvent, SessionMeta, SessionState, WireSession } from "../types";
 
 export type Link = "idle" | "connecting" | "live" | "reconnecting" | "gone";
 
@@ -40,6 +40,18 @@ class SessionStore {
   onQueue(listener: (view: QueueView) => void): () => void {
     this.#queueListeners.add(listener);
     return () => this.#queueListeners.delete(listener);
+  }
+  #eventListeners = new Map<string, Set<(event: ServerEvent) => void>>();
+  /**
+   * Other pushes on the shared stream, by type: `settings` and `workspaces` (every tab follows a
+   * change made in any of them), and `hello` (the stream (re)connected: whatever was missed while it
+   * was down has to be read again).
+   */
+  onEvent(type: "hello" | "settings" | "workspaces", listener: (event: ServerEvent) => void): () => void {
+    let set = this.#eventListeners.get(type);
+    if (!set) this.#eventListeners.set(type, (set = new Set()));
+    set.add(listener);
+    return () => set.delete(listener);
   }
   /** The one backoff policy (E50), shared with the sockets: a stream that merely OPENED is not proof. */
   #r = new Reconnect({ baseDelay: 1_000, maxDelay: 15_000 });
@@ -127,6 +139,8 @@ class SessionStore {
         this.hosts = payload.hosts;
       } else if (payload.type === "queue" && payload.tasks) {
         for (const listener of this.#queueListeners) listener({ tasks: payload.tasks, main: payload.main ?? "", concurrency: payload.concurrency ?? 0, delta: payload.delta });
+      } else if (payload.type === "hello" || payload.type === "settings" || payload.type === "workspaces") {
+        for (const listener of this.#eventListeners.get(payload.type) ?? []) listener(payload as ServerEvent);
       }
     };
   }

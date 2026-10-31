@@ -192,8 +192,25 @@ export interface SkillInfo {
 
 export type OutputMode = "collapsed" | "trim" | "expanded";
 
+/** What the main chat is: one dispatcher that creates tasks, or sessions you create in workspaces. */
+export type ChatMode = "dispatcher" | "manual";
+
+/** A saved workspace (`GET /api/workspaces`): a named folder on this machine or a remote host. */
+export interface SavedWorkspace {
+  id: string;
+  name: string;
+  /** Absolute on this machine; as typed (may start with `~`) on a remote host. */
+  path: string;
+  /** A saved remote host's id; absent = this machine. */
+  hostId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface SettingsView {
   outputMode: OutputMode;
+  /** Absent only from an older server, which means the dispatcher. */
+  chatMode?: ChatMode;
   theme?: string;
   /** The model a fresh chat starts on (last one picked anywhere). */
   lastModel: string;
@@ -363,10 +380,12 @@ export interface QueueView {
 }
 
 export interface ServerEvent {
-  type: "hello" | "session" | "session-gone" | "hosts" | "pong" | "queue";
+  type: "hello" | "session" | "session-gone" | "hosts" | "pong" | "queue" | "settings" | "workspaces";
   session?: SessionMeta;
   id?: string;
   hosts?: RemoteHost[];
+  settings?: SettingsView;
+  workspaces?: SavedWorkspace[];
 }
 
 /** One entry from `GET /api/models`. */

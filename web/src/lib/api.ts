@@ -13,6 +13,7 @@ import type {
   ProviderView,
   RemoteHost,
   RouteLevel,
+  SavedWorkspace,
   RouterPreview,
   RouterStatusView,
   SessionMeta,
@@ -144,6 +145,13 @@ export const api = {
       body: JSON.stringify(host),
       signal,
     }),
+  /** Saved workspaces for manual chat mode (shared with the terminal UI). */
+  workspaces: () => call<{ workspaces: SavedWorkspace[] }>("/workspaces"),
+  addWorkspace: (body: { name?: string; path: string; hostId?: string }) =>
+    call<SavedWorkspace>("/workspaces", { method: "POST", body: JSON.stringify(body) }),
+  renameWorkspace: (id: string, name: string) =>
+    call<SavedWorkspace>(`/workspaces/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteWorkspace: (id: string) => call<{ ok: true }>(`/workspaces/${encodeURIComponent(id)}`, { method: "DELETE" }),
   models: () => call<ModelInfo[]>("/models"),
   commands: () => call<CommandInfo[]>("/commands"),
   skills: () => call<SkillInfo[]>("/skills"),

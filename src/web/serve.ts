@@ -8,8 +8,8 @@
  *   bun src/web/serve.ts [--port 4317] [--host 127.0.0.1]
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { extname, join, normalize, resolve } from "node:path";
+import { existsSync, readFileSync, statSync, watch } from "node:fs";
+import { basename, dirname, extname, join, normalize, resolve } from "node:path";
 
 import { SessionManager, loadHosts, saveHosts, probeHost, type RemoteHostRecord } from "./sessions";
 import { resolveAttachments } from "./sessions";
@@ -26,6 +26,7 @@ import { AgentsStreamHub } from "./agentsStream";
 import { listAgentDefs } from "../mini/agentDefs";
 import { WORKSPACE_MAX, WorkspaceStore } from "./workspace";
 import { WorkspaceError, addWorkspace, listWorkspaces, removeWorkspace, renameWorkspace } from "../workspaces";
+import { settingsFilePath } from "../settings";
 import { homedir } from "node:os";
 import { runQueueRead } from "../mini/queueRead";
 import { ChannelInbox } from "../channels/inbox";
@@ -233,6 +234,35 @@ const queueHost: QueueHost = new QueueHost({
   onChange: queueChanged,
   watchers: (id) => feed.count(id),
 });
+
+// The terminal UI saves the same settings file, so a mode switch made there reaches every tab
+// too. The folder is watched because the file may not exist yet; a burst of writes becomes one
+// push, and a view equal to the last one pushed (this server's own PATCH) is dropped.
+let settingsPushed = "";
+function pushSettings(view: ReturnType<typeof settingsView>): void {
+  settingsPushed = JSON.stringify(view);
+  broadcast({ type: "settings", settings: view });
+}
+const sharedSettingsFile = settingsFilePath();
+if (sharedSettingsFile && existsSync(dirname(sharedSettingsFile))) {
+  settingsPushed = JSON.stringify(settingsView());
+  let settingsTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    watch(dirname(sharedSettingsFile), (_event, name) => {
+      if (name && name !== basename(sharedSettingsFile)) return;
+      clearTimeout(settingsTimer);
+      settingsTimer = setTimeout(() => {
+        const view = settingsView();
+        if (JSON.stringify(view) === settingsPushed) return;
+        queueHost.queue.resize();
+        queueChanged();
+        pushSettings(view);
+      }, 150);
+    }).unref();
+  } catch {
+    // Without a watch, tabs still re-read settings when they regain focus or reconnect.
+  }
+}
 
 // Terminals start where the session works: its folder on this machine, or an ssh shell on its host.
 const terminals = new Terminals();
@@ -1712,7 +1742,7 @@ const handle = async (request: Request, srv: import("bun").Server<SocketData>): 
         queueHost.queue.resize();
         queueChanged();
         // Every open tab follows a mode switch (dispatcher ↔ manual) made anywhere.
-        broadcast({ type: "settings", settings: patched });
+        pushSettings(patched);
         return json(patched);
       }
 

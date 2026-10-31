@@ -55,12 +55,23 @@ class Catalog {
     void this.loadSkills(true);
   }
 
-  async loadSettings() {
-    try {
-      this.settings = await api.settings();
-    } catch (error) {
-      this.error = (error as Error).message;
-    }
+  #settingsLoad: Promise<void> | null = null;
+
+  loadSettings(): Promise<void> {
+    const load = (async () => {
+      try {
+        this.settings = await api.settings();
+      } catch (error) {
+        this.error = (error as Error).message;
+      }
+    })();
+    this.#settingsLoad = load;
+    return load;
+  }
+
+  /** Settles once the settings have been asked for (loaded, or failed to load). */
+  settingsReady(): Promise<void> {
+    return this.#settingsLoad ?? this.loadSettings();
   }
 
   async saveSettings(patch: Record<string, unknown>) {

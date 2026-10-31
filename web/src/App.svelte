@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { ArrowDown, ListTodo, SquarePen, Settings, Keyboard, WifiOff, ArrowLeft, Globe, Sparkles, ArrowUpRight, PanelLeft } from "@lucide/svelte";
+  import { ArrowDown, ListTodo, SquarePen, Settings, Keyboard, WifiOff, ArrowLeft, Globe, Sparkles, ArrowUpRight, PanelLeft, Folder, FolderPlus } from "@lucide/svelte";
   import { fade } from "svelte/transition";
   import { dragSize, effectiveWidth, keySize, loadPanelSize, savePanelSize, type PanelSize } from "./lib/panelWidth";
   import { popIn, pressable, staggerChildren } from "./lib/motion";
@@ -14,10 +14,14 @@
   import Lightbox from "./lib/components/Lightbox.svelte";
   import QueuePanel from "./lib/components/QueuePanel.svelte";
   import WorkspaceSidebar from "./lib/components/WorkspaceSidebar.svelte";
+  import ManualSidebar from "./lib/components/ManualSidebar.svelte";
   import BrowserPanel from "./lib/components/BrowserPanel.svelte";
   import { catalog } from "./lib/stores/catalog.svelte";
   import { store } from "./lib/stores/sessions.svelte";
   import { queue } from "./lib/stores/queue.svelte";
+  import { workspaces } from "./lib/stores/workspaces.svelte";
+  import { loadPlace, savePlace, workspaceForCwd } from "./lib/savedWorkspaces";
+  import { tildify } from "./lib/folderPath";
   import { toasts } from "./lib/stores/toast.svelte";
   import { api } from "./lib/api";
   import { parseCommand } from "./lib/completion";
@@ -33,6 +37,10 @@
    * The chat's agent is the dispatcher: everything sent here becomes tasks in the work queue (or a
    * redirect of a task in flight), and each task runs as its own background session. The panel on
    * the right lists and filters them; the left groups their sessions by dispatcher-assigned workspace.
+   *
+   * In manual chat mode (`chatMode: "manual"` in the shared settings) there is no dispatcher: the left
+   * lists saved workspaces (folders) and their sessions, and the chat is whichever of those sessions
+   * is open, or a draft that starts a new one in the chosen workspace.
    */
   const NARROW = 900;
   const COMPACT = 1200;
@@ -83,6 +91,8 @@
   let resizing = $state(false);
   const panelPx = $derived(effectiveWidth(panelSize, shellWidth || 1200));
   const panelFull = $derived(panelSize.full && !narrow);
+  /** Manual mode has no task queue: the panel shows only when it holds the browser. */
+  const panelShown = $derived(panelOpen && !(catalog.settings?.chatMode === "manual" && panelTab === "tasks"));
   function setPanelSize(next: PanelSize) {
     panelSize = next;
     savePanelSize(next);
@@ -141,41 +151,82 @@
   /** A worker session opened from either sidebar; its composer redirects the owning task. */
   let viewing = $state("");
 
+  const manual = $derived(catalog.settings?.chatMode === "manual");
+  /** Manual mode: the session on screen ("" = a new-session draft in `manualWsId`). */
+  let manualId = $state("");
+  let manualWsId = $state("");
+  let manualReady = $state(false);
+  let manualPrompt = $state("");
+  let manualChips = $state<Chip[]>([]);
+  let manualAttachments = $state<AttachmentRef[]>([]);
+  let manualComposer = $state<{ focus: () => void } | null>(null);
+  let newWorkspaceOpen = $state(false);
+  const manualWs = $derived(workspaces.byId(manualWsId) ?? workspaces.list[0]);
+  /** The dispatcher's chat and its workers are not listed among the manual sessions. */
+  const queueSessionIds = $derived([queue.main, ...queue.tasks.map((t) => t.sessionId)].filter(Boolean));
+
   let settingsOpen = $state(false);
   let settingsTab = $state("general");
   let helpOpen = $state(false);
   type ModalOf<T> = T extends { default: infer C } ? C : never;
   let SettingsModal = $state<ModalOf<typeof import("./lib/components/SettingsModal.svelte")> | null>(null);
   let HelpModal = $state<ModalOf<typeof import("./lib/components/HelpModal.svelte")> | null>(null);
+  let NewWorkspaceModal = $state<ModalOf<typeof import("./lib/components/NewWorkspaceModal.svelte")> | null>(null);
   $effect(() => {
+    if (newWorkspaceOpen && !NewWorkspaceModal) void import("./lib/components/NewWorkspaceModal.svelte").then((m) => (NewWorkspaceModal = m.default));
     if (settingsOpen && !SettingsModal) void import("./lib/components/SettingsModal.svelte").then((m) => (SettingsModal = m.default));
     if (helpOpen && !HelpModal) void import("./lib/components/HelpModal.svelte").then((m) => (HelpModal = m.default));
   });
 
-  const shownId = $derived(viewing || queue.main);
+  const shownId = $derived(manual ? manualId : viewing || queue.main);
   const session = $derived(shownId ? (store.sessions[shownId] ?? null) : null);
   const link = $derived(session ? (store.links[session.id] ?? "idle") : "idle");
+  /** Manual mode: the workspace the session on screen belongs to (or the draft's). */
+  const headerWs = $derived(session ? workspaceForCwd(workspaces.list, session.cwd, session.hostId) : manualWs);
   const currentModel = $derived(session?.model || draftModel || catalog.settings?.lastModel || "");
 
   $effect(() => {
     untrack(() => void catalog.warm());
     store.connect();
-    Promise.all([store.load(), queue.load()])
-      .then(() => (queue.main && !store.sessions[queue.main] ? store.restore([queue.main]) : null))
+    // The mode decides what to restore, so the settings are part of the boot.
+    Promise.all([store.load(), queue.load(), catalog.settingsReady()])
+      .then(() => (catalog.settings?.chatMode !== "manual" && queue.main && !store.sessions[queue.main] ? store.restore([queue.main]) : null))
       .catch((error) => toasts.push("Could not reach the mini-tui server", { detail: (error as Error).message, tone: "err" }))
       .finally(() => (loading = false));
-    return () => store.close();
+    // A mode switch (or any settings change) made in another tab flips this one too.
+    let greeted = false;
+    const offs = [
+      store.onEvent("settings", (event) => {
+        if (event.settings) catalog.settings = event.settings;
+      }),
+      store.onEvent("hello", () => {
+        // The first greeting is the boot's own connect; a later one is a reconnect after a drop.
+        if (!greeted) return void (greeted = true);
+        void catalog.loadSettings();
+        if (catalog.settings?.chatMode === "manual") void workspaces.load().catch(() => {});
+      }),
+    ];
+    // A push missed while the tab slept (or a server that cannot watch the settings file): read it again.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void catalog.loadSettings();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      for (const off of offs) off();
+      document.removeEventListener("visibilitychange", onVisible);
+      store.close();
+    };
   });
 
   // The chat (and a worker opened from the panel) streams over its socket.
   $effect(() => {
-    store.setVisible([queue.main, viewing].filter(Boolean));
+    store.setVisible(manual ? [manualId].filter(Boolean) : [queue.main, viewing].filter(Boolean));
     store.setActive(shownId || null);
   });
   // A chat this tab does not hold yet (another tab started it, the server restarted): open it.
   $effect(() => {
     const id = queue.main;
-    if (!loading && id && !store.sessions[id]) untrack(() => void store.restore([id]));
+    if (!loading && !manual && id && !store.sessions[id]) untrack(() => void store.restore([id]));
   });
 
   // ↑/↓ recall from the chat's own prompts.
@@ -234,7 +285,111 @@
     }),
   );
 
+  // ---- manual chat mode: sessions you start yourself, inside saved workspaces
+  /** Whether the manual layout's place (workspace, session) has been restored after entering it. */
+  let manualEntered = false;
+  $effect(() => {
+    if (loading) return;
+    if (!manual) {
+      manualEntered = false;
+      manualReady = false;
+      return;
+    }
+    if (manualEntered) return;
+    manualEntered = true;
+    untrack(() => void enterManual());
+  });
+  async function enterManual() {
+    manualReady = false;
+    try {
+      await workspaces.load();
+    } catch (error) {
+      toasts.push("Could not load the workspaces", { detail: (error as Error).message, tone: "err" });
+    }
+    const place = loadPlace();
+    manualWsId = workspaces.byId(place.workspaceId)?.id ?? workspaces.list[0]?.id ?? "";
+    let id = place.sessionId;
+    if (id && !store.sessions[id]) {
+      await store.restore([id]);
+      if (!store.sessions[id]) id = "";
+    }
+    if (id) {
+      const s = store.sessions[id]!;
+      const ws = workspaceForCwd(workspaces.list, s.cwd, s.hostId);
+      if (ws) manualWsId = ws.id;
+    }
+    manualId = id;
+    manualReady = true;
+  }
+  // Where this device is, so a reload lands there again.
+  $effect(() => {
+    if (manual && manualReady) savePlace({ workspaceId: manualWs?.id ?? "", sessionId: manualId });
+  });
+  // The session on screen was closed (here, in another tab, by the server): a new draft in its workspace.
+  $effect(() => {
+    if (manual && manualReady && manualId && !store.sessions[manualId]) untrack(() => (manualId = ""));
+  });
+
+  function newDraft(workspaceId = manualWs?.id ?? "") {
+    manualId = "";
+    manualWsId = workspaceId;
+    if (compact) workspaceOpen = false;
+    queueMicrotask(() => manualComposer?.focus());
+  }
+
+  async function openManual(id: string, workspaceId: string) {
+    try {
+      if (!store.sessions[id]) store.adopt(await api.openHistory(id));
+      manualId = id;
+      manualWsId = workspaceId;
+      if (compact) workspaceOpen = false;
+    } catch (error) {
+      toasts.push("Could not open that session", { detail: (error as Error).message, tone: "err" });
+    }
+  }
+
+  async function sendManual(message: string) {
+    const text = message.trim();
+    const files = manualAttachments;
+    if ((!text && !files.length) || sending) return;
+    const sent = text || `📎 ${files.map((a) => a.name).join(", ")}`;
+    sending = true;
+    try {
+      if (await runCommand(sent)) return;
+      if (manualId) {
+        // A saved session the server does not hold yet is opened first, like a worker from the panel.
+        if (!store.sessions[manualId]) store.adopt(await api.openHistory(manualId));
+        await api.send(manualId, sent, files);
+      } else {
+        const ws = manualWs;
+        if (!ws) throw new Error("Add a workspace first");
+        const created = await api.create({
+          prompt: sent,
+          cwd: ws.path,
+          target: ws.hostId ? "remote" : "local",
+          hostId: ws.hostId,
+          model: currentModel || undefined,
+          attachments: files,
+        });
+        store.adopt(created);
+        manualId = created.id;
+        manualWsId = ws.id;
+      }
+      manualPrompt = "";
+      manualChips = [];
+      manualAttachments = [];
+    } catch (error) {
+      toasts.push("Could not send", { detail: (error as Error).message, tone: "err" });
+    } finally {
+      sending = false;
+    }
+  }
+
   async function newChat() {
+    if (manual) {
+      newDraft();
+      return;
+    }
     try {
       await api.queueNew();
       viewing = "";
@@ -256,7 +411,7 @@
     else if (cmd.name === "model") {
       if (cmd.arg) await pickModel(cmd.arg);
       else modelOpen = true;
-    } else if (cmd.name === "compact" && queue.main) await api.compact(queue.main).catch((e) => toasts.push("Could not compact", { detail: (e as Error).message, tone: "err" }));
+    } else if (cmd.name === "compact" && (manual ? shownId : queue.main)) await api.compact(manual ? shownId : queue.main).catch((e) => toasts.push("Could not compact", { detail: (e as Error).message, tone: "err" }));
     else if (cmd.name === "settings" || cmd.name === "skills") {
       settingsTab = cmd.name === "settings" ? "general" : "skills";
       settingsOpen = true;
@@ -264,15 +419,21 @@
       settingsTab = cmd.name === "mcp" ? "mcp" : "providers";
       settingsOpen = true;
     } else if (cmd.name === "help") helpOpen = true;
-    else if (cmd.name === "tasks") showTasks();
+    else if (cmd.name === "tasks" && !manual) showTasks();
     else if (cmd.name === "browser") showBrowser();
     else toasts.push(`/${cmd.name} is not available here`, { tone: "info" });
-    prompt = "";
-    chips = [];
+    if (manual) {
+      manualPrompt = "";
+      manualChips = [];
+    } else {
+      prompt = "";
+      chips = [];
+    }
     return true;
   }
 
   async function send(message: string) {
+    if (manual) return sendManual(message);
     const text = message.trim();
     const mainAttachments = viewing ? [] : attachments;
     if ((!text && !mainAttachments.length) || sending) return;
@@ -389,19 +550,24 @@
       toggleWorkspaces();
     } else if (mod && !event.shiftKey && event.key.toLowerCase() === "b") {
       event.preventDefault();
+      if (manual) {
+        if (panelShown) panelOpen = false;
+        else showBrowser();
+        return;
+      }
       if (panelOpen && compact) workspaceOpen = false;
       panelOpen = !panelOpen;
-    } else if (mod && event.shiftKey && event.key.toLowerCase() === "f" && panelOpen && !narrow) {
+    } else if (mod && event.shiftKey && event.key.toLowerCase() === "f" && panelShown && !narrow) {
       event.preventDefault();
       toggleFull();
-    } else if (event.key === "Escape" && panelFull && panelOpen && !settingsOpen && !helpOpen && !(event.target as HTMLElement)?.closest?.("input,textarea")) {
+    } else if (event.key === "Escape" && panelFull && panelShown && !settingsOpen && !helpOpen && !newWorkspaceOpen && !(event.target as HTMLElement)?.closest?.("input,textarea")) {
       event.preventDefault();
       toggleFull();
-    } else if (event.key === "Escape" && narrow && panelOpen && !settingsOpen && !helpOpen) {
+    } else if (event.key === "Escape" && narrow && panelShown && !settingsOpen && !helpOpen && !newWorkspaceOpen) {
       // On a phone the panel covers the chat: Escape is its way out.
       event.preventDefault();
       panelOpen = false;
-    } else if (event.key === "Escape" && compact && workspaceOpen && !settingsOpen && !helpOpen) {
+    } else if (event.key === "Escape" && compact && workspaceOpen && !settingsOpen && !helpOpen && !newWorkspaceOpen) {
       event.preventDefault();
       workspaceOpen = false;
     }
@@ -422,13 +588,38 @@
       aria-label={compact ? "Workspaces and sessions" : undefined}
       in:fade={{ duration: 140 }}
     >
-      <WorkspaceSidebar tasks={queue.tasks} mainId={queue.main} activeId={shownId} onmain={openMain} onopen={openWorker} onclose={() => (workspaceOpen = false)} />
+      {#if manual}
+        <ManualSidebar
+          activeId={manualId}
+          activeWorkspaceId={manualWs?.id ?? ""}
+          draft={manualReady && !manualId}
+          exclude={queueSessionIds}
+          onopen={openManual}
+          onnew={newDraft}
+          onadd={() => (newWorkspaceOpen = true)}
+          onclose={() => (workspaceOpen = false)}
+        />
+      {:else}
+        <WorkspaceSidebar tasks={queue.tasks} mainId={queue.main} activeId={shownId} onmain={openMain} onopen={openWorker} onclose={() => (workspaceOpen = false)} />
+      {/if}
     </div>
   {/if}
-  <div class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)]" inert={((narrow || panelFull) && panelOpen) || (compact && workspaceOpen)} class:hidden={panelFull && panelOpen}>
+  <div class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)]" inert={((narrow || panelFull) && panelShown) || (compact && workspaceOpen)} class:hidden={panelFull && panelShown}>
     <header class="app-header relative z-30 flex min-h-16 shrink-0 items-center gap-1.5 border-b border-line/65 px-4 py-2">
       <Button variant="ghost" size="icon-sm" icon={PanelLeft} title="Workspaces (Ctrl/⌘ ⇧ B)" aria-label="Toggle workspaces" active={workspaceOpen} onclick={toggleWorkspaces} />
-      {#if viewing}
+      {#if manual}
+        <div class="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
+          <span class="brand-mark grid size-8 shrink-0 place-items-center rounded-[10px] border border-brand/25 bg-brand-soft text-brand-fg"><Folder size={15} strokeWidth={1.8} aria-hidden="true" /></span>
+          <div class="min-w-0">
+            <h1 class="truncate font-display text-[13px] font-semibold leading-4 tracking-[-0.01em]">{session ? session.title || "New session" : manualWs ? `New session in ${manualWs.name}` : "Manual mode"}</h1>
+            {#if session?.status === "running"}
+              <p class="mt-0.5 flex items-center gap-1.5 truncate text-[9.5px] text-brand-fg"><span class="pulse-live size-1 shrink-0 rounded-full bg-brand"></span>Working{headerWs ? ` · ${headerWs.name}` : ""}</p>
+            {:else}
+              <p class="mt-0.5 truncate text-[9.5px] text-ink-faint">{headerWs ? `${headerWs.name} · ${tildify(headerWs.path, headerWs.hostId ? "" : workspaces.home)}` : session ? session.cwd : "Add a workspace to start"}</p>
+            {/if}
+          </div>
+        </div>
+      {:else if viewing}
         <Button variant="ghost" size="icon-sm" icon={ArrowLeft} title="Back to the chat" aria-label="Back to the chat" onclick={() => (viewing = "")} />
         <h1 class="min-w-0 flex-1 truncate px-1 text-[13.5px] font-semibold">{session?.title || "Task"} <span class="font-normal text-ink-faint">· worker</span></h1>
       {:else}
@@ -440,19 +631,21 @@
           </div>
         </div>
       {/if}
-      <Button variant="ghost" size="icon-sm" icon={SquarePen} title="New chat (Ctrl/⌘ K)" aria-label="New chat" onclick={newChat} />
+      <Button variant="ghost" size="icon-sm" icon={SquarePen} title={manual ? "New session (Ctrl/⌘ K)" : "New chat (Ctrl/⌘ K)"} aria-label={manual ? "New session" : "New chat"} onclick={newChat} />
       <Button variant="ghost" size="icon-sm" icon={Settings} title="Settings (Ctrl/⌘ ,)" aria-label="Settings" onclick={() => { settingsTab = "general"; settingsOpen = true; }} />
       <Button variant="ghost" size="icon-sm" icon={Keyboard} title="Help" aria-label="Help" onclick={() => (helpOpen = true)} />
       <Button variant="ghost" size="icon-sm" icon={Globe} title="Browser" aria-label="Toggle browser" active={panelOpen && panelTab === "browser"} onclick={() => { if (panelOpen && panelTab === "browser") panelOpen = false; else showBrowser(); }} />
-      <Button variant="ghost" size="icon-sm" icon={ListTodo} title="Tasks (Ctrl/⌘ B)" aria-label="Toggle tasks" active={panelOpen && panelTab === "tasks"} onclick={showTasks} />
-      {#if queue.counts.running}<span class="tnum -ml-1 text-[11px] text-live" aria-label="{queue.counts.running} running">{queue.counts.running}</span>{/if}
+      {#if !manual}
+        <Button variant="ghost" size="icon-sm" icon={ListTodo} title="Tasks (Ctrl/⌘ B)" aria-label="Toggle tasks" active={panelOpen && panelTab === "tasks"} onclick={showTasks} />
+        {#if queue.counts.running}<span class="tnum -ml-1 text-[11px] text-live" aria-label="{queue.counts.running} running">{queue.counts.running}</span>{/if}
+      {/if}
     </header>
 
     <div class="relative flex min-h-0 flex-1 flex-col">
       <div class="relative min-h-0 flex-1">
         <main bind:this={scroller} onscroll={onScroll} class="h-full min-h-0 overflow-y-auto overscroll-contain px-4 py-5">
           <div class="mx-auto max-w-3xl pb-3">
-            {#if loading || (shownId && !session) || (session && !store.hydrated[session.id] && !session.events.length)}
+            {#if loading || (manual && !manualReady) || (shownId && !session) || (session && !store.hydrated[session.id] && !session.events.length)}
               <div class="flex flex-col gap-4 py-2" role="status" aria-label="Loading conversation">
                 <Skeleton class="h-4 w-2/5" />
                 <Skeleton class="h-16 w-full" />
@@ -462,6 +655,24 @@
               {#key session.id}
                 <Transcript {events} partial={session.partial} onsubmit={(m) => send(m)} />
               {/key}
+            {:else if manual}
+              <div class="empty-workspace relative mx-auto flex max-w-lg flex-col items-center gap-4 overflow-hidden rounded-2xl border border-line/60 px-7 py-12 text-center">
+                <span class="empty-icon grid size-12 place-items-center rounded-2xl border border-brand/25 bg-brand-soft text-brand-fg"><Folder size={21} strokeWidth={1.6} aria-hidden="true" /></span>
+                {#if manualWs}
+                  <div>
+                    <p class="mb-2 text-[9px] font-semibold tracking-[0.18em] text-brand-fg uppercase">New session</p>
+                    <h2 class="font-display text-[23px] font-semibold tracking-[-0.025em]">{manualWs.name}</h2>
+                  </div>
+                  <p class="max-w-sm text-[12.5px] leading-5.5 text-ink-muted">Your first message starts an agent in <span class="font-mono text-ink">{tildify(manualWs.path, manualWs.hostId ? "" : workspaces.home)}</span>{manualWs.hostId ? ` on ${store.hosts.find((h) => h.id === manualWs.hostId)?.label ?? manualWs.hostId}` : ""}.</p>
+                {:else}
+                  <div>
+                    <p class="mb-2 text-[9px] font-semibold tracking-[0.18em] text-brand-fg uppercase">Manual mode</p>
+                    <h2 class="font-display text-[23px] font-semibold tracking-[-0.025em]">Add a workspace to start</h2>
+                  </div>
+                  <p class="max-w-sm text-[12.5px] leading-5.5 text-ink-muted">A workspace is a folder on this machine or a remote host. Sessions you start in it run there and are listed under it.</p>
+                  <Button variant="primary" size="sm" icon={FolderPlus} onclick={() => (newWorkspaceOpen = true)}>New workspace</Button>
+                {/if}
+              </div>
             {:else}
               <div class="empty-workspace relative mx-auto flex max-w-lg flex-col items-center gap-4 overflow-hidden rounded-2xl border border-line/60 px-7 py-12 text-center" use:staggerChildren={{ step: 0.08, y: 8 }}>
                 <span class="empty-icon grid size-12 place-items-center rounded-2xl border border-brand/25 bg-brand-soft text-brand-fg"><ArrowUpRight size={21} strokeWidth={1.6} aria-hidden="true" /></span>
@@ -498,11 +709,33 @@
         </div>
       {:else if session?.status === "running"}
         <div class="mx-auto mb-2 w-full max-w-3xl px-4">
-          <PixelLoader label={viewing ? "Working" : "Dispatching"} since={session.startedAt} />
+          <PixelLoader label={manual || viewing ? "Working" : "Dispatching"} since={session.startedAt} />
         </div>
       {/if}
 
-      {#if viewing}
+      {#if manual}
+        <Composer
+          bind:this={manualComposer}
+          bind:value={manualPrompt}
+          bind:chips={manualChips}
+          bind:attachments={manualAttachments}
+          draftKey={manualId || `new:${manualWs?.id ?? ""}`}
+          bind:modelOpen
+          running={session?.status === "running"}
+          {sending}
+          model={currentModel}
+          {switchingModel}
+          modelNote={manualId ? "Used when this session continues." : "Used by the new session."}
+          placeholder={manualId ? undefined : manualWs ? `Start a session in ${manualWs.name}…` : "Add a workspace to start"}
+          disabled={!manualReady || (!manualId && !manualWs)}
+          onsend={send}
+          oninterrupt={interrupt}
+          onmodel={pickModel}
+          oneffort={pickEffort}
+          modelEfforts={catalog.settings?.modelEfforts ?? {}}
+          {effortBusy}
+        />
+      {:else if viewing}
         <Composer
           bind:value={workerPrompt}
           bind:chips={workerChips}
@@ -547,7 +780,7 @@
     </div>
   </div>
 
-  {#if panelOpen}
+  {#if panelShown}
     <div
       class={narrow ? "panel-in absolute inset-0 z-50 bg-surface pt-[env(safe-area-inset-top)]" : `side-panel relative shrink-0 ${panelFull ? "flex-1" : ""}`}
       class:resizing
@@ -594,6 +827,16 @@
 
 {#if SettingsModal}<SettingsModal bind:open={settingsOpen} bind:tab={settingsTab} onclose={() => (settingsOpen = false)} />{/if}
 {#if HelpModal}<HelpModal bind:open={helpOpen} />{/if}
+{#if NewWorkspaceModal}
+  <NewWorkspaceModal
+    bind:open={newWorkspaceOpen}
+    onclose={() => (newWorkspaceOpen = false)}
+    oncreated={(ws) => {
+      newWorkspaceOpen = false;
+      newDraft(ws.id);
+    }}
+  />
+{/if}
 <Lightbox />
 <Toasts />
 

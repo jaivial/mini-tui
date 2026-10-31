@@ -6,9 +6,14 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "minitui-ws-"));
 const file = join(dir, "workspaces.json");
+const previousPath = process.env.MINITUI_WORKSPACES_PATH;
 process.env.MINITUI_WORKSPACES_PATH = file;
 const ws = await import("../src/workspaces");
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => {
+  if (previousPath === undefined) delete process.env.MINITUI_WORKSPACES_PATH;
+  else process.env.MINITUI_WORKSPACES_PATH = previousPath;
+  rmSync(dir, { recursive: true, force: true });
+});
 beforeEach(() => rmSync(file, { force: true }));
 
 describe("saved workspaces", () => {

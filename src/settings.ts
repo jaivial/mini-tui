@@ -116,6 +116,11 @@ function enabled(value: unknown): boolean {
   return value === true;
 }
 
+/** The settings file this process reads and writes (null under test with no MINITUI_SETTINGS_PATH). */
+export function settingsFilePath(): string | null {
+  return settingsFile();
+}
+
 export function loadSettings(): Settings {
   const file = settingsFile();
   if (!file) return { ...DEFAULT_SETTINGS };

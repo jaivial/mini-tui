@@ -4,6 +4,23 @@ The web app is one screen: worker sessions grouped by workspace on the left, a s
 center, and the task queue on the right. There are no panes and no kanban. Everything sent to the
 main chat becomes work in a queue; the prompt bar in an opened worker redirects that task.
 
+## Manual mode (no queue)
+
+Everything on this page is the **dispatcher** chat mode, the default. Settings → General → **Main chat**
+→ **Manual** (or `/settings` in the terminal UI; the setting is shared, `chatMode` in
+`~/.config/mini-tui/settings.json`, and every open tab follows a switch) turns the dispatcher off:
+
+- the left sidebar lists saved **workspaces** (`GET/POST /api/workspaces`, `~/.config/mini-tui/workspaces.json`,
+  the same list as the terminal's `/workspaces`): a name, a folder, and optionally a saved SSH host;
+- **New workspace** opens a folder browser for the chosen machine (or takes a typed / pasted path);
+- a workspace's **+** starts a draft; the first message creates a normal session (`POST /api/sessions`,
+  full toolset, no queue profile) in that folder, on that host;
+- a session is listed under the deepest workspace whose folder contains its cwd, live ones from the
+  server and saved ones from the history of that folder; clicking a saved one reopens it;
+- the task panel and its toggle are hidden (the browser panel stays); queued tasks keep their state
+  and are back when you switch to the dispatcher again. Each browser remembers the last workspace
+  and session it showed.
+
 ## The pieces
 
 | piece | what it is | where |
