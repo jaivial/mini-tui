@@ -4,11 +4,12 @@ import { colors } from "../theme";
 export function HelpPanel() {
   const rows: Array<[string, string]> = [
     ["/model [id]", "switch model — picker, or straight to <id>"],
-    ["/new", "start a new session without restarting mini-tui"],
+    ["/new  ·  /main", "new session (dispatcher: new main chat) · /main: back from a task"],
     ["/resume", "browse sessions saved in this folder (search, pages · → preview read-only)"],
+    ["/tasks  /workspaces", "ctrl+t · task queue (dispatcher) / saved folders (manual)"],
     ["/connect", "connect a BYOK provider (key → model → connection test)"],
     ["/mcp", "MCP servers: install, OAuth login (c copy · o open), test"],
-    ["/settings", "output display · theme · jev toggles (Tab ×3)"],
+    ["/settings", "output display · theme · main chat (dispatcher / manual) · jev (Tab)"],
     ["/compact", "summarize the conversation now (frees context; auto at 80 %)"],
     ["$skill (anywhere)", "reference skills in the prompt — $ opens the list, Enter/Tab inserts"],
     ["/help", "this panel"],

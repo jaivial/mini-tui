@@ -288,6 +288,15 @@ bun run web          # build the UI and serve everything on http://127.0.0.1:431
 bun run web:dev      # Vite dev server, hot reload
 ```
 
+**Main chat: dispatcher or manual.** Settings → General → **Main chat** picks how the web app works
+(the same setting as the terminal UI's; a switch in either one flips every open tab):
+**Dispatcher** (default) is the one chat that turns requests into work-queue tasks; **Manual** drops
+the dispatcher and the task panel, and the left sidebar lists your saved **workspaces** instead, like
+Paseo's projects. **New workspace** picks a folder on this machine or on a saved SSH host (browse it or
+paste a path; the name defaults to the folder's), each workspace's **+** starts a new session in that
+folder, and its sessions (live and saved) are listed under it, newest first. `/new` and `Ctrl/⌘ K`
+start a new session in the current workspace; a reload lands on the session you had open.
+
 Sessions started in the browser land in the same `~/.config/mini-tui/sessions.db` the terminal UI's
 `/resume` reads, so both front ends see each other. **A session running in a terminal opens live in
 the browser**: the web app follows that terminal's agent (its output streams in, your prompts go to
@@ -463,6 +472,27 @@ mini-tui view ~/.config/mini-swe-agent/last_mini_run.traj.json
 mini-tui run ... --show-system
 ```
 
+### Chat modes: dispatcher or manual
+
+The main chat has two modes, shared with the web app (`/settings` → `Tab` to **main chat**, or
+the web's settings; a change made in either UI applies in the other right away):
+
+- **dispatcher** (default): the chat is the work queue's dispatcher. Each request becomes one or
+  more tasks that run as background worker sessions ([docs/work-queue.md](docs/work-queue.md)).
+  The terminal is a client of the web server's queue: it uses the server at `$MINITUI_WEB_URL`, else
+  `http://127.0.0.1:$MINITUI_WEB_PORT` (4317). When none answers at the default address it starts
+  one on a free loopback port (log in `~/.config/mini-tui/runs/queue-server-<port>.log`) and stops
+  it on exit; queued and running tasks then pause until a server runs again (the queue is durable).
+  The status line shows `3 running · 2 queued`; `/tasks` (or `ctrl+t`) lists the queue: filter
+  by status (`Tab`/`f`, `1`–`6`), `Enter` opens a task's worker session live (prompts typed there
+  **redirect** that task), `c` cancels (asks first). `Esc Esc` or `/main` goes back to the main
+  chat; `/new` starts a new main chat (the queue and its tasks stay).
+- **manual**: no dispatcher; you run normal sessions in saved **workspaces** (named folders, the
+  same list as the web app's). `/workspaces` (or `ctrl+t`): `Enter` switches to one (a fresh
+  session starts there and `/resume` lists its sessions), `n` adds a folder (`Tab` completes
+  folders), `s` saves the current folder, `r` renames, `d` removes (its sessions stay). The
+  status line shows the workspace's name next to the path.
+
 ### Headless: `mini-tui -p` (no TUI)
 
 `-p` / `--print` runs a session with no UI, like `claude -p`, `opencode run` or `pi -p`: the
@@ -552,8 +582,11 @@ touches `~/.config/mini-swe-agent/last_mini_run.traj.json` — it always passes 
 | `/quit` · `/exit` | close mini-tui |
 | `/help` | commands and keys |
 | `/model` | open the model picker (or `/model <id>` for a direct switch) |
-| `/settings` | output display (collapsed / trimmed / expanded) |
-| `/new` | start a fresh session in place (stops the current run; model and settings stay) |
+| `/settings` | output display (collapsed / trimmed / expanded) · theme · main chat mode (dispatcher / manual) · jev (`Tab` switches group) |
+| `/new` | start a fresh session in place (stops the current run; model and settings stay) · dispatcher mode: a new main chat |
+| `/tasks` · `ctrl+t` | dispatcher mode: the work queue (filter · `Enter` opens a worker's session, prompts there redirect it · `c` cancels) |
+| `/main` | dispatcher mode: back to the main chat from a task's session (also `Esc Esc`) |
+| `/workspaces` · `ctrl+t` | manual mode: saved folders (`Enter` switch · `n` new · `s` save the current folder · `r` rename · `d` remove) |
 | `/resume` | browse sessions saved in this folder (search + pages, `→` previews a transcript read-only) |
 | `/connect` | connect a BYOK provider (key → model → tested connection) |
 | `j` / `k` (or ↓ / ↑) | (navigation mode) move between tool call blocks |

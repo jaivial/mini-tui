@@ -17,11 +17,14 @@ export interface CommandOption {
 export function buildOptions(models: SelectOption[]): CommandOption[] {
   return [
     { insert: "/model", label: "/model", detail: "open the model picker" },
-    { insert: "/settings", label: "/settings", detail: "output display, theme, jev toggles" },
+    { insert: "/settings", label: "/settings", detail: "output display, theme, jev toggles, chat mode" },
     { insert: "/compact", label: "/compact", detail: "summarize the conversation now (frees context)" },
     { insert: "/subagents", label: "/subagents", detail: "the subagents this session started (open one with /resume)" },
     { insert: "/new", label: "/new", detail: "start a new session (stops the current run)" },
     { insert: "/resume", label: "/resume", detail: "browse sessions saved in this folder" },
+    { insert: "/tasks", label: "/tasks", detail: "the work queue: open a worker, redirect or cancel a task (dispatcher)" },
+    { insert: "/main", label: "/main", detail: "back to the main chat (dispatcher)" },
+    { insert: "/workspaces", label: "/workspaces", detail: "saved folders to create sessions in (manual)" },
     { insert: "/connect", label: "/connect", detail: "connect a provider with your own API key" },
     { insert: "/mcp", label: "/mcp", detail: "install MCP servers and log in to them (Figma, Linear…)" },
     { insert: "/help", label: "/help", detail: "commands and keys" },

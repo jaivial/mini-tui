@@ -25,6 +25,8 @@ export function PromptBar(props: {
   onTextChange: (text: string) => void;
   /** Rows the text wraps into at the textarea's width (word wrap, wide chars): the box height. */
   onWrapRows?: (rows: number) => void;
+  /** Placeholder of an idle prompt (the chat modes say where the text goes). */
+  placeholder?: string;
 }) {
   /** Report the wrapped row count and, when it all fits, show it from the top (the textarea
    * scrolled a row it wrapped before the box grew, and kept it scrolled after growing). */
@@ -64,7 +66,7 @@ export function PromptBar(props: {
     ? "ctrl+c again to close"
     : props.busy
       ? "continue the conversation…"
-      : "what should mini do?";
+      : props.placeholder ?? "what should mini do?";
   return (
     <box
       borderStyle="rounded"

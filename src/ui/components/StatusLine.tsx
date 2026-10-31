@@ -44,6 +44,12 @@ export const StatusLine = memo(function StatusLine(props: {
   compacting?: boolean;
   /** The optional verifier phase is reviewing the finished turn's diff. */
   verifying?: boolean;
+  /** The saved workspace the path belongs to (manual chat mode). */
+  workspace?: string;
+  /** What the transcript shows in dispatcher mode ("main chat", "task t3 · …"). */
+  view?: string;
+  /** The work queue strip ("3 running · 2 queued", or the connection state). */
+  queue?: string;
 }) {
   const statusColor =
     props.status === "error" ? colors.err : props.status === "done" ? colors.ok : props.status === "interrupted" ? colors.warn : colors.dim;
@@ -53,8 +59,11 @@ export const StatusLine = memo(function StatusLine(props: {
         <WorkingIndicator key={props.startedAt} startedAt={props.startedAt} label={props.compacting ? "compacting" : undefined} />
       ) : null}
       {props.verifying ? <text fg={colors.faint}>jev verifying…</text> : null}
+      {props.view ? <text fg={colors.accent}>{props.view}</text> : null}
+      {props.queue ? <text fg={colors.warn}>{props.queue}</text> : null}
       <text fg={colors.text}>{props.model}</text>
       <text fg={colors.faint}>·</text>
+      {props.workspace ? <text fg={colors.accent}>◆ {props.workspace}</text> : null}
       <text fg={colors.dim}>{props.path}</text>
       {props.branch ? <text fg={colors.dim}>⎇ {props.branch}</text> : null}
       {props.status === "done" || props.status === "error" || props.status === "interrupted" ? (

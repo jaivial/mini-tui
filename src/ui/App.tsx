@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard, usePaste, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
+import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
+import { basename, dirname } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
@@ -15,7 +17,10 @@ import { ErrorBanner } from "./components/ErrorBanner";
 import { ThinkingCard } from "./components/ThinkingCard";
 import { PromptBar } from "./components/PromptBar";
 import { ModelPicker, MODELS } from "./components/ModelPicker";
-import { SettingsPanel, SETTINGS_GROUPS } from "./components/SettingsPanel";
+import { SettingsPanel, SETTINGS_GROUPS, JEV_GROUP } from "./components/SettingsPanel";
+import { TasksModal, TASK_FILTERS, visibleTasks, type TaskFilter } from "./components/TasksModal";
+import { WorkspacesModal, type WorkspaceRow, type WorkspaceStep } from "./components/WorkspacesModal";
+import { completeFolder } from "./pathComplete";
 import { JevSettings } from "./components/JevSettings";
 import { HelpPanel } from "./components/HelpPanel";
 import { Modal } from "./components/Modal";
@@ -71,7 +76,9 @@ import { PromptHistory } from "../history";
 import { SKILLS_DIR, expandSkills, filterSkills, insertSkill, listSkills, skillQueryAt } from "../skills";
 import { SkillHighlighter } from "./skillHighlight";
 import { fromCursorOffset, tabWidthOf, toCursorOffset } from "./textOffsets";
-import { loadSettings, saveSettings, type Settings } from "../settings";
+import { chatModeOf, loadSettings, saveSettings, settingsFilePath, type Settings } from "../settings";
+import { addWorkspace, expandHome, listWorkspaces, removeWorkspace, renameWorkspace, workspaceForCwd, type SavedWorkspace } from "../workspaces";
+import { EMPTY_QUEUE, cleanQueueEvents, queueBadge, type QueueClientLike, type QueueState, type SessionMetaView } from "../queueClient";
 import { gitDiff } from "../jev/diff";
 import { pickReader } from "../jev/reader";
 import { formatReport, verifyDiff } from "../jev/verifier";
@@ -149,7 +156,31 @@ export interface AppProps {
   onOpenUrl?: (url: string) => string;
   /** MCP store file (tests); defaults to `~/.config/mini-tui/mcp.json`. */
   mcpPath?: string | null;
+  /**
+   * The work-queue client the dispatcher chat mode talks to (a factory is called on first use).
+   * Absent = no dispatcher here (tests, `view`, `run`): the chat behaves as in manual mode.
+   */
+  queue?: QueueClientLike | (() => QueueClientLike) | null;
   onQuit?: () => void;
+}
+
+type Overlay = "none" | "model" | "settings" | "help" | "resume" | "connect" | "mcp" | "tasks" | "workspaces";
+
+/** Settings compared by value (key order differs between a load and a patch). */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((k) => [k, canonical((value as Record<string, unknown>)[k])]));
+  }
+  return value;
+}
+function sameSettings(a: Settings, b: Settings): boolean {
+  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
+function oneLine(text: string, max: number): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
 /** Value-level message identity across re-parses (trajectory files are re-read whole). */
@@ -207,7 +238,7 @@ export function deriveStatus(status: RunStatus, events: RunEvent[]): RunStatus {
 }
 
 /** Notices mini-tui adds to the transcript itself, as opposed to ones parsed from the agent's journal. */
-const UI_NOTES = new Set(["model", "skills", "subagents"]);
+const UI_NOTES = new Set(["model", "skills", "subagents", "queue", "workspace"]);
 function isUiNote(event: RunEvent): boolean {
   return event.type === "notice" && (!event.interruptType || UI_NOTES.has(event.interruptType));
 }
@@ -244,7 +275,7 @@ export function App(props: AppProps) {
   const settingsRef = useRef<Settings>(settings);
   settingsRef.current = settings;
   const [inputFocused, setInputFocusedState] = useState(true);
-  const [overlayState, setOverlayState] = useState<"none" | "model" | "settings" | "help" | "resume" | "connect" | "mcp">("none");
+  const [overlayState, setOverlayState] = useState<Overlay>("none");
   /** ctrl+c was pressed once: the prompt placeholder says a second press closes. */
   const [closeArmed, setCloseArmed] = useState(false);
   const [promptText, setPromptTextState] = useState("");
@@ -271,7 +302,7 @@ export function App(props: AppProps) {
   // Key handlers can fire several times before React re-renders; mirror what they
   // read/write into refs so state is never stale inside a batch of keystrokes.
   const inputRefocus = useRef(true);
-  const overlayRef = useRef<"none" | "model" | "settings" | "help" | "resume" | "connect" | "mcp">("none");
+  const overlayRef = useRef<Overlay>("none");
   const exitedRef = useRef(false);
   const interruptedRef = useRef(false);
   /** Prompt focus before the first Esc of a pair, restored by the second (see `escapePress`). */
@@ -303,7 +334,14 @@ export function App(props: AppProps) {
   const previewScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const connectRef = useRef<ConnectStep | null>(null);
   const commandOptionsRef = useRef<CommandOption[]>([]);
-  const branch = useMemo(() => gitBranch(props.cwd), [props.cwd]);
+  /** The folder new sessions start in: the launch folder, or the workspace picked in manual mode. */
+  const [cwd, setCwdState] = useState(props.cwd);
+  const cwdRef = useRef(props.cwd);
+  const setCwd = (value: string) => {
+    cwdRef.current = value;
+    setCwdState(value);
+  };
+  const branch = useMemo(() => gitBranch(cwd), [cwd]);
 
   const setMcpStep = (value: McpStep | null) => {
     mcpRef.current = value;
@@ -321,7 +359,7 @@ export function App(props: AppProps) {
     inputRefocus.current = value;
     setInputFocusedState(value);
   };
-  const setOverlay = (value: "none" | "model" | "settings" | "help" | "resume" | "connect" | "mcp") => {
+  const setOverlay = (value: Overlay) => {
     overlayRef.current = value;
     setOverlayState(value);
     if (value !== "resume") setResumePreview(null); // /resume always reopens on its list
@@ -636,10 +674,10 @@ export function App(props: AppProps) {
   useEffect(() => {
     if (overlayState !== "resume") return;
     try {
-      const total = countSessions(db(), props.cwd, resumeQuery);
+      const total = countSessions(db(), cwd, resumeQuery);
       const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
       const page = Math.min(resumePage, pages - 1);
-      const rows = listSessions(db(), props.cwd, resumeQuery, page);
+      const rows = listSessions(db(), cwd, resumeQuery, page);
       resumeRowsRef.current = rows;
       setResumeRows(rows);
       setResumePages(pages);
@@ -649,7 +687,7 @@ export function App(props: AppProps) {
       setResumePages(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlayState, resumeQuery, resumePage]);
+  }, [overlayState, resumeQuery, resumePage, cwd]);
 
   /**
    * The optional verifier phase (toggle 2), run after a turn finishes and the code is on disk.
@@ -663,10 +701,10 @@ export function App(props: AppProps) {
     if (verifyingRef.current) return; // one at a time: a slow phase must not stack up
     verifyingRef.current = true;
     setVerifying(true);
-    const cwd = props.cwd;
+    const folder = cwdRef.current;
     void (async () => {
       try {
-        const diff = gitDiff(cwd);
+        const diff = gitDiff(folder);
         const { reader, reason } = pickReader();
         const report = await verifyDiff({ diff, reader, readerReason: reason });
         itemAppendHint.current = true;
@@ -694,7 +732,7 @@ export function App(props: AppProps) {
     if (!sessionIdRef.current && persist) {
       const id = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       try {
-        createSession(db(), { id, cwd: spec.cwd ?? props.cwd, model: spec.model || modelOverride || DEFAULT_MODEL, task: spec.task });
+        createSession(db(), { id, cwd: spec.cwd ?? cwdRef.current, model: spec.model || modelOverride || DEFAULT_MODEL, task: spec.task });
         sessionIdRef.current = id;
       } catch { /* persistence is best effort */ }
     }
@@ -758,6 +796,13 @@ export function App(props: AppProps) {
   /** Double Esc: interrupt the run in flight (SIGINT through `MiniRun.interrupt`). */
   const interruptRun = () => {
     if (props.onInterrupt) props.onInterrupt();
+    if (dispatcherRef.current) {
+      // a worker's session: back to the main chat; the main chat: stop the dispatcher's turn
+      if (viewTaskRef.current) return backToMain();
+      const main = queueStateRef.current.main;
+      if (main) void queueClient()?.interrupt(main).catch(() => undefined);
+      return;
+    }
     const run = live.current.run;
     if (!run || exitedRef.current) return;
     interruptedRef.current = true;
@@ -881,8 +926,8 @@ export function App(props: AppProps) {
     setEvents((prev) => [...prev, { type: "notice", text, interruptType: "subagents" }]);
   };
 
-  /** `/new`: stop whatever runs and start a blank session (model and settings stay). */
-  const newSession = () => {
+  /** Drop the transcript and whatever runs (a local run is stopped); model and settings stay. */
+  const clearTranscript = (keep: RunEvent[] = []) => {
     latestSave.current(); // flush the throttled save
     live.current.watch?.stop();
     live.current.run?.kill();
@@ -899,16 +944,509 @@ export function App(props: AppProps) {
     historyRef.current.reset();
     togglesRef.current.clear();
     itemAppendHint.current = false;
-    setEvents([]);
+    setEvents(keep);
     setInfo({ cost: 0, apiCalls: 0 });
     setStatus("idle");
+    setCompacting(null);
     setFocusIdx(0);
     setFlipped(new Set());
     setAnchor(null);
+  };
+
+  /** `/new`: stop whatever runs and start a blank session (model and settings stay). */
+  const newSession = () => {
+    clearTranscript();
     setOverlay("none");
     setInputFocused(true);
   };
 
+  /** A notice line of mini-tui's own (`queue`/`workspace` notes never change the run status). */
+  const addNote = (text: string, interruptType: string) => {
+    const event: RunEvent = { type: "notice", text, interruptType };
+    if (dispatcherRef.current) notesRef.current.push(event);
+    itemAppendHint.current = true;
+    setEvents((prev) => [...prev, event]);
+  };
+
+  // ------------------------------------------------------------ chat modes
+  // dispatcher: the transcript is a session the web server runs (the main chat, or a task's
+  // worker), followed over its socket; prompts go to the queue. manual: local sessions in `cwd`.
+  const chatMode = chatModeOf(settings);
+  const queueCapable = Boolean(props.queue) && !staticMode && !props.viewPath && !props.runSpec;
+  const dispatcher = chatMode === "dispatcher" && queueCapable;
+  const dispatcherRef = useRef(dispatcher);
+  dispatcherRef.current = dispatcher;
+  const queueClientRef = useRef<QueueClientLike | null>(null);
+  const queueClient = (): QueueClientLike | null => {
+    if (!queueClientRef.current && props.queue) queueClientRef.current = typeof props.queue === "function" ? props.queue() : props.queue;
+    return queueClientRef.current;
+  };
+  const [queueState, setQueueStateRaw] = useState<QueueState>(EMPTY_QUEUE);
+  const queueStateRef = useRef<QueueState>(EMPTY_QUEUE);
+  const setQueueState = (value: QueueState) => {
+    queueStateRef.current = value;
+    setQueueStateRaw(value);
+  };
+  const [queueLink, setQueueLinkRaw] = useState<"off" | "connecting" | "live" | "polling" | "error">("off");
+  const queueLinkRef = useRef(queueLink);
+  const setQueueLink = (value: typeof queueLink) => {
+    queueLinkRef.current = value;
+    setQueueLinkRaw(value);
+  };
+  /** The task whose worker session the transcript shows ("" = the main chat). */
+  const [viewTask, setViewTaskRaw] = useState("");
+  const viewTaskRef = useRef("");
+  const setViewTask = (value: string) => {
+    viewTaskRef.current = value;
+    setViewTaskRaw(value);
+  };
+  /** mini-tui's own notes in a followed session: kept across the server's snapshots. */
+  const mainNotesRef = useRef<RunEvent[]>(dispatcher ? events.filter((event) => event.type === "notice") : []);
+  const notesRef = useRef<RunEvent[]>(mainNotesRef.current);
+  const followed = useRef<{ id: string; gone: boolean } | null>(null);
+  /** Bumped to follow the same session again (it was closed on the server and came back). */
+  const [followNonce, setFollowNonce] = useState(0);
+  const remoteRunning = useRef(false);
+  const viewed = viewTask ? queueState.tasks.find((task) => task.id === viewTask) : undefined;
+  const followId = dispatcher ? (viewTask ? viewed?.sessionId ?? "" : queueState.main) : "";
+
+  const reloadSettings = () => {
+    const next = loadSettings();
+    if (sameSettings(next, settingsRef.current)) return;
+    settingsRef.current = next;
+    setSettings(next);
+    applyTheme(next.theme ?? DEFAULT_THEME);
+  };
+
+  // The settings file is shared with the web app: a change made there (the chat mode, the
+  // theme) reaches this terminal without a restart.
+  useEffect(() => {
+    if (!persist || staticMode) return;
+    const file = settingsFilePath();
+    if (!file) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let watcher: FSWatcher | undefined;
+    try {
+      watcher = watch(dirname(file), (_event, name) => {
+        if (name && name !== basename(file)) return;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(reloadSettings, 150);
+      });
+    } catch {
+      return; // no settings folder yet: the file is read again at the next launch
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+      watcher?.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Switching the mode starts over in the other one (a local run in flight is stopped).
+  const modeSeen = useRef(dispatcher);
+  useEffect(() => {
+    if (modeSeen.current === dispatcher) return;
+    modeSeen.current = dispatcher;
+    mainNotesRef.current = [];
+    notesRef.current = mainNotesRef.current;
+    setViewTask("");
+    const note: RunEvent = dispatcher
+      ? { type: "notice", text: "main chat: dispatcher · each request becomes queued tasks (/tasks lists them)", interruptType: "queue" }
+      : { type: "notice", text: "main chat: manual · sessions start in the current folder (/workspaces switches it)", interruptType: "workspace" };
+    if (dispatcher) notesRef.current.push(note);
+    clearTranscript([note]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatcher]);
+
+  // Dispatcher: reach the queue (the server is started when none runs) and keep its list live.
+  useEffect(() => {
+    if (!dispatcher) return;
+    const client = queueClient();
+    if (!client) return;
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    setQueueLink("connecting");
+    client
+      .connect()
+      .then((result) => {
+        if (cancelled) return;
+        if (result.started) {
+          addNote(
+            `started a web server for the work queue at ${result.url}${result.logPath ? ` (log ${shortPath(result.logPath)})` : ""}; it stops with mini-tui and the queue resumes on the next server`,
+            "queue",
+          );
+        }
+        setQueueState(client.state());
+        setQueueLink("live");
+        unsubscribe = client.subscribe({
+          onQueue: (state) => setQueueState(state),
+          onLink: (up) => setQueueLink(up ? "live" : "polling"),
+          onSession: (meta) => {
+            const current = followed.current;
+            if (current?.gone && meta.id === current.id) setFollowNonce((n) => n + 1);
+          },
+          onSettings: () => reloadSettings(),
+        });
+      })
+      .catch((error: Error) => {
+        if (cancelled) return;
+        setQueueLink("error");
+        addNote(`dispatcher: ${error.message}. Start the web server (bun run web:serve), or switch the main chat to manual in /settings.`, "queue");
+      });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+      setQueueLink("off");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatcher]);
+
+  useEffect(() => () => queueClientRef.current?.stop(), []);
+
+  const remoteStatus = (meta: SessionMetaView) => {
+    setInfo((previous) => {
+      const next = { ...previous, model: meta.model || previous.model, cost: meta.cost ?? previous.cost, apiCalls: meta.apiCalls ?? previous.apiCalls };
+      return sameRunInfo(previous, next) ? previous : next;
+    });
+    if (!meta.status) return;
+    if (meta.status === "running") {
+      if (!remoteRunning.current) setTurnStartedAt(meta.startedAt || Date.now());
+      remoteRunning.current = true;
+      setStatus("running");
+      return;
+    }
+    remoteRunning.current = false;
+    setStatus(meta.status === "error" ? "error" : meta.status === "interrupted" ? "interrupted" : meta.status === "idle" ? "idle" : "done");
+  };
+
+  // Dispatcher: follow the session the transcript shows (the main chat or the opened task).
+  const followSeen = useRef("|");
+  useEffect(() => {
+    if (!dispatcher) return;
+    const client = queueClient();
+    if (!client) return;
+    const viewKey = `${viewTask}|${followId}`;
+    if (followSeen.current !== viewKey) {
+      followSeen.current = viewKey;
+      notesRef.current = viewTask ? [] : mainNotesRef.current;
+      const task = viewTask ? queueStateRef.current.tasks.find((t) => t.id === viewTask) : undefined;
+      if (task) {
+        notesRef.current = [
+          { type: "notice", text: `task ${task.id} · ${oneLine(task.title, 80)} · ${task.status}${task.workspace ? ` · ◆ ${task.workspace}` : ""} — prompts here redirect it · Esc Esc or /main back to the main chat`, interruptType: "queue" },
+        ];
+        if (!task.sessionId) {
+          notesRef.current.push({ type: "notice", text: `${task.id} has no worker session yet (${task.status}): it starts when a slot frees`, interruptType: "queue" });
+        }
+      }
+      clearTranscript([...(task && !task.sessionId && task.prompt ? [{ type: "task" as const, text: task.prompt }] : []), ...notesRef.current]);
+      remoteRunning.current = false;
+    }
+    if (!followId) return;
+    const entry = { id: followId, gone: false };
+    followed.current = entry;
+    const stop = client.follow(followId, {
+      onSnapshot: (session) => {
+        if (followed.current !== entry) return;
+        itemAppendHint.current = false;
+        setEvents([...cleanQueueEvents(session.events), ...notesRef.current]);
+        remoteStatus(session);
+      },
+      onDelta: (fresh, meta) => {
+        if (followed.current !== entry) return;
+        const shown = cleanQueueEvents(fresh);
+        if (shown.length) {
+          itemAppendHint.current = true;
+          setEvents((prev) => [...prev, ...shown]);
+        }
+        remoteStatus(meta);
+      },
+      onGone: () => {
+        if (followed.current !== entry) return;
+        entry.gone = true;
+        remoteRunning.current = false;
+        setStatus((current) => (current === "running" ? "done" : current));
+      },
+    });
+    return () => {
+      stop();
+      if (followed.current === entry) followed.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatcher, viewTask, followId, followNonce]);
+
+  /** A prompt in dispatcher mode: to the queue's chat, or a redirect of the opened task. */
+  const sendToQueue = (task: string) => {
+    const client = queueClient();
+    if (!client) return;
+    if (queueLinkRef.current === "connecting" || queueLinkRef.current === "error") {
+      addNote(queueLinkRef.current === "connecting" ? "still reaching the work queue: send it again in a moment" : "the work queue is not reachable (see above): nothing was sent", "queue");
+      return;
+    }
+    const taskId = viewTaskRef.current;
+    if (taskId) {
+      addNote(`→ redirect ${taskId}: ${oneLine(task, 160)}`, "queue");
+      void client
+        .redirect(taskId, task)
+        .then((result) => addNote(result.ok ? result.text || `${taskId} redirected` : `redirect refused: ${result.text || result.error || "the server said no"}`, "queue"))
+        .catch((error: Error) => addNote(`redirect failed: ${error.message}`, "queue"));
+      return;
+    }
+    remoteRunning.current = true;
+    setStatus("running");
+    setTurnStartedAt(Date.now());
+    void client
+      .prompt(task, modelOverride)
+      .then(({ id }) => {
+        const current = followed.current;
+        if (id && current?.id === id && current.gone) setFollowNonce((n) => n + 1);
+      })
+      .catch((error: Error) => {
+        remoteRunning.current = false;
+        setStatus("error");
+        addNote(`the dispatcher did not take the message: ${error.message}`, "queue");
+      });
+  };
+
+  const newQueueChat = () => {
+    const client = queueClient();
+    setOverlay("none");
+    setInputFocused(true);
+    if (!client) return;
+    setViewTask("");
+    mainNotesRef.current.length = 0;
+    void client
+      .newChat()
+      .then(() => addNote("new main chat · the queue and its tasks stay", "queue"))
+      .catch((error: Error) => addNote(`could not start a new chat: ${error.message}`, "queue"));
+  };
+
+  const backToMain = () => {
+    if (!viewTaskRef.current) return;
+    setViewTask("");
+    setInputFocused(true);
+  };
+
+  // ---- /tasks
+  const [tasksUi, setTasksUiRaw] = useState<{ filter: TaskFilter; index: number; confirm: string | null; note?: string }>({ filter: "all", index: 0, confirm: null });
+  const tasksUiRef = useRef(tasksUi);
+  const setTasksUi = (value: typeof tasksUi) => {
+    tasksUiRef.current = value;
+    setTasksUiRaw(value);
+  };
+  const openTasks = () => {
+    if (!dispatcherRef.current) {
+      addNote("the task list belongs to the dispatcher chat mode (/settings → main chat)", "workspace");
+      return;
+    }
+    setTasksUi({ filter: tasksUiRef.current.filter, index: 0, confirm: null });
+    setOverlay("tasks");
+  };
+  const openTask = (taskId: string) => {
+    setOverlay("none");
+    setViewTask(taskId);
+    setInputFocused(true);
+  };
+  const tasksKey = (key: { name: string; sequence?: string; ctrl?: boolean; meta?: boolean; shift?: boolean }) => {
+    const ui = tasksUiRef.current;
+    const rows = visibleTasks(queueStateRef.current.tasks, ui.filter);
+    const index = Math.min(ui.index, Math.max(rows.length - 1, 0));
+    const isEnter = key.name === "return" || key.name === "enter" || key.name === "kpenter";
+    if (ui.confirm) {
+      if (key.name === "y" || isEnter) {
+        const id = ui.confirm;
+        setTasksUi({ ...ui, confirm: null, note: `cancelling ${id}…` });
+        void queueClient()
+          ?.cancel(id)
+          .then((result) => setTasksUi({ ...tasksUiRef.current, note: result.ok ? result.text || `${id} cancelled` : `could not cancel ${id}: ${result.text || result.error || "refused"}` }))
+          .catch((error: Error) => setTasksUi({ ...tasksUiRef.current, note: `could not cancel ${id}: ${error.message}` }));
+      } else if (key.name === "n" || key.name === "escape") setTasksUi({ ...ui, confirm: null, note: undefined });
+      return;
+    }
+    if (key.name === "escape" || (key.ctrl && key.name === "t")) {
+      setOverlay("none");
+      setInputFocused(true);
+      return;
+    }
+    if (key.name === "up" || key.name === "k") return setTasksUi({ ...ui, index: Math.max(0, index - 1), note: undefined });
+    if (key.name === "down" || key.name === "j") return setTasksUi({ ...ui, index: Math.min(Math.max(rows.length - 1, 0), index + 1), note: undefined });
+    if (key.name === "pageup") return setTasksUi({ ...ui, index: Math.max(0, index - 10) });
+    if (key.name === "pagedown") return setTasksUi({ ...ui, index: Math.min(Math.max(rows.length - 1, 0), index + 10) });
+    if (key.name === "home") return setTasksUi({ ...ui, index: 0 });
+    if (key.name === "end") return setTasksUi({ ...ui, index: Math.max(rows.length - 1, 0) });
+    if (key.name === "tab" || key.name === "f") {
+      const at = TASK_FILTERS.indexOf(ui.filter);
+      const next = TASK_FILTERS[(at + (key.shift ? TASK_FILTERS.length - 1 : 1)) % TASK_FILTERS.length]!;
+      return setTasksUi({ filter: next, index: 0, confirm: null });
+    }
+    if (key.sequence && /^[1-6]$/.test(key.sequence) && !key.ctrl && !key.meta) {
+      return setTasksUi({ filter: TASK_FILTERS[Number(key.sequence) - 1]!, index: 0, confirm: null });
+    }
+    const row = rows[index];
+    if (!row) return;
+    if (isEnter || key.name === "right") return openTask(row.id);
+    if (key.name === "c" || key.name === "delete") {
+      if (row.status !== "queued" && row.status !== "running") return setTasksUi({ ...ui, note: `${row.id} is ${row.status}: only queued or running tasks can be cancelled` });
+      return setTasksUi({ ...ui, confirm: row.id, note: undefined });
+    }
+  };
+
+  // ---- /workspaces (manual mode)
+  const [workspacesVersion, setWorkspacesVersion] = useState(0);
+  const workspaceLabel = useMemo(() => {
+    if (dispatcher) return undefined;
+    try {
+      return workspaceForCwd(listWorkspaces(), cwd)?.name;
+    } catch {
+      return undefined;
+    }
+  }, [cwd, dispatcher, workspacesVersion]);
+  const [wsRows, setWsRowsRaw] = useState<WorkspaceRow[]>([]);
+  const wsRowsRef = useRef<WorkspaceRow[]>([]);
+  const [wsStep, setWsStepRaw] = useState<WorkspaceStep>({ kind: "list", index: 0 });
+  const wsStepRef = useRef<WorkspaceStep>({ kind: "list", index: 0 });
+  const setWsStep = (value: WorkspaceStep) => {
+    wsStepRef.current = value;
+    setWsStepRaw(value);
+  };
+  const reloadWorkspaces = (): WorkspaceRow[] => {
+    let list: SavedWorkspace[] = [];
+    try {
+      list = listWorkspaces();
+    } catch {
+      list = [];
+    }
+    const sessionsIn = (path: string) => {
+      try {
+        return countSessions(db(), path, "");
+      } catch {
+        return 0;
+      }
+    };
+    const rows = [...list.filter((w) => !w.hostId), ...list.filter((w) => w.hostId)].map((workspace) => ({
+      workspace,
+      path: workspace.hostId ? workspace.path : shortPath(workspace.path),
+      sessions: workspace.hostId ? 0 : sessionsIn(workspace.path),
+      remote: Boolean(workspace.hostId),
+    }));
+    wsRowsRef.current = rows;
+    setWsRowsRaw(rows);
+    setWorkspacesVersion((v) => v + 1);
+    return rows;
+  };
+  const openWorkspaces = () => {
+    if (dispatcherRef.current) {
+      addNote("workspaces belong to the manual chat mode: the dispatcher picks each task's folder (/settings → main chat)", "queue");
+      return;
+    }
+    const rows = reloadWorkspaces();
+    const here = rows.findIndex((row) => !row.remote && row.workspace.path === cwdRef.current);
+    setWsStep({ kind: "list", index: Math.max(0, here) });
+    setOverlay("workspaces");
+  };
+  const switchWorkspace = (workspace: SavedWorkspace) => {
+    clearTranscript([{ type: "notice", text: `workspace ${workspace.name} · ${shortPath(workspace.path)} — new sessions start here (/resume lists its sessions)`, interruptType: "workspace" }]);
+    setCwd(workspace.path);
+    setOverlay("none");
+    setInputFocused(true);
+  };
+  const workspacesKey = (key: { name: string; sequence?: string; ctrl?: boolean; meta?: boolean; shift?: boolean }) => {
+    const step = wsStepRef.current;
+    const rows = wsRowsRef.current;
+    const isEnter = key.name === "return" || key.name === "enter" || key.name === "kpenter";
+    const typed = !key.ctrl && !key.meta && key.sequence && key.sequence >= " " ? key.sequence : "";
+    const paste = (key.ctrl && key.name === "v") || (key.shift && key.name === "insert");
+    if (step.kind === "list") {
+      const index = Math.min(step.index, Math.max(rows.length - 1, 0));
+      const row = rows[index];
+      if (key.name === "escape" || (key.ctrl && key.name === "t")) {
+        setOverlay("none");
+        setInputFocused(true);
+        return;
+      }
+      if (key.name === "up" || key.name === "k") return setWsStep({ kind: "list", index: Math.max(0, index - 1) });
+      if (key.name === "down" || key.name === "j") return setWsStep({ kind: "list", index: Math.min(Math.max(rows.length - 1, 0), index + 1) });
+      if (key.name === "n" || key.name === "a") return setWsStep({ kind: "add", field: "path", path: "~/", name: "" });
+      if (key.name === "s") {
+        try {
+          const saved = addWorkspace({ path: cwdRef.current });
+          const next = reloadWorkspaces();
+          return setWsStep({ kind: "list", index: Math.max(0, next.findIndex((r) => r.workspace.id === saved.id)), note: `saved ${saved.name} (${shortPath(saved.path)})` });
+        } catch (error) {
+          return setWsStep({ ...step, note: (error as Error).message });
+        }
+      }
+      if (!row) return;
+      if (isEnter) {
+        if (row.remote) return setWsStep({ ...step, note: `${row.workspace.name} is on a remote host: the terminal only runs local sessions (open it in the web app)` });
+        if (!existsSync(row.workspace.path)) return setWsStep({ ...step, note: `${row.path} no longer exists` });
+        return switchWorkspace(row.workspace);
+      }
+      if (key.name === "r") return setWsStep({ kind: "rename", id: row.workspace.id, value: row.workspace.name });
+      if (key.name === "d" || key.name === "delete") return setWsStep({ kind: "remove", id: row.workspace.id });
+      return;
+    }
+    if (step.kind === "remove") {
+      if (key.name === "y" || isEnter) {
+        const gone = rows.find((r) => r.workspace.id === step.id);
+        removeWorkspace(step.id);
+        const next = reloadWorkspaces();
+        return setWsStep({ kind: "list", index: Math.min(Math.max(0, rows.findIndex((r) => r.workspace.id === step.id)), Math.max(next.length - 1, 0)), note: `removed ${gone?.workspace.name ?? "the workspace"} (its sessions stay)` });
+      }
+      if (key.name === "n" || key.name === "escape") return setWsStep({ kind: "list", index: Math.max(0, rows.findIndex((r) => r.workspace.id === step.id)) });
+      return;
+    }
+    if (step.kind === "rename") {
+      const at = Math.max(0, rows.findIndex((r) => r.workspace.id === step.id));
+      if (key.name === "escape") return setWsStep({ kind: "list", index: at });
+      if (key.name === "backspace") return setWsStep({ ...step, value: step.value.slice(0, -1), error: undefined });
+      if (paste) return setWsStep({ ...step, value: step.value + pastedLine(readClipboard()), error: undefined });
+      if (isEnter) {
+        try {
+          const renamed = renameWorkspace(step.id, step.value);
+          reloadWorkspaces();
+          return setWsStep({ kind: "list", index: at, note: `renamed to ${renamed.name}` });
+        } catch (error) {
+          return setWsStep({ ...step, error: (error as Error).message });
+        }
+      }
+      if (typed) return setWsStep({ ...step, value: step.value + typed, error: undefined });
+      return;
+    }
+    // add: the folder, then an optional name
+    const field = step.field;
+    const value = field === "path" ? step.path : step.name;
+    const set = (next: string) => setWsStep({ ...step, [field]: next, error: undefined, hint: undefined });
+    if (key.name === "escape") return setWsStep({ kind: "list", index: 0 });
+    if (key.name === "tab") {
+      if (field === "name") return setWsStep({ ...step, field: "path" });
+      const done = completeFolder(step.path);
+      return setWsStep({ ...step, path: done.text, error: undefined, hint: done.matches.length ? done.matches.slice(0, 12).join("  ") + (done.matches.length > 12 ? "  …" : "") : undefined });
+    }
+    if (key.name === "backspace") return set(value.slice(0, -1));
+    if (paste) return set(value + pastedLine(readClipboard()));
+    if (isEnter) {
+      if (field === "path") {
+        const path = expandHome(step.path);
+        let isDir = false;
+        try {
+          isDir = statSync(path).isDirectory();
+        } catch {
+          isDir = false;
+        }
+        if (!isDir) return setWsStep({ ...step, error: `${shortPath(path)} is not a folder on this machine` });
+        return setWsStep({ ...step, field: "name", hint: undefined, error: undefined });
+      }
+      try {
+        const added = addWorkspace({ path: step.path, name: step.name });
+        const next = reloadWorkspaces();
+        return setWsStep({ kind: "list", index: Math.max(0, next.findIndex((r) => r.workspace.id === added.id)), note: `added ${added.name} · Enter switches to it` });
+      } catch (error) {
+        return setWsStep({ ...step, error: (error as Error).message });
+      }
+    }
+    const chunk = pastedSequence(key) || typed;
+    if (chunk) return set(value + chunk.replace(/[\r\n]+/g, ""));
+  };
   const applyModel = (model: string) => {
     setOverlay("none");
     setModelOverride(model);
@@ -929,7 +1467,7 @@ export function App(props: AppProps) {
       ...prev,
       {
         type: "notice",
-        text: liveRun && !exitedRef.current ? `model → ${model} (from next step)` : `model → ${model} (next run)`,
+        text: dispatcherRef.current ? `model → ${model} (the dispatcher's next turn and the tasks it creates from now on)` : liveRun && !exitedRef.current ? `model → ${model} (from next step)` : `model → ${model} (next run)`,
         interruptType: "model",
       },
     ]);
@@ -951,6 +1489,18 @@ export function App(props: AppProps) {
   /** `/compact`: summarize the conversation now. A live run gets `COMPACT` on its control
    * channel; otherwise a resumed run compacts the saved history and waits for the next prompt. */
   const compactNow = () => {
+    if (dispatcherRef.current) {
+      const id = followed.current?.id;
+      if (!id) return addNote("nothing to compact yet", "queue");
+      setCompacting("manual");
+      void queueClient()
+        ?.compact(id)
+        .catch((error: Error) => {
+          setCompacting(null);
+          addNote(`could not compact: ${error.message}`, "queue");
+        });
+      return;
+    }
     const liveRun = live.current.run;
     itemAppendHint.current = true;
     if (liveRun && !exitedRef.current) {
@@ -979,7 +1529,7 @@ export function App(props: AppProps) {
     }
     if (!resumePath) return;
     setCompacting("manual");
-    startRun({ task: "", compactOnly: true, model: modelOverride, cwd: props.cwd, resumePath });
+    startRun({ task: "", compactOnly: true, model: modelOverride, cwd: cwdRef.current, resumePath });
     compactOnlyRef.current = true;
   };
 
@@ -997,7 +1547,16 @@ export function App(props: AppProps) {
       return setOverlay("settings");
     }
     if (command === "help" || command === "h") return setOverlay("help");
-    if (command === "resume" || command === "sessions") return setOverlay("resume");
+    if (command === "resume" || command === "sessions") {
+      if (dispatcherRef.current) return addNote("/resume lists this folder's own sessions: open a worker's session with /tasks, or switch the main chat to manual in /settings", "queue");
+      return setOverlay("resume");
+    }
+    if (command === "tasks" || command === "queue") return openTasks();
+    if (command === "workspaces" || command === "workspace" || command === "ws") return openWorkspaces();
+    if (command === "main" || command === "chat") {
+      if (!dispatcherRef.current) return addNote("/main returns to the dispatcher chat (dispatcher mode only)", "workspace");
+      return backToMain();
+    }
     if (command === "connect") {
       setConnectStep({ kind: "provider", index: 0, query: "" });
       return setOverlay("connect");
@@ -1008,7 +1567,7 @@ export function App(props: AppProps) {
       return setOverlay("mcp");
     }
     if (command === "quit" || command === "exit" || command === "q") return quit();
-    if (command === "new" || command === "clear") return newSession();
+    if (command === "new" || command === "clear") return dispatcherRef.current ? newQueueChat() : newSession();
     if (command.startsWith("model ")) {
       const model = trimmed.replace(/^\//, "").slice("model ".length).trim();
       if (model) return applyModel(model);
@@ -1029,6 +1588,7 @@ export function App(props: AppProps) {
       setEvents((prev) => [...prev, { type: "notice", text: `unknown skill${expanded.missing.length > 1 ? "s" : ""} sent as plain text: ${expanded.missing.map((n) => `$${n}`).join(", ")}` }]);
     }
     const task = expanded.task;
+    if (dispatcherRef.current) return sendToQueue(task);
     echoTask(task);
     if (props.onSend) {
       props.onSend(task);
@@ -1048,7 +1608,7 @@ export function App(props: AppProps) {
       const model = modelOverride ?? DEFAULT_MODEL;
       if (persist) {
         try {
-          createSession(db(), { id, cwd: props.cwd, model, task: trimmed });
+          createSession(db(), { id, cwd: cwdRef.current, model, task: trimmed });
           generateTitle(trimmed, model, (title) => {
             try {
               db().query("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title, Date.now(), id);
@@ -1072,7 +1632,7 @@ export function App(props: AppProps) {
         resumePath = undefined;
       }
     }
-    startRun({ task, model: modelOverride, cwd: props.cwd, resumePath });
+    startRun({ task, model: modelOverride, cwd: cwdRef.current, resumePath });
   };
 
 
@@ -1118,6 +1678,7 @@ export function App(props: AppProps) {
 
   const quit = () => {
     latestSave.current(); // the throttled save may be pending: flush before leaving
+    queueClientRef.current?.stop(); // a queue server this terminal started stops with it
     live.current.watch?.stop();
     live.current.run?.kill(); // quitting interrupts any run in flight
     if (props.onQuit) props.onQuit();
@@ -1418,6 +1979,16 @@ export function App(props: AppProps) {
         setConnectStep({ ...step, query: step.query + token, index: 0 });
       return;
     }
+    if (overlayRef.current === "workspaces") {
+      const step = wsStepRef.current;
+      const line = pastedLine(new TextDecoder().decode(event.bytes));
+      if (!line) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (step.kind === "add") setWsStep({ ...step, [step.field]: (step.field === "path" ? step.path : step.name) + line, error: undefined });
+      else if (step.kind === "rename") setWsStep({ ...step, value: step.value + line, error: undefined });
+      return;
+    }
     if (overlayRef.current === "resume") {
       const line = pastedLine(new TextDecoder().decode(event.bytes));
       if (!line) return;
@@ -1429,6 +2000,12 @@ export function App(props: AppProps) {
 
   useKeyboard((key) => {
     if (overlayRef.current === "mcp") return mcpKey(key);
+    if (overlayRef.current === "tasks") return tasksKey(key);
+    if (overlayRef.current === "workspaces") return workspacesKey(key);
+    if (overlayRef.current === "none" && key.ctrl && key.name === "t") {
+      // the list of the current chat mode: the queue's tasks, or the saved workspaces
+      return dispatcherRef.current ? openTasks() : openWorkspaces();
+    }
     if (overlayRef.current === "connect") {
       // the BYOK wizard owns the keys (its inputs are display-only)
       const step = connectRef.current;
@@ -1691,7 +2268,8 @@ export function App(props: AppProps) {
       return; // the prompt input owns the other keys
     }
 
-    // normal mode: transcript navigation
+    // normal mode: transcript navigation (in a worker's session Esc goes back to the main chat)
+    if (key.name === "escape" && dispatcherRef.current && viewTaskRef.current) return backToMain();
     if (key.name === "escape") return escapePress();
     if (key.ctrl && key.name === "c") return ctrlCPress();
     if (key.name === "i" || key.name === "return" || key.name === "enter") return setInputFocused(true);
@@ -1792,11 +2370,31 @@ export function App(props: AppProps) {
     ) : overlayState === "connect" && connectStep ? (
       <ConnectWizard step={connectStep} providers={PROVIDERS} areaHeight={modalAreaHeight} />
     ) : overlayState === "settings" ? (
-      settingsGroup === 2 ? (
+      settingsGroup === JEV_GROUP ? (
         <JevSettings settings={settings} onChange={changeSettings} onDone={doneSettings} />
       ) : (
         <SettingsPanel settings={settings} group={settingsGroup} onChange={changeSettings} onDone={doneSettings} />
       )
+    ) : overlayState === "tasks" ? (
+      <TasksModal
+        tasks={queueState.tasks}
+        filter={tasksUi.filter}
+        selectedIndex={tasksUi.index}
+        confirmCancel={tasksUi.confirm}
+        note={tasksUi.note}
+        link={queueLink === "connecting" ? "connecting…" : queueLink === "error" ? "not reachable" : queueLink === "polling" ? "polling" : undefined}
+        areaHeight={modalAreaHeight}
+        onPick={(task) => openTask(task.id)}
+      />
+    ) : overlayState === "workspaces" ? (
+      <WorkspacesModal
+        rows={wsRows}
+        step={wsStep}
+        current={shortPath(cwd)}
+        currentId={wsRows.find((row) => !row.remote && row.workspace.path === cwd)?.workspace.id}
+        areaHeight={modalAreaHeight}
+        onPick={(row) => (row.remote ? undefined : switchWorkspace(row.workspace))}
+      />
     ) : overlayState === "help" ? (
       <HelpPanel />
     ) : overlayState === "resume" ? (
@@ -1900,15 +2498,19 @@ export function App(props: AppProps) {
         onSend={send}
         onTextChange={syncPromptText}
         onWrapRows={setPromptWrapRows}
+        placeholder={dispatcher ? (viewTask ? `redirect ${viewTask}: tell its worker what to change…` : "ask the dispatcher: each request becomes a background task…") : undefined}
       />
       <StatusLine
         model={(modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL) || "default model"}
-        path={shortPath(props.cwd)}
+        path={shortPath(cwd)}
         branch={branch}
         status={displayStatus}
         startedAt={turnStartedAt}
         compacting={Boolean(compacting)}
         verifying={verifying}
+        workspace={workspaceLabel}
+        view={dispatcher ? (viewTask ? `task ${viewTask}${viewed ? ` · ${oneLine(viewed.title, 28)} (${viewed.status})` : ""}` : "main chat") : undefined}
+        queue={dispatcher ? (queueLink === "connecting" ? "queue: connecting…" : queueLink === "error" ? "queue offline" : queueBadge(queueState.tasks) || (queueLink === "polling" ? "queue: polling" : "")) : undefined}
       />
       {overlayNode ? <Modal areaHeight={modalAreaHeight}>{overlayNode}</Modal> : null}
     </box>

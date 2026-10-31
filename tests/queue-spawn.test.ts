@@ -186,6 +186,7 @@ describe("there is only one place that spawns a queue command", () => {
       "channels/queueBridge.ts",
       "mini/spawn.ts",
       "proc/spawnBounded.ts",
+      "queueClient.ts", // the terminal starting a web server when none runs: not a queue launch
       "web/browser.ts", // `cu shot` for the browser panel: a screenshot, not a queue launch
       "web/ssh.ts",
       "web/terminals.ts",
@@ -197,6 +198,14 @@ describe("there is only one place that spawns a queue command", () => {
     const sites = source.match(/Bun\.spawn\([^\n]*/g) ?? [];
     expect(sites.length).toBe(1);
     expect(sites[0]).toContain("systemctl");
+  });
+
+  test("the terminal's queue client spawns the web server and nothing else", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "src", "queueClient.ts"), "utf8");
+    const sites = source.match(/Bun\.spawn\([^\n]*/g) ?? [];
+    expect(sites.length).toBe(1);
+    expect(sites[0]).toContain("script");
+    expect(source).toContain('join(import.meta.dir, "web", "serve.ts")');
   });
 
   test("the queue files are adapters: no spawn of their own, and they call the launcher", () => {

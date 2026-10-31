@@ -63,8 +63,10 @@ Scripting commands (add --json for machine-readable output):
 
 Prompt commands (TUI):
   /model              open the model picker (or /model <id>)
-  /settings           output display, theme, and the jev toggles (Tab \u00d7 3)
+  /settings           output display, theme, main chat mode, jev toggles (Tab)
   /compact            summarize the conversation now (frees context)
+  /tasks  /main       dispatcher mode: the work queue, back to the main chat (ctrl+t)
+  /workspaces         manual mode: saved folders new sessions start in (ctrl+t)
   /resume  /new  /connect  /quit
   $skill              reference skills anywhere in a prompt ($ opens the list)
 
@@ -161,6 +163,7 @@ const args: TuiArgs = parsed;
 const { createCliRenderer } = await import("@opentui/core");
 const { createRoot, createElement } = await import("@opentui/react");
 const { App } = await import("./ui/App");
+const { QueueClient } = await import("./queueClient");
 const { startProfiling } = await import("./profile");
 
 // Default model of this launch: -m, else $MINITUI_MODEL, else the model last picked with
@@ -205,6 +208,8 @@ createRoot(renderer).render(
     runSpec,
     initialModel,
     importedSkills,
+    // The dispatcher chat mode's queue lives in the web server: reached (or started) on first use.
+    queue: args.command === "view" || runSpec ? null : () => new QueueClient(),
     onQuit: quit,
   }),
 );
