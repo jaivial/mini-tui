@@ -19,6 +19,8 @@ pub struct Mapper {
     streamed_text: String,
     streamed_thought: String,
     open_calls: Vec<String>,
+    /// Ids an `act` note announced whose assistant message has not reached the journal yet.
+    announced: Vec<String>,
     used: i64,
     last_usage: Option<(i64, i64, String)>,
     synthetic_ids: usize,
@@ -37,6 +39,7 @@ impl Mapper {
             streamed_text: String::new(),
             streamed_thought: String::new(),
             open_calls: Vec::new(),
+            announced: Vec::new(),
             used: 0,
             last_usage: None,
             synthetic_ids: 0,
@@ -67,6 +70,7 @@ impl Mapper {
                     vec![chunk("agent_message_chunk", text)]
                 }
             }
+            Some("act") if !self.replay => rec.get("m").map(|m| self.announce(m)).unwrap_or_default(),
             Some("msg") => rec.get("m").map(|m| self.message(m)).unwrap_or_default(),
             Some("info") if !self.replay => rec.get("i").map(|i| self.info(i)).unwrap_or_default(),
             _ => vec![],
@@ -97,7 +101,11 @@ impl Mapper {
                 if !text.trim().is_empty() {
                     self.emitted_text = true;
                 }
-                for (id, name, args) in self.calls_of(m) {
+                let announced = std::mem::take(&mut self.announced);
+                for (i, (id, name, args)) in self.calls_of(m).into_iter().enumerate() {
+                    if i < announced.len() {
+                        continue; // shown (and left open) when its `act` note arrived
+                    }
                     out.push(tool_call(&id, &name, &args, &self.cwd));
                     self.open_calls.push(id);
                 }
@@ -158,6 +166,19 @@ impl Mapper {
         }
         self.last_usage = Some(key);
         vec![json!({"sessionUpdate": "usage_update", "used": self.used, "size": size, "cost": {"amount": cost, "currency": "USD"}})]
+    }
+
+    /// An `act` note: the step's actions are about to run. They are announced now, so a client
+    /// shows a long command while it runs, and matched by position to the assistant message
+    /// that reaches the journal with their observations when the step ends.
+    fn announce(&mut self, m: &Value) -> Vec<Value> {
+        let mut out = Vec::new();
+        for (id, name, args) in self.calls_of(m) {
+            out.push(tool_call(&id, &name, &args, &self.cwd));
+            self.open_calls.push(id.clone());
+            self.announced.push(id);
+        }
+        out
     }
 
     /// `(id, tool name, arguments)` for every action the assistant asked for.
@@ -405,6 +426,36 @@ mod tests {
 
     fn kinds(updates: &[Value]) -> Vec<String> {
         updates.iter().map(|u| u["sessionUpdate"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn announced_actions_open_once_and_close_with_their_results() {
+        let mut m = Mapper::new("/w", "openai/gpt-mock", false);
+        let calls = json!([{"id": "call_7", "type": "function", "function": {"name": "bash", "arguments": "{\"command\": \"sleep 30\"}"}}]);
+        let out = m.record(&json!({"t": "act", "m": {"tool_calls": calls, "extra": {"actions": null}}}));
+        assert_eq!(kinds(&out), vec!["tool_call"]);
+        assert_eq!((out[0]["toolCallId"].as_str(), out[0]["status"].as_str()), (Some("call_7"), Some("in_progress")));
+        let out = m.record(&json!({"t": "msg", "m": {"role": "assistant", "content": null, "tool_calls": calls}}));
+        assert!(out.is_empty(), "already announced: {out:?}");
+        let out = m.record(&json!({"t": "msg", "m": {"role": "tool", "tool_call_id": "call_7", "content": "{\"returncode\": 0, \"output\": \"\"}"}}));
+        assert_eq!((kinds(&out), out[0]["toolCallId"].as_str()), (vec!["tool_call_update".to_string()], Some("call_7")));
+    }
+
+    #[test]
+    fn announced_text_actions_keep_their_synthetic_ids() {
+        let mut m = Mapper::new("/w", "openai/gpt-mock", false);
+        let out = m.record(&json!({"t": "act", "m": {"tool_calls": null, "extra": {"actions": [{"command": "ls"}]}}}));
+        let id = out[0]["toolCallId"].as_str().unwrap().to_string();
+        let out = m.message(&json!({"role": "assistant", "content": "THOUGHT: look\n```bash\nls\n```", "extra": {"actions": [{"command": "ls"}]}}));
+        assert!(kinds(&out).iter().all(|k| k != "tool_call"), "{out:?}");
+        let out = m.message(&json!({"role": "user", "content": "<returncode>0</returncode>", "extra": {"raw_output": "a", "returncode": 0}}));
+        assert_eq!(out[0]["toolCallId"].as_str(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn replay_ignores_announcements() {
+        let mut m = Mapper::new("/w", "openai/gpt-mock", true);
+        assert!(m.record(&json!({"t": "act", "m": {"extra": {"actions": [{"command": "ls"}]}}})).is_empty());
     }
 
     #[test]

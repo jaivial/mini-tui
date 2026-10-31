@@ -148,6 +148,8 @@ pub fn run_env(spec: &RunSpec) -> Vec<(String, String)> {
     set("MINI_AGENT_TASK_FILE", "1".into());
     set("MSWEA_CONTROL_FILE", spec.control.display().to_string());
     set("MSWEA_SILENT_STARTUP", "1".into());
+    // Tool calls are shown when they start, not only once the step's commands have returned.
+    set("MINI_AGENT_JOURNAL_ACTIONS", "1".into());
     if var("MINI_AGENT_CU_MCP").is_none() {
         set("MINI_AGENT_CU_MCP", "1".into());
     }

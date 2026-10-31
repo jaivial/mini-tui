@@ -285,17 +285,25 @@ def main():
         titles = [u["title"] for u in ups + ups2 if u["sessionUpdate"] == "session_info_update"]
         check("title: fallback then generated", titles[:1] == ["Run the scripted check in this directory"] and "Mock title" in titles, titles)
 
-        # Turn 3: cancel while `sleep 30` runs. The agent journals a step when it ends, so the
-        # cue is the mock handing out the command, not a notification.
+        # Turn 3: the `sleep 30` tool call is announced while the command runs (the agent's `act`
+        # journal note), and that notification is the cue to cancel.
         t0 = time.time()
         rid = c.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "Start the slow job now"}]})
-        SLOW_STARTED.wait(30)
-        time.sleep(1.0)
-        c.notify("session/cancel", {"sessionId": sid})
-        r, ups3 = c.wait(rid, 40)
+        shown = {}
+
+        def cancel_on_announce(u):
+            if u.get("sessionUpdate") == "tool_call" and u.get("title") == "sleep 30" and "at" not in shown:
+                shown["at"] = time.time() - t0
+                shown["status"] = u.get("status")
+                c.notify("session/cancel", {"sessionId": sid})
+
+        r, ups3 = c.wait(rid, 40, cancel_on_announce)
         took = time.time() - t0
-        check("turn 3: cancelled during sleep", r.get("result", {}).get("stopReason") == "cancelled" and took < 10, f"{json.dumps(r)[:200]} after {took:.1f}s")
-        check("turn 3: the interrupted step still reports its tool call", any(u.get("title") == "sleep 30" for u in ups3))
+        check("turn 3: the running command is shown before it returns", "at" in shown and shown["at"] < 15 and shown["status"] == "in_progress", shown)
+        check("turn 3: cancelled during sleep", r.get("result", {}).get("stopReason") == "cancelled" and took < 15, f"{json.dumps(r)[:200]} after {took:.1f}s")
+        announced = [u for u in ups3 if u.get("sessionUpdate") == "tool_call" and u.get("title") == "sleep 30"]
+        check("turn 3: the tool call is announced once", len(announced) == 1, len(announced))
+
         time.sleep(0.5)
         sleeping = subprocess.run(["pgrep", "-x", "sleep", "-a"], capture_output=True, text=True).stdout
         check("turn 3: no `sleep 30` left behind", "sleep 30" not in sleeping, sleeping)

@@ -1556,6 +1556,13 @@ impl Agent {
             }
             return Err(Flow::Interrupt(vec![Self::exit_message("RepeatedActionLoop", "RepeatedActionLoop", "")]));
         }
+        if std::env::var_os("MINI_AGENT_JOURNAL_ACTIONS").is_some_and(|v| v == "1") {
+            // A reader that shows commands while they run (the ACP adapter) learns about them
+            // now; the assistant message itself reaches the journal with its observations.
+            let actions = get(&message, "extra").and_then(|e| e.get("actions")).cloned().unwrap_or(Value::Null);
+            let calls = get(&message, "tool_calls").cloned().unwrap_or(Value::Null);
+            self.journal_note(&json!({"t": "act", "m": {"tool_calls": calls, "extra": {"actions": actions}}}));
+        }
         let mut outputs = self.execute_actions(&message)?;
         // A real loop repeats the call AND gets the same output back. Same-shaped commands
         // that keep producing new information (e.g. iterative image processing over heredocs,

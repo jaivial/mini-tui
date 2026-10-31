@@ -66,8 +66,10 @@ browser server, `other`), a title (the command, `Read <path>`, `Edit <path>`, `<
 for MCP), `rawInput` and `locations`. Edits also carry `filePath`, `oldString` and `newString`,
 which Paseo renders as a diff.
 
-The agent journals a step when the step ends. A command therefore appears when it has finished
-(or when the turn is cancelled), not when it starts.
+The agent journals a step when the step ends. For ACP turns it also writes an `act` note with the
+step's tool calls just before running them (`MINI_AGENT_JOURNAL_ACTIONS=1`), so a command appears
+as `in_progress` when it starts and is closed by its result; the step's assistant message does not
+announce it a second time.
 
 Stop reasons: `end_turn` for a submitted answer or any other clean exit (with a note naming the
 exit status when the agent stopped without answering), `max_turn_requests` for the step, cost and
