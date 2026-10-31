@@ -4,6 +4,7 @@
 //! `<traj>.jsonl` journal (meta / msg / info / delta lines), the same control file protocol
 //! (`MSWEA_CONTROL_FILE`: `MODEL`, `MESSAGE`, `COMPACT`), the same YAML configs and `.env`.
 
+mod acp;
 mod agent;
 mod agents;
 mod resources;
@@ -416,6 +417,11 @@ fn main() {
     }
     if argv.first().map(String::as_str) == Some("agent") {
         std::process::exit(subagents::client(&argv[1..]));
+    }
+    // `acp`: the Agent Client Protocol server (src/acp.rs, docs/acp.md).
+    if argv.first().map(String::as_str) == Some("acp") {
+        config::load_dotenv();
+        std::process::exit(acp::main(&argv[1..]));
     }
     if argv.first().map(String::as_str) == Some("browser") {
         std::process::exit(e2e::server::client(&argv[1..]));
