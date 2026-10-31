@@ -44,6 +44,15 @@ struct Registry {
     id: Option<String>,
     conn: Mutex<Conn>,
     tools: Vec<RemoteTool>,
+    /// A local server whose tools came from the on-disk cache: it is started on its first call.
+    lazy: Mutex<Option<LazyStdio>>,
+}
+
+/// What starting a cached local server later takes, and what to refresh the cache against.
+struct LazyStdio {
+    command: StdioCommand,
+    cache: std::path::PathBuf,
+    listed: Vec<Value>,
 }
 
 impl Registry {
@@ -309,7 +318,7 @@ fn request_timeout() -> Duration {
 }
 
 /// Start a local server, run the handshake and register its session under its address.
-fn stdio_connect(spec: &ServerSpec, command: &StdioCommand) -> Result<Arc<StdioSession>, String> {
+fn stdio_connect(address: &str, command: &StdioCommand) -> Result<Arc<StdioSession>, String> {
     let session = Arc::new(StdioSession::spawn(command)?);
     let initialized = session.request(json!({
         "jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "initialize",
@@ -321,9 +330,122 @@ fn stdio_connect(spec: &ServerSpec, command: &StdioCommand) -> Result<Arc<StdioS
     }
     let _ = session.write_line(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
     if let Ok(mut sessions) = stdio_sessions().lock() {
-        sessions.insert(spec.url.clone(), Arc::clone(&session));
+        sessions.insert(address.to_string(), Arc::clone(&session));
     }
     Ok(session)
+}
+
+/// The built-in `cu` server's `tools/list` is compiled into the cu binary, yet getting it meant
+/// starting `cu mcp` before the first request of every turn, used or not. It is cached on disk,
+/// keyed by the program's identity, so a turn that never browses never starts the server; a turn
+/// that does starts it on its first call. A cache that is missing, stale or unreadable falls back
+/// to the eager start, which writes it. `MINI_AGENT_CU_MCP_LAZY=0` turns the cache off.
+const TOOLS_CACHE_TTL_SECS: u64 = 24 * 3600;
+
+fn cache_root() -> Option<std::path::PathBuf> {
+    let base = std::env::var("XDG_CACHE_HOME").ok().filter(|v| !v.trim().is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| crate::config::home().join(".cache"));
+    Some(base.join("mini-tui"))
+}
+
+fn fnv64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn resolve_program(program: &str) -> Option<std::path::PathBuf> {
+    if program.contains('/') {
+        return Some(std::path::PathBuf::from(program));
+    }
+    std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|dir| dir.join(program)).find(|p| p.is_file()))
+}
+
+fn stamp(path: &std::path::Path, into: &mut String) -> Option<()> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    into.push_str(&format!("{}\0{}\0{}\0{}\0{}\0", path.display(), m.ino(), m.len(), m.mtime(), m.mtime_nsec()));
+    Some(())
+}
+
+/// What changes when the program does: its path, size and mtime, and for a wrapper script (`cu`
+/// is usually one, exec'ing the real binary) the script itself and every file it names.
+fn program_fingerprint(command: &StdioCommand) -> Option<String> {
+    let path = resolve_program(&command.program)?;
+    let mut key = format!("{}\0{}\0", command.args.join("\0"), command.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("\0"));
+    stamp(&path, &mut key)?;
+    let head = std::fs::File::open(&path).ok().and_then(|f| {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        f.take(16 * 1024 + 1).read_to_end(&mut buf).ok().map(|_| buf)
+    })?;
+    if head.starts_with(b"#!") && head.len() <= 16 * 1024 {
+        let script = String::from_utf8_lossy(&head).into_owned();
+        key.push_str(&script);
+        for token in script.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '=' | ':' | '(' | ')')) {
+            if token.starts_with('/') && std::path::Path::new(token).is_file() {
+                stamp(std::path::Path::new(token), &mut key);
+            }
+        }
+    }
+    Some(format!("{:016x}", fnv64(key.as_bytes())))
+}
+
+fn builtin_tools_cache(spec: &ServerSpec) -> Option<std::path::PathBuf> {
+    if spec.name != BUILTIN_CU || spec.id.is_some() || std::env::var("MINI_AGENT_CU_MCP_LAZY").is_ok_and(|v| v.trim() == "0") {
+        return None;
+    }
+    let command = spec.stdio.as_ref()?;
+    Some(cache_root()?.join(format!("cu-tools-{}.json", program_fingerprint(command)?)))
+}
+
+fn read_tools_cache(path: &std::path::Path) -> Option<Vec<Value>> {
+    let age = std::fs::metadata(path).ok()?.modified().ok()?.elapsed().ok()?;
+    if age.as_secs() >= TOOLS_CACHE_TTL_SECS {
+        return None;
+    }
+    let data: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    data.get("tools")?.as_array().cloned()
+}
+
+fn write_tools_cache(path: &std::path::Path, tools: &[Value]) {
+    let Some(dir) = path.parent() else { return };
+    let _ = std::fs::create_dir_all(dir);
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let body = json!({"tools": tools}).to_string();
+    if std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, path)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// Start a cached server on its first call (once: a call that waited on the lock finds it started).
+fn lazy_connect(registry: &Registry) -> Result<Arc<StdioSession>, String> {
+    let stopped = || format!("MCP server {} was stopped", registry.url.trim_start_matches("stdio:"));
+    let mut slot = registry.lazy.lock().map_err(|_| stopped())?;
+    if let Some(session) = stdio_session(&registry.url) {
+        return Ok(session);
+    }
+    // Taken by close_sessions: the run is over, nothing is started any more.
+    let Some(lazy) = slot.as_ref() else { return Err(stopped()) };
+    match stdio_connect(&registry.url, &lazy.command) {
+        Ok(session) => {
+            // The run keeps the list it started with; the next one gets what the server says now.
+            if let Ok(listed) = list_tools(Some(&session), &registry.url, None) {
+                if listed != lazy.listed {
+                    write_tools_cache(&lazy.cache, &listed);
+                }
+            }
+            slot.take();
+            Ok(session)
+        }
+        Err(error) => {
+            // A server that cannot start any more: the next run lists what the eager start finds.
+            let _ = std::fs::remove_file(&lazy.cache);
+            Err(error)
+        }
+    }
 }
 
 /// The headers mini-tui would send for server `id` right now, from `MINI_AGENT_MCP_FILE`
@@ -480,39 +602,67 @@ fn handshake(url: &str, headers: Vec<(String, String)>) -> Result<Conn, String> 
     Ok(client)
 }
 
-fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>) -> Result<Registry, String> {
-    let stdio = match &spec.stdio {
-        Some(command) => Some(stdio_connect(spec, command)?),
-        None => None,
-    };
-    let conn = match &stdio {
-        Some(_) => Conn { headers: vec![], session: None, protocol: "2024-11-05".into() },
-        None => handshake(&spec.url, spec.headers.clone())?,
-    };
-    let mut client = Registry { url: spec.url.clone(), id: spec.id.clone(), conn: Mutex::new(conn.clone()), tools: vec![] };
+/// Every page of `tools/list`, over the local session or HTTP.
+fn list_tools(stdio: Option<&StdioSession>, url: &str, conn: Option<&Conn>) -> Result<Vec<Value>, String> {
     let mut raw_tools = Vec::new();
     let mut cursor = Value::Null;
     for _ in 0..20 {
         let params = if cursor.is_null() { json!({}) } else { json!({"cursor": cursor}) };
         let request = json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/list", "params": params});
-        let listed = match &stdio {
-            Some(session) => session.request(request, request_timeout()),
-            None => post(&client.url, &conn, &request).map(|(_, result)| result),
-        };
-        let result = match listed {
-            Ok(result) => result,
-            Err(error) => {
-                if let Some(session) = &stdio {
-                    session.stop();
-                }
-                return Err(error);
-            }
+        let result = match (stdio, conn) {
+            (Some(session), _) => session.request(request, request_timeout())?,
+            (None, Some(conn)) => post(url, conn, &request).map(|(_, result)| result)?,
+            (None, None) => return Err("MCP tools/list: no connection".into()),
         };
         raw_tools.extend(result.get("tools").and_then(Value::as_array).cloned().unwrap_or_default());
         let next = result.get("nextCursor").cloned().filter(|v| !v.is_null());
         let Some(next) = next else { break };
         cursor = next;
     }
+    Ok(raw_tools)
+}
+
+fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>) -> Result<Registry, String> {
+    initialize_with(spec, exposed, builtin_tools_cache(spec))
+}
+
+fn initialize_with(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>, cache: Option<std::path::PathBuf>) -> Result<Registry, String> {
+    let local_conn = || Conn { headers: vec![], session: None, protocol: "2024-11-05".into() };
+    if let (Some(command), Some(path)) = (&spec.stdio, &cache) {
+        if let Some(raw_tools) = read_tools_cache(path) {
+            let lazy = LazyStdio { command: command.clone(), cache: path.clone(), listed: raw_tools.clone() };
+            let mut client = Registry { url: spec.url.clone(), id: spec.id.clone(), conn: Mutex::new(local_conn()), tools: vec![], lazy: Mutex::new(Some(lazy)) };
+            client.tools = remote_tools(spec, raw_tools, exposed)?;
+            return Ok(client);
+        }
+    }
+    let stdio = match &spec.stdio {
+        Some(command) => Some(stdio_connect(&spec.url, command)?),
+        None => None,
+    };
+    let conn = match &stdio {
+        Some(_) => local_conn(),
+        None => handshake(&spec.url, spec.headers.clone())?,
+    };
+    let mut client = Registry { url: spec.url.clone(), id: spec.id.clone(), conn: Mutex::new(conn.clone()), tools: vec![], lazy: Mutex::new(None) };
+    let raw_tools = match list_tools(stdio.as_deref(), &client.url, Some(&conn)) {
+        Ok(raw_tools) => raw_tools,
+        Err(error) => {
+            if let Some(session) = &stdio {
+                session.stop();
+            }
+            return Err(error);
+        }
+    };
+    if let Some(path) = &cache {
+        write_tools_cache(path, &raw_tools);
+    }
+    client.tools = remote_tools(spec, raw_tools, exposed)?;
+    Ok(client)
+}
+
+fn remote_tools(spec: &ServerSpec, raw_tools: Vec<Value>, exposed: &mut std::collections::HashSet<String>) -> Result<Vec<RemoteTool>, String> {
+    let mut out = Vec::new();
     for tool in raw_tools {
         let Some(original) = tool.get("name").and_then(Value::as_str) else { continue };
         if !spec.allow.is_empty() && !spec.allow.iter().any(|a| a == original) {
@@ -522,7 +672,7 @@ fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>
         if !exposed.insert(name.clone()) {
             return Err(format!("MCP tool name collision after normalization: {name}"));
         }
-        client.tools.push(RemoteTool {
+        out.push(RemoteTool {
             exposed: name,
             original: original.to_string(),
             description: {
@@ -535,7 +685,7 @@ fn initialize(spec: &ServerSpec, exposed: &mut std::collections::HashSet<String>
             schema: tool.get("inputSchema").cloned().unwrap_or_else(|| json!({"type": "object", "properties": {}})),
         });
     }
-    Ok(client)
+    Ok(out)
 }
 
 /// Every configured server, connected once. The legacy server failing is an error (the benchmark
@@ -594,6 +744,14 @@ pub fn tools(protocol: &str) -> Vec<Value> {
 /// idle ones expire after 15 minutes), so a run that just exits holds a slot another worker needs.
 /// Best effort, short timeout, and a no-op when nothing was connected.
 pub fn close_sessions() {
+    // A cached server nobody called is never started now (one waiting on its lock finishes first).
+    if let Some(Ok(registries)) = REGISTRY.get() {
+        for registry in registries {
+            if let Ok(mut slot) = registry.lazy.lock() {
+                slot.take();
+            }
+        }
+    }
     // Local servers: end of input, a moment to finish, then a kill. Taken out of the map, so a
     // second call (a signal during the normal exit) has nothing left to stop.
     let local: Vec<Arc<StdioSession>> = stdio_sessions().lock().map(|mut map| map.drain().map(|(_, session)| session).collect()).unwrap_or_default();
@@ -626,7 +784,10 @@ pub fn is_tool(name: &str) -> bool {
 fn call(registry: &Registry, tool: &RemoteTool, args: &Value) -> Result<Value, String> {
     let payload = || json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/call", "params": {"name": tool.original, "arguments": args}});
     if registry.url.starts_with("stdio:") {
-        let session = stdio_session(&registry.url).ok_or_else(|| format!("MCP server {} was stopped", registry.url.trim_start_matches("stdio:")))?;
+        let session = match stdio_session(&registry.url) {
+            Some(session) => session,
+            None => lazy_connect(registry)?,
+        };
         return session.request(payload(), request_timeout());
     }
     let conn = registry.conn();
@@ -710,6 +871,112 @@ mod tests {
         let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n", body.len(), if session { "Mcp-Session-Id: test-session\r\n" } else { "" });
         stream.write_all(headers.as_bytes()).unwrap();
         stream.write_all(body.as_bytes()).unwrap();
+    }
+
+    /// A fake local server: answers initialize, tools/list and tools/call by id, and logs each
+    /// start to \`log\`.
+    fn fake_stdio_server(dir: &std::path::Path, log: &std::path::Path, tool: &str) -> std::path::PathBuf {
+        let script = dir.join("fake-mcp");
+        let body = format!(
+            r#"#!/bin/sh
+echo started >> '{log}'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{{"jsonrpc":"2.0","id":\([0-9]*\).*/\1/p')
+  [ -z "$id" ] && continue
+  case "$line" in
+    *'"initialize"'*) echo '{{"jsonrpc":"2.0","id":'$id',"result":{{"protocolVersion":"2024-11-05","capabilities":{{}}}}}}' ;;
+    *'"tools/list"'*) echo '{{"jsonrpc":"2.0","id":'$id',"result":{{"tools":[{{"name":"{tool}","description":"Up?","inputSchema":{{"type":"object","properties":{{"n":{{"type":"number","minimum":1.5}}}}}}}}]}}}}' ;;
+    *'"tools/call"'*) echo '{{"jsonrpc":"2.0","id":'$id',"result":{{"content":[{{"type":"text","text":"up"}}]}}}}' ;;
+  esac
+done
+"#,
+            log = log.display()
+        );
+        std::fs::write(&script, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    fn starts(log: &std::path::Path) -> usize {
+        std::fs::read_to_string(log).map(|t| t.lines().count()).unwrap_or(0)
+    }
+
+    /// The built-in's tools come from the cache when it has them: the server is started by the
+    /// first call, not by listing, and the listed tools are the same ones the eager start gives.
+    #[test]
+    fn a_cached_builtin_server_starts_on_its_first_call() {
+        let dir = std::env::temp_dir().join(format!("mcp-lazy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("starts.log");
+        let program = fake_stdio_server(&dir, &log, "status");
+        let command = StdioCommand { program: program.to_string_lossy().into_owned(), args: vec!["mcp".into()], env: vec![] };
+        let spec = ServerSpec { name: BUILTIN_CU.into(), id: None, url: "stdio:cu-lazy-test".into(), headers: vec![], prefixed: true, allow: vec![], hints: vec![], stdio: Some(command.clone()) };
+        let key = program_fingerprint(&command).unwrap();
+        assert_eq!(key, program_fingerprint(&command).unwrap());
+        let cache = dir.join(format!("cu-tools-{key}.json"));
+
+        // No cache: the eager start lists the tools and writes the cache.
+        let eager = initialize_with(&spec, &mut Default::default(), Some(cache.clone())).unwrap();
+        assert_eq!(starts(&log), 1);
+        assert!(cache.is_file());
+        stop_test_session(&spec.url);
+
+        // Cached: same tools, nothing started until the first call.
+        let lazy = initialize_with(&spec, &mut Default::default(), Some(cache.clone())).unwrap();
+        assert_eq!(starts(&log), 1);
+        let eager_tools: Vec<Value> = eager.tools.iter().map(|t| tool_values(t, "chat")).collect();
+        let lazy_tools: Vec<Value> = lazy.tools.iter().map(|t| tool_values(t, "chat")).collect();
+        assert_eq!(serde_json::to_string(&eager_tools).unwrap(), serde_json::to_string(&lazy_tools).unwrap());
+        assert_eq!(lazy.tools[0].exposed, "mcp__cu__status");
+        let result = call(&lazy, &lazy.tools[0], &json!({})).unwrap();
+        assert_eq!(result["content"][0]["text"], "up");
+        assert_eq!(starts(&log), 1 + 1);
+        // One server per run: a second call reuses it (or, when another test's close_sessions
+        // drained the shared map in between, fails rather than starting a second one).
+        let _ = call(&lazy, &lazy.tools[0], &json!({}));
+        assert_eq!(starts(&log), 2);
+        stop_test_session(&spec.url);
+
+        // The server changed its list behind an unchanged program: the first call refreshes the
+        // cache for the next run (this run keeps the list it started with).
+        let program = fake_stdio_server(&dir, &log, "status2");
+        let changed = StdioCommand { program: program.to_string_lossy().into_owned(), ..command.clone() };
+        let stale = initialize_with(&ServerSpec { stdio: Some(changed), ..spec_clone(&spec) }, &mut Default::default(), Some(cache.clone())).unwrap();
+        assert_eq!(stale.tools[0].exposed, "mcp__cu__status");
+        call(&stale, &stale.tools[0], &json!({})).unwrap();
+        assert!(std::fs::read_to_string(&cache).unwrap().contains("status2"));
+        stop_test_session(&spec.url);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Tests share the session map with close_sessions() calls of other tests running in parallel.
+    fn stop_test_session(address: &str) {
+        if let Some(session) = stdio_sessions().lock().unwrap().remove(address) {
+            session.stop();
+        }
+    }
+
+    fn spec_clone(spec: &ServerSpec) -> ServerSpec {
+        ServerSpec { name: spec.name.clone(), id: spec.id.clone(), url: spec.url.clone(), headers: spec.headers.clone(), prefixed: spec.prefixed, allow: spec.allow.clone(), hints: spec.hints.clone(), stdio: spec.stdio.clone() }
+    }
+
+    #[test]
+    fn a_wrapper_script_is_keyed_by_the_files_it_names() {
+        let dir = std::env::temp_dir().join(format!("mcp-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real-cu");
+        std::fs::write(&real, b"\x7fELF v1").unwrap();
+        let wrapper = dir.join("cu");
+        std::fs::write(&wrapper, format!("#!/bin/sh\nexec {} \"$@\"\n", real.display())).unwrap();
+        let command = StdioCommand { program: wrapper.to_string_lossy().into_owned(), args: vec!["mcp".into()], env: vec![] };
+        let before = program_fingerprint(&command).unwrap();
+        std::fs::write(&real, b"\x7fELF v2 longer").unwrap();
+        assert_ne!(before, program_fingerprint(&command).unwrap());
+        assert!(program_fingerprint(&StdioCommand { program: dir.join("missing").to_string_lossy().into_owned(), ..command }).is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -803,6 +1070,7 @@ mod tests {
             id: Some("google-search-console".into()),
             conn: Mutex::new(Conn { headers: vec![("Authorization".into(), "Bearer old-token".into())], session: Some("old".into()), protocol: "2025-06-18".into() }),
             tools: vec![],
+            lazy: Mutex::new(None),
         };
         let tool = RemoteTool { exposed: "mcp__google-search-console__sites_list".into(), original: "sites_list".into(), description: String::new(), schema: json!({}) };
         let result = call(&registry, &tool, &json!({})).unwrap();
