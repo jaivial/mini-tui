@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,7 +13,7 @@ import {
   type QueueState,
   type QueueTaskView,
 } from "../src/queueClient";
-import { completeFolder } from "../src/ui/pathComplete";
+import { completeFolder, completePath } from "../src/ui/pathComplete";
 import type { RunEvent } from "../src/traj/schema";
 
 function task(id: string, status: QueueTaskView["status"], extra: Partial<QueueTaskView> = {}): QueueTaskView {
@@ -23,6 +23,7 @@ function task(id: string, status: QueueTaskView["status"], extra: Partial<QueueT
 interface Fake {
   url: string;
   requests: Array<{ method: string; path: string; body: unknown }>;
+  uploads: Array<{ name: string; bytes: number; type: string }>;
   streams: Array<ReadableStreamDefaultController<Uint8Array>>;
   sockets: Array<{ send: (data: string) => void; received: string[] }>;
   stop: () => void;
@@ -30,7 +31,7 @@ interface Fake {
 
 /** A stand-in for the web server: just the routes the client calls. */
 function fakeServer(opts: { stream?: "ok" | "fail"; healthy?: boolean } = {}): Fake {
-  const fake: Fake = { url: "", requests: [], streams: [], sockets: [], stop: () => {} };
+  const fake: Fake = { url: "", requests: [], uploads: [], streams: [], sockets: [], stop: () => {} };
   const enc = new TextEncoder();
   let state = { tasks: [task("t1", "running", { sessionId: "s-w1" })], main: "s-main", concurrency: 5 };
   const server = Bun.serve<{ id: string; received: string[] }>({
@@ -38,6 +39,15 @@ function fakeServer(opts: { stream?: "ok" | "fail"; healthy?: boolean } = {}): F
     hostname: "127.0.0.1",
     async fetch(request, srv) {
       const url = new URL(request.url);
+      if (url.pathname === "/api/attachments" && request.method === "POST") {
+        const form = await request.formData().catch(() => null);
+        const file = form?.get("file");
+        if (!file || typeof file === "string") return Response.json({ error: "expected multipart/form-data with a `file` field" }, { status: 400 });
+        if (file.name.endsWith(".exe")) return Response.json({ error: "tipo de archivo no aceptado (.exe)" }, { status: 400 });
+        fake.uploads.push({ name: file.name, bytes: file.size, type: request.headers.get("content-type") ?? "" });
+        const id = String(fake.uploads.length).padStart(16, "0");
+        return Response.json({ id, name: file.name, mime: "text/markdown", size: file.size, path: `/store/${id}.md`, url: `/api/attachments/${id}` }, { status: 201 });
+      }
       const body = request.method === "POST" ? await request.json().catch(() => null) : null;
       fake.requests.push({ method: request.method, path: url.pathname, body });
       if (url.pathname === "/api/health") return opts.healthy === false ? new Response("no", { status: 500 }) : Response.json({ ok: true });
@@ -47,6 +57,13 @@ function fakeServer(opts: { stream?: "ok" | "fail"; healthy?: boolean } = {}): F
         return Response.json({ id: "s-new", status: "running", events: [] });
       }
       if (url.pathname === "/api/queue/new") return Response.json({ ok: true });
+      if (url.pathname === "/api/hosts") return Response.json([{ id: "h1", label: "build box", host: "10.0.0.9", user: "ci", workdir: "~", online: true }]);
+      if (url.pathname === "/api/sessions" && request.method === "POST") {
+        const b = body as { hostId?: string; target?: string };
+        if (b?.target === "remote" && b.hostId !== "h1") return Response.json({ error: "unknown remote host" }, { status: 400 });
+        return Response.json({ id: "s-remote", status: "running", target: b?.target, hostId: b?.hostId, events: [] }, { status: 201 });
+      }
+      if (/^\/api\/sessions\/[^/]+\/(prompt|model)$/.test(url.pathname)) return Response.json({ ok: true });
       const m = url.pathname.match(/^\/api\/queue\/tasks\/([\w-]+)\/(cancel|redirect)$/);
       if (m) return m[1] === "t404" ? Response.json({ ok: false, text: "no such task" }, { status: 409 }) : Response.json({ ok: true, text: `${m[2]} ${m[1]}` });
       if (url.pathname.endsWith("/interrupt") || url.pathname.endsWith("/compact")) return Response.json({ ok: true });
@@ -256,6 +273,50 @@ describe("QueueClient against a fake server", () => {
   });
 });
 
+describe("server sessions and attachments", () => {
+  test("upload is multipart with one `file` field; its ref rides with a queue prompt", async () => {
+    const fake = fakeServer();
+    cleanups.push(fake.stop);
+    const client = new QueueClient({ url: fake.url });
+    cleanups.push(() => client.stop());
+    await client.connect();
+    const ref = await client.upload({ name: "notes.md", bytes: new TextEncoder().encode("# hi\n") });
+    expect(ref).toEqual({ id: "0000000000000001", name: "notes.md", mime: "text/markdown", size: 5, url: "/api/attachments/0000000000000001" });
+    expect(fake.uploads).toEqual([{ name: "notes.md", bytes: 5, type: expect.stringContaining("multipart/form-data") }]);
+    await client.prompt("read the notes", undefined, [ref]);
+    expect(fake.requests.find((r) => r.path === "/api/queue/prompt")?.body).toEqual({ prompt: "read the notes", attachments: [ref] });
+    // the server's verdict comes back as the error, with the file's name
+    await expect(client.upload({ name: "tool.exe", bytes: new Uint8Array([1]) })).rejects.toThrow("tool.exe: tipo de archivo no aceptado (.exe)");
+  });
+
+  test("a remote session is created with its host, followed, continued, and its model switched", async () => {
+    const fake = fakeServer();
+    cleanups.push(fake.stop);
+    const client = new QueueClient({ url: fake.url });
+    cleanups.push(() => client.stop());
+    await client.connect();
+    expect(await client.hosts()).toEqual([{ id: "h1", label: "build box", host: "10.0.0.9", user: "ci", workdir: "~", online: true }]);
+    const ref = await client.upload({ name: "spec.md", bytes: new TextEncoder().encode("spec") });
+    const session = await client.createSession({ prompt: "deploy", cwd: "~/app", model: "openai/gpt-mock", target: "remote", hostId: "h1", attachments: [ref] });
+    expect(session.id).toBe("s-remote");
+    expect(fake.requests.find((r) => r.path === "/api/sessions")?.body).toEqual({ prompt: "deploy", cwd: "~/app", model: "openai/gpt-mock", target: "remote", hostId: "h1", attachments: [ref] });
+    const snapshots: string[] = [];
+    cleanups.push(client.follow(session.id, { onSnapshot: (s) => snapshots.push(s.id), onDelta: () => {} }));
+    await until(() => snapshots.length === 1);
+    expect(snapshots).toEqual(["s-remote"]);
+    await client.send(session.id, "and the docs");
+    expect(fake.requests.find((r) => r.path === "/api/sessions/s-remote/prompt")?.body).toEqual({ prompt: "and the docs" });
+    await client.setModel(session.id, "openai/gpt-other");
+    expect(fake.requests.find((r) => r.path === "/api/sessions/s-remote/model")?.body).toEqual({ model: "openai/gpt-other" });
+    await expect(client.createSession({ prompt: "x", target: "remote", hostId: "nope" })).rejects.toThrow("unknown remote host");
+  });
+
+  test("hosts() is empty when no server answers (labels fall back to ids)", async () => {
+    const client = new QueueClient({ url: `http://127.0.0.1:${fakePortNobodyUses()}` });
+    expect(await client.hosts()).toEqual([]);
+  });
+});
+
 describe("folder completion", () => {
   test("Tab completes a unique folder and lists several", () => {
     const home = mkdtempSync(join(tmpdir(), "minitui-complete-"));
@@ -268,6 +329,24 @@ describe("folder completion", () => {
     expect(completeFolder("~/projects/", home).matches).toEqual(["alpha", "beta"]);
     expect(completeFolder(`${home}/projects/al`, home).text).toBe(`${home}/projects/alpha/`);
     expect(completeFolder("~/nothing-here", home)).toEqual({ text: "~/nothing-here", matches: [] });
+  });
+
+  test("file completion: relative to a base folder, files included, folders marked", () => {
+    const home = mkdtempSync(join(tmpdir(), "minitui-complete-"));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    const work = join(home, "work");
+    mkdirSync(join(work, "shots"), { recursive: true });
+    writeFileSync(join(work, "shot one.png"), "x");
+    writeFileSync(join(work, "notes.md"), "x");
+    writeFileSync(join(work, "shots", "a.png"), "x");
+    expect(completePath("no", { base: work, files: true, home })).toEqual({ text: "notes.md", matches: [] });
+    expect(completePath("sho", { base: work, files: true, home })).toEqual({ text: "shot", matches: ["shot one.png", "shots/"] });
+    expect(completePath("shots", { base: work, files: true, home })).toEqual({ text: "shots/", matches: [] });
+    expect(completePath("shots/", { base: work, files: true, home })).toEqual({ text: "shots/a.png", matches: [] });
+    expect(completePath("", { base: work, files: true, home }).matches).toEqual(["notes.md", "shot one.png", "shots/"]);
+    expect(completePath("~/wo", { base: work, files: true, home })).toEqual({ text: "~/work/", matches: [] });
+    // folders only (the workspace picker) never offers a file
+    expect(completePath("no", { base: work, home })).toEqual({ text: "no", matches: [] });
   });
 });
 

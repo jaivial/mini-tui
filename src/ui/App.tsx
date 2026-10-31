@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard, usePaste, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
-import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
@@ -20,7 +20,9 @@ import { ModelPicker, MODELS } from "./components/ModelPicker";
 import { SettingsPanel, SETTINGS_GROUPS, JEV_GROUP } from "./components/SettingsPanel";
 import { TasksModal, TASK_FILTERS, visibleTasks, type TaskFilter } from "./components/TasksModal";
 import { WorkspacesModal, type WorkspaceRow, type WorkspaceStep } from "./components/WorkspacesModal";
-import { completeFolder } from "./pathComplete";
+import { completeFolder, completePath } from "./pathComplete";
+import { AttachmentsBar, attachmentsBarRows } from "./components/AttachmentsBar";
+import { MAX_STAGED, escapeAttachPath, humanSize, localAttachmentText, parseAttachArgs, stageFile, type StagedAttachment } from "../attach";
 import { JevSettings } from "./components/JevSettings";
 import { HelpPanel } from "./components/HelpPanel";
 import { Modal } from "./components/Modal";
@@ -78,7 +80,7 @@ import { SkillHighlighter } from "./skillHighlight";
 import { fromCursorOffset, tabWidthOf, toCursorOffset } from "./textOffsets";
 import { chatModeOf, loadSettings, saveSettings, settingsFilePath, type Settings } from "../settings";
 import { addWorkspace, expandHome, listWorkspaces, removeWorkspace, renameWorkspace, workspaceForCwd, type SavedWorkspace } from "../workspaces";
-import { EMPTY_QUEUE, cleanQueueEvents, queueBadge, type QueueClientLike, type QueueState, type SessionMetaView } from "../queueClient";
+import { EMPTY_QUEUE, cleanQueueEvents, queueBadge, type AttachmentRef, type QueueClientLike, type QueueState, type SessionMetaView } from "../queueClient";
 import { gitDiff } from "../jev/diff";
 import { pickReader } from "../jev/reader";
 import { formatReport, verifyDiff } from "../jev/verifier";
@@ -238,7 +240,9 @@ export function deriveStatus(status: RunStatus, events: RunEvent[]): RunStatus {
 }
 
 /** Notices mini-tui adds to the transcript itself, as opposed to ones parsed from the agent's journal. */
-const UI_NOTES = new Set(["model", "skills", "subagents", "queue", "workspace"]);
+const UI_NOTES = new Set(["model", "skills", "subagents", "queue", "workspace", "attach"]);
+/** A prompt that is an `/attach` with arguments started (Tab completes its last path). */
+const ATTACH_ARGS = /^\/attach\s/i;
 function isUiNote(event: RunEvent): boolean {
   return event.type === "notice" && (!event.interruptType || UI_NOTES.has(event.interruptType));
 }
@@ -497,6 +501,7 @@ export function App(props: AppProps) {
    * freshly typed `/` or `$` (the token is just the sigil) reopens a dismissed panel. */
   const syncPromptText = (text: string) => {
     setPromptText(text);
+    if (!ATTACH_ARGS.test(text)) setAttachHint("");
     const cursor = cursorOf(text);
     const skill = skillQueryAt(text, cursor);
     if (!isPaletteText(text, cursor)) setPaletteDismissed(false);
@@ -803,6 +808,11 @@ export function App(props: AppProps) {
       if (main) void queueClient()?.interrupt(main).catch(() => undefined);
       return;
     }
+    if (remoteWsRef.current) {
+      const id = remoteSessionRef.current;
+      if (id) void queueClient()?.interrupt(id).catch((error: Error) => addNote(`could not interrupt: ${error.message}`, "workspace"));
+      return;
+    }
     const run = live.current.run;
     if (!run || exitedRef.current) return;
     interruptedRef.current = true;
@@ -963,7 +973,7 @@ export function App(props: AppProps) {
   /** A notice line of mini-tui's own (`queue`/`workspace` notes never change the run status). */
   const addNote = (text: string, interruptType: string) => {
     const event: RunEvent = { type: "notice", text, interruptType };
-    if (dispatcherRef.current) notesRef.current.push(event);
+    if (serverChatRef.current) notesRef.current.push(event);
     itemAppendHint.current = true;
     setEvents((prev) => [...prev, event]);
   };
@@ -976,6 +986,39 @@ export function App(props: AppProps) {
   const dispatcher = chatMode === "dispatcher" && queueCapable;
   const dispatcherRef = useRef(dispatcher);
   dispatcherRef.current = dispatcher;
+  /**
+   * Manual mode on a saved workspace of a remote host: the web server runs its sessions (it owns
+   * the SSH runs), so the transcript is a server session, followed like the dispatcher's.
+   */
+  const [remoteWs, setRemoteWsRaw] = useState<SavedWorkspace | null>(null);
+  const remoteWsRef = useRef<SavedWorkspace | null>(null);
+  const setRemoteWs = (value: SavedWorkspace | null) => {
+    remoteWsRef.current = value;
+    setRemoteWsRaw(value);
+  };
+  /** That workspace's session on the server ("" = none yet: the next prompt creates it). */
+  const [remoteSession, setRemoteSessionRaw] = useState("");
+  const remoteSessionRef = useRef("");
+  const setRemoteSession = (value: string) => {
+    remoteSessionRef.current = value;
+    setRemoteSessionRaw(value);
+  };
+  const remoteWorkspace = dispatcher ? null : remoteWs;
+  /** The transcript is a session the web server runs (dispatcher, or a remote workspace). */
+  const serverChat = dispatcher || Boolean(remoteWorkspace);
+  const serverChatRef = useRef(serverChat);
+  serverChatRef.current = serverChat;
+  /** Saved hosts' labels by id (`GET /api/hosts`); a host the server did not name shows its id. */
+  const [hostLabels, setHostLabels] = useState<Record<string, string>>({});
+  const hostLabel = (hostId?: string) => (hostId ? hostLabels[hostId] || hostId : "");
+  const loadHostLabels = () => {
+    const client = queueClient();
+    if (!client) return;
+    void client.hosts().then((hosts) => {
+      if (!hosts.length) return;
+      setHostLabels(Object.fromEntries(hosts.map((h) => [h.id, h.label || h.host || h.id])));
+    });
+  };
   const queueClientRef = useRef<QueueClientLike | null>(null);
   const queueClient = (): QueueClientLike | null => {
     if (!queueClientRef.current && props.queue) queueClientRef.current = typeof props.queue === "function" ? props.queue() : props.queue;
@@ -1008,7 +1051,7 @@ export function App(props: AppProps) {
   const [followNonce, setFollowNonce] = useState(0);
   const remoteRunning = useRef(false);
   const viewed = viewTask ? queueState.tasks.find((task) => task.id === viewTask) : undefined;
-  const followId = dispatcher ? (viewTask ? viewed?.sessionId ?? "" : queueState.main) : "";
+  const followId = dispatcher ? (viewTask ? viewed?.sessionId ?? "" : queueState.main) : remoteWorkspace ? remoteSession : "";
 
   const reloadSettings = () => {
     const next = loadSettings();
@@ -1050,6 +1093,8 @@ export function App(props: AppProps) {
     mainNotesRef.current = [];
     notesRef.current = mainNotesRef.current;
     setViewTask("");
+    setRemoteWs(null);
+    setRemoteSession("");
     const note: RunEvent = dispatcher
       ? { type: "notice", text: "main chat: dispatcher · each request becomes queued tasks (/tasks lists them)", interruptType: "queue" }
       : { type: "notice", text: "main chat: manual · sessions start in the current folder (/workspaces switches it)", interruptType: "workspace" };
@@ -1101,6 +1146,49 @@ export function App(props: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatcher]);
 
+  // A remote workspace: reach the web server (started when none runs), which runs its sessions.
+  const remoteKey = remoteWorkspace?.id ?? "";
+  useEffect(() => {
+    if (!remoteKey) return;
+    const client = queueClient();
+    if (!client) return;
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    const host = hostLabel(remoteWsRef.current?.hostId);
+    setQueueLink("connecting");
+    client
+      .connect()
+      .then((result) => {
+        if (cancelled) return;
+        if (result.started) {
+          addNote(`started a web server for the remote workspace at ${result.url}${result.logPath ? ` (log ${shortPath(result.logPath)})` : ""}; it stops with mini-tui`, "workspace");
+        }
+        setQueueLink("live");
+        loadHostLabels();
+        unsubscribe = client.subscribe({
+          onQueue: () => undefined,
+          onLink: (up) => setQueueLink(up ? "live" : "polling"),
+          onSession: (meta) => {
+            const current = followed.current;
+            if (current?.gone && meta.id === current.id) setFollowNonce((n) => n + 1);
+          },
+          onSettings: () => reloadSettings(),
+        });
+      })
+      .catch((error: Error) => {
+        if (cancelled) return;
+        setQueueLink("error");
+        addNote(`remote workspace: ${error.message}. Sessions on ${host} run through the web server: start it (bun run web:serve), or pick a local workspace.`, "workspace");
+      });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+      // the dispatcher may own the link by now (the mode switched): leave its state alone
+      if (!dispatcherRef.current) setQueueLink("off");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteKey]);
+
   useEffect(() => () => queueClientRef.current?.stop(), []);
 
   const remoteStatus = (meta: SessionMetaView) => {
@@ -1122,7 +1210,7 @@ export function App(props: AppProps) {
   // Dispatcher: follow the session the transcript shows (the main chat or the opened task).
   const followSeen = useRef("|");
   useEffect(() => {
-    if (!dispatcher) return;
+    if (!serverChat) return;
     const client = queueClient();
     if (!client) return;
     const viewKey = `${viewTask}|${followId}`;
@@ -1172,10 +1260,10 @@ export function App(props: AppProps) {
       if (followed.current === entry) followed.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dispatcher, viewTask, followId, followNonce]);
+  }, [dispatcher, serverChat, viewTask, followId, followNonce]);
 
   /** A prompt in dispatcher mode: to the queue's chat, or a redirect of the opened task. */
-  const sendToQueue = (task: string) => {
+  const sendToQueue = (task: string, attachments?: AttachmentRef[]) => {
     const client = queueClient();
     if (!client) return;
     if (queueLinkRef.current === "connecting" || queueLinkRef.current === "error") {
@@ -1195,7 +1283,7 @@ export function App(props: AppProps) {
     setStatus("running");
     setTurnStartedAt(Date.now());
     void client
-      .prompt(task, modelOverride)
+      .prompt(task, modelOverride, attachments)
       .then(({ id }) => {
         const current = followed.current;
         if (id && current?.id === id && current.gone) setFollowNonce((n) => n + 1);
@@ -1224,6 +1312,182 @@ export function App(props: AppProps) {
     if (!viewTaskRef.current) return;
     setViewTask("");
     setInputFocused(true);
+  };
+
+  /** The server is reachable for a send (otherwise a note says why and nothing goes out). */
+  const serverReady = (): boolean => {
+    const link = queueLinkRef.current;
+    if (link !== "connecting" && link !== "error") return true;
+    const what = dispatcherRef.current ? "the work queue" : "the web server";
+    addNote(link === "connecting" ? `still reaching ${what}: send it again in a moment` : `${what} is not reachable (see above): nothing was sent`, dispatcherRef.current ? "queue" : "workspace");
+    return false;
+  };
+
+  /**
+   * A prompt in a remote workspace: the first one creates the session on the server (on the
+   * workspace's host and folder), later ones continue it. The raw prompt goes up: the server
+   * expands `$skills` itself, and its transcript then shows the prompt as typed.
+   */
+  const sendToRemote = (prompt: string, attachments?: AttachmentRef[]) => {
+    const client = queueClient();
+    const ws = remoteWsRef.current;
+    if (!client || !ws) return;
+    if (!serverReady()) return;
+    remoteRunning.current = true;
+    setStatus("running");
+    setTurnStartedAt(Date.now());
+    const id = remoteSessionRef.current;
+    const sent = id
+      ? client.send(id, prompt, attachments).then(() => id)
+      : client
+          .createSession({ prompt, cwd: ws.path, model: modelOverride, target: "remote", hostId: ws.hostId, attachments })
+          .then((session) => {
+            if (remoteWsRef.current === ws && !remoteSessionRef.current) setRemoteSession(session.id);
+            return session.id;
+          });
+    void sent
+      .then((sessionId) => {
+        const current = followed.current;
+        if (current?.id === sessionId && current.gone) setFollowNonce((n) => n + 1);
+      })
+      .catch((error: Error) => {
+        remoteRunning.current = false;
+        setStatus("error");
+        addNote(`${hostLabel(ws.hostId)} did not take the message: ${error.message}`, "workspace");
+      });
+  };
+
+  /** `/new` in a remote workspace: the next prompt starts another session there. */
+  const newRemoteSession = () => {
+    const ws = remoteWsRef.current;
+    setOverlay("none");
+    setInputFocused(true);
+    if (!ws) return;
+    const note: RunEvent = { type: "notice", text: `new session on ${hostLabel(ws.hostId)} · ${ws.path} — the next prompt starts it`, interruptType: "workspace" };
+    mainNotesRef.current = [note];
+    notesRef.current = mainNotesRef.current;
+    remoteRunning.current = false;
+    setRemoteSession("");
+    clearTranscript([note]);
+  };
+
+  // ---- /attach
+  const [staged, setStagedRaw] = useState<StagedAttachment[]>([]);
+  const stagedRef = useRef<StagedAttachment[]>([]);
+  const setStaged = (value: StagedAttachment[]) => {
+    stagedRef.current = value;
+    setStagedRaw(value);
+  };
+  /** Files of the staged list going up right now (a second send waits for them). */
+  const [uploading, setUploadingRaw] = useState(false);
+  const uploadingRef = useRef(false);
+  const setUploading = (value: boolean) => {
+    uploadingRef.current = value;
+    setUploadingRaw(value);
+  };
+  /** Matches of the last Tab completion in `/attach` (the strip above the prompt shows them). */
+  const [attachHint, setAttachHint] = useState("");
+
+  const attachCommand = (args: string) => {
+    const words = parseAttachArgs(args);
+    if (!words.length) {
+      const files = stagedRef.current;
+      return addNote(
+        files.length
+          ? `attached: ${files.map((f, i) => `${i + 1}. ${shortPath(f.path)} (${humanSize(f.size)})`).join(" · ")} — sent with the next prompt · /detach [n] removes`
+          : "/attach <file> [more files] stages files for the next prompt (Tab completes paths) · /detach removes them",
+        "attach",
+      );
+    }
+    if (words.length === 1 && words[0]!.toLowerCase() === "clear") return detachCommand("");
+    const next = [...stagedRef.current];
+    const refused: string[] = [];
+    for (const word of words) {
+      try {
+        const file = stageFile(word, cwdRef.current);
+        if (next.some((f) => f.path === file.path)) continue;
+        if (next.length >= MAX_STAGED) {
+          refused.push(`${file.name}: at most ${MAX_STAGED} files per prompt`);
+          continue;
+        }
+        next.push(file);
+      } catch (error) {
+        refused.push((error as Error).message);
+      }
+    }
+    setStaged(next);
+    setAttachHint("");
+    if (refused.length) addNote(`not attached: ${refused.join(" · ")}`, "attach");
+  };
+
+  const detachCommand = (args: string) => {
+    const files = stagedRef.current;
+    const which = args.trim();
+    if (!which || which.toLowerCase() === "all") {
+      setStaged([]);
+      return addNote(files.length ? `removed ${files.length} attachment${files.length === 1 ? "" : "s"}` : "nothing is attached", "attach");
+    }
+    const n = Number(which);
+    const at = Number.isInteger(n) && n >= 1 ? n - 1 : files.findIndex((f) => f.name === which || f.path === which);
+    if (at < 0 || at >= files.length) return addNote(`no attachment ${which} (${files.length ? `1-${files.length}` : "none attached"})`, "attach");
+    setStaged(files.filter((_, i) => i !== at));
+  };
+
+  /** Tab in `/attach …`: complete the last path (files and folders, relative to the session folder). */
+  const completeAttachPath = (text: string) => {
+    const match = /^(.*?)((?:\\.|[^\s\\])*)$/s.exec(text);
+    const head = match?.[1] ?? text;
+    const token = (match?.[2] ?? "").replace(/\\(.)/g, "$1");
+    if (!ATTACH_ARGS.test(head)) return; // still on the command word itself
+    const done = completePath(token, { base: cwdRef.current, files: true });
+    const next = head + escapeAttachPath(done.text);
+    if (next !== text) editPrompt(next, next.length);
+    setAttachHint(done.matches.length ? done.matches.slice(0, 16).join("  ") + (done.matches.length > 16 ? "  …" : "") : "");
+  };
+
+  /** Upload the staged files to the server, in order; the refs go with the prompt. */
+  const uploadStaged = async (client: QueueClientLike, files: StagedAttachment[]): Promise<AttachmentRef[]> => {
+    const refs: AttachmentRef[] = [];
+    for (const file of files) {
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(readFileSync(file.path));
+      } catch (error) {
+        throw new Error(`${file.name}: cannot be read (${(error as Error).message})`);
+      }
+      refs.push(await client.upload({ name: file.name, bytes }));
+    }
+    return refs;
+  };
+
+  /**
+   * Send with the staged files through the server: upload them, then hand the refs to `deliver`.
+   * A refused upload keeps both the files and the prompt (back in the box) for another try.
+   */
+  const sendWithUploads = (prompt: string, deliver: (refs: AttachmentRef[]) => void) => {
+    const client = queueClient();
+    const files = stagedRef.current;
+    if (!client) return;
+    const keep = () => applyPromptText(prompt);
+    if (uploadingRef.current) {
+      keep();
+      return addNote("still uploading the attachments: send it again in a moment", "attach");
+    }
+    if (!serverReady()) return keep();
+    setUploading(true);
+    void uploadStaged(client, files)
+      .then((refs) => {
+        setUploading(false);
+        // a /detach while the files went up wins: only what is still staged is sent
+        const still = new Set(stagedRef.current.map((f) => f.path));
+        setStaged([]);
+        deliver(refs.filter((_, i) => still.has(files[i]!.path)));
+      })
+      .catch((error: Error) => {
+        setUploading(false);
+        keep();
+        addNote(`attachments not sent: ${error.message} · the prompt is back in the box and the files stay attached (/detach removes one)`, "attach");
+      });
   };
 
   // ---- /tasks
@@ -1339,15 +1603,45 @@ export function App(props: AppProps) {
       return;
     }
     const rows = reloadWorkspaces();
-    const here = rows.findIndex((row) => !row.remote && row.workspace.path === cwdRef.current);
+    const remoteHere = remoteWsRef.current?.id;
+    const here = rows.findIndex((row) => (remoteHere ? row.workspace.id === remoteHere : !row.remote && row.workspace.path === cwdRef.current));
     setWsStep({ kind: "list", index: Math.max(0, here) });
     setOverlay("workspaces");
+    if (rows.some((row) => row.remote)) loadHostLabels();
   };
   const switchWorkspace = (workspace: SavedWorkspace) => {
     clearTranscript([{ type: "notice", text: `workspace ${workspace.name} · ${shortPath(workspace.path)} — new sessions start here (/resume lists its sessions)`, interruptType: "workspace" }]);
     setCwd(workspace.path);
+    if (remoteWsRef.current) {
+      setRemoteWs(null);
+      setRemoteSession("");
+    }
     setOverlay("none");
     setInputFocused(true);
+  };
+  /** A workspace on a remote host: its sessions run on the web server (local runs stop here). */
+  const switchRemoteWorkspace = (workspace: SavedWorkspace) => {
+    const host = hostLabel(workspace.hostId);
+    const note: RunEvent = { type: "notice", text: `workspace ${workspace.name} · ${host}:${workspace.path} — sessions run on ${host} through the web server (/new starts another · Esc Esc interrupts)`, interruptType: "workspace" };
+    mainNotesRef.current = [note];
+    notesRef.current = mainNotesRef.current;
+    remoteRunning.current = false;
+    setRemoteSession("");
+    setRemoteWs(workspace);
+    clearTranscript([note]);
+    setOverlay("none");
+    setInputFocused(true);
+  };
+  /** Enter (or a click) on a workspace row. */
+  const pickWorkspace = (row: WorkspaceRow): string | undefined => {
+    if (row.remote) {
+      if (!queueCapable) return `${row.workspace.name} is on a remote host: its sessions run through the web server, which this terminal does not reach here (open it in the web app)`;
+      switchRemoteWorkspace(row.workspace);
+      return undefined;
+    }
+    if (!existsSync(row.workspace.path)) return `${row.path} no longer exists`;
+    switchWorkspace(row.workspace);
+    return undefined;
   };
   const workspacesKey = (key: { name: string; sequence?: string; ctrl?: boolean; meta?: boolean; shift?: boolean }) => {
     const step = wsStepRef.current;
@@ -1377,9 +1671,9 @@ export function App(props: AppProps) {
       }
       if (!row) return;
       if (isEnter) {
-        if (row.remote) return setWsStep({ ...step, note: `${row.workspace.name} is on a remote host: the terminal only runs local sessions (open it in the web app)` });
-        if (!existsSync(row.workspace.path)) return setWsStep({ ...step, note: `${row.path} no longer exists` });
-        return switchWorkspace(row.workspace);
+        const refused = pickWorkspace(row);
+        if (refused) setWsStep({ ...step, note: refused });
+        return;
       }
       if (key.name === "r") return setWsStep({ kind: "rename", id: row.workspace.id, value: row.workspace.name });
       if (key.name === "d" || key.name === "delete") return setWsStep({ kind: "remove", id: row.workspace.id });
@@ -1452,6 +1746,8 @@ export function App(props: AppProps) {
     setModelOverride(model);
     const liveRun = live.current.run;
     liveRun?.switchModel(model);
+    const remoteId = !dispatcherRef.current && remoteWsRef.current ? remoteSessionRef.current : "";
+    if (remoteId) void queueClient()?.setModel(remoteId, model).catch((error: Error) => addNote(`the remote session kept its model: ${error.message}`, "model"));
     // Fresh launches start on this model; open TUIs read the file only at startup.
     if (persist) saveLastModel(model);
     const id = sessionIdRef.current;
@@ -1467,7 +1763,7 @@ export function App(props: AppProps) {
       ...prev,
       {
         type: "notice",
-        text: dispatcherRef.current ? `model → ${model} (the dispatcher's next turn and the tasks it creates from now on)` : liveRun && !exitedRef.current ? `model → ${model} (from next step)` : `model → ${model} (next run)`,
+        text: dispatcherRef.current ? `model → ${model} (the dispatcher's next turn and the tasks it creates from now on)` : remoteWsRef.current ? `model → ${model} (${remoteId ? "the remote session's next turn" : "the next remote session"})` : liveRun && !exitedRef.current ? `model → ${model} (from next step)` : `model → ${model} (next run)`,
         interruptType: "model",
       },
     ]);
@@ -1489,7 +1785,7 @@ export function App(props: AppProps) {
   /** `/compact`: summarize the conversation now. A live run gets `COMPACT` on its control
    * channel; otherwise a resumed run compacts the saved history and waits for the next prompt. */
   const compactNow = () => {
-    if (dispatcherRef.current) {
+    if (serverChatRef.current) {
       const id = followed.current?.id;
       if (!id) return addNote("nothing to compact yet", "queue");
       setCompacting("manual");
@@ -1538,9 +1834,13 @@ export function App(props: AppProps) {
     setPromptText("");
     setPaletteDismissed(false);
     setPaletteIdx(0);
+    if (attachHint) setAttachHint("");
     if (!trimmed) return;
     historyRef.current.push(trimmed);
     const command = trimmed.replace(/^\//, "").toLowerCase();
+    // Only the slash form: "attach the logs to the report" is a prompt, not a command.
+    const attach = /^\/(attach|detach)(?:\s+([\s\S]*))?$/i.exec(trimmed);
+    if (attach) return attach[1]!.toLowerCase() === "attach" ? attachCommand(attach[2] ?? "") : detachCommand(attach[2] ?? "");
     if (command === "model") return setOverlay("model");
     if (command === "settings" || command === "config") {
       setSettingsGroup(0);
@@ -1549,6 +1849,7 @@ export function App(props: AppProps) {
     if (command === "help" || command === "h") return setOverlay("help");
     if (command === "resume" || command === "sessions") {
       if (dispatcherRef.current) return addNote("/resume lists this folder's own sessions: open a worker's session with /tasks, or switch the main chat to manual in /settings", "queue");
+      if (remoteWsRef.current) return addNote("/resume lists this machine's sessions: the remote workspace's earlier sessions open in the web app (/new starts another here)", "workspace");
       return setOverlay("resume");
     }
     if (command === "tasks" || command === "queue") return openTasks();
@@ -1567,7 +1868,7 @@ export function App(props: AppProps) {
       return setOverlay("mcp");
     }
     if (command === "quit" || command === "exit" || command === "q") return quit();
-    if (command === "new" || command === "clear") return dispatcherRef.current ? newQueueChat() : newSession();
+    if (command === "new" || command === "clear") return dispatcherRef.current ? newQueueChat() : remoteWsRef.current ? newRemoteSession() : newSession();
     if (command.startsWith("model ")) {
       const model = trimmed.replace(/^\//, "").slice("model ".length).trim();
       if (model) return applyModel(model);
@@ -1587,8 +1888,19 @@ export function App(props: AppProps) {
       itemAppendHint.current = true;
       setEvents((prev) => [...prev, { type: "notice", text: `unknown skill${expanded.missing.length > 1 ? "s" : ""} sent as plain text: ${expanded.missing.map((n) => `$${n}`).join(", ")}` }]);
     }
-    const task = expanded.task;
-    if (dispatcherRef.current) return sendToQueue(task);
+    const files = stagedRef.current;
+    if (dispatcherRef.current || remoteWsRef.current) {
+      const deliver = (refs?: AttachmentRef[]) => (dispatcherRef.current ? sendToQueue(expanded.task, refs) : sendToRemote(trimmed, refs));
+      if (!files.length) return deliver();
+      if (dispatcherRef.current && viewTaskRef.current) {
+        applyPromptText(trimmed);
+        return addNote("a redirect carries text only: /main sends the files with a prompt to the main chat (/detach drops them)", "queue");
+      }
+      return sendWithUploads(trimmed, deliver);
+    }
+    // A local agent runs on this machine: the prompt names the files and it reads them in place.
+    const task = files.length ? `${expanded.task}\n\n${localAttachmentText(files)}` : expanded.task;
+    if (files.length) setStaged([]);
     echoTask(task);
     if (props.onSend) {
       props.onSend(task);
@@ -2205,6 +2517,19 @@ export function App(props: AppProps) {
           return editPrompt(text.slice(0, glued - 1) + key.sequence + text.slice(glued), glued);
         }
       }
+      if (key.name === "tab" && !key.ctrl && !key.meta && !key.shift) {
+        // the buffer itself: promptRef syncs a tick after each key
+        let text = promptRef.current;
+        try {
+          text = textareaRef.current?.editorView.getText() ?? text;
+        } catch {
+          // renderer torn down
+        }
+        if (ATTACH_ARGS.test(text)) {
+          key.preventDefault();
+          return completeAttachPath(text);
+        }
+      }
 
       if (!dismissedRef.current && isPaletteText(promptRef.current, cursorOf(promptRef.current))) {
         // `/` and `$` completion: App owns the keys while the popover is open
@@ -2351,7 +2676,8 @@ export function App(props: AppProps) {
   };
 
   // Compact bottom stack: prompt (grows with the text) · single status line, nothing below.
-  const bottomRows = 2 + promptRows + 1;
+  const attachRows = attachmentsBarRows(staged, attachHint, uploading);
+  const bottomRows = 2 + promptRows + 1 + attachRows;
   // PgUp/PgDn travel half a screen (at least 12 rows) — quick without being jumpy.
   const scrollStep = Math.max(12, Math.floor(dims.height / 2));
   const modalAreaHeight = Math.max(4, dims.height - bottomRows);
@@ -2390,10 +2716,15 @@ export function App(props: AppProps) {
       <WorkspacesModal
         rows={wsRows}
         step={wsStep}
-        current={shortPath(cwd)}
-        currentId={wsRows.find((row) => !row.remote && row.workspace.path === cwd)?.workspace.id}
+        current={remoteWorkspace ? `${hostLabel(remoteWorkspace.hostId)}:${remoteWorkspace.path}` : shortPath(cwd)}
+        currentId={remoteWorkspace ? remoteWorkspace.id : wsRows.find((row) => !row.remote && row.workspace.path === cwd)?.workspace.id}
+        hostLabel={hostLabel}
         areaHeight={modalAreaHeight}
-        onPick={(row) => (row.remote ? undefined : switchWorkspace(row.workspace))}
+        onPick={(row) => {
+          if (!row.remote) return switchWorkspace(row.workspace);
+          const refused = pickWorkspace(row);
+          if (refused) setWsStep({ kind: "list", index: Math.max(0, wsRowsRef.current.indexOf(row)), note: refused });
+        }}
       />
     ) : overlayState === "help" ? (
       <HelpPanel />
@@ -2489,6 +2820,7 @@ export function App(props: AppProps) {
           onPick={completeOption}
         />
       ) : null}
+      <AttachmentsBar files={staged} hint={attachHint} uploading={uploading} />
       <PromptBar
         focused={inputFocused && overlayState === "none" && !paletteOpen}
         busy={busy}
@@ -2498,19 +2830,19 @@ export function App(props: AppProps) {
         onSend={send}
         onTextChange={syncPromptText}
         onWrapRows={setPromptWrapRows}
-        placeholder={dispatcher ? (viewTask ? `redirect ${viewTask}: tell its worker what to change…` : "ask the dispatcher: each request becomes a background task…") : undefined}
+        placeholder={dispatcher ? (viewTask ? `redirect ${viewTask}: tell its worker what to change…` : "ask the dispatcher: each request becomes a background task…") : remoteWorkspace ? `runs on ${hostLabel(remoteWorkspace.hostId)} in ${remoteWorkspace.path} (through the web server)…` : undefined}
       />
       <StatusLine
         model={(modelOverride ?? info.model ?? props.runSpec?.model ?? DEFAULT_MODEL) || "default model"}
-        path={shortPath(cwd)}
-        branch={branch}
+        path={remoteWorkspace ? `${hostLabel(remoteWorkspace.hostId)}:${remoteWorkspace.path}` : shortPath(cwd)}
+        branch={remoteWorkspace ? null : branch}
         status={displayStatus}
         startedAt={turnStartedAt}
         compacting={Boolean(compacting)}
         verifying={verifying}
-        workspace={workspaceLabel}
+        workspace={remoteWorkspace ? `${remoteWorkspace.name} @ ${hostLabel(remoteWorkspace.hostId)}` : workspaceLabel}
         view={dispatcher ? (viewTask ? `task ${viewTask}${viewed ? ` · ${oneLine(viewed.title, 28)} (${viewed.status})` : ""}` : "main chat") : undefined}
-        queue={dispatcher ? (queueLink === "connecting" ? "queue: connecting…" : queueLink === "error" ? "queue offline" : queueBadge(queueState.tasks) || (queueLink === "polling" ? "queue: polling" : "")) : undefined}
+        queue={dispatcher ? (queueLink === "connecting" ? "queue: connecting…" : queueLink === "error" ? "queue offline" : queueBadge(queueState.tasks) || (queueLink === "polling" ? "queue: polling" : "")) : remoteWorkspace ? (queueLink === "connecting" ? "server: connecting…" : queueLink === "error" ? "server offline" : queueLink === "polling" ? "server: polling" : undefined) : undefined}
       />
       {overlayNode ? <Modal areaHeight={modalAreaHeight}>{overlayNode}</Modal> : null}
     </box>

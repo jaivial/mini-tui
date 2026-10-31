@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { QueueClient, cleanQueueEvents, type QueueState, type SessionView } from "../src/queueClient";
+import { QueueClient, cleanQueueEvents, freePort, type QueueState, type SessionView } from "../src/queueClient";
 import type { RunEvent } from "../src/traj/schema";
 
 const repo = join(import.meta.dir, "..");
@@ -33,6 +33,7 @@ const env: Record<string, string> = {
   MINITUI_RUNS_DIR: join(dir, "runs"),
   MINITUI_WEB_TERMINAL: "0",
   MINITUI_TASK_GRAPH_DB: join(dir, "task-graph.sqlite"),
+  MINITUI_ATTACHMENTS_DIR: join(dir, "attachments"),
   MSWEA_OPENAI_API_BASE: `http://127.0.0.1:${MOCK_PORT}/v1`,
   MSWEA_OPENAI_API_KEY: "mock",
   MINITUI_MODEL: "openai/gpt-mock",
@@ -119,3 +120,57 @@ test("the TUI client starts a server, lists the queue, and a prompt creates the 
     stop();
   }
 }, 180_000);
+
+test("a file goes up and its ref rides with a dispatcher prompt; a remote-host session is created through the server and followed", async () => {
+  if (!client) throw new Error("the first test starts the server");
+  const c = client;
+  const ref = await c.upload({ name: "notes.md", bytes: new TextEncoder().encode("# release notes\n") });
+  expect(ref.id).toMatch(/^[0-9a-f]{16}$/);
+  expect(ref.mime).toBe("text/markdown");
+  expect(existsSync(join(dir, "attachments"))).toBe(true); // the test's own store, not the user's
+  await expect(c.upload({ name: "tool.exe", bytes: new TextEncoder().encode("MZ") })).rejects.toThrow(/^tool\.exe: /);
+
+  const { id } = await c.prompt("read the notes", "openai/gpt-mock", [ref]);
+  let events: RunEvent[] = [];
+  const stopMain = c.follow(id, {
+    onSnapshot: (s) => (events = s.events),
+    onDelta: (fresh) => (events = [...events, ...fresh]),
+  });
+  try {
+    const typed = await until(() => events.find((e) => e.type === "task" && e.text.startsWith("read the notes")), 20_000, "the prompt with its attachment");
+    expect(typed.type === "task" && typed.text).toContain(`/api/attachments/${ref.id}`);
+  } finally {
+    stopMain();
+  }
+
+  // A saved host that refuses connections: the session is still created there and followed; its
+  // ssh turn fails fast (nothing listens), which is the server's business, not the terminal's.
+  const res = await fetch(`${c.url}/api/hosts`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: "h-e2e", label: "e2e box", host: "127.0.0.1", port: freePort(), user: "nobody", workdir: "/tmp" }),
+  });
+  expect(res.ok).toBe(true);
+  expect((await c.hosts()).find((h) => h.id === "h-e2e")?.label).toBe("e2e box");
+  const created = await c.createSession({ prompt: "remote hello", cwd: "/srv/app", model: "openai/gpt-mock", target: "remote", hostId: "h-e2e" });
+  expect((created as { hostId?: string; target?: string }).hostId).toBe("h-e2e");
+  expect((created as { target?: string }).target).toBe("remote");
+  let remote: SessionView | undefined;
+  let status = "";
+  const stopRemote = c.follow(created.id, {
+    onSnapshot: (s) => {
+      remote = s;
+      status = s.status ?? status;
+    },
+    onDelta: (_fresh, meta) => (status = meta.status ?? status),
+  });
+  try {
+    const snap = await until(() => remote, 10_000, "the remote session's snapshot");
+    expect(snap.cwd).toBe("/srv/app");
+    expect(snap.events.find((e) => e.type === "task")).toMatchObject({ type: "task", text: "remote hello" });
+    await until(() => status && status !== "running", 30_000, "the refused ssh turn to end");
+  } finally {
+    stopRemote();
+  }
+  await expect(c.createSession({ prompt: "x", target: "remote", hostId: "nope" })).rejects.toThrow("unknown remote host");
+}, 120_000);

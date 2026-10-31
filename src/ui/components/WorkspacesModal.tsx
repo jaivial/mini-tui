@@ -6,7 +6,7 @@ export interface WorkspaceRow {
   /** Display path (`~/…`). */
   path: string;
   sessions: number;
-  /** Lives on a remote host: the terminal UI only runs local sessions. */
+  /** Lives on a remote host: its sessions run on the web server (which owns the SSH runs). */
   remote: boolean;
 }
 
@@ -23,6 +23,8 @@ export function WorkspacesModal(props: {
   /** The folder sessions start in right now (display path). */
   current: string;
   currentId?: string;
+  /** A saved host's label by id (the id itself when the server did not name it). */
+  hostLabel?: (hostId?: string) => string;
   areaHeight: number;
   onPick?: (row: WorkspaceRow) => void;
 }) {
@@ -66,9 +68,9 @@ export function WorkspacesModal(props: {
         return (
           <box key={row.workspace.id} flexDirection="row" gap={1} onMouseDown={() => props.onPick?.(row)}>
             <text fg={colors.accent}>{isSelected ? "▸" : " "}</text>
-            <text fg={row.remote ? colors.faint : isSelected ? colors.text : colors.dim}>{row.workspace.name}</text>
+            <text fg={isSelected ? colors.text : colors.dim}>{row.workspace.name}</text>
             <text fg={colors.faint}>{row.path}</text>
-            <text fg={colors.faint}>{row.remote ? "remote host · open it in the web app" : `${row.sessions} session${row.sessions === 1 ? "" : "s"}`}</text>
+            <text fg={colors.faint}>{row.remote ? `remote · on ${props.hostLabel?.(row.workspace.hostId) || row.workspace.hostId} (runs through the web server)` : `${row.sessions} session${row.sessions === 1 ? "" : "s"}`}</text>
             {active ? <text fg={colors.ok}>● current</text> : null}
           </box>
         );
