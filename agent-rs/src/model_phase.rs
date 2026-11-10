@@ -150,6 +150,20 @@ pub fn system_note() -> String {
     "\n\n<fusion>You are the main model of a fusion run: you reason, plan, read files (read, or read-only code/codejs scripts) and review. You never run shell commands, writes or edits yourself. For every execution step call model_phase with the worker and effort that fit that step (cheapest that can do it well) and a precise brief; review when control returns: the return note lists the files the worker changed, so read the ones that matter before you accept its summary. These limits bind only the main model: a worker named in a [fusion handoff] has full tools until it hands back.</fusion>".into()
 }
 
+/// One line for transcripts: `→ worker · effort low — brief` or `← base — summary`.
+pub fn describe_call(args: &Value) -> String {
+    let get = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let first = |t: String| t.lines().next().unwrap_or("").chars().take(160).collect::<String>();
+    let target = { let m = get("model"); if m.is_empty() { get("phase") } else { m } };
+    if target.eq_ignore_ascii_case(BASE) {
+        return format!("← base — {}", first(get("summary")));
+    }
+    let model = resolve(&target).unwrap_or(target);
+    let effort = get("effort");
+    let effort = if effort.is_empty() { "auto".into() } else { effort };
+    format!("→ {model} · effort {effort} — {}", first(get("brief")))
+}
+
 pub fn is_tool(name: &str) -> bool {
     name == TOOL && enabled()
 }
@@ -229,6 +243,12 @@ mod tests {
             Worker { alias: Some("build".into()), model: "glm-5.3".into(), note: "components".into() },
             Worker { alias: None, model: "cliproxy/claude-haiku-5-5".into(), note: String::new() },
         ]);
+    }
+
+    #[test]
+    fn describes_calls() {
+        assert_eq!(describe_call(&json!({"model": "base", "summary": "done\nmore"})), "← base — done");
+        assert!(describe_call(&json!({"model": "x/y", "effort": "low", "brief": "b"})).starts_with("→ x/y · effort low — b"));
     }
 
     #[test]
