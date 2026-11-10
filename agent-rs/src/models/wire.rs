@@ -1155,17 +1155,17 @@ fn tool_list(protocol: Protocol) -> Vec<Value> {
     }
     let (base, agents, queue) = match protocol {
         Protocol::Messages => (
-            crate::writing::with_writing_anthropic(crate::computer_use::with_computer_use_anthropic(read::with_read_anthropic(vec![anthropic_bash_tool(), anthropic_cu_tool()]))),
+            crate::model_phase::with_anthropic(crate::writing::with_writing_anthropic(crate::computer_use::with_computer_use_anthropic(read::with_read_anthropic(vec![anthropic_bash_tool(), anthropic_cu_tool()])))),
             crate::agents::anthropic_tools(),
             q::anthropic_tools(),
         ),
         Protocol::Responses => (
-            crate::writing::with_writing_responses(crate::computer_use::with_computer_use_responses(read::with_read_responses(vec![bash_tool_responses(), cu_tool_responses()]))),
+            crate::model_phase::with_responses(crate::writing::with_writing_responses(crate::computer_use::with_computer_use_responses(read::with_read_responses(vec![bash_tool_responses(), cu_tool_responses()])))),
             crate::agents::responses_tools(),
             q::responses_tools(),
         ),
         _ => (
-            crate::writing::with_writing(crate::computer_use::with_computer_use(read::with_read(vec![bash_tool(), cu_tool()]))),
+            crate::model_phase::with_chat(crate::writing::with_writing(crate::computer_use::with_computer_use(read::with_read(vec![bash_tool(), cu_tool()])))),
             crate::agents::chat_tools(),
             q::chat_tools(),
         ),

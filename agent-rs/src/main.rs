@@ -42,6 +42,7 @@ mod tools;
 mod writing;
 mod codejs;
 mod computer_use;
+mod model_phase;
 mod util;
 
 use agent::{Agent, AgentConfig, CHILD_GROUP, SIGNAL, STOP};

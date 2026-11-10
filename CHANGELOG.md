@@ -4,8 +4,15 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ## Unreleased
 
+## 0.46.0 - 2026-11-10
+
 ### Added
 
+- **Fusion: one session, the strong model thinks, cheaper models act.** The main model calls
+  `model_phase` to hand the next steps of the SAME conversation to a worker model and effort it
+  chooses from a pool (`~/.config/mini-tui/fusion`); the worker returns control with a summary.
+  No subagent, no context loss. Strict mode refuses every bash/write/edit from the main model.
+  See docs/fusion.md.
 - **The `cu` browser is a built-in MCP server.** Every run mini-tui spawns gets cu's browser tools
   as `mcp__cu__*` (navigate, snapshot, click, type, act, screenshot, console, tabs, handoff...),
   one page per run, closed when the run ends. It has no switch: `MINI_AGENT_CU_MCP=1` is set last
