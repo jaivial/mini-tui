@@ -7,6 +7,7 @@
   import CodeBlock from "$lib/components/CodeBlock.svelte";
   import FeatureIcon from "$lib/components/FeatureIcon.svelte";
   import BoardMock from "$lib/components/home/BoardMock.svelte";
+  import FusionTimeline from "$lib/components/home/FusionTimeline.svelte";
   import PhoneMock from "$lib/components/home/PhoneMock.svelte";
   import BrowserMock from "$lib/components/home/BrowserMock.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -16,7 +17,7 @@
   import { DESCRIPTION, REPO, RELEASE } from "$lib/site";
 </script>
 
-<Seo page={{ path: "/", title: "mini-tui: verified work, 2.43× faster", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-10-25" }} />
+<Seo page={{ path: "/", title: "mini-tui 0.46: Fusion, the right model for every step", description: DESCRIPTION, faq: faq.map((f) => ({ q: f.q, a: f.a })), modified: "2026-11-10" }} />
 
 <div class="relative overflow-hidden border-b">
   <div class="pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
@@ -45,11 +46,15 @@
 
 <div class="border-b bg-card/40">
   <dl class="mx-auto grid max-w-5xl gap-px px-4 py-10 text-center sm:grid-cols-3 sm:px-6">
-    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Tasks passed, mini and pi</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">10 / 10</dd></div>
-    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">Assigned-worker speedup</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">2.43×</dd></div>
-    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">End-to-end, dispatcher included</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">1.84×</dd></div>
+    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">v0.45.0 benchmark: tasks passed, mini and pi</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">10 / 10</dd></div>
+    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">v0.45.0 assigned-worker speedup</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">2.43×</dd></div>
+    <div class="px-4 py-3"><dt class="text-sm text-muted-foreground">v0.45.0 end-to-end, dispatcher included</dt><dd class="mt-1 font-mono text-3xl font-semibold tracking-tight">1.84×</dd></div>
   </dl>
 </div>
+
+<Section id="fusion" title="Fusion: one conversation, many models" lede="The main model never leaves the conversation. It hands each step to a worker through model_phase and gets control back.">
+  <FusionTimeline />
+</Section>
 
 <Section id="how" title="One chat. The right amount of parallelism." lede="mini-tui routes work instead of making every task a monologue. Small jobs stay direct; independent parts fan out safely.">
   <ol use:reveal={{ children: true }} class="grid gap-4 md:grid-cols-3">
