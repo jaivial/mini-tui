@@ -280,6 +280,9 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(model: Box<dyn Model>, env: Box<dyn Environment>, config: AgentConfig) -> Self {
+        if model.serialize().pointer("/info/config/model_type").and_then(Value::as_str).is_some_and(|t| t.contains("test_models")) {
+            crate::model_phase::mark_scripted_run();
+        }
         Agent {
             config,
             messages: vec![],
@@ -773,7 +776,7 @@ impl Agent {
         let target = { let m = text("model"); if m.is_empty() { text("phase") } else { m } };
         if target.eq_ignore_ascii_case(crate::model_phase::BASE) {
             return match self.leave_phase() {
-                Some((worker, base)) => json!({"output": format!("[fusion] {worker} finished; back on {base}.\nWorker summary: {}\nReview the result against the brief, then choose the next step.", text("summary")), "returncode": 0, "exception_info": ""}),
+                Some((worker, base)) => json!({"output": format!("[fusion] {worker} finished; back on {base}.\nWorker summary: {}{}\nReview the result against the brief, then choose the next step.", text("summary"), self.worktree_evidence()), "returncode": 0, "exception_info": ""}),
                 None => fail("Already on the base model.".into()),
             };
         }
@@ -791,7 +794,27 @@ impl Agent {
         eprintln!("[fusion] {base} → {model} (effort {effort})");
         self.journal_note(&json!({"t": "fusion", "from": base, "to": model, "effort": effort}));
         self.phase = Some((model.clone(), base, 0));
-        json!({"output": format!("[fusion] You are now the worker {model} (effort {effort}), continuing this same conversation.\nBrief: {}\nDo only this brief. When it is done and checked, call model_phase with model `base` and a short summary. Budget: {} steps.", text("brief"), crate::model_phase::max_steps()), "returncode": 0, "exception_info": ""})
+        json!({"output": format!("[fusion handoff] The assistant turns above were the main model. From your next turn on, YOU are the worker {model} (effort {effort}): you have full tools (the fusion limits in the system prompt bind only the main model) and this whole conversation as context.\nBrief: {}\nDo only this brief. When it is done and checked, call model_phase with model `base` and a short summary. Budget: {} steps.", text("brief"), crate::model_phase::max_steps()), "returncode": 0, "exception_info": ""})
+    }
+
+    /// What the working tree looks like now (git status, short), so the main model reviews the
+    /// worker's real changes instead of trusting its summary. Empty outside a git repository.
+    fn worktree_evidence(&mut self) -> String {
+        let cwd = self.env.working_dir();
+        let out = std::process::Command::new("git").args(["-C", &cwd, "status", "--short", "--untracked-files=all"]).output();
+        match out {
+            Ok(o) if o.status.success() => {
+                let text = String::from_utf8_lossy(&o.stdout);
+                let lines: Vec<&str> = text.lines().collect();
+                if lines.is_empty() {
+                    return "\nWorking tree: no uncommitted changes.".into();
+                }
+                let shown = lines.iter().take(40).copied().collect::<Vec<_>>().join("\n");
+                let more = if lines.len() > 40 { format!("\n… {} more", lines.len() - 40) } else { String::new() };
+                format!("\nWorking tree now (git status --short):\n{shown}{more}\nRead the files that matter before you accept the summary.")
+            }
+            _ => String::new(),
+        }
     }
 
     /// Return to the base model. `Some((phase, base))` when a phase was active.
@@ -1504,7 +1527,10 @@ impl Agent {
     /// three ways it declines are cheap --- the classifier said "work", the classifier is off,
     /// or the provider errored --- and a decline costs nothing but the classification.
     fn try_fast_path(&mut self, task: &str) -> bool {
-        if crate::intent::classify(task) != crate::intent::Intent::Conversational {
+        // A scripted (deterministic) model has no spare reply for a probe: the fast path would
+        // eat its first scripted step and every later step would shift by one.
+        let scripted = self.model.serialize().pointer("/info/config/model_type").and_then(Value::as_str).is_some_and(|t| t.contains("test_models"));
+        if scripted || crate::intent::classify(task) != crate::intent::Intent::Conversational {
             return false;
         }
         let view = vec![
@@ -1575,8 +1601,8 @@ impl Agent {
             // A phase model that answers in plain text is done with its brief: the run does not
             // end on its word; the base model takes the conversation back and reviews.
             if let Some((name, base)) = self.leave_phase() {
-                let note = format!("[fusion] worker {name} ended with a plain answer (above); back on {base}. Review it against the brief and continue, or finish.");
-                self.add_messages(vec![Self::user_task_message(&note)]);
+                let note = format!("[fusion] worker {name} ended with a plain answer (above); back on {base}. Review it against the brief and continue, or finish.{}", self.worktree_evidence());
+                self.add_messages(vec![json!({"role": "user", "content": note, "extra": {"interrupt_type": "FusionReturn"}})]);
                 return Ok(());
             }
             // With a closure judge, the redundant second plain-text confirmation is replaced
@@ -1635,7 +1661,8 @@ impl Agent {
             if *steps > crate::model_phase::max_steps() {
                 if let (Some((name, base)), Some(last)) = (self.leave_phase(), outputs.last_mut()) {
                     let cur = last.get("output").and_then(Value::as_str).unwrap_or("").to_string();
-                    last["output"] = json!(format!("{cur}\n\n[fusion] worker {name} hit its step budget; back on {base}. Check what is done and decide the next move."));
+                    let evidence = self.worktree_evidence();
+                    last["output"] = json!(format!("{cur}\n\n[fusion] worker {name} hit its step budget; back on {base}. Check what is done and decide the next move.{evidence}"));
                 }
             }
         }
@@ -1828,6 +1855,19 @@ impl Agent {
                 // conversation, and the run goes on. Only when the chain is exhausted is the
                 // error fatal.
                 let mut err = e;
+                // A worker that fails is not the run failing: the main model takes the step back
+                // and chooses another worker (or none).
+                if let Some((worker, base)) = self.leave_phase() {
+                    let note = format!("[fusion] worker {worker} failed ({}); back on {base}. Choose another worker for this step.", err.message.chars().take(200).collect::<String>());
+                    eprintln!("{note}");
+                    self.messages.push(json!({"role": "user", "content": note, "extra": {"interrupt_type": "FusionWorkerFailure"}}));
+                    view = self.context_messages();
+                    match self.model_query(&view) {
+                        Ok(r) => return self.finish_query(r, &view),
+                        Err(e2) if cmp::is_context_overflow(&e2.kind, &e2.message) => return Err(Flow::Fatal(e2)),
+                        Err(e2) => err = e2,
+                    }
+                }
                 loop {
                     let Some(next) = self.next_fallback_model() else { return Err(Flow::Fatal(err)) };
                     let note = format!("provider failure on {}: {} -> continuing on {next}", self.model.model_name(), err.message.chars().take(200).collect::<String>());
@@ -1870,11 +1910,16 @@ impl Agent {
                 self.model_query(&view).map_err(Flow::Fatal)?
             }
         };
+        self.finish_query(reply, &view)
+    }
+
+    /// The common tail of `query_model`: unwrap the reply and stamp its context size.
+    fn finish_query(&mut self, reply: Reply, view: &[Value]) -> Result<Value, Flow> {
         let mut message = match reply {
             Reply::Message(m) => m,
             Reply::FormatError(msgs) => return Err(Flow::FormatError(msgs)),
         };
-        let chars = cmp::messages_chars(&view);
+        let chars = cmp::messages_chars(view);
         if !message.get("extra").is_some_and(Value::is_object) {
             message["extra"] = json!({});
         }
@@ -1931,7 +1976,7 @@ impl Agent {
         // with a pointer to hand the work to a worker; reads and model_phase still run.
         if self.phase.is_none() && crate::model_phase::strict() && actions.iter().any(|a| !crate::model_phase::base_may_run(a.get("tool").and_then(Value::as_str))) {
             let refused = |a: &Value| !crate::model_phase::base_may_run(a.get("tool").and_then(Value::as_str));
-            let msg = "Strict fusion: the main model does not run shell, write or edit actions. Call model_phase with the worker and effort that fits this step and a precise brief.";
+            let msg = crate::model_phase::REFUSAL;
             let mut out = Vec::new();
             for a in &actions {
                 if refused(a) {
@@ -2168,16 +2213,28 @@ impl Agent {
                 // moves the pointer: the script's `bash` calls still run on the agent's own
                 // thread, one at a time, so there is no concurrent access to hide.
                 let env = SendPtr(&mut *self.env as *mut dyn Environment);
+                // Strict fusion: the main model's script may read, never write or run shell.
+                let read_only = self.phase.is_none() && crate::model_phase::strict();
+                let _guard = read_only.then(crate::model_phase::ReadOnlyScript::begin);
                 let mut ctx = crate::writing::CodeCtx {
                     cwd,
-                    bash: Box::new(move |cmd: &str| match unsafe { env.execute(cmd) } {
+                    bash: Box::new(move |cmd: &str| if read_only && crate::model_phase::script_read_only() {
+                        json!({"output": crate::model_phase::REFUSAL, "returncode": 1, "exception_info": crate::model_phase::REFUSAL})
+                    } else { match unsafe { env.execute(cmd) } {
                         Outcome::Output(o) => o,
                         Outcome::Submitted(_) | Outcome::Stopped => {
                             json!({"output": "code: the run ended while this script was running a command", "returncode": -1, "exception_info": "action was not executed"})
                         }
-                    }),
+                    }}),
                 };
-                Some(if tool == "codejs" { crate::codejs::outcome(&args, &mut ctx, &mut self.codejs_store) } else { crate::writing::code_outcome(&args, &mut ctx) })
+                let mut out = if tool == "codejs" { crate::codejs::outcome(&args, &mut ctx, &mut self.codejs_store) } else { crate::writing::code_outcome(&args, &mut ctx) };
+                let refused = if read_only { crate::model_phase::script_refused() } else { 0 };
+                if refused > 0 {
+                    let cur = out.get("output").and_then(Value::as_str).unwrap_or("").to_string();
+                    out["output"] = json!(format!("{cur}\n[fusion] {refused} write/edit/bash call(s) in this script were REFUSED and did nothing: scripts are read-only for the main model. Hand that work to a worker with model_phase."));
+                    out["returncode"] = json!(1);
+                }
+                Some(out)
             }
             _ => None,
         }

@@ -72,7 +72,18 @@ pub fn resolve(target: &str) -> Option<String> {
     pool().into_iter().find(|w| w.model == t || w.alias.as_deref() == Some(&t.to_lowercase())).map(|w| w.model)
 }
 
+static SCRIPTED_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A scripted (deterministic test) model is driving this run. The pool from the user's config
+/// file must not change what such a run does; an explicit `MINI_AGENT_FUSION_MODELS` still applies.
+pub fn mark_scripted_run() {
+    SCRIPTED_RUN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn enabled() -> bool {
+    if SCRIPTED_RUN.load(std::sync::atomic::Ordering::SeqCst) && std::env::var("MINI_AGENT_FUSION_MODELS").map_or(true, |v| v.trim().is_empty()) {
+        return false;
+    }
     std::env::var_os("MINI_AGENT_DEPTH").is_none() && !crate::queue_tools::dispatcher() && !pool().is_empty()
 }
 
@@ -88,9 +99,46 @@ pub fn strict() -> bool {
     }
 }
 
-/// Tools the base model may still run itself under strict fusion.
+/// Tools the base model may still run itself under strict fusion. `code`/`codejs` scripts run
+/// read-only: their `bash`, `write` and `edit` calls are refused (see `script_read_only`).
 pub fn base_may_run(tool: Option<&str>) -> bool {
-    matches!(tool, Some("read") | Some(TOOL))
+    matches!(tool, Some("read") | Some("code") | Some("codejs") | Some(TOOL))
+}
+
+pub const REFUSAL: &str = "Strict fusion: the main model does not run shell, write or edit actions (scripts are read-only for it). Call model_phase with the worker and effort that fit this step and a precise brief.";
+
+static SCRIPT_READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+static SCRIPT_REFUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// True while the main model's script runs under strict fusion: writes and shell are refused.
+/// Each check that answers true is a refused call, counted for the script's observation.
+pub fn script_read_only() -> bool {
+    let on = SCRIPT_READ_ONLY.load(std::sync::atomic::Ordering::SeqCst);
+    if on {
+        SCRIPT_REFUSED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    on
+}
+
+/// Calls refused in the current read-only script (reset by `ReadOnlyScript::begin`).
+pub fn script_refused() -> usize {
+    SCRIPT_REFUSED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Mark the main model's script as read-only until the guard drops.
+pub struct ReadOnlyScript;
+impl ReadOnlyScript {
+    pub fn begin() -> Self {
+        SCRIPT_REFUSED.store(0, std::sync::atomic::Ordering::SeqCst);
+        SCRIPT_READ_ONLY.store(true, std::sync::atomic::Ordering::SeqCst);
+        ReadOnlyScript
+    }
+}
+impl Drop for ReadOnlyScript {
+    fn drop(&mut self) {
+        SCRIPT_READ_ONLY.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Appended to the run's system prompt (and to a resumed turn's task) under strict fusion, so
@@ -99,7 +147,7 @@ pub fn system_note() -> String {
     if !strict() {
         return String::new();
     }
-    "\n\n<fusion>You are the main model of a fusion run: you reason, plan, read files and review. You never run shell commands, writes or edits yourself. For every execution step call model_phase with the worker and effort that fit that step (cheapest that can do it well) and a precise brief; review when control returns.</fusion>".into()
+    "\n\n<fusion>You are the main model of a fusion run: you reason, plan, read files (read, or read-only code/codejs scripts) and review. You never run shell commands, writes or edits yourself. For every execution step call model_phase with the worker and effort that fit that step (cheapest that can do it well) and a precise brief; review when control returns: the return note lists the files the worker changed, so read the ones that matter before you accept its summary. These limits bind only the main model: a worker named in a [fusion handoff] has full tools until it hands back.</fusion>".into()
 }
 
 pub fn is_tool(name: &str) -> bool {
@@ -185,7 +233,7 @@ mod tests {
 
     #[test]
     fn base_whitelist() {
-        assert!(base_may_run(Some("read")) && base_may_run(Some(TOOL)));
+        assert!(base_may_run(Some("read")) && base_may_run(Some(TOOL)) && base_may_run(Some("codejs")));
         assert!(!base_may_run(None) && !base_may_run(Some("write")));
     }
 }

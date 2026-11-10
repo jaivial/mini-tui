@@ -4,6 +4,15 @@ All notable changes to mini-tui, newest first. Versions follow [semver](https://
 
 ## Unreleased
 
+### Fixed
+
+- **Fusion hardening.** The main model's `code`/`codejs` scripts run read-only instead of being
+  refused outright; each return to it lists the changed files; a failing worker hands the step
+  back instead of ending the run; workers are told the strict limits bind only the main model;
+  scripted test runs ignore the user's pool file.
+- **Scripted runs skip the conversational fast path.** It consumed the first scripted reply and
+  shifted every later step (the `metrics`, `resources_gate` and some `plan` tests failed on it).
+
 ## 0.46.0 - 2026-11-10
 
 ### Added
