@@ -1,12 +1,13 @@
 /** Copy for the landing page. Product facts and measured results share one source. */
 
 export const hero = {
-  kicker: "v0.45.0 · eager verification + MCP",
-  title: "Assign work. Get proof, 2.43× faster.",
-  sub: "mini-tui turns one chat into a durable work queue. A dispatcher routes each task, workers execute in parallel, and the run closes only when its checker passes. In the final MiMo V2.6 Flash comparison, mini took 163.3 s to pi's 397.6 s, with 10/10 tasks passing on both.",
+  kicker: "v0.46.0 · Fusion",
+  title: "One conversation. The right model for every step.",
+  sub: "Fusion keeps a strong main model, like Claude Opus 5.5, for thinking, planning, reading and review. For every execution step it calls model_phase and picks a cheaper worker model and reasoning effort itself. The worker continues the same conversation with full history, then hands control back. No subagents, no lost context.",
 };
 
 export const features = [
+  { id: "fusion", icon: "workflow", title: "Fusion: the right model per step", body: "One session. The main model only thinks, plans and reviews; each execution step goes to a worker model and effort it chooses from your pool, in the same conversation. Strict mode refuses bash, write and edit from the main model." },
   { id: "queue", icon: "workflow", title: "One chat, a real work queue", body: "The dispatcher writes the brief, the queue keeps it durable, and workers run in the background. Redirect, cancel or continue a task without losing its history." },
   { id: "eager", icon: "check", title: "Eager closure, no victory lap", body: "As soon as the intact checker passes, the task closes with a factual result card. No extra model turn, no post-PASS exploration and no unverified Submitted." },
   { id: "verifier", icon: "key-round", title: "Verification that cannot be faked", body: "The checker is hashed at start and must return 0 plus an independent PASS line. Masked failures, tracebacks and checker replacement are rejected." },
@@ -17,6 +18,16 @@ export const features = [
   { id: "docker", icon: "server", title: "One Docker runtime", body: "Web, Rust agent, Python, whisper, gh and ssh in one image, with your home mounted for state. The container is not a sandbox: PRs and remote hosts still work." },
   { id: "evidence", icon: "workflow", title: "Benchmarks with provenance", body: "Every result names the run, model, endpoint, binary hash and verifier. Charts are generated from raw rows, not from a speedup typed into a blog post." },
   { id: "headless", icon: "terminal", title: "Headless and remote", body: "Run one task in CI or keep the agent on a larger server over SSH while the web UI stays on your laptop. The same session history follows both." },
+] as const;
+
+export const fusion = [
+  { id: 1, lane: "main", who: "Opus · thinks", title: "Read, plan, split the work", body: "The main model reads the code and decides which step needs which model.", call: "" },
+  { id: 2, lane: "worker", who: "Haiku · effort low", title: "Mechanical step: listing, tests, small edits", body: "The cheapest worker that can do the step answers the next turns of the same conversation.", call: "model_phase {model: \"fast\", effort: \"low\", brief}" },
+  { id: 3, lane: "back", who: "Opus · reviews", title: "Control returns with a summary", body: "The worker hands back; the main model reviews the result before moving on.", call: "model_phase {model: \"base\", summary}" },
+  { id: 4, lane: "worker", who: "Sonnet · effort high", title: "Hard step: a multi-file component", body: "Harder step, stronger worker and higher effort, still with full history.", call: "model_phase {model: \"ui\", effort: \"high\", brief}" },
+  { id: 5, lane: "back", who: "Opus · reviews", title: "Review again", body: "Back to the main model, which checks the work against the plan.", call: "model_phase {model: \"base\", summary}" },
+  { id: 6, lane: "worker", who: "GLM-5.3", title: "Backend logic", body: "Any model in your pool can take a step. The pool lives in ~/.config/mini-tui/fusion.", call: "model_phase {model: \"glm-5.3\", brief}" },
+  { id: 7, lane: "back", who: "Opus · reviews", title: "Final review and answer", body: "The main model verifies and answers. One session from start to finish.", call: "model_phase {model: \"base\", summary}" },
 ] as const;
 
 export const steps = [
@@ -56,10 +67,11 @@ export const oracleBench = {
     { label: "Speedup, worker / E2E", pi: "—", mini: "2.43x / 1.84x" },
     { label: "Hedged requests", pi: "—", mini: "1" },
   ],
-  caveats: "Final strict validation, 24 October 2026: ten tasks, one repetition per arm, Xiaomi MiMo V2.6 Flash on the same Singapore Anthropic endpoint and the final binary. The three-repetition eager campaign measured 2.85x with 30/30 on both. These are local coding results, not a guarantee for every provider or workload, and not the inaccessible official Composio suite.",
+  caveats: "v0.45.0 results. Final strict validation, 24 October 2026: ten tasks, one repetition per arm, Xiaomi MiMo V2.6 Flash on the same Singapore Anthropic endpoint and the final binary. The three-repetition eager campaign measured 2.85x with 30/30 on both. These are local coding results, not a guarantee for every provider or workload, and not the inaccessible official Composio suite.",
 } as const;
 
 export const faq = [
+  { q: "What is Fusion?", a: "A mode where one strong main model (for example Claude Opus 5.5) only thinks, plans, reads and reviews. For each execution step it calls the model_phase tool and chooses a cheaper worker model and reasoning effort from a pool in ~/.config/mini-tui/fusion. The worker answers the next steps of the same conversation with full history and returns control with model_phase {model: \"base\", summary}. There are no subagents and no context loss. Strict mode refuses any bash, write or edit from the main model. We have not published Fusion benchmark numbers yet." },
   { q: "What is mini-tui now?", a: "A local-first agent work queue. You give it an outcome in one chat, a dispatcher creates the right task or tasks, workers execute them, and a deterministic checker decides whether the work is actually complete." },
   { q: "What does eager verification change?", a: "Instead of trusting a final response, the harness runs the intact checker after work steps. The first real PASS closes the task with a factual card. That removes the final-summary turn and stops the agent from exploring after it has already succeeded." },
   { q: "Can a worker fake a PASS?", a: "Not by replacing the checker: its SHA-256 is captured at run start and checked again before closure. A checker must return 0 and an independent PASS line. Tracebacks, explicit failures and masked pipeline failures are rejected, and repeated failures become TaskVerifierFailed." },

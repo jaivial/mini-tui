@@ -5,7 +5,7 @@
     { id: "t2", title: "Analyze 4 logs", state: "working", note: "worker 2 · computing", tone: "amber" },
     { id: "t3", title: "Fix async limiter", state: "done", note: "verify.sh → PASS", tone: "lime" },
     { id: "t4", title: "Reconcile CSV", state: "done", note: "verify.sh → PASS", tone: "lime" },
-    { id: "t5", title: "Release v0.45", state: "queued", note: "waiting for a worker", tone: "faint" },
+    { id: "t5", title: "Release v0.46", state: "queued", note: "waiting for a worker", tone: "faint" },
   ];
 </script>
 

@@ -4,11 +4,11 @@
  */
 export const SITE_URL: string = (import.meta.env.VITE_SITE_URL ?? "https://jaivial.github.io/mini-tui").replace(/\/$/, "");
 export const REPO = "https://github.com/jaivial/mini-tui";
-export const RELEASE = "0.45.0";
+export const RELEASE = "0.46.0";
 export const NAME = "mini-tui";
 export const TAGLINE = "Verified work, at queue speed";
 export const DESCRIPTION =
-  "mini-tui turns one chat into a durable work queue. A dispatcher routes tasks, workers execute in parallel, and eager verification closes only on a real PASS. Final MiMo benchmark: 2.43× worker, 1.84× end to end, 10/10 on both.";
+  "mini-tui v0.46.0 adds Fusion: one conversation where a strong main model plans and reviews, and hands each execution step to a cheaper worker model via model_phase. Durable work queue with eager verification; v0.45.0 MiMo benchmark: 2.43× worker, 1.84× end to end, 10/10 on both.";
 export const OG_IMAGE = "/og.png";
 export const OG_SIZE = { width: 1200, height: 630 } as const;
 export const AUTHOR = { name: "Jaime Villanueva Alcon", url: "https://github.com/jaivial" };
