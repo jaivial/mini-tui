@@ -469,6 +469,9 @@ fn count_lines(s: &str) -> usize {
 
 /// The `write` tool's observation.
 pub fn write_outcome(args: &Value, cwd: &str) -> Value {
+    if crate::model_phase::script_read_only() {
+        return observation(crate::model_phase::REFUSAL.into(), true, Obj::new());
+    }
     let Some(path) = get(args, "path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()) else {
         return observation("write: missing required argument 'path'".into(), true, Obj::new());
     };
@@ -510,6 +513,9 @@ pub fn write_outcome(args: &Value, cwd: &str) -> Value {
 
 /// The `edit` tool's observation.
 pub fn edit_outcome(args: &Value, cwd: &str) -> Value {
+    if crate::model_phase::script_read_only() {
+        return observation(crate::model_phase::REFUSAL.into(), true, Obj::new());
+    }
     let Some(path) = get(args, "path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()) else {
         return observation("edit: missing required argument 'path'".into(), true, Obj::new());
     };

@@ -14,7 +14,16 @@ subagents, no new process, no brief files, no lost context.
   `MINI_AGENT_MODEL_PHASE_MAX_STEPS` steps (default 40).
 - In **strict** mode the main model never runs bash, write or edit: those actions are refused
   with a pointer to `model_phase`. It is told so in its system prompt, so it plans with workers
-  from the first step.
+  from the first step. It can still `read`, and run `code`/`codejs` scripts **read-only**: any
+  `write`/`edit`/`bash` inside its script is refused, does nothing, and the observation says how
+  many calls were refused.
+- Every return to the main model carries the working tree (`git status --short`), so it reviews
+  what the worker really changed instead of trusting the summary.
+- A worker whose provider fails hands the step back to the main model, which picks another
+  worker; the run does not die on a worker's outage.
+- Runs driven by a scripted test model ignore the pool file (an explicit
+  `MINI_AGENT_FUSION_MODELS` still applies), so test suites and replays behave the same on a
+  machine with fusion configured.
 
 ```
 opus (think)  → model_phase {model:"fast", effort:"low", brief:"run the test suite, report failures"}
