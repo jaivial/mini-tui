@@ -291,6 +291,18 @@
           </button>
         </div>
       </div>
+    {:else if row.kind === "step" && row.event.type === "tool_call" && row.event.name === "model_phase"}
+      <!-- Fusion: the model answering this conversation changes here (docs/fusion.md). -->
+      {@const back = row.event.command.startsWith("←")}
+      {@const head = row.event.command.split(" — ")[0]}
+      {@const note = row.event.command.split(" — ").slice(1).join(" — ")}
+      <div class="cv-row flex items-center gap-2 px-2.5 text-xs {gap}" role="note" aria-label="Fusion model switch">
+        <span class="h-px flex-1 bg-line"></span>
+        <Sparkles size={13} class="shrink-0 {back ? 'text-ink-faint' : 'text-brand-fg'}" />
+        <span class="shrink-0 font-mono {back ? 'text-ink-muted' : 'text-brand-fg'}">fusion {head}</span>
+        {#if note}<span class="min-w-0 truncate text-ink-faint" title={note}>{note}</span>{/if}
+        <span class="h-px flex-1 bg-line"></span>
+      </div>
     {:else if row.kind === "step"}
       <div class="cv-row {gap}"><StepCard event={row.event} /></div>
     {:else if row.kind === "ui-component"}

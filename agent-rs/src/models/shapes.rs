@@ -114,6 +114,11 @@ fn action_value(command: &Value, tool_call_id: Value) -> Value {
             if let Some(path) = fields.get("args").and_then(|x| x.get("path")).cloned() {
                 a.insert("command".into(), path);
             }
+            if tool == crate::model_phase::TOOL {
+                // A readable line for the TUI and the web transcript instead of raw JSON.
+                let args = fields.get("args").cloned().unwrap_or(Value::Null);
+                a.insert("command".into(), json!(crate::model_phase::describe_call(&args)));
+            }
             if crate::queue_tools::is_tool(&tool) {
                 a.insert("command".into(), json!(format!("{tool} {}", fields.get("args").map(|v| v.to_string()).unwrap_or_default())));
             }
