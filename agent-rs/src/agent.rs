@@ -273,6 +273,9 @@ pub struct Agent {
     codejs_store: Obj,
     /// Models the fallback chain already moved through in this run (never twice).
     fallbacks_tried: std::collections::HashSet<String>,
+    /// The active model phase (`model_phase` tool): its name, the base model to return to, and
+    /// the steps it has taken. `None` = the run's own model is answering.
+    phase: Option<(String, String, usize)>,
 }
 
 impl Agent {
@@ -333,6 +336,7 @@ impl Agent {
             initial_files_capped: false,
             codejs_store: Obj::new(),
             fallbacks_tried: std::collections::HashSet::new(),
+            phase: None,
         }
     }
 
@@ -749,6 +753,59 @@ impl Agent {
         }
     }
 
+    /// Swap the model answering this conversation without touching the history. `effort` is
+    /// the abstract level (`auto` = provider default), mapped per provider by `apply_effort`.
+    fn swap_model(&mut self, name: &str, effort: &str) -> Result<(), String> {
+        let mut config = Obj::new();
+        crate::models::apply_effort(name, effort, &mut config);
+        let m = get_model(Some(name), &config)?;
+        self.model = m;
+        self.requested_model = name.to_string();
+        crate::models::set_think_next(false);
+        Ok(())
+    }
+
+    /// The `model_phase` tool (fusion): hand the next steps to a worker model at a chosen
+    /// effort, or return to the base model.
+    fn model_phase_outcome(&mut self, args: &Value) -> Value {
+        let fail = |m: String| json!({"output": m, "returncode": 1, "exception_info": m});
+        let text = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let target = { let m = text("model"); if m.is_empty() { text("phase") } else { m } };
+        if target.eq_ignore_ascii_case(crate::model_phase::BASE) {
+            return match self.leave_phase() {
+                Some((worker, base)) => json!({"output": format!("[fusion] {worker} finished; back on {base}.\nWorker summary: {}\nReview the result against the brief, then choose the next step.", text("summary")), "returncode": 0, "exception_info": ""}),
+                None => fail("Already on the base model.".into()),
+            };
+        }
+        if self.phase.is_some() {
+            return fail("You are a worker: finish your brief, then call model_phase with model `base`. Only the base model chooses workers.".into());
+        }
+        let Some(model) = crate::model_phase::resolve(&target) else {
+            return fail(format!("Unknown worker '{target}'. Pool: {}", crate::model_phase::pool().iter().map(|w| w.model.as_str()).collect::<Vec<_>>().join(", ")));
+        };
+        let effort = { let e = text("effort").to_lowercase(); if crate::model_phase::EFFORTS.contains(&e.as_str()) { e } else { "auto".into() } };
+        let base = self.parent_model_name();
+        if let Err(e) = self.swap_model(&model, &effort) {
+            return fail(format!("Could not switch to {model}: {e}. Choose another worker."));
+        }
+        eprintln!("[fusion] {base} → {model} (effort {effort})");
+        self.journal_note(&json!({"t": "fusion", "from": base, "to": model, "effort": effort}));
+        self.phase = Some((model.clone(), base, 0));
+        json!({"output": format!("[fusion] You are now the worker {model} (effort {effort}), continuing this same conversation.\nBrief: {}\nDo only this brief. When it is done and checked, call model_phase with model `base` and a short summary. Budget: {} steps.", text("brief"), crate::model_phase::max_steps()), "returncode": 0, "exception_info": ""})
+    }
+
+    /// Return to the base model. `Some((phase, base))` when a phase was active.
+    fn leave_phase(&mut self) -> Option<(String, String)> {
+        let (name, base, _) = self.phase.take()?;
+        // Back to the run's own settings: `get_model` re-reads MINI_AGENT_MODEL_EFFORTS.
+        if let Err(e) = self.swap_model(&base, "auto") {
+            eprintln!("WARNING: could not return to base model {base}: {e}");
+        }
+        eprintln!("[fusion] {name} → {base}");
+        self.journal_note(&json!({"t": "fusion", "from": name, "to": base}));
+        Some((name, base))
+    }
+
     fn apply_control_commands(&mut self) {
         let (model, messages) = self.drain_control();
         self.apply_model_switch(model);
@@ -1051,7 +1108,8 @@ impl Agent {
                     return Ok(self.messages.last().map(extra).unwrap_or_default());
                 }
             } else {
-                self.add_messages(vec![Self::user_task_message(task)]);
+                let task = format!("{task}{}", crate::model_phase::system_note());
+                self.add_messages(vec![Self::user_task_message(&task)]);
             }
         } else if compact_only {
             return Err(ModelError { message: "compact_only requires resume_messages".into(), status: None, abort: true, kind: "ValueError".into(), connect_refused: false, retry_after: None, });
@@ -1059,6 +1117,7 @@ impl Agent {
             self.messages.clear();
             let vars = self.template_vars();
             let system = render(&self.config.system_template, &vars).map_err(template_error)?;
+            let system = format!("{system}{}", crate::model_phase::system_note());
             let instance = render(&self.config.instance_template, &vars).map_err(template_error)?;
             let sys = self.model.format_message("system", &system, None);
             let user = self.model.format_message("user", &instance, None);
@@ -1513,6 +1572,13 @@ impl Agent {
         let at = self.messages.len().saturating_sub(1);
         if let Some(sub) = get(&message, "extra").and_then(|e| e.get("submission")).and_then(Value::as_str) {
             self.record_timings(&mut t, at);
+            // A phase model that answers in plain text is done with its brief: the run does not
+            // end on its word; the base model takes the conversation back and reviews.
+            if let Some((name, base)) = self.leave_phase() {
+                let note = format!("[fusion] worker {name} ended with a plain answer (above); back on {base}. Review it against the brief and continue, or finish.");
+                self.add_messages(vec![Self::user_task_message(&note)]);
+                return Ok(());
+            }
             // With a closure judge, the redundant second plain-text confirmation is replaced
             // by an actual evidence-based judgement, saving one full worker turn. An explicitly
             // disabled judge (`MINI_AGENT_GOAL_ORACLE=off`, e.g. wave workers reviewed by their
@@ -1564,6 +1630,15 @@ impl Agent {
             self.journal_note(&json!({"t": "act", "m": {"tool_calls": calls, "extra": {"actions": actions}}}));
         }
         let mut outputs = self.execute_actions(&message)?;
+        if let Some((_, _, steps)) = self.phase.as_mut() {
+            *steps += 1;
+            if *steps > crate::model_phase::max_steps() {
+                if let (Some((name, base)), Some(last)) = (self.leave_phase(), outputs.last_mut()) {
+                    let cur = last.get("output").and_then(Value::as_str).unwrap_or("").to_string();
+                    last["output"] = json!(format!("{cur}\n\n[fusion] worker {name} hit its step budget; back on {base}. Check what is done and decide the next move."));
+                }
+            }
+        }
         // A real loop repeats the call AND gets the same output back. Same-shaped commands
         // that keep producing new information (e.g. iterative image processing over heredocs,
         // whose bodies fuzzy_norm eats) are progress, not a loop.
@@ -1852,6 +1927,23 @@ impl Agent {
                 return Ok(actions.iter().map(|_| json!({"raw_output": "Action refused by the orchestrator boundary. Delegate with an inline brief.", "exception_info": "", "returncode": 1, "output": "Orchestrator boundary: this action was not executed. Only kanban/tasks bookkeeping and agent delegation/messaging/results are available. Pass an inline brief to a worker. Do not write brief files, inspect work, poll, or execute it yourself."})).collect());
             }
         }
+        // Strict fusion: the base model only thinks. Its shell/write actions are refused, each
+        // with a pointer to hand the work to a worker; reads and model_phase still run.
+        if self.phase.is_none() && crate::model_phase::strict() && actions.iter().any(|a| !crate::model_phase::base_may_run(a.get("tool").and_then(Value::as_str))) {
+            let refused = |a: &Value| !crate::model_phase::base_may_run(a.get("tool").and_then(Value::as_str));
+            let msg = "Strict fusion: the main model does not run shell, write or edit actions. Call model_phase with the worker and effort that fits this step and a precise brief.";
+            let mut out = Vec::new();
+            for a in &actions {
+                if refused(a) {
+                    out.push(json!({"output": msg, "returncode": 1, "exception_info": msg}));
+                } else if let Some(o) = self.native_outcome(a) {
+                    out.push(o);
+                } else {
+                    out.push(crate::models::shapes::not_executed());
+                }
+            }
+            return Ok(out);
+        }
         // A single action, or concurrency disabled: the plain serial loop, unchanged.
         if actions.len() < 2 || action_concurrency(actions.len()) < 2 {
             for action in &actions {
@@ -2054,6 +2146,9 @@ impl Agent {
         }
         if crate::mcp::is_tool(tool) {
             return Some(crate::mcp::outcome(tool, &args));
+        }
+        if crate::model_phase::is_tool(tool) {
+            return Some(self.model_phase_outcome(&args));
         }
         let cwd = self.env.working_dir();
         match tool {

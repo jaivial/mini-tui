@@ -493,7 +493,7 @@ fn fnv(text: &str) -> String {
 }
 
 fn reserved(name: &str) -> bool {
-    matches!(name, "bash" | "cu" | "read" | "write" | "edit" | "code" | "codejs" | "computer_use" | "task_verify")
+    matches!(name, "bash" | "cu" | "read" | "write" | "edit" | "code" | "codejs" | "computer_use" | "task_verify" | "model_phase")
         || name.starts_with("task_")
         || name.starts_with("agent_")
 }

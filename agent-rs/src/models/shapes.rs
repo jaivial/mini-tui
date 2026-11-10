@@ -132,13 +132,14 @@ fn action_value(command: &Value, tool_call_id: Value) -> Value {
 pub fn is_native_tool(name: &str) -> bool {
     crate::mcp::is_tool(name) || crate::queue_tools::is_tool(name) || (name == "codejs" && crate::codejs::enabled()) || matches!(name, "read") || (matches!(name, "write" | "edit" | "code") && crate::writing::write_enabled())
         || (name == "computer_use" && crate::computer_use::enabled())
+        || crate::model_phase::is_tool(name)
 }
 
 fn command_for(name: &str, args: &Value) -> Result<Value, String> {
     if crate::mcp::is_tool(name) {
         return Ok(json!({"tool": name, "args": args}));
     }
-    if crate::queue_tools::is_tool(name) {
+    if crate::queue_tools::is_tool(name) || crate::model_phase::is_tool(name) {
         return Ok(json!({"tool": name, "args": args}));
     }
     if crate::queue_tools::active() && crate::agents::is_tool(name) {
